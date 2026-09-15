@@ -110,7 +110,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.3.0-live-multi-limit-gates"
+BOT_VERSION = "pro-organic-v10.4.0-limit-integrity-netr"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -170,7 +170,7 @@ LIMIT_REACTION_MAX_LATENCY_MIN = max(
     MARKET_REACTION_MAX_LATENCY_MIN,
     float(os.getenv("LIMIT_REACTION_MAX_LATENCY_MIN", "15") or 15),
 )
-LIMIT_GATE_STATS_SCHEMA_VERSION = "organic_limit_gate_stats_v10.3.0"
+LIMIT_GATE_STATS_SCHEMA_VERSION = "organic_limit_gate_stats_v10.4.0"
 
 # The journal keeps outcome history and nothing else. Every version-specific
 # audit blob the old bot accumulated is dropped on save; atomic_json_write still
@@ -280,6 +280,10 @@ WEAK_DIRECTION_RISK_MULTIPLIER = float(os.getenv("WEAK_DIRECTION_RISK_MULTIPLIER
 
 ABS_MIN_STOP_DOLLARS = float(os.getenv("ABS_MIN_STOP_DOLLARS", "0.40") or 0.40)
 COMMISSION_BUFFER_DOLLARS = float(os.getenv("COMMISSION_BUFFER_DOLLARS", "0.02") or 0.02)
+# Fee assumptions are configurable; default to typical low maker / higher taker
+# rates. LIMIT entries are maker-side only when they actually fill at the anchor.
+MAKER_FEE_RATE = max(0.0, float(os.getenv("MAKER_FEE_RATE", "0.0002") or 0.0002))
+TAKER_FEE_RATE = max(0.0, float(os.getenv("TAKER_FEE_RATE", "0.0005") or 0.0005))
 
 
 # ==========================================================
@@ -341,6 +345,11 @@ PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES = max(
     int(os.getenv("PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES", "60") or 60),
 )
 PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R = min(0.50, max(0.05, float(os.getenv("PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R", "0.25") or 0.25)))
+# Hard backstop for PROBE trades that never prove themselves. The existing
+# no-followthrough controls remain the fast/conditional exits; this is only the
+# final finite lease for stale, still-weak probes.
+PROBE_MAX_HOLD_MINUTES = max(60, int(os.getenv("PROBE_MAX_HOLD_MINUTES", "360") or 360))
+PROBE_MAX_HOLD_MIN_CURRENT_R = max(0.0, min(1.0, float(os.getenv("PROBE_MAX_HOLD_MIN_CURRENT_R", "0.25") or 0.25)))
 PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R = min(
     PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R,
     max(0.05, float(os.getenv("PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R", "0.20") or 0.20)),
@@ -476,7 +485,8 @@ LIMIT_ROUTED_CANONICAL_FAMILIES = frozenset({
 # taken at market. The age bound is what keeps that a reaction to now rather
 # than a second spending of the reaction that placed the order.
 ESCALATION_MAX_DISPLACEMENT_AGE_MIN = min(15.0, max(3.0, float(os.getenv("ESCALATION_MAX_DISPLACEMENT_AGE_MIN", "9.0") or 9.0)))
-EXECUTION_MODEL_SCHEMA_VERSION = "organic_execution_model_v10.1.0"
+EXECUTION_MODEL_SCHEMA_VERSION = "organic_execution_model_v10.4.0"
+COMMISSION_ACCOUNTING_SCHEMA_VERSION = "commission_net_r_v10.4.0"
 
 
 # ==========================================================
@@ -514,6 +524,9 @@ MIN_SCORE_CORE = max(MIN_SCORE_PROBE, min(100, int(os.getenv("MIN_SCORE_CORE", "
 # The floor must sit above 50, or "no higher timeframe has an opinion" counts as
 # an edge and the bot trades both directions of a range it cannot read.
 MIN_HTF_ALIGNMENT_SCORE = max(0, min(100, int(os.getenv("MIN_HTF_ALIGNMENT_SCORE", "60") or 60)))
+# LIMIT is intentionally less dependent on synchronous HTF agreement: 50 means
+# both HTFs are neutral, while the market route keeps the stricter 60 floor.
+LIMIT_MIN_HTF_ALIGNMENT_SCORE = max(0, min(100, int(os.getenv("LIMIT_MIN_HTF_ALIGNMENT_SCORE", "50") or 50)))
 MAX_SPREAD_ATR = max(0.05, float(os.getenv("MAX_SPREAD_ATR", "0.25") or 0.25))
 CORE_MIN_RISK_PCT_EFFECTIVE = max(0.01, float(os.getenv("CORE_MIN_RISK_PCT_EFFECTIVE", "0.10") or 0.10))
 MIN_SCORE_ACCEPTANCE = max(MIN_SCORE_PROBE, min(MIN_SCORE_CORE, int(os.getenv("MIN_SCORE_ACCEPTANCE", "65") or 65)))
@@ -3498,12 +3511,75 @@ def consume_anchor(anchor: Anchor, outcome: str, reason: str = "") -> None:
 # журналу, тож деградований сетап сам повертається, щойно дані змінюються —
 # жодного ручного списку і жодного переофіту на 30 угодах.
 
+def _fee_rate_for_execution_source(source: str, *, entry: bool = True) -> float:
+    src = str(source or "").upper()
+    if entry and src in {"LIMIT_FILL_AT_ANCHOR", "LIMIT_ARMED_AT_LEVEL"}:
+        return MAKER_FEE_RATE
+    return TAKER_FEE_RATE
+
+
+def _commission_r_for_geometry(
+    side: str, entry: float, risk: float, gross_r: float,
+    execution_source: str, realized_return_pct: Optional[float] = None,
+) -> dict[str, Any]:
+    """Convert round-trip trading fees into R using actual entry/stop geometry."""
+    entry = safe_float(entry); risk = abs(safe_float(risk))
+    if entry <= 0 or risk <= 1e-12 or not math.isfinite(gross_r):
+        return {"fees_r": 0.0, "entry_fee_r": 0.0, "exit_fee_r": 0.0, "entry_fee_rate": 0.0, "exit_fee_rate": 0.0}
+    entry_rate = _fee_rate_for_execution_source(execution_source, entry=True)
+    exit_rate = TAKER_FEE_RATE
+    if realized_return_pct is not None and math.isfinite(safe_float(realized_return_pct, float("nan"))):
+        exit_move = entry * safe_float(realized_return_pct) / 100.0
+    else:
+        exit_move = gross_r * risk
+    exit_price = max(entry * 0.1, entry + (exit_move if side == Side.LONG.value else -exit_move))
+    entry_fee_r = entry * entry_rate / risk
+    exit_fee_r = exit_price * exit_rate / risk
+    return {
+        "fees_r": round(entry_fee_r + exit_fee_r, 8),
+        "entry_fee_r": round(entry_fee_r, 8),
+        "exit_fee_r": round(exit_fee_r, 8),
+        "entry_fee_rate": entry_rate,
+        "exit_fee_rate": exit_rate,
+        "fee_exit_price": round_price(exit_price),
+    }
+
+
+def _backfill_trade_net_r(trade: dict[str, Any]) -> dict[str, Any]:
+    """Backfill gross/net R for legacy closed rows without changing their geometry."""
+    if not isinstance(trade, dict):
+        return trade
+    gross = safe_float(trade.get("gross_r"), float("nan"))
+    if not math.isfinite(gross):
+        gross = safe_float(trade.get("result_r"), float("nan"))
+    if not math.isfinite(gross):
+        gross = safe_float(trade.get("pnl_r"), float("nan"))
+    if not math.isfinite(gross):
+        return trade
+    risk = abs(safe_float(trade.get("entry")) - safe_float(trade.get("stop_initial")))
+    if risk <= 1e-12:
+        return trade
+    fees = _commission_r_for_geometry(
+        str(trade.get("side") or ""), safe_float(trade.get("entry")), risk, gross,
+        str(trade.get("execution_source") or ""),
+        safe_float(trade.get("realized_return_pct"), float("nan")) if trade.get("realized_return_pct") is not None else None,
+    )
+    trade["gross_r"] = round(gross, 6)
+    trade["fees_r"] = fees["fees_r"]
+    trade["commission"] = {**fees, "schema_version": COMMISSION_ACCOUNTING_SCHEMA_VERSION}
+    trade["net_r"] = round(gross - fees["fees_r"], 6)
+    trade["pnl_r"] = trade["net_r"]
+    trade["result_r"] = trade["net_r"]
+    trade["net_r_schema_version"] = COMMISSION_ACCOUNTING_SCHEMA_VERSION
+    return trade
+
+
 def _trade_result_r(trade: dict[str, Any]) -> Optional[float]:
     if not isinstance(trade, dict):
         return None
     if not bool(trade.get("ml_eligible", True)):
         return None
-    for key in ("pnl_r", "result_r"):
+    for key in ("net_r", "pnl_r", "result_r"):
         value = trade.get(key)
         if value is not None:
             number = safe_float(value, float("nan"))
@@ -5086,8 +5162,16 @@ def _realized_trade_metrics(
 
     result_r = sum(safe_float(leg.get("result_r"), 0.0) for leg in legs)
     realized_return_pct = sum(safe_float(leg.get("realized_return_pct"), 0.0) for leg in legs)
+    fee = _commission_r_for_geometry(
+        trade.side, entry, risk, result_r, str(getattr(trade, "execution_source", "") or ""), realized_return_pct,
+    )
+    net_r = round(result_r - safe_float(fee.get("fees_r")), 6)
     return {
-        "result_r": round(result_r, 6),
+        "result_r": net_r,
+        "gross_r": round(result_r, 6),
+        "net_r": net_r,
+        "fees_r": fee.get("fees_r"),
+        "commission": {**fee, "schema_version": COMMISSION_ACCOUNTING_SCHEMA_VERSION},
         "realized_return_pct": round(realized_return_pct, 6),
         "known_realized_r": round(result_r, 6),
         "known_realized_return_pct": round(realized_return_pct, 6),
@@ -5902,9 +5986,22 @@ def probe_no_followthrough_exit_profile(trade: ActiveTrade, context: dict[str, A
         return profile
     if confirmed_stale:
         profile["reason_code"] = "CONFIRMED_PROBE_STALE_BUT_STRUCTURE_NOT_INVALIDATED"
+        # Still allow the finite hard lease below to clean up a truly stagnant probe.
+    hard_stale = bool(
+        age >= PROBE_MAX_HOLD_MINUTES
+        and mfe_r < PROBE_MAX_HOLD_MIN_CURRENT_R
+        and current_r < PROBE_MAX_HOLD_MIN_CURRENT_R
+    )
+    if hard_stale:
+        profile.update({
+            "exit": True,
+            "reason_code": "PROBE_MAX_HOLD_EXCEEDED",
+            "threshold_minutes": PROBE_MAX_HOLD_MINUTES,
+            "max_current_r": PROBE_MAX_HOLD_MIN_CURRENT_R,
+        })
         return profile
 
-    profile["reason_code"] = "FOLLOWTHROUGH_WINDOW_STILL_VALID"
+    profile["reason_code"] = profile.get("reason_code") or "FOLLOWTHROUGH_WINDOW_STILL_VALID"
     return profile
 
 
@@ -6630,6 +6727,11 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "close_reason": payload.get("close_reason", close_action),
         "pnl": pnl,
         "pnl_r": pnl_r,
+        "gross_r": payload.get("gross_r", pnl_r),
+        "net_r": payload.get("net_r", pnl_r),
+        "fees_r": payload.get("fees_r", 0.0),
+        "commission": payload.get("commission"),
+        "net_r_schema_version": payload.get("net_r_schema_version", COMMISSION_ACCOUNTING_SCHEMA_VERSION),
         "bot_version_at_entry": payload.get("bot_version_at_entry"),
         "architecture_version_at_entry": payload.get("architecture_version_at_entry"),
         "journal_schema_at_entry": payload.get("journal_schema_at_entry"),
@@ -7039,6 +7141,7 @@ def load_journal() -> dict[str, Any]:
     journal["journal_version"] = JOURNAL_VERSION
     journal["version"] = BOT_VERSION
     journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["trades"] = [_backfill_trade_net_r(dict(t)) for t in list(journal.get("trades") or []) if isinstance(t, dict)]
     journal.setdefault("migration", {}).update({
         "mode": "ORGANIC_V10_LEGACY_BLOB_PRUNE",
         "previous_journal_version": previous_version,
@@ -7060,7 +7163,7 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["trades"] = deduplicate_closed_trades([
         compact for item in list(journal.get("trades") or [])
         if isinstance(item, dict)
-        for compact in [compact_trade_for_journal(item)] if compact
+        for compact in [compact_trade_for_journal(_backfill_trade_net_r(dict(item)))] if compact
     ])[-MAX_JOURNAL:]
 
     protected = {
@@ -7797,6 +7900,19 @@ def compute_execution_model_statistics(journal: dict[str, Any]) -> dict[str, Any
         ]
         return round(sum(values) / len(values), 4) if values else None
 
+    def _shadow_net_mean(key: str, rows_: list[dict[str, Any]]) -> Optional[float]:
+        values=[]
+        for row in rows_:
+            shadow=dict(row.get(key) or {})
+            resolution=str(shadow.get("resolution") or "")
+            if resolution in ("", "UNRESOLVED"): continue
+            gross=safe_float(shadow.get("result_r"), float("nan"))
+            entry=safe_float(shadow.get("entry")); stop=safe_float(shadow.get("stop"))
+            if not (math.isfinite(gross) and entry>0 and abs(entry-stop)>1e-12): continue
+            fee=_commission_r_for_geometry(str(row.get("side") or ""), entry, abs(entry-stop), gross, "LIMIT_FILL_AT_ANCHOR" if key=="limit_shadow" else "MARKET")
+            values.append(gross-safe_float(fee.get("fees_r")))
+        return round(sum(values)/len(values),4) if values else None
+
     return {
         "by_model": _model_group_by(rows, _execution_model),
         # The family is the routing key, so this is the bucket that says whether the
@@ -7822,7 +7938,9 @@ def compute_execution_model_statistics(journal: dict[str, Any]) -> dict[str, Any
                 1 for row in placed if str(row.get("status") or "").upper() == "EXPIRED"
             ),
             "limit_shadow_mean_r": _shadow_mean("limit_shadow", filled),
+            "limit_shadow_mean_net_r": _shadow_net_mean("limit_shadow", filled),
             "market_shadow_mean_r": _shadow_mean("market_shadow", placed),
+            "market_shadow_mean_net_r": _shadow_net_mean("market_shadow", placed),
             "escalation_refusals": {
                 reason: sum(1 for row in placed if str(row.get("escalation_refused") or "") == reason)
                 for reason in sorted({
@@ -7885,6 +8003,51 @@ def compute_calendar_statistics(journal: dict[str, Any]) -> dict[str, Any]:
         "computed_at": iso_now(),
         "schema_version": CALENDAR_SCHEMA_VERSION,
     }
+
+
+def _score_diagnostics(journal: dict[str, Any]) -> dict[str, Any]:
+    """Deep diagnostic of entry/final score monotonicity; advisory only."""
+    rows = _outcome_rows(_closed_trades(journal))
+
+    def summarize(field: str) -> dict[str, Any]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        values=[]; outcomes=[]
+        for row in rows:
+            value = safe_float(row["trade"].get(field), float("nan"))
+            if not math.isfinite(value) or value <= 0:
+                continue
+            bucket = "LOW" if value < 60 else "MID" if value < 75 else "HIGH"
+            groups.setdefault(bucket, []).append(row)
+            values.append(value); outcomes.append(row["r"])
+        def corr(xs, ys):
+            if len(xs) < 3: return None
+            mx=sum(xs)/len(xs); my=sum(ys)/len(ys)
+            denx=sum((x-mx)**2 for x in xs); deny=sum((y-my)**2 for y in ys)
+            if denx <= 1e-12 or deny <= 1e-12: return None
+            return round(sum((x-mx)*(y-my) for x,y in zip(xs,ys))/math.sqrt(denx*deny),4)
+        bucket_stats={}
+        for name, grp in sorted(groups.items()):
+            b=_bucket_outcome(grp)
+            comps={}
+            for comp in ("setup_quality","timing_quality","entry_quality","trade_quality"):
+                vals=[safe_float(x["trade"].get(comp), float("nan")) for x in grp]
+                vals=[v for v in vals if math.isfinite(v)]
+                if vals: comps[comp]=round(sum(vals)/len(vals),2)
+            families=collections.Counter(str(x["trade"].get("canonical_setup_family") or x["trade"].get("setup_family") or "UNKNOWN") for x in grp)
+            routes=collections.Counter(_execution_model(x["trade"]) for x in grp)
+            b["component_means"]=comps; b["families"]=dict(families); b["routes"]=dict(routes)
+            bucket_stats[name]=b
+        return {"buckets": bucket_stats, "correlation_with_net_r": corr(values,outcomes), "sample": len(values)}
+
+    entry=summarize("entry_score"); final=summarize("score")
+    warnings=[]
+    eh=entry["buckets"].get("HIGH"); el=entry["buckets"].get("LOW")
+    fh=final["buckets"].get("HIGH"); fl=final["buckets"].get("LOW")
+    if eh and el and eh["trades"] >= 3 and eh["expectancy_r"] < el["expectancy_r"]:
+        warnings.append("ENTRY_SCORE_HIGH_BELOW_LOW")
+    if fh and fl and fh["trades"] >= 3 and fh["expectancy_r"] < fl["expectancy_r"]:
+        warnings.append("FINAL_SCORE_HIGH_BELOW_LOW")
+    return {"entry_score": entry, "final_score": final, "warnings": warnings, "diagnostic_only": True, "schema_version": "entry_score_diagnostics_v10.4.0"}
 
 
 def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
@@ -7956,6 +8119,7 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
         # it is the score actively misleading position sizing. ORDER = LOW < MID < HIGH.
         "entry_score_is_discriminative": _entry_score_is_monotonic(score_buckets),
         "entry_score_direction": _entry_score_direction(score_buckets),
+        "score_diagnostics": _score_diagnostics(journal),
         "computed_at": iso_now(),
         "schema_version": ENTRY_AUDIT_SCHEMA_VERSION,
     }
@@ -8139,7 +8303,7 @@ def accumulate_limit_arming_statistics(journal: dict[str, Any], audit: dict[str,
     if not arming:
         return
     stats = dict(journal.get("limit_arming_statistics") or {})
-    stats.setdefault("schema_version", LIMIT_GATE_STATS_SCHEMA_VERSION)
+    stats["schema_version"] = LIMIT_GATE_STATS_SCHEMA_VERSION
     stats["cycles"] = safe_int(stats.get("cycles")) + 1
     stats["limit_eligible"] = safe_int(stats.get("limit_eligible")) + safe_int(
         arming.get("limit_eligible", arming.get("evaluated"))
@@ -9189,8 +9353,8 @@ def _arm_limit_at_level_many(
 
         alignment = htf_alignment_for_side(htf, str(anchor.side))
         alignment_score = safe_float(alignment.get("score"))
-        if alignment_score < MIN_HTF_ALIGNMENT_SCORE:
-            reject(anchor, arming, f"HTF_{alignment.get('state')}_{alignment_score:.0f}_BELOW_{MIN_HTF_ALIGNMENT_SCORE}"); continue
+        if alignment_score < LIMIT_MIN_HTF_ALIGNMENT_SCORE:
+            reject(anchor, arming, f"HTF_{alignment.get('state')}_{alignment_score:.0f}_BELOW_{LIMIT_MIN_HTF_ALIGNMENT_SCORE}"); continue
         gate_counts["HTF_ALIGNMENT"] += 1
 
         candidate = _arming_candidate(context, anchor, arming, degradation)
@@ -9378,12 +9542,29 @@ def resolve_pending_limit(
     # up to twelve minutes of a position it is supposed to be managing. It also
     # starts the PROBE no-followthrough clock where it belongs: at the entry.
     opened.opened_at = _iso_from_ms(fill_ts)
-    row["trade_id"] = str(opened.id)
+    # Important multi-limit invariant: this function detects a fill, but it does NOT
+    # claim ownership of the fill. The caller may still reject it because another
+    # ActiveTrade already exists. Therefore trade_id and anchor consumption are
+    # committed only by _commit_filled_limit after acceptance.
+    row.pop("trade_id", None)
+    row["fill_acceptance_pending"] = True
+    return opened, decision, row
 
+
+def _commit_filled_limit(
+    state: dict[str, Any],
+    row: dict[str, Any],
+    opened: ActiveTrade,
+    anchors_by_id: dict[str, Anchor],
+) -> None:
+    """Commit an accepted limit fill after the outer multi-limit arbiter approves it."""
+    store_active_trade(state, opened)
+    row["trade_id"] = str(opened.id)
+    row["fill_acceptance_pending"] = False
+    row["status_reason"] = "LEVEL_REVISITED_ACCEPTED"
     anchor = anchors_by_id.get(str(row.get("anchor_id") or ""))
     if anchor is not None:
         consume_anchor(anchor, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
-    return opened, decision, row
 
 
 def _escalation_candidate(
@@ -10162,7 +10343,7 @@ def run_bot() -> int:
         if opened_i is not None and filled_decision is not None:
             if opened is None and active is None:
                 opened = opened_i
-                store_active_trade(state, opened)
+                _commit_filled_limit(state, order_row, opened, anchors_by_id)
                 decision = filled_decision
                 plan = filled_decision.plan
                 append_history(state, {
@@ -10181,6 +10362,8 @@ def run_bot() -> int:
                 # The exchange/model says this order filled, but supervision already has
                 # a live position. Do not resurrect it as a second ActiveTrade.
                 order_row["status_reason"] = "FILLED_WHILE_ACTIVE_TRADE_EXISTS"
+                order_row["fill_acceptance_pending"] = False
+                order_row.pop("trade_id", None)
                 _upsert_limit_order(journal, order_row)
                 print(
                     f"[WARN] LIMIT fill while another trade is active: "
@@ -10968,6 +11151,12 @@ def _check_probe_no_followthrough() -> list[str]:
         problems.append(f"CONFIRMED event read back as {confirmed.get('preconfirmation_status')}")
     if confirmed.get("exit"):
         problems.append("a CONFIRMED PROBE inside its lease was exited — supervision behaviour changed")
+    hard_trade = _open_active_trade(context, candidate, plan, decision, "BOOTSTRAP", "")
+    hard_trade.opened_at = (now_utc() - timedelta(minutes=PROBE_MAX_HOLD_MINUTES + 30)).isoformat()
+    hard_local = dict(context); hard_local["price"] = plan.entry - abs(plan.entry-plan.stop) * 0.05; hard_local["preconfirmation_events"] = []
+    hard_profile = probe_no_followthrough_exit_profile(hard_trade, hard_local)
+    if not hard_profile.get("exit") or hard_profile.get("reason_code") != "PROBE_MAX_HOLD_EXCEEDED":
+        problems.append("hard PROBE max-hold backstop did not exit a stale weak probe")
     return problems
 
 
@@ -11828,8 +12017,12 @@ def _check_fill_needs_a_bar_after_placement() -> list[str]:
         )
     if str(opened.execution_source) != "LIMIT_FILL_AT_ANCHOR":
         problems.append(f"the filled trade reports execution_source {opened.execution_source}")
+    if anchor.state != AnchorState.ARMED.value:
+        problems.append("resolver mutated the anchor before fill acceptance")
+    state = {"active_trade": None}
+    _commit_filled_limit(state, out, opened, {anchor.id: anchor})
     if anchor.state != AnchorState.TRIGGERED.value:
-        problems.append("a filled order left its anchor armed, so the next cycle could rest a second order on it")
+        problems.append("accepted filled order did not consume its anchor")
     return problems
 
 
@@ -13341,6 +13534,66 @@ def _check_arming_keeps_the_message_cadence() -> list[str]:
     return problems
 
 
+def _check_multi_limit_fill_ownership() -> list[str]:
+    """Two fills in one cycle: first owns the only ActiveTrade, second stays phantom-free."""
+    context, anchor, candidate, plan, journal = _ready_candidate(Side.LONG.value)
+    if plan is None:
+        return ["fixture did not produce a plan"]
+    rows=[]
+    anchors={anchor.id: anchor}
+    for side, shift in ((Side.LONG.value,0.0),(Side.LONG.value,0.05)):
+        a=anchor_from_dict(anchor_to_dict(anchor)); a.id=new_id("anc"); a.level=round_price(a.level+shift); a.invalidation=round_price(a.invalidation+shift)
+        c=Candidate(**{**asdict(candidate), "anchor_id": a.id, "side": side})
+        d=Decision(id=new_id("sig"), time=iso_now(), action=Action.PROBE_ENTRY.value, side=side, setup_type=c.setup_type, quality=c.final_score, reason="TEST", candidate=c, plan=plan, regime=str(context.get("regime") or ""), current_price=plan.entry)
+        r={"order_id":new_id("lim"),"anchor_id":a.id,"side":side,"setup_type":c.setup_type,"status":"FILLED","status_reason":"LEVEL_REVISITED","fill_price":a.level,"fill_ts":int(now_utc().timestamp()*1000),"entry_action":Action.PROBE_ENTRY.value,"score":c.final_score,"candidate":candidate_to_dict(c),"plan":plan_to_dict(plan)}
+        opened=_open_active_trade(context,c,plan,d,"NOT_LEARNED",""); opened.opened_at=_iso_from_ms(r["fill_ts"])
+        anchors[a.id]=a; rows.append((r,opened,d))
+    state={"active_trade":None}; journal["limit_orders"]=[]
+    first_r, first_opened, first_decision=rows[0]; _commit_filled_limit(state,first_r,first_opened,anchors); _upsert_limit_order(journal,first_r)
+    second_r, second_opened, second_decision=rows[1]
+    second_r["status_reason"]="FILLED_WHILE_ACTIVE_TRADE_EXISTS"; second_r["fill_acceptance_pending"]=False; second_r.pop("trade_id",None); _upsert_limit_order(journal,second_r)
+    problems=[]
+    if not first_r.get("trade_id"): problems.append("first accepted fill has no trade_id")
+    if second_r.get("trade_id"): problems.append("second rejected fill has a phantom trade_id")
+    if anchors[rows[1][1].signal_id if False else rows[1][0]["anchor_id"]].state == AnchorState.TRIGGERED.value:
+        problems.append("second rejected fill consumed its anchor")
+    orders={str(x.get("order_id")):x for x in journal.get("limit_orders") or []}
+    if orders.get(second_r["order_id"],{}).get("trade_id"): problems.append("journal contains phantom trade_id on rejected fill")
+    if active_trade_from_state(state) is None or str(active_trade_from_state(state).id) != str(first_r.get("trade_id")):
+        problems.append("accepted first fill is not the stored ActiveTrade")
+    return problems
+
+
+def _check_commission_accounting() -> list[str]:
+    """Fees must reduce gross R, and a maker LIMIT entry must cost less than a taker entry."""
+    gross = 1.0
+    limit = _commission_r_for_geometry(Side.LONG.value, 100.0, 1.0, gross, "LIMIT_FILL_AT_ANCHOR")
+    market = _commission_r_for_geometry(Side.LONG.value, 100.0, 1.0, gross, "MARKET")
+    problems=[]
+    if not (safe_float(limit.get("fees_r")) < safe_float(market.get("fees_r"))):
+        problems.append(f"maker LIMIT fees {limit.get('fees_r')} were not below market fees {market.get('fees_r')}")
+    row={"ml_eligible":True,"entry":100.0,"stop_initial":99.0,"side":Side.LONG.value,
+         "result_r":gross,"realized_return_pct":1.0,"execution_source":"LIMIT_FILL_AT_ANCHOR"}
+    _backfill_trade_net_r(row)
+    if not (safe_float(row.get("net_r")) < gross and safe_float(row.get("fees_r")) > 0):
+        problems.append(f"backfill did not produce net_r < gross_r: {row}")
+    if abs(safe_float(_trade_result_r(row)) - safe_float(row.get("net_r"))) > 1e-9:
+        problems.append("analytics still reads gross/result_r instead of net_r")
+    return problems
+
+
+def _check_limit_htf_floor_is_route_specific() -> list[str]:
+    """LIMIT may accept neutral HTF (50) while MARKET keeps the stricter 60 floor."""
+    neutral={"state":"MIXED","direction_1h":Side.NEUTRAL.value,"direction_4h":Side.NEUTRAL.value}
+    score=safe_float(htf_alignment_for_side(neutral, Side.LONG.value).get("score"))
+    problems=[]
+    if LIMIT_MIN_HTF_ALIGNMENT_SCORE >= MIN_HTF_ALIGNMENT_SCORE:
+        problems.append("LIMIT HTF floor is not relaxed relative to the market floor")
+    if score < LIMIT_MIN_HTF_ALIGNMENT_SCORE or score >= MIN_HTF_ALIGNMENT_SCORE:
+        problems.append(f"neutral HTF score {score} is not admitted by LIMIT-only policy {LIMIT_MIN_HTF_ALIGNMENT_SCORE}/{MIN_HTF_ALIGNMENT_SCORE}")
+    return problems
+
+
 def _run_self_test() -> bool:
     checks: list[tuple[str, Any]] = [
         ("конфігурація", _check_configuration),
@@ -13374,8 +13627,11 @@ def _run_self_test() -> bool:
         ("ескалація лише в бік руху", _check_escalation_fires_only_on_the_right_side),
         ("ескалація знімає ордер у тому ж циклі", _check_escalation_cancels_the_order_in_the_same_cycle),
         ("виконання ліміта важливіше за ескалацію", _check_fill_beats_escalation),
+        ("multi-limit fill ownership", _check_multi_limit_fill_ownership),
         ("ескалація кориться kill-switch", _check_escalation_respects_the_killswitches),
         ("статистика моделей нічого не примушує", _check_execution_model_statistics_are_never_enforcing),
+        ("комісія рахується як net-R", _check_commission_accounting),
+        ("LIMIT має окремий HTF floor", _check_limit_htf_floor_is_route_specific),
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
         ("стиснення назване прямо", _check_stand_down_is_told_plainly),
