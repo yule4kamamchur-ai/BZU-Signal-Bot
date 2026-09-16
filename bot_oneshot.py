@@ -110,7 +110,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.4.0-limit-integrity-netr"
+BOT_VERSION = "pro-organic-v10.5.0-score-limits-riskguard"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -170,7 +170,7 @@ LIMIT_REACTION_MAX_LATENCY_MIN = max(
     MARKET_REACTION_MAX_LATENCY_MIN,
     float(os.getenv("LIMIT_REACTION_MAX_LATENCY_MIN", "15") or 15),
 )
-LIMIT_GATE_STATS_SCHEMA_VERSION = "organic_limit_gate_stats_v10.4.0"
+LIMIT_GATE_STATS_SCHEMA_VERSION = "organic_limit_gate_stats_v10.5.0"
 
 # The journal keeps outcome history and nothing else. Every version-specific
 # audit blob the old bot accumulated is dropped on save; atomic_json_write still
@@ -280,6 +280,19 @@ WEAK_DIRECTION_RISK_MULTIPLIER = float(os.getenv("WEAK_DIRECTION_RISK_MULTIPLIER
 
 ABS_MIN_STOP_DOLLARS = float(os.getenv("ABS_MIN_STOP_DOLLARS", "0.40") or 0.40)
 COMMISSION_BUFFER_DOLLARS = float(os.getenv("COMMISSION_BUFFER_DOLLARS", "0.02") or 0.02)
+# LIMIT geometry gets its own caps so the market route stays conservative while
+# resting orders can cover a wider but still explicitly bounded level universe.
+LIMIT_MAX_STOP_ATR = min(4.0, max(0.80, float(os.getenv("LIMIT_MAX_STOP_ATR", "1.90") or 1.90)))
+LIMIT_ARM_MAX_ATR = min(6.0, max(0.40, float(os.getenv("LIMIT_ARM_MAX_ATR", "3.00") or 3.00)))
+# Temporary portfolio-level brake while the observed edge is negative. It does not
+# stop evidence collection; it scales every new position before the normal budget gate.
+GLOBAL_RISK_MULTIPLIER = min(1.0, max(0.10, float(os.getenv("GLOBAL_RISK_MULTIPLIER", "0.70") or 0.70)))
+ADVERSE_EDGE_GUARD_ENABLED = _flag("ADVERSE_EDGE_GUARD_ENABLED", "true")
+ADVERSE_EDGE_WINDOW = max(10, int(os.getenv("ADVERSE_EDGE_WINDOW", "20") or 20))
+ADVERSE_EDGE_EXPECTANCY_R = float(os.getenv("ADVERSE_EDGE_EXPECTANCY_R", "-0.10") or -0.10)
+ADVERSE_EDGE_RECENT_EXPECTANCY_R = float(os.getenv("ADVERSE_EDGE_RECENT_EXPECTANCY_R", "-0.25") or -0.25)
+ADVERSE_EDGE_RISK_MULTIPLIER = min(1.0, max(0.10, float(os.getenv("ADVERSE_EDGE_RISK_MULTIPLIER", "0.50") or 0.50)))
+LIMIT_DISTANCE_RISK_FLOOR = min(1.0, max(0.40, float(os.getenv("LIMIT_DISTANCE_RISK_FLOOR", "0.70") or 0.70)))
 # Fee assumptions are configurable; default to typical low maker / higher taker
 # rates. LIMIT entries are maker-side only when they actually fill at the anchor.
 MAKER_FEE_RATE = max(0.0, float(os.getenv("MAKER_FEE_RATE", "0.0002") or 0.0002))
@@ -411,6 +424,7 @@ ACCEPTANCE_MAX_AGE_BARS = max(1, int(os.getenv("ACCEPTANCE_MAX_AGE_BARS", "4") o
 ANCHOR_MAX_AGE_MIN = max(15, int(os.getenv("ANCHOR_MAX_AGE_MIN", "180") or 180))
 # Максимальна відстань стопа від входу (ATR15) — інакше вхід уже запізний.
 MAX_STOP_ATR = min(4.0, max(0.5, float(os.getenv("MAX_STOP_ATR", "1.60") or 1.60)))
+LIMIT_TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
 # Runway: найближча протилежна ціль має давати хоча б стільки R,
 # щоб 0.25R MFE був досяжний у вікні no-followthrough.
 MIN_RUNWAY_R = max(0.5, float(os.getenv("MIN_RUNWAY_R", "1.60") or 1.60))
@@ -433,7 +447,6 @@ LIMIT_ORDER_SCHEMA_VERSION = "organic_limit_order_v10.1.0"
 # ринковий вхід — там ціна вже впритул до рівня, бо реакція підтвердилась. Армінг
 # навпаки чекає, поки ціна дійде, тому його межа ширша: рівень має бути досяжним
 # за життя якоря, але не настільки далеко, щоб ордер був фантазією.
-LIMIT_ARM_MAX_ATR = min(6.0, max(0.40, float(os.getenv("LIMIT_ARM_MAX_ATR", "2.50") or 2.50)))
 LIMIT_ARM_SCHEMA_VERSION = "organic_limit_arming_v10.2.0"
 
 # Стіна волатильності. _plan_geometry відмовляє, коли noise_floor — який ніколи не
@@ -3245,7 +3258,7 @@ def _displacement_evidence(bars: list[Candle], anchor: Anchor, atr3: float, afte
     }
 
 
-def _provisional_stop(anchor: Anchor, entry: float, reaction: dict[str, Any], atr15: float) -> dict[str, Any]:
+def _provisional_stop(anchor: Anchor, entry: float, reaction: dict[str, Any], atr15: float, max_stop_atr: Optional[float] = None) -> dict[str, Any]:
     """Structural stop from the anchor's own falsifier, capped for early entry."""
     sign = side_sign(anchor.side)
     buffer_dollars = max(0.10 * atr15, COMMISSION_BUFFER_DOLLARS)
@@ -3256,7 +3269,8 @@ def _provisional_stop(anchor: Anchor, entry: float, reaction: dict[str, Any], at
         guarded = extreme - sign * buffer_dollars
         structural = min(structural, guarded) if sign > 0 else max(structural, guarded)
     distance = abs(entry - structural)
-    max_distance = MAX_STOP_ATR * atr15
+    cap_atr = safe_float(max_stop_atr, MAX_STOP_ATR)
+    max_distance = cap_atr * atr15
     return {
         "stop": round_price(structural),
         "distance": round(distance, 6),
@@ -4316,6 +4330,28 @@ def resolve_entry_stage(
     }
 
 
+def _recent_net_edge(journal: dict[str, Any], window: int = ADVERSE_EDGE_WINDOW) -> dict[str, Any]:
+    rows = _outcome_rows(_closed_trades(journal))
+    recent = [safe_float(r.get("r"), 0.0) for r in rows[-window:]]
+    all_net = [safe_float(r.get("r"), 0.0) for r in rows]
+    return {
+        "sample": len(recent),
+        "recent_expectancy_r": round(sum(recent) / len(recent), 4) if recent else None,
+        "overall_expectancy_r": round(sum(all_net) / len(all_net), 4) if all_net else None,
+    }
+
+
+def _stop_cap_atr(candidate: Optional[Candidate]) -> float:
+    family = str(getattr(candidate, "canonical_setup_family", "") or "").upper()
+    return LIMIT_MAX_STOP_ATR if family and family not in MARKET_ROUTED_CANONICAL_FAMILIES else MAX_STOP_ATR
+
+
+def _limit_entry_is_route(candidate: Optional[Candidate]) -> bool:
+    if candidate is None:
+        return False
+    return _execution_route(candidate) == "LIMIT"
+
+
 def position_risk_pct(stage: str, conviction: dict[str, Any], admission: dict[str, Any], candidate: Candidate, context: dict[str, Any], journal: dict[str, Any]) -> dict[str, Any]:
     """Base stage risk, then every multiplier that can only shrink it."""
     stage = str(stage or EntryStage.PROBE.value).upper()
@@ -4328,14 +4364,37 @@ def position_risk_pct(stage: str, conviction: dict[str, Any], admission: dict[st
 
     breakdown: list[dict[str, Any]] = [{"factor": "STAGE_BASE", "multiplier": 1.0, "value": round(base, 6)}]
     effective = base
+    apply_global = True
 
     def apply(name: str, multiplier: float, note: str) -> None:
+
         nonlocal effective
         multiplier = clamp(safe_float(multiplier, 1.0), 0.0, 1.0)
         if multiplier >= 1.0 - 1e-9:
             return
         effective *= multiplier
         breakdown.append({"factor": name, "multiplier": round(multiplier, 4), "value": round(effective, 6), "note": note})
+
+    if _limit_entry_is_route(candidate):
+        arming = dict((candidate.stage_plan or {}).get("arming") or {})
+        distance_atr = safe_float(arming.get("distance_atr"), LIMIT_ARM_MAX_ATR)
+        reach = clamp(1.0 - distance_atr / max(LIMIT_ARM_MAX_ATR, 1e-9), 0.0, 1.0)
+        distance_mult = LIMIT_DISTANCE_RISK_FLOOR + (1.0 - LIMIT_DISTANCE_RISK_FLOOR) * reach
+        apply("LIMIT_DISTANCE", distance_mult, f"level distance {distance_atr:.2f} ATR")
+
+    apply("GLOBAL_RISK", GLOBAL_RISK_MULTIPLIER, "temporary portfolio risk throttle")
+    if ADVERSE_EDGE_GUARD_ENABLED:
+        edge = _recent_net_edge(journal)
+        adverse = bool(
+            edge.get("overall_expectancy_r") is not None
+            and edge.get("overall_expectancy_r") <= ADVERSE_EDGE_EXPECTANCY_R
+            and edge.get("recent_expectancy_r") is not None
+            and edge.get("recent_expectancy_r") <= ADVERSE_EDGE_RECENT_EXPECTANCY_R
+            and safe_int(edge.get("sample")) >= ADVERSE_EDGE_WINDOW
+        )
+        if adverse:
+            apply("ADVERSE_EDGE_GUARD", ADVERSE_EDGE_RISK_MULTIPLIER,
+                  f"overall {edge['overall_expectancy_r']:.3f}R / recent {edge['recent_expectancy_r']:.3f}R")
 
     entry_quality = safe_float(candidate.entry_quality)
     if entry_quality < ENTRY_QUALITY_VERY_LOW:
@@ -4613,11 +4672,12 @@ def _plan_geometry(
         atr15 * MIN_STOP_ATR15 * 0.45,
     )
     decision_distance = max(structural_distance, noise_floor)
-    cap_distance = MAX_STOP_ATR * atr15
+    cap_atr = _stop_cap_atr(candidate)
+    cap_distance = cap_atr * atr15
     if decision_distance > cap_distance:
         return {
             "valid": False,
-            "reason": f"STOP_NOISE_FLOOR_{decision_distance / max(atr15, 1e-9):.2f}ATR_EXCEEDS_EARLY_ENTRY_CAP",
+            "reason": f"STOP_NOISE_FLOOR_{decision_distance / max(atr15, 1e-9):.2f}ATR_EXCEEDS_EARLY_ENTRY_CAP_{cap_atr:.2f}",
             "atr15": atr15, "noise": noise,
         }
 
@@ -4833,7 +4893,7 @@ def build_trade_plan(
             "min_rr1": MIN_RR1,
             "min_rr2": MIN_RR2,
             "min_rr3": MIN_RR3,
-            "max_stop_atr": MAX_STOP_ATR,
+            "max_stop_atr": MAX_STOP_ATR, "limit_max_stop_atr": LIMIT_MAX_STOP_ATR, "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
             "min_runway_r": MIN_RUNWAY_R,
             "bot_version": BOT_VERSION,
             "architecture_version": ARCHITECTURE_VERSION,
@@ -7357,36 +7417,36 @@ def _volatility_stand_down_line(
     atr15 = safe_float(context.get("atr15"))
     if atr15 <= 0:
         return ""
-    if atr15 < TRADEABLE_ATR15_FLOOR:
-        return (
-            f"<b>Ринок у стисненні:</b> ATR15 {atr15:.2f} проти порогу {TRADEABLE_ATR15_FLOOR:.2f} — "
-            "стоп виходить ширшим за дозволений, тож валідного плану входу не існує "
-            "на жодному маршруті. Чекаємо повернення волатильності."
-        )
 
     arming = dict((audit or {}).get("limit_arming") or {})
     rows = [row for row in (arming.get("refusals") or []) if isinstance(row, dict)]
     stop_rows = [row for row in rows if str(row.get("reason") or "").startswith("STOP_")]
-    # A majority, not unanimity: a live cycle at atr15 0.25 lost six of eight levels to
-    # the cap while two failed for ordinary structural reasons, and requiring every row
-    # kept the line silent in exactly the cycle that needed it. Below a majority this is
-    # a dry market rather than a wall, and crying wall there would teach the operator to
-    # ignore the line when it is true.
-    if not rows or len(stop_rows) * 2 <= len(rows):
-        return ""
-    buffer_now = max(0.10 * atr15, COMMISSION_BUFFER_DOLLARS)
-    needed = max(
-        (safe_float(row.get("stop_distance_atr")) * atr15 - buffer_now)
-        / max(MAX_STOP_ATR - 0.10, 1e-9)
-        for row in stop_rows
-    )
-    if needed <= atr15:
-        return ""
-    return (
-        f"<b>Стоп не вміщається:</b> ATR15 {atr15:.2f} — {len(stop_rows)} з {len(rows)} рівнів "
-        f"потребують стоп ширший за стелю {MAX_STOP_ATR:.2f}×ATR, тож навіть 3m-реакція на них "
-        f"не дасть входу. Вхід можливий від ATR15 ≈ {needed:.2f}."
-    )
+    route = str(arming.get("route") or "MARKET").upper()
+
+    # A majority, not unanimity. Prefer a route-specific stop wall when the audit has
+    # enough evidence to identify it; otherwise fall back to the universal volatility wall.
+    if rows and len(stop_rows) * 2 > len(rows):
+        cap_atr = LIMIT_MAX_STOP_ATR if route == "LIMIT" else MAX_STOP_ATR
+        buffer_now = max(0.10 * atr15, COMMISSION_BUFFER_DOLLARS)
+        needed = max(
+            (safe_float(row.get("stop_distance_atr")) * atr15 - buffer_now)
+            / max(cap_atr - 0.10, 1e-9)
+            for row in stop_rows
+        )
+        if needed > atr15:
+            return (
+                f"<b>Стоп не вміщається:</b> ATR15 {atr15:.2f} — {len(stop_rows)} з {len(rows)} рівнів "
+                f"потребують стоп ширший за стелю {cap_atr:.2f}×ATR для маршруту {route}, "
+                f"тобто реакція на цих рівнях не дасть входу. Вхід можливий від ATR15 ≈ {needed:.2f}."
+            )
+
+    if atr15 < TRADEABLE_ATR15_FLOOR:
+        return (
+            f"<b>Ринок у стисненні:</b> ATR15 {atr15:.2f} проти market-порогу {TRADEABLE_ATR15_FLOOR:.2f}. "
+            f"MARKET-план зараз не проходить волатильність; LIMIT-поріг становить "
+            f"{LIMIT_TRADEABLE_ATR15_FLOOR:.2f}. Чекаємо або відновлення волатильності, або валідний LIMIT-рівень."
+        )
+    return ""
 
 
 def _plan_lines(plan: TradePlan) -> list[str]:
@@ -8037,7 +8097,20 @@ def _score_diagnostics(journal: dict[str, Any]) -> dict[str, Any]:
             routes=collections.Counter(_execution_model(x["trade"]) for x in grp)
             b["component_means"]=comps; b["families"]=dict(families); b["routes"]=dict(routes)
             bucket_stats[name]=b
-        return {"buckets": bucket_stats, "correlation_with_net_r": corr(values,outcomes), "sample": len(values)}
+        component_corr = {}
+        for comp in ("setup_quality","timing_quality","entry_quality","trade_quality","location_quality"):
+            xs=[]; ys=[]
+            for row in rows:
+                value = safe_float(row["trade"].get(comp), float("nan"))
+                if math.isfinite(value):
+                    xs.append(value); ys.append(row["r"])
+            component_corr[comp] = corr(xs, ys)
+        return {
+            "buckets": bucket_stats,
+            "correlation_with_net_r": corr(values,outcomes),
+            "component_correlations_with_net_r": component_corr,
+            "sample": len(values),
+        }
 
     entry=summarize("entry_score"); final=summarize("score")
     warnings=[]
@@ -8120,8 +8193,30 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
         "entry_score_is_discriminative": _entry_score_is_monotonic(score_buckets),
         "entry_score_direction": _entry_score_direction(score_buckets),
         "score_diagnostics": _score_diagnostics(journal),
+        "detector_coverage": compute_detector_coverage(journal),
         "computed_at": iso_now(),
         "schema_version": ENTRY_AUDIT_SCHEMA_VERSION,
+    }
+
+
+def compute_detector_coverage(journal: dict[str, Any]) -> dict[str, Any]:
+    """Explain 'unseen' setup types without calling them dead or degraded."""
+    recent = list(journal.get("signals") or [])[-MAX_JOURNAL:]
+    counts = collections.Counter()
+    for row in recent:
+        setup = str(row.get("setup_type") or "NONE")
+        if setup != "NONE":
+            counts[setup] += 1
+    configured = sorted(str(x) for x in DETECTED_SETUP_TYPES if str(x) != SetupType.NONE.value)
+    unseen = [x for x in configured if counts.get(x, 0) == 0]
+    return {
+        "window_signals": len(recent),
+        "observed_setup_types": len([x for x in configured if counts.get(x,0) > 0]),
+        "total_setup_types": len(configured),
+        "unseen_setup_types": unseen,
+        "counts": {k:int(counts[k]) for k in configured},
+        "note": "UNSEEN means no emitted signal in the retained FIFO window; it is not a degradation decision.",
+        "schema_version": "detector_coverage_v10.5.0",
     }
 
 
@@ -8918,7 +9013,7 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     # Stop and runway are measured at the level, because that is where the order
     # fills. Passing them at the waiting price would prove nothing about the entry.
     # The empty reaction means no rejection wick exists to guard the stop against yet.
-    stop_profile = _provisional_stop(anchor, level, {}, atr15)
+    stop_profile = _provisional_stop(anchor, level, {}, atr15, max_stop_atr=LIMIT_MAX_STOP_ATR)
     out["stop"] = stop_profile.get("stop")
     out["stop_distance_atr"] = stop_profile.get("distance_atr")
     if not stop_profile.get("within_cap"):
@@ -10602,6 +10697,17 @@ def validate_runtime_configuration() -> dict[str, Any]:
             "the supervision stop floor exceeds the early-entry stop cap, so no plan can ever be valid."
         )
 
+    if LIMIT_MAX_STOP_ATR < MIN_STOP_ATR15:
+        problems.append(
+            f"LIMIT_MAX_STOP_ATR {LIMIT_MAX_STOP_ATR:.2f} < MIN_STOP_ATR15 {MIN_STOP_ATR15:.2f} — "
+            "LIMIT plans could never satisfy both their route cap and supervision stop floor."
+        )
+    if LIMIT_ARM_MAX_ATR < ANCHOR_MAX_ATR:
+        warnings.append(
+            f"LIMIT_ARM_MAX_ATR {LIMIT_ARM_MAX_ATR:.2f} < ANCHOR_MAX_ATR {ANCHOR_MAX_ATR:.2f} — "
+            "the resting route reaches less far than the reaction route."
+        )
+
     # GATE_RUNWAY exists so the plan's own promise is not fiction: TP1 is placed at
     # MIN_RR1 while the nearest real opposing level sits at runway_r. A runway floor
     # below MIN_RR1 admits entries whose first real target is behind a wall.
@@ -10662,10 +10768,10 @@ def validate_runtime_configuration() -> dict[str, Any]:
             "anchor_max_age_min": ANCHOR_MAX_AGE_MIN,
             "anchor_cooldown_min": ANCHOR_COOLDOWN_MIN,
             "trigger_lookback_3m": TRIGGER_LOOKBACK_3M,
-            "max_stop_atr": MAX_STOP_ATR,
+            "max_stop_atr": MAX_STOP_ATR, "limit_max_stop_atr": LIMIT_MAX_STOP_ATR, "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
             "min_runway_r": MIN_RUNWAY_R,
             "score_floors": {"probe": MIN_SCORE_PROBE, "acceptance": MIN_SCORE_ACCEPTANCE, "core": MIN_SCORE_CORE},
-            "risk_pct": {"probe": PROBE_RISK_PCT, "acceptance": ACCEPTANCE_RISK_PCT, "core": CORE_RISK_PCT},
+            "risk_pct": {"probe": PROBE_RISK_PCT, "acceptance": ACCEPTANCE_RISK_PCT, "core": CORE_RISK_PCT, "global_multiplier": GLOBAL_RISK_MULTIPLIER, "adverse_edge_guard": ADVERSE_EDGE_GUARD_ENABLED},
             "daily_risk_cap": DAILY_RISK_CAP,
             "tp_partials": {"TP0": TP0_SIZE_PCT, "TP1": TP1_SIZE_PCT, "TP2": TP2_SIZE_PCT, "TP3": TP3_RUNNER_PCT},
             "preconfirmation": {
@@ -13040,7 +13146,7 @@ def _check_limit_arms_on_a_fresh_level() -> list[str]:
 
     # Waiting further has to cost something, or a level 2.5 ATR away is as good as one
     # 0.6 ATR away and the reach term in _arming_candidate is decoration.
-    if len(risks) >= 6 and risks[-1] >= risks[0]:
+    if len(risks) >= 6 and risks[-1] > risks[0] + 1e-9:
         problems.append(
             f"the risk on the farthest level ({risks[-1]:.4f}%) is not below the nearest "
             f"({risks[0]:.4f}%) — distance does not taper the probe"
@@ -13253,11 +13359,11 @@ def _check_arming_respects_the_volatility_wall() -> list[str]:
     derivation rather than a magic number that could drift from it.
     """
     problems: list[str] = []
-    floor = ABS_MIN_STOP_DOLLARS / max(MAX_STOP_ATR, 1e-9)
-    if abs(TRADEABLE_ATR15_FLOOR - floor) > 1e-9:
+    floor = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
+    if abs(LIMIT_TRADEABLE_ATR15_FLOOR - floor) > 1e-9:
         problems.append(
-            f"TRADEABLE_ATR15_FLOOR is {TRADEABLE_ATR15_FLOOR}, but ABS_MIN_STOP_DOLLARS / "
-            f"MAX_STOP_ATR is {floor:.6f} — the reported threshold is not the real one"
+            f"LIMIT_TRADEABLE_ATR15_FLOOR is {LIMIT_TRADEABLE_ATR15_FLOOR}, but ABS_MIN_STOP_DOLLARS / "
+            f"LIMIT_MAX_STOP_ATR is {floor:.6f} — the reported LIMIT threshold is not the real one"
         )
 
     below = floor * 0.96
@@ -13353,12 +13459,12 @@ def _check_stand_down_is_told_plainly() -> list[str]:
     # atr15 >= ABS_MIN_STOP_DOLLARS / (MAX_STOP_ATR - 0.10). A live cycle at atr15 0.25
     # lost six of eight levels to it while the market still read as tradeable, and the
     # message said nothing at all — the same silence this check exists to prevent.
-    repaired_floor = ABS_MIN_STOP_DOLLARS / max(MAX_STOP_ATR - 0.10, 1e-9)
+    repaired_floor = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR - 0.10, 1e-9)
     # 0.20 ATR puts the level inside 2*ANCHOR_ZONE_ATR, so the message takes the
     # "вхід наближається" branch exactly as the live cycle did — the branch whose
     # "чекаємо 3m-реакцію" promise the wall contradicts.
     context, anchor, journal, _, _, _ = _armable_level(
-        Side.LONG.value, 0.20, 3.20, atr15=TRADEABLE_ATR15_FLOOR)
+        Side.LONG.value, 0.20, 3.20, atr15=LIMIT_TRADEABLE_ATR15_FLOOR)
     anchor.invalidation = round_price(
         safe_float(anchor.level) - side_sign(str(anchor.side)) * ABS_MIN_STOP_DOLLARS)
     cap_audit: dict[str, Any] = {}
@@ -13369,7 +13475,7 @@ def _check_stand_down_is_told_plainly() -> list[str]:
     if not cap_rows or not all(str(row.get("reason") or "").startswith("STOP_") for row in cap_rows):
         problems.append(
             f"a level whose falsifier was repaired to ABS_MIN_STOP_DOLLARS refused as "
-            f"{[row.get('reason') for row in cap_rows]} at atr15 {TRADEABLE_ATR15_FLOOR:.3f}, so "
+            f"{[row.get('reason') for row in cap_rows]} at atr15 {LIMIT_TRADEABLE_ATR15_FLOOR:.3f}, so "
             "the stop-cap case is not being reproduced and the line below is untested"
         )
     else:
@@ -13387,7 +13493,7 @@ def _check_stand_down_is_told_plainly() -> list[str]:
             )
         if "Стоп не вміщається" not in plain:
             problems.append(
-                f"every level was refused on the stop cap at atr15 {TRADEABLE_ATR15_FLOOR:.3f} and "
+                f"every level was refused on the stop cap at atr15 {LIMIT_TRADEABLE_ATR15_FLOOR:.3f} and "
                 f"the message did not say so: {plain[:160]}"
             )
         if "чекаємо 3m-реакцію" in plain:
