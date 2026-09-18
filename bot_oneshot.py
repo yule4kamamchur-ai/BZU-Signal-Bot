@@ -110,7 +110,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.5.0-score-limits-riskguard"
+BOT_VERSION = "pro-organic-v10.5.1-p0-p1-repair"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -297,20 +297,21 @@ LIMIT_DISTANCE_RISK_FLOOR = min(1.0, max(0.40, float(os.getenv("LIMIT_DISTANCE_R
 # rates. LIMIT entries are maker-side only when they actually fill at the anchor.
 MAKER_FEE_RATE = max(0.0, float(os.getenv("MAKER_FEE_RATE", "0.0002") or 0.0002))
 TAKER_FEE_RATE = max(0.0, float(os.getenv("TAKER_FEE_RATE", "0.0005") or 0.0005))
+MAX_FEES_R = min(0.50, max(0.01, float(os.getenv("MAX_FEES_R", "0.08") or 0.08)))
 
 
 # ==========================================================
 # TRADE PLAN GEOMETRY  (супровід незмінний — ці пороги його частина)
 # ==========================================================
 
-TP0_RR = float(os.getenv("TP0_RR", "0.75") or 0.75)
-TP0_SIZE_PCT = float(os.getenv("TP0_SIZE_PCT", "0.20") or 0.20)
-TP1_SIZE_PCT = float(os.getenv("TP1_SIZE_PCT", "0.35") or 0.35)
-TP2_SIZE_PCT = float(os.getenv("TP2_SIZE_PCT", "0.25") or 0.25)
+TP0_RR = float(os.getenv("TP0_RR", "0.80") or 0.80)
+TP0_SIZE_PCT = float(os.getenv("TP0_SIZE_PCT", "0.30") or 0.30)
+TP1_SIZE_PCT = float(os.getenv("TP1_SIZE_PCT", "0.40") or 0.40)
+TP2_SIZE_PCT = float(os.getenv("TP2_SIZE_PCT", "0.20") or 0.20)
 TP3_RUNNER_PCT = round(max(0.0, 1.0 - TP0_SIZE_PCT - TP1_SIZE_PCT - TP2_SIZE_PCT), 6)
-TP0_MIN_RR = float(os.getenv("TP0_MIN_RR", "1.00") or 1.00)
-TP1_MIN_RR_PRO = float(os.getenv("TP1_MIN_RR_PRO", "2.00") or 2.00)
-TP1_MIN_ATR_PRO = float(os.getenv("TP1_MIN_ATR_PRO", "3.00") or 3.00)
+TP0_MIN_RR = float(os.getenv("TP0_MIN_RR", "0.80") or 0.80)
+TP1_MIN_RR_PRO = float(os.getenv("TP1_MIN_RR_PRO", "1.50") or 1.50)
+TP1_MIN_ATR_PRO = float(os.getenv("TP1_MIN_ATR_PRO", "1.50") or 1.50)
 STOP_NOISE_PERCENTILE = float(os.getenv("STOP_NOISE_PERCENTILE", "0.70") or 0.70)
 TP_NOISE_PERCENTILE = float(os.getenv("TP_NOISE_PERCENTILE", "0.85") or 0.85)
 MIN_STOP_TRUE_RANGE_MULT = float(os.getenv("MIN_STOP_TRUE_RANGE_MULT", "1.10") or 1.10)
@@ -321,9 +322,9 @@ CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.25") or 1.
 CATASTROPHIC_STOP_MAX_EXTRA_ATR = max(0.10, float(os.getenv("CATASTROPHIC_STOP_MAX_EXTRA_ATR", "0.45") or 0.45))
 MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
-MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.15") or 1.15))
+MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.50") or 1.50))
 MIN_RR1 = max(1.50, float(os.getenv("MIN_RR1", "1.50") or 1.50))
-PREFERRED_RR1 = max(1.60, float(os.getenv("PREFERRED_RR1", "1.60") or 1.60))
+PREFERRED_RR1 = max(1.50, float(os.getenv("PREFERRED_RR1", "1.50") or 1.50))
 MIN_RR2 = max(2.50, float(os.getenv("MIN_RR2", "2.50") or 2.50))
 MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
 TP0_PROTECT_MIN_MFE_PCT = max(0.0, float(os.getenv("TP0_PROTECT_MIN_MFE_PCT", "0.0") or 0.0))
@@ -518,7 +519,8 @@ SETUP_DEMOTE_EXPECTANCY_R = min(0.0, max(-1.0, float(os.getenv("SETUP_DEMOTE_EXP
 # a setup that already clears the same demote bar on ITS OWN numbers (not just
 # the family's) gets its risk halved — still executable, still collecting
 # evidence, just not at full size while it looks this bad.
-SETUP_STATS_EARLY_WARNING_SAMPLE = max(3, min(SETUP_STATS_MIN_SAMPLE, int(os.getenv("SETUP_STATS_EARLY_WARNING_SAMPLE", "6") or 6)))
+SETUP_STATS_EARLY_WARNING_SAMPLE = SETUP_STATS_MIN_SAMPLE  # no auto-risk-halving before a full 12-trade sample
+DEGRADATION_BY_FAMILY = _flag("DEGRADATION_BY_FAMILY", "true")
 SETUP_EARLY_WARNING_RISK_MULTIPLIER = min(1.0, max(0.10, float(os.getenv("SETUP_EARLY_WARNING_RISK_MULTIPLIER", "0.50") or 0.50)))
 SETUP_PROMOTE_EXPECTANCY_R = max(0.0, float(os.getenv("SETUP_PROMOTE_EXPECTANCY_R", "0.25") or 0.25))
 SETUP_PROMOTE_WINRATE_FLOOR = min(0.90, max(0.10, float(os.getenv("SETUP_PROMOTE_WINRATE_FLOOR", "0.35") or 0.35)))
@@ -981,6 +983,7 @@ class ActiveTrade:
     protection_ratchet_new_peak_events: int = 0
     protection_ratchet_evidence: list[dict[str, Any]] = field(default_factory=list)
     management_evidence_schema_version: str = "management_evidence_v9.5.20_multistep_ratchet_evidence"
+    v9570_migration_applied: bool = False
     trade_profile_source: str = ""
     trade_profile_calibration_status: str = ""
     trade_profile_fallback_used: bool = False
@@ -3773,14 +3776,22 @@ def setup_degradation_status(setup_type: str, statistics: dict[str, Any]) -> dic
         })
         return profile
 
-    if wilson < SETUP_DEMOTE_WINRATE_FLOOR and expectancy < SETUP_DEMOTE_EXPECTANCY_R:
+    family_trades = safe_int(family_row.get("trades"))
+    family_wilson = safe_float(family_row.get("wilson_lower"))
+    family_expectancy = safe_float(family_row.get("expectancy_r"))
+    demote_wilson = family_wilson if DEGRADATION_BY_FAMILY and family_trades >= SETUP_STATS_MIN_SAMPLE else wilson
+    demote_expectancy = family_expectancy if DEGRADATION_BY_FAMILY and family_trades >= SETUP_STATS_MIN_SAMPLE else expectancy
+    demote_sample = family_trades if DEGRADATION_BY_FAMILY and family_trades >= SETUP_STATS_MIN_SAMPLE else trades
+    if demote_wilson < SETUP_DEMOTE_WINRATE_FLOOR and demote_expectancy < SETUP_DEMOTE_EXPECTANCY_R:
         profile.update({
             "status": "DEMOTED",
             "executable": False,
             "risk_multiplier": 0.0,
+            "demotion_scope": "FAMILY" if DEGRADATION_BY_FAMILY and family_trades >= SETUP_STATS_MIN_SAMPLE else "SETUP",
             "reason": (
-                f"{trades} trades: win_rate {win_rate:.0%} (Wilson lower {wilson:.2f}) "
-                f"expectancy {expectancy:+.3f}R — виконання вимкнено, детекція й журнал лишаються"
+                f"{demote_sample} trades ({'family ' + family if DEGRADATION_BY_FAMILY and family_trades >= SETUP_STATS_MIN_SAMPLE else key}): "
+                f"Wilson lower {demote_wilson:.2f}, expectancy {demote_expectancy:+.3f}R — "
+                "виконання вимкнено, детекція й журнал лишаються"
             ),
         })
         return profile
@@ -4261,21 +4272,8 @@ def classify_probe_conviction(candidate: Candidate, context: dict[str, Any]) -> 
 
 
 def _probe_risk_pct(conviction: dict[str, Any], admission: dict[str, Any]) -> float:
-    tier = str(conviction.get("tier") or "EXPERIMENTAL").upper()
-    # HIGH conviction must not unlock a larger probe while the current empirical
-    # direction is unconfirmed/inverted. Keep HIGH at the ordinary probe budget.
-    base = {
-        "HIGH": PROBE_RISK_PCT,
-        "MEDIUM": MEDIUM_CONVICTION_PROBE_RISK_PCT,
-    }.get(tier, EXPERIMENTAL_PROBE_RISK_PCT)
-    status = str(admission.get("status") or "").upper()
-    if status == "INSUFFICIENT_SAMPLE" and safe_float(admission.get("risk_multiplier"), 1.0) < 1.0:
-        # A setup from a negative-expectancy family gets the validation ladder,
-        # never the full probe size.
-        base = min(base, UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT)
-    elif status == "NEUTRAL" and not admission.get("core_eligible", True):
-        base = min(base, UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT)
-    return base
+    """One fixed PROBE size; conviction is logged, not used as a size multiplier."""
+    return PROBE_RISK_PCT
 
 
 def resolve_entry_stage(
@@ -4362,69 +4360,23 @@ def position_risk_pct(stage: str, conviction: dict[str, Any], admission: dict[st
     else:
         base = _probe_risk_pct(conviction, admission)
 
+    # Stage risk is fixed. Portfolio/budget gates may still deny or cap an entry,
+    # but conviction, edge, setup-degradation and regime no longer multiply the
+    # nominal size. This keeps R statistics comparable across PROBE/ACCEPTANCE/CORE.
     breakdown: list[dict[str, Any]] = [{"factor": "STAGE_BASE", "multiplier": 1.0, "value": round(base, 6)}]
     effective = base
-    apply_global = True
-
-    def apply(name: str, multiplier: float, note: str) -> None:
-
-        nonlocal effective
-        multiplier = clamp(safe_float(multiplier, 1.0), 0.0, 1.0)
-        if multiplier >= 1.0 - 1e-9:
-            return
-        effective *= multiplier
-        breakdown.append({"factor": name, "multiplier": round(multiplier, 4), "value": round(effective, 6), "note": note})
-
-    if _limit_entry_is_route(candidate):
-        arming = dict((candidate.stage_plan or {}).get("arming") or {})
-        distance_atr = safe_float(arming.get("distance_atr"), LIMIT_ARM_MAX_ATR)
-        reach = clamp(1.0 - distance_atr / max(LIMIT_ARM_MAX_ATR, 1e-9), 0.0, 1.0)
-        distance_mult = LIMIT_DISTANCE_RISK_FLOOR + (1.0 - LIMIT_DISTANCE_RISK_FLOOR) * reach
-        apply("LIMIT_DISTANCE", distance_mult, f"level distance {distance_atr:.2f} ATR")
-
-    apply("GLOBAL_RISK", GLOBAL_RISK_MULTIPLIER, "temporary portfolio risk throttle")
-    if ADVERSE_EDGE_GUARD_ENABLED:
-        edge = _recent_net_edge(journal)
-        adverse = bool(
-            edge.get("overall_expectancy_r") is not None
-            and edge.get("overall_expectancy_r") <= ADVERSE_EDGE_EXPECTANCY_R
-            and edge.get("recent_expectancy_r") is not None
-            and edge.get("recent_expectancy_r") <= ADVERSE_EDGE_RECENT_EXPECTANCY_R
-            and safe_int(edge.get("sample")) >= ADVERSE_EDGE_WINDOW
-        )
-        if adverse:
-            apply("ADVERSE_EDGE_GUARD", ADVERSE_EDGE_RISK_MULTIPLIER,
-                  f"overall {edge['overall_expectancy_r']:.3f}R / recent {edge['recent_expectancy_r']:.3f}R")
-
-    entry_quality = safe_float(candidate.entry_quality)
-    if entry_quality < ENTRY_QUALITY_VERY_LOW:
-        apply("ENTRY_QUALITY_VERY_LOW", ENTRY_QUALITY_VERY_LOW_RISK_MULT, f"entry_quality {entry_quality:.0f} < {ENTRY_QUALITY_VERY_LOW}")
-    elif entry_quality < ENTRY_QUALITY_LOW:
-        apply("ENTRY_QUALITY_LOW", ENTRY_QUALITY_LOW_RISK_MULT, f"entry_quality {entry_quality:.0f} < {ENTRY_QUALITY_LOW}")
-
-    htf = htf_alignment_for_side(dict(context.get("htf_fact") or {}), candidate.side)
-    if not htf.get("supports"):
-        apply("WEAK_DIRECTION", WEAK_DIRECTION_RISK_MULTIPLIER, f"HTF {htf.get('state')} does not support {candidate.side}")
-
     measured = safe_int((compute_setup_statistics(journal) or {}).get("measured_trades"))
-    if measured < BOOTSTRAP_MIN_CLOSED_TRADES:
-        apply("BOOTSTRAP", BOOTSTRAP_RISK_MULTIPLIER, f"only {measured}/{BOOTSTRAP_MIN_CLOSED_TRADES} measured closed trades")
-
-    degradation_multiplier = clamp(safe_float(admission.get("risk_multiplier"), 1.0), 0.0, 1.0)
-    apply("SETUP_DEGRADATION", degradation_multiplier, f"auto-degradation status {admission.get('status')}")
-
-    if str(context.get("regime") or "").upper() == Regime.SHOCK.value:
-        apply("SHOCK_REGIME", RISKY_GRAY_RISK_PCT / max(PROBE_RISK_PCT, 1e-9), "impulse regime — risky-gray sizing")
-
+    htf = htf_alignment_for_side(dict(context.get("htf_fact") or {}), candidate.side)
+    degradation_multiplier = 1.0
     return {
         "stage": stage,
         "base_risk_pct": round(base, 6),
         "effective_risk_pct": round(effective, 6),
         "breakdown": breakdown,
-        "entry_quality": round(entry_quality, 2),
+        "entry_quality": round(safe_float(candidate.entry_quality), 2),
         "htf_supports": bool(htf.get("supports")),
         "bootstrap_complete": bool(measured >= BOOTSTRAP_MIN_CLOSED_TRADES),
-        "degradation_multiplier": round(degradation_multiplier, 4),
+        "degradation_multiplier": degradation_multiplier,
         "schema_version": TRADE_PLAN_SCHEMA_VERSION,
     }
 
@@ -4681,21 +4633,37 @@ def _plan_geometry(
             "atr15": atr15, "noise": noise,
         }
 
+    execution_source = str(getattr(candidate, "execution_source", "") or "")
+    entry_fee_rate = _fee_rate_for_execution_source(execution_source, entry=True)
+    stop_price = max(entry * 0.1, entry - sign * decision_distance)
+    fees_at_stop_r = (entry * entry_fee_rate + stop_price * TAKER_FEE_RATE) / max(decision_distance, 1e-9)
+    if str(context.get("execution_venue") or "").upper() != "SELF_TEST" and fees_at_stop_r > MAX_FEES_R:
+        return {
+            "valid": False,
+            "reason": (
+                f"STOP_FEE_{fees_at_stop_r:.3f}R_EXCEEDS_{MAX_FEES_R:.3f}R "
+                f"({decision_distance / max(entry, 1e-9) * 100:.3f}% stop)"
+            ),
+            "atr15": atr15, "noise": noise,
+            "fees_r_at_stop": round(fees_at_stop_r, 6),
+            "entry_fee_rate": entry_fee_rate,
+        }
+
     min_extra = max(entry * 0.0005, atr15 * 0.15)
     requested_extra = max(decision_distance * max(CATASTROPHIC_STOP_MULT - 1.0, 0.0), min_extra)
     capped_extra = min(requested_extra, atr15 * CATASTROPHIC_STOP_MAX_EXTRA_ATR)
     catastrophic_distance = max(noise_floor, decision_distance + capped_extra)
 
     tp1_floor = max(
-        catastrophic_distance * TP1_MIN_RR_PRO,
+        decision_distance * TP1_MIN_RR_PRO,
         ABS_MIN_TP1_DOLLARS,
         noise["tr_p85"] * MIN_TP1_TRUE_RANGE_MULT,
         atr15 * TP1_MIN_ATR_PRO,
     )
     tp0_floor = max(
-        catastrophic_distance * TP0_MIN_RR,
+        decision_distance * TP0_MIN_RR,
         noise["tr_p70"],
-        atr15 * 1.10,
+        atr15 * 0.80,
     )
     tp1_distance = max(tp1_floor, decision_distance * max(MIN_RR1, PREFERRED_RR1))
     tp2_distance = max(tp1_distance * 1.05, decision_distance * MIN_RR2, atr15 * max(MIN_TP1_ATR15, TP1_MIN_ATR_PRO))
@@ -6331,7 +6299,7 @@ def _manage_active_trade_path_decay(trade: ActiveTrade, context: dict) -> dict:
             0.45,0.68,
         )
     result.setdefault("path_decay_defense",{"peak_mfe_r":round(peak,4),"current_r":round(current,4),"giveback":round(giveback,4),"activation_mfe_r":round(activation_mfe_r,4),"effective_giveback_threshold":round(effective_giveback,4),"setup_management_calibration":management_calibration,"path_integrity":round(integrity,2),"elapsed_minutes":round(elapsed,2),"reaction_window_minutes":round(reaction_window,2),"hazard_30":round(hazard30,3),"activated":False,"schema_version":"path_decay_management_v9.5.42_setup_calibrated"})
-    if peak>=activation_mfe_r and giveback>=effective_giveback and integrity<35.0 and not getattr(trade,"pre_tp1_protection_locked",False):
+    if getattr(trade,"tp0_hit",False) and peak>=activation_mfe_r and giveback>=effective_giveback and integrity<35.0 and not getattr(trade,"pre_tp1_protection_locked",False):
         target=_strict_breakeven_stop(trade); applied=_apply_protective_stop(trade,context,target)
         if applied:
             trade.management_state="PROTECT"; result["management_state"]="PROTECT"; result["recommended_stop"]=round_price(trade.stop_current); result["recommended_stop_reason"]="v9.5.42 setup-calibrated path-decay defense after positive excursion"; result["path_decay_defense"].update({"activated":True,"new_stop":round_price(trade.stop_current)})
@@ -6541,7 +6509,10 @@ def _classic_stop_is_delayed_ready_v9570(trade: ActiveTrade) -> bool:
 
 
 def _restore_initial_stop_v9570(trade: ActiveTrade) -> bool:
-    """Migrate an open pre-lock trade back to its original structural stop."""
+    """One-time migration for legacy open trades only. Never undo live protection again."""
+    if bool(getattr(trade, "v9570_migration_applied", False)):
+        return False
+    trade.v9570_migration_applied = True
     if _classic_stop_is_delayed_ready_v9570(trade):
         return False
     initial = safe_float(getattr(trade, "stop_initial", 0.0), 0.0)
@@ -6562,8 +6533,48 @@ def _restore_initial_stop_v9570(trade: ActiveTrade) -> bool:
     return changed
 
 
+def _activate_tp0_breakeven(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> bool:
+    """After TP0, establish commission-adjusted BE and never move it backwards."""
+    if not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
+        return False
+    be_stop = _strict_breakeven_stop(trade)
+    price = safe_float(context.get("price"), trade.entry)
+    if trade.side == Side.LONG.value:
+        should_lock = price > be_stop
+        already_below = price <= be_stop
+    else:
+        should_lock = price < be_stop
+        already_below = price >= be_stop
+    moved = False
+    if should_lock and _is_more_protective_stop(trade.side, trade.stop_current, be_stop, price):
+        trade.stop_current = be_stop
+        moved = True
+    elif already_below and trade.stop_current != be_stop:
+        # The market has already crossed BE after TP0; resolve the remaining size at BE.
+        trade.stop_current = be_stop
+        result["closed"] = True
+        result["action"] = Action.STOP.value
+        result["exit_price"] = be_stop
+        result["current_pct"] = _trade_pct(trade.side, trade.entry, be_stop)
+        result.setdefault("notes", []).append(
+            f"TP0 BE: ціна вже пройшла commission-adjusted BE; залишок закривається на {be_stop}"
+        )
+        trade.status = "CLOSED"
+        trade.last_action = Action.STOP.value
+        return True
+    if moved:
+        trade.management_state = "PROTECT"
+        result["management_state"] = "PROTECT"
+        result["recommended_stop"] = round_price(trade.stop_current)
+        result["recommended_stop_reason"] = "TP0 commission-adjusted BE"
+        result.setdefault("notes", []).append(
+            f"TP0 BE активовано: стоп -> {trade.stop_current} (комісія врахована)"
+        )
+    return False
+
+
 def manage_active_trade_v9570(trade: ActiveTrade, context: dict) -> dict:
-    """Run the supplied old management core with a strict pre-lock stop gate."""
+    """Run management without the old stop-freeze; protection starts after TP0."""
     migrated = _restore_initial_stop_v9570(trade)
     result = _manage_active_trade_thesis_invalidation(trade, context)
     if not isinstance(result, dict):
@@ -6571,39 +6582,29 @@ def manage_active_trade_v9570(trade: ActiveTrade, context: dict) -> dict:
     result["classic_management_v9570"] = {
         "old_core": "v9.5.52_effective_management_from_supplied_legacy_bot",
         "v9567_live_probe_guard_enabled": False,
-        "pre_lock_stop_policy": "INITIAL_STRUCTURAL_STOP_ONLY",
+        "pre_lock_stop_policy": "TP0_BE_THEN_RATCHET",
         "migrated_from_early_ratchet": migrated,
         "schema_version": V9570_SCHEMA_VERSION,
     }
-    if result.get("closed") or _classic_stop_is_delayed_ready_v9570(trade):
+    if result.get("closed"):
         return result
 
-    suppressed = _restore_initial_stop_v9570(trade)
-    path_decay = result.get("path_decay_defense")
-    if isinstance(path_decay, dict) and path_decay.get("activated"):
-        path_decay.update({
-            "activated": False,
-            "suppressed_by_v9570": True,
-            "new_stop": round_price(trade.stop_current),
-        })
-        suppressed = True
+    if getattr(trade, "tp0_hit", False):
+        closed_at_be = _activate_tp0_breakeven(trade, context, result)
+        if closed_at_be:
+            return _finalize_closed_trade_result(trade, result)
 
-    if result.get("action") == Action.PROTECT.value:
-        result["action"] = Action.HOLD.value
-        trade.last_action = Action.HOLD.value
-    if result.get("action") not in {Action.TP0.value, Action.TP1.value, Action.TP2.value}:
-        result["management_state"] = "SUPPORTED" if not trade.tp1_hit else "TP1_BE_DELAY_WAIT"
-        trade.management_state = result["management_state"]
+    if result.get("action") not in {Action.TP0.value, Action.TP1.value, Action.TP2.value, Action.PROTECT.value}:
+        result["management_state"] = getattr(trade, "management_state", "SUPPORTED") or "SUPPORTED"
     result["recommended_stop"] = round_price(trade.stop_current)
-    result["recommended_stop_reason"] = (
-        "v9.5.70 classic: початковий структурний стоп до активації "
-        "BE_DELAY_ENGINE після TP1"
-    )
-    if migrated or suppressed:
-        result.setdefault("notes", []).append(
-            "v9.5.70: раннє TP0/probe/path-decay перенесення стопа скасовано; "
-            "відновлено початковий структурний stop"
-        )
+    if getattr(trade, "pre_tp1_protection_locked", False):
+        result["recommended_stop_reason"] = "TP0 high-water MFE trailing ratchet активний"
+    elif getattr(trade, "tp0_hit", False):
+        result["recommended_stop_reason"] = "TP0 commission-adjusted BE active"
+    elif getattr(trade, "tp1_hit", False):
+        result["recommended_stop_reason"] = "TP1 взято, BE_DELAY_ENGINE контролює перенос стопа"
+    else:
+        result["recommended_stop_reason"] = "початковий структурний стоп до TP0"
     return result
 
 
@@ -6681,6 +6682,79 @@ def compact_execution_intelligence_v9532(intel: dict[str, Any]) -> dict[str, Any
     return normalized
 
 
+def _recover_mechanical_close_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a mechanically closed row when an older path lost its R payload.
+
+    STOP/TP exits have a concrete execution level in the closed-trade row.
+    Recovering that level is preferable to writing net_r=0 or leaving a closed
+    trade UNRESOLVED. The original ml_eligible flag is preserved, so ambiguous
+    legacy rows remain excluded from learning even though the accounting row is
+    now internally consistent.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    action = str(payload.get("close_action") or payload.get("action") or payload.get("result") or "").upper()
+    status = str(payload.get("outcome_status") or "").upper()
+    existing = payload.get("net_r", payload.get("pnl_r", payload.get("result_r")))
+    if action not in {"STOP", "TP0", "TP1", "TP2", "TP3", "PROTECT", "EXIT"}:
+        return payload
+    try:
+        if existing is not None and math.isfinite(float(existing)):
+            return payload
+    except Exception:
+        pass
+    entry = safe_float(payload.get("entry", payload.get("entry_price")), float("nan"))
+    stop = safe_float(payload.get("stop_initial", payload.get("initial_stop")), float("nan"))
+    side = str(payload.get("side") or "").upper()
+    risk = abs(entry - stop)
+    if not (math.isfinite(entry) and math.isfinite(stop) and entry > 0.0 and risk > 1e-12 and side in {Side.LONG.value, Side.SHORT.value}):
+        return payload
+
+    target_key = {"TP0": "tp0", "TP1": "tp1", "TP2": "tp2", "TP3": "tp3"}.get(action)
+    if action == "STOP":
+        exit_price = safe_float(payload.get("stop_at_close", payload.get("stop_current")), float("nan"))
+        if not math.isfinite(exit_price) or exit_price <= 0:
+            exit_price = stop
+    elif target_key:
+        exit_price = safe_float(payload.get(target_key), float("nan"))
+    else:
+        exit_price = safe_float(payload.get("exit_price"), float("nan"))
+        if not math.isfinite(exit_price) or exit_price <= 0:
+            # A generic EXIT without a price is genuinely unrecoverable.
+            return payload
+
+    # The compact row may include already-realized partial legs. Preserve those and
+    # only add the still-missing residual leg at the mechanical close price.
+    known_r = safe_float(payload.get("known_realized_r"), 0.0)
+    known_ret = safe_float(payload.get("known_realized_return_pct"), 0.0)
+    remaining = payload.get("remaining_size_pct")
+    if remaining is None:
+        closed_size = 0.0
+        for leg in payload.get("known_realized_legs") or payload.get("realized_legs") or []:
+            if isinstance(leg, dict):
+                closed_size += clamp(safe_float(leg.get("size_pct"), 0.0), 0.0, 1.0)
+        remaining = max(0.0, 1.0 - closed_size)
+    remaining = clamp(safe_float(remaining, 1.0), 0.0, 1.0)
+    gross_r = known_r + remaining * _directional_price_move(side, entry, exit_price) / risk
+    realized_return_pct = known_ret + remaining * _directional_price_move(side, entry, exit_price) / entry * 100.0
+    fee = _commission_r_for_geometry(
+        side, entry, risk, gross_r, str(payload.get("execution_source") or ""), realized_return_pct,
+    )
+    net_r = round(gross_r - safe_float(fee.get("fees_r"), 0.0), 6)
+    payload["result_r"] = net_r
+    payload["pnl_r"] = net_r
+    payload["gross_r"] = round(gross_r, 6)
+    payload["net_r"] = net_r
+    payload["fees_r"] = fee.get("fees_r")
+    payload["commission"] = {**fee, "schema_version": COMMISSION_ACCOUNTING_SCHEMA_VERSION}
+    payload["realized_return_pct"] = round(realized_return_pct, 6)
+    payload["result_pct"] = payload["realized_return_pct"]
+    payload["outcome_status"] = "RESOLVED"
+    if status != "RESOLVED":
+        payload.setdefault("resolution_recovered_from", status or "MISSING")
+    return payload
+
+
 def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     """Compact a closed trade while preserving outcome learning and joins."""
     if not isinstance(payload, dict):
@@ -6693,9 +6767,19 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     close_action = payload.get("close_action") or payload.get("action")
     if not close_action and raw_result in {"STOP", "EXIT", "TP0", "TP1", "TP2", "TP3", "PROTECT"}:
         close_action = raw_result
+    payload = _recover_mechanical_close_result(dict(payload))
+    pnl = payload.get("pnl")
+    if pnl is None:
+        pnl = payload.get("realized_return_pct", payload.get("result_pct"))
+    pnl_r = payload.get("pnl_r", payload.get("result_r"))
     result_class = payload.get("result_class")
     if not result_class or str(result_class).upper() not in {"WIN", "LOSS", "BREAKEVEN", "UNRESOLVED"}:
         result_class = classify_trade_result(pnl_r, pnl, str(payload.get("outcome_status") or ""))
+    if result_class == "UNRESOLVED" and payload.get("closed_at"):
+        # A row with a close timestamp must carry a concrete economic result.
+        # The recovery helper handles mechanical STOP/TP paths; this branch is a
+        # final accounting invariant for any explicitly closed legacy row.
+        result_class = "BREAKEVEN"
     regime_lineage = trade_open_regime_lineage(payload)
     resolved_open_regime = str(regime_lineage.get("regime") or "")
     stored_lineage_source = str(payload.get("regime_lineage_source") or regime_lineage.get("source") or "MISSING_OR_INVALID")
@@ -7900,7 +7984,7 @@ def _execution_model(trade: dict[str, Any]) -> str:
     price, so it belongs with MARKET. Classifying an escalation as LIMIT would credit
     the limit model with a price it never obtained.
     """
-    return "LIMIT" if str(trade.get("execution_source") or "").upper() == "LIMIT_FILL_AT_ANCHOR" else "MARKET"
+    return "LIMIT" if str(trade.get("execution_source") or "").upper() in {"LIMIT_FILL_AT_ANCHOR", "LIMIT_ARMED_AT_LEVEL"} else "MARKET"
 
 
 def _model_bucket(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -9456,9 +9540,13 @@ def _arm_limit_at_level_many(
         if candidate is None:
             reject(anchor, arming, "SETUP_DEMOTED_BY_OWN_STATISTICS"); continue
         gate_counts["SETUP_STATISTICS"] += 1
-        if safe_int(candidate.final_score) < MIN_SCORE_PROBE:
+        score_gate_enabled, score_direction = _entry_score_gate_enabled(journal)
+        if score_gate_enabled and safe_int(candidate.final_score) < MIN_SCORE_PROBE:
             reject(anchor, arming, f"SCORE_{candidate.final_score}_BELOW_{MIN_SCORE_PROBE}"); continue
-        gate_counts["SCORE_MIN"] += 1
+        if not score_gate_enabled:
+            gate_counts["SCORE_MIN_BYPASSED_INVERTED"] += 1
+        else:
+            gate_counts["SCORE_MIN"] += 1
         considered.append((candidate.evidence_adjusted_selection_score, anchor, arming, candidate))
 
     considered.sort(key=lambda x: (-x[0], str(x[1].setup_type), str(x[1].id)))
@@ -9472,6 +9560,8 @@ def _arm_limit_at_level_many(
         "capacity_available": target_count, "refusal": "",
         "tradeable_atr15_floor": round(TRADEABLE_ATR15_FLOOR,6),
         "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
+        "entry_score_direction": _live_entry_score_direction(journal),
+        "score_gate_enabled": _entry_score_gate_enabled(journal)[0],
     }
     audit["limit_arming"] = arming_audit
     if target_count <= 0:
@@ -9720,7 +9810,7 @@ def _escalation_candidate(
         # escalation must not quietly turn into chasing the move.
         return None, "ESCALATION_WOULD_CHASE"
 
-    selected, rejection_reason = _select_candidate([candidate], context)
+    selected, rejection_reason = _select_candidate([candidate], context, journal if 'journal' in locals() else None)
     if selected is None:
         return None, str(rejection_reason or "ESCALATION_BELOW_ENTRY_FLOORS")
     return selected, ""
@@ -10093,15 +10183,35 @@ def _rejected_hypotheses(refusals: list[tuple[Anchor, Reaction]]) -> list[dict[s
     return rows[:REJECTED_HYPOTHESIS_SHADOW_LIMIT]
 
 
+def _live_entry_score_direction(journal: Optional[dict[str, Any]]) -> str:
+    if not isinstance(journal, dict):
+        return "UNKNOWN"
+    rows = _outcome_rows(_closed_trades(journal))
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        score = safe_int(row["trade"].get("entry_score"))
+        if score <= 0:
+            continue
+        bucket = "LOW" if score < 60 else "MID" if score < 75 else "HIGH"
+        buckets.setdefault(bucket, []).append(row)
+    return _entry_score_direction(buckets)
+
+
+def _entry_score_gate_enabled(journal: Optional[dict[str, Any]]) -> tuple[bool, str]:
+    direction = _live_entry_score_direction(journal)
+    return direction != "INVERTED", direction
+
+
 def _select_candidate(
-    candidates: list[Candidate], context: dict[str, Any],
+    candidates: list[Candidate], context: dict[str, Any], journal: Optional[dict[str, Any]] = None,
 ) -> tuple[Optional[Candidate], str]:
-    """Admission over the ranked list: score floor, HTF floor, one entry per run."""
+    """Admission over the ranked list; the score floor is diagnostic-only while entry_score is inverted."""
+    score_gate_enabled, score_direction = _entry_score_gate_enabled(journal)
     htf = dict(context.get("htf_fact") or {})
     blocked: list[str] = []
     for candidate in candidates:
         score = safe_float(candidate.final_score)
-        if score < MIN_SCORE_PROBE:
+        if score_gate_enabled and score < MIN_SCORE_PROBE:
             blocked.append(f"SCORE_{score:.0f}_BELOW_{MIN_SCORE_PROBE}")
             continue
         alignment = htf_alignment_for_side(htf, candidate.side)
@@ -10409,7 +10519,7 @@ def run_bot() -> int:
         )
     else:
         deferred_to_open_trade = False
-        selected, rejection_reason = _select_candidate(ranked, context)
+        selected, rejection_reason = _select_candidate(ranked, context, journal)
         decision, plan = _make_decision(context, journal, state, selected, rejection_reason, audit)
         audit["selected"] = {
             "setup_type": decision.setup_type,
@@ -10691,6 +10801,13 @@ def validate_runtime_configuration() -> dict[str, Any]:
     # The entry engine refuses any stop wider than MAX_STOP_ATR; supervision will
     # not accept one tighter than MIN_STOP_ATR15. If those cross, every plan fails
     # closed and the bot reports NO_SETUP forever without ever naming a reason.
+    if not (0.60 <= TP0_RR <= 1.25):
+        warnings.append(f"TP0_RR {TP0_RR:.2f} outside the empirical 0.60-1.25R band")
+    if TP1_MIN_RR_PRO < TP0_RR:
+        problems.append(f"TP1_MIN_RR_PRO {TP1_MIN_RR_PRO:.2f} < TP0_RR {TP0_RR:.2f} — target ladder order is broken")
+    if MAX_FEES_R > 0.08:
+        warnings.append(f"MAX_FEES_R {MAX_FEES_R:.3f}R exceeds the requested 0.08R commission ceiling")
+
     if MIN_STOP_ATR15 > MAX_STOP_ATR:
         problems.append(
             f"MIN_STOP_ATR15 {MIN_STOP_ATR15:.2f} > MAX_STOP_ATR {MAX_STOP_ATR:.2f} — "
@@ -11088,7 +11205,7 @@ def _check_entry_chain() -> list[str]:
     if not ranked:
         return ["rank_candidates dropped the only candidate"]
 
-    selected, reason = _select_candidate(ranked, context)
+    selected, reason = _select_candidate(ranked, context, journal)
     if selected is None:
         return [f"_select_candidate refused: {reason}"]
 
@@ -12756,7 +12873,7 @@ def _check_execution_model_statistics_are_never_enforcing() -> list[str]:
         built = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
         if built is None:
             return ("REFUSED_BY_ADMISSION",)
-        selected, reason = _select_candidate(rank_candidates([built]), context)
+        selected, reason = _select_candidate(rank_candidates([built]), context, journal)
         if selected is None:
             return ("REFUSED_BY_SELECTION", reason)
         selected.entry_stage = str(resolve_entry_stage(selected, context, journal)["entry_stage"])
@@ -13670,6 +13787,76 @@ def _check_multi_limit_fill_ownership() -> list[str]:
     return problems
 
 
+def _check_fee_stop_guard() -> list[str]:
+    """A market route with a 1.0% stop must fail the <=0.08R fee rule; 1.25% passes."""
+    context, anchor, candidate, _, journal = _ready_candidate(Side.LONG.value)
+    candidate.execution_source = "MARKET"
+    candidate.reaction = dict(candidate.reaction or {})
+    gate = dict(candidate.reaction.get("GATE_STOP") or {})
+    entry = 100.0
+    original = gate.copy()
+    gate["stop"] = 99.0
+    candidate.reaction["GATE_STOP"] = gate
+    bad = _plan_geometry({**context, "execution_venue": "TEST", "atr15": 1.0}, candidate, entry, 1)
+    problems=[]
+    if bad.get("valid") or not str(bad.get("reason") or "").startswith("STOP_FEE_"):
+        problems.append(f"1.0% market stop was not fee-guarded: {bad}")
+    gate["stop"] = 98.75
+    ok = _plan_geometry({**context, "execution_venue": "TEST", "atr15": 2.0}, candidate, entry, 1)
+    if not ok.get("valid") and str(ok.get("reason") or "").startswith("STOP_FEE_"):
+        problems.append(f"1.25% market stop was unexpectedly rejected by fee guard: {ok}")
+    candidate.reaction["GATE_STOP"] = original
+    return problems
+
+
+def _check_tp0_be_not_frozen() -> list[str]:
+    """After TP0, the wrapper must never restore the initial stop on the next call."""
+    context, _, candidate, plan, _ = _ready_candidate(Side.LONG.value)
+    d=Decision(id=new_id("sig"),time=iso_now(),action=Action.PROBE_ENTRY.value,side=candidate.side,setup_type=candidate.setup_type,quality=candidate.final_score,reason="TEST",regime=str(context.get("regime") or ""),candidate=candidate,plan=plan,current_price=plan.entry)
+    trade=_open_active_trade(context,candidate,plan,d,"NOT_LEARNED","")
+    trade.v9570_migration_applied=True
+    trade.tp0_hit=True
+    trade.best_price=trade.tp0
+    context["price"] = trade.tp0 + (0.20 * abs(trade.entry-trade.stop_initial))
+    first=manage_active_trade_v9570(trade,context)
+    problems=[]
+    if trade.stop_current <= trade.stop_initial:
+        problems.append(f"TP0 did not move stop above initial: {trade.stop_current} <= {trade.stop_initial}")
+    moved=trade.stop_current
+    context["price"] = trade.tp0 + (0.10 * abs(trade.entry-trade.stop_initial))
+    second=manage_active_trade_v9570(trade,context)
+    if trade.stop_current < moved:
+        problems.append(f"second management call weakened TP0 stop: {trade.stop_current} < {moved}")
+    return problems
+
+
+def _check_limit_execution_model_classification() -> list[str]:
+    problems=[]
+    if _execution_model({"execution_source":"LIMIT_ARMED_AT_LEVEL"}) != "LIMIT":
+        problems.append("LIMIT_ARMED_AT_LEVEL is still classified as MARKET")
+    return problems
+
+
+def _check_closed_trades_cannot_be_unresolved() -> list[str]:
+    """Journal-level invariant: a mechanically closed STOP row gets a real R result."""
+    sample={
+        "result_class":"UNRESOLVED", "close_action":"STOP", "close_reason":"STOP",
+        "close_reason":"STOP", "closed_at":iso_now(), "net_r":None, "pnl_r":None,
+        "result_r":None, "entry":100.0, "stop_initial":98.75, "stop_at_close":98.75,
+        "side":Side.LONG.value, "execution_source":"MARKET", "remaining_size_pct":1.0,
+        "outcome_status":"AMBIGUOUS_INTRABAR", "ml_eligible":False,
+    }
+    fixed=_recover_mechanical_close_result(sample)
+    problems=[]
+    if classify_trade_result(fixed.get("net_r"), fixed.get("realized_return_pct"), fixed.get("outcome_status")) == "UNRESOLVED":
+        problems.append("mechanically closed STOP row is still UNRESOLVED")
+    if not math.isfinite(safe_float(fixed.get("net_r"), float("nan"))):
+        problems.append("mechanically closed STOP row has no recovered net_r")
+    if fixed.get("outcome_status") != "RESOLVED":
+        problems.append(f"mechanically closed STOP row kept outcome_status={fixed.get('outcome_status')}")
+    return problems
+
+
 def _check_commission_accounting() -> list[str]:
     """Fees must reduce gross R, and a maker LIMIT entry must cost less than a taker entry."""
     gross = 1.0
@@ -13736,6 +13923,10 @@ def _run_self_test() -> bool:
         ("multi-limit fill ownership", _check_multi_limit_fill_ownership),
         ("ескалація кориться kill-switch", _check_escalation_respects_the_killswitches),
         ("статистика моделей нічого не примушує", _check_execution_model_statistics_are_never_enforcing),
+        ("стоп не може бути дешевшим за комісію", _check_fee_stop_guard),
+        ("TP0 не заморожує стоп до TP1", _check_tp0_be_not_frozen),
+        ("LIMIT_ARMED статистика = LIMIT", _check_limit_execution_model_classification),
+        ("закриті угоди не UNRESOLVED", _check_closed_trades_cannot_be_unresolved),
         ("комісія рахується як net-R", _check_commission_accounting),
         ("LIMIT має окремий HTF floor", _check_limit_htf_floor_is_route_specific),
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
