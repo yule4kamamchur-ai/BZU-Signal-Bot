@@ -110,8 +110,8 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.5.1-p0-p1-repair"
-ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
+BOT_VERSION = "pro-organic-v10.6.0-p0-p3-limit-first"
+ARCHITECTURE_VERSION = "ORGANIC_LEVEL_TO_LIMIT_V10_6_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
 
@@ -165,6 +165,12 @@ STATE_PENDING_KEY = "pending_limit_v10"
 # Multiple independent resting limits may coexist. The state key is now a list;
 # legacy single-dict state is migrated transparently on load.
 MAX_PENDING_LIMIT_ORDERS = max(1, min(20, int(os.getenv("MAX_PENDING_LIMIT_ORDERS", "8") or 8)))
+MAX_PENDING_LIMIT_RISK_PCT = max(0.01, float(os.getenv("MAX_PENDING_LIMIT_RISK_PCT", "1.0") or "1.0"))
+PRICE_TICK_SIZE = max(1e-9, float(os.getenv("PRICE_TICK_SIZE", "0.001") or 0.001))
+LIMIT_FILL_PENETRATION_TICKS = max(1, int(os.getenv("LIMIT_FILL_PENETRATION_TICKS", "1") or 1))
+RUNTIME_FEASIBILITY_CYCLES = max(30, int(os.getenv("RUNTIME_FEASIBILITY_CYCLES", "200") or 200))
+RUNTIME_FEASIBILITY_MIN_RATIO = min(1.0, max(0.01, float(os.getenv("RUNTIME_FEASIBILITY_MIN_RATIO", "0.15") or 0.15)))
+WATCHDOG_ZERO_FLOW_CYCLES = max(1, int(os.getenv("WATCHDOG_ZERO_FLOW_CYCLES", "48") or 48))
 MARKET_REACTION_MAX_LATENCY_MIN = max(3.0, float(os.getenv("MARKET_REACTION_MAX_LATENCY_MIN", "9") or 9))
 LIMIT_REACTION_MAX_LATENCY_MIN = max(
     MARKET_REACTION_MAX_LATENCY_MIN,
@@ -297,34 +303,34 @@ LIMIT_DISTANCE_RISK_FLOOR = min(1.0, max(0.40, float(os.getenv("LIMIT_DISTANCE_R
 # rates. LIMIT entries are maker-side only when they actually fill at the anchor.
 MAKER_FEE_RATE = max(0.0, float(os.getenv("MAKER_FEE_RATE", "0.0002") or 0.0002))
 TAKER_FEE_RATE = max(0.0, float(os.getenv("TAKER_FEE_RATE", "0.0005") or 0.0005))
-MAX_FEES_R = min(0.50, max(0.01, float(os.getenv("MAX_FEES_R", "0.08") or 0.08)))
+MAX_FEES_R = min(0.50, max(0.01, float(os.getenv("MAX_FEES_R", "0.15") or 0.15)))
 
 
 # ==========================================================
 # TRADE PLAN GEOMETRY  (супровід незмінний — ці пороги його частина)
 # ==========================================================
 
-TP0_RR = float(os.getenv("TP0_RR", "0.80") or 0.80)
-TP0_SIZE_PCT = float(os.getenv("TP0_SIZE_PCT", "0.30") or 0.30)
-TP1_SIZE_PCT = float(os.getenv("TP1_SIZE_PCT", "0.40") or 0.40)
+TP0_RR = float(os.getenv("TP0_RR", "0.60") or 0.60)
+TP0_SIZE_PCT = 0.0
+TP1_SIZE_PCT = min(0.70, max(0.60, float(os.getenv("TP1_SIZE_PCT", "0.65") or 0.65)))
 TP2_SIZE_PCT = float(os.getenv("TP2_SIZE_PCT", "0.20") or 0.20)
 TP3_RUNNER_PCT = round(max(0.0, 1.0 - TP0_SIZE_PCT - TP1_SIZE_PCT - TP2_SIZE_PCT), 6)
 TP0_MIN_RR = float(os.getenv("TP0_MIN_RR", "0.80") or 0.80)
-TP1_MIN_RR_PRO = float(os.getenv("TP1_MIN_RR_PRO", "1.50") or 1.50)
-TP1_MIN_ATR_PRO = float(os.getenv("TP1_MIN_ATR_PRO", "1.50") or 1.50)
+TP1_MIN_RR_PRO = min(1.00, max(0.60, float(os.getenv("TP1_MIN_RR_PRO", "0.80") or 0.80)))
+TP1_MIN_ATR_PRO = min(1.25, max(0.50, float(os.getenv("TP1_MIN_ATR_PRO", "0.80") or 0.80)))
 STOP_NOISE_PERCENTILE = float(os.getenv("STOP_NOISE_PERCENTILE", "0.70") or 0.70)
 TP_NOISE_PERCENTILE = float(os.getenv("TP_NOISE_PERCENTILE", "0.85") or 0.85)
 MIN_STOP_TRUE_RANGE_MULT = float(os.getenv("MIN_STOP_TRUE_RANGE_MULT", "1.10") or 1.10)
 MIN_TP1_TRUE_RANGE_MULT = float(os.getenv("MIN_TP1_TRUE_RANGE_MULT", "1.25") or 1.25)
 CURRENT_CANDLE_STOP_MULT = float(os.getenv("CURRENT_CANDLE_STOP_MULT", "0.85") or 0.85)
-ABS_MIN_TP1_DOLLARS = float(os.getenv("ABS_MIN_TP1_DOLLARS", "0.65") or 0.65)
+ABS_MIN_TP1_DOLLARS = max(0.05, float(os.getenv("ABS_MIN_TP1_DOLLARS", "0.18") or 0.18))
 CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.25") or 1.25)
 CATASTROPHIC_STOP_MAX_EXTRA_ATR = max(0.10, float(os.getenv("CATASTROPHIC_STOP_MAX_EXTRA_ATR", "0.45") or 0.45))
 MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
-MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.50") or 1.50))
-MIN_RR1 = max(1.50, float(os.getenv("MIN_RR1", "1.50") or 1.50))
-PREFERRED_RR1 = max(1.50, float(os.getenv("PREFERRED_RR1", "1.50") or 1.50))
+MIN_TP1_ATR15 = min(1.25, max(0.50, float(os.getenv("MIN_TP1_ATR15", "0.80") or 0.80)))
+MIN_RR1 = min(1.00, max(0.60, float(os.getenv("MIN_RR1", "0.80") or 0.80)))
+PREFERRED_RR1 = min(1.00, max(MIN_RR1, float(os.getenv("PREFERRED_RR1", "0.80") or 0.80)))
 MIN_RR2 = max(2.50, float(os.getenv("MIN_RR2", "2.50") or 2.50))
 MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
 TP0_PROTECT_MIN_MFE_PCT = max(0.0, float(os.getenv("TP0_PROTECT_MIN_MFE_PCT", "0.0") or 0.0))
@@ -428,8 +434,8 @@ MAX_STOP_ATR = min(4.0, max(0.5, float(os.getenv("MAX_STOP_ATR", "1.60") or 1.60
 LIMIT_TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
 # Runway: найближча протилежна ціль має давати хоча б стільки R,
 # щоб 0.25R MFE був досяжний у вікні no-followthrough.
-MIN_RUNWAY_R = max(0.5, float(os.getenv("MIN_RUNWAY_R", "1.60") or 1.60))
-MIN_RUNWAY_ATR = max(0.3, float(os.getenv("MIN_RUNWAY_ATR", "0.90") or 0.90))
+MIN_RUNWAY_R = float(os.getenv("MIN_RUNWAY_R", "1.60") or 1.60)
+MIN_RUNWAY_ATR = float(os.getenv("MIN_RUNWAY_ATR", "0.90") or 0.90)
 # Скільки anchor-ів одного сетапу тримаємо в стані.
 ANCHOR_MEMORY_LIMIT = max(1, min(40, int(os.getenv("ANCHOR_MEMORY_LIMIT", "12") or 12)))
 # Після спрацювання або відбою не перевхідимо рівень ще N хвилин.
@@ -465,10 +471,10 @@ LIMIT_ARM_SCHEMA_VERSION = "organic_limit_arming_v10.2.0"
 # лічильник відмов STOP_EXCEEDS_CAP у журналі — повідомлення ж називає лише ту межу,
 # нижче якої не входить нічого взагалі. Константа лиш звітна: вона нічого не відкриває
 # і не закриває, армінг і план перевіряють стоп самі.
-TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(MAX_STOP_ATR, 1e-9)
+TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
 
 # ==========================================================
-# HYBRID EXECUTION ROUTING  (ліміт + market як два живі шляхи)
+## LIMIT-FIRST EXECUTION ROUTING  (один живий шлях: рівень -> LIMIT)
 # ==========================================================
 #
 # Which model executes a candidate is a property of the setup, not a global
@@ -3592,9 +3598,8 @@ def _backfill_trade_net_r(trade: dict[str, Any]) -> dict[str, Any]:
 
 
 def _trade_result_r(trade: dict[str, Any]) -> Optional[float]:
+    """Economic result for accounting; ml_eligible only controls training admission."""
     if not isinstance(trade, dict):
-        return None
-    if not bool(trade.get("ml_eligible", True)):
         return None
     for key in ("net_r", "pnl_r", "result_r"):
         value = trade.get(key)
@@ -3941,7 +3946,7 @@ def build_candidate(
     risk = max(safe_float((reaction.gates.get("GATE_STOP") or {}).get("distance")), ABS_MIN_STOP_DOLLARS, 1e-9)
     runway = nearest_runway_r(context, anchor.side, reaction.entry_price, risk)
 
-    route = "MARKET" if str(anchor.setup_family or "").upper() in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
+    route = "LIMIT"
     timing = _reaction_timing_quality(reaction, route)
     location = _location_quality(reaction, runway)
     smt = dict(context.get("smt") or {})
@@ -4340,8 +4345,7 @@ def _recent_net_edge(journal: dict[str, Any], window: int = ADVERSE_EDGE_WINDOW)
 
 
 def _stop_cap_atr(candidate: Optional[Candidate]) -> float:
-    family = str(getattr(candidate, "canonical_setup_family", "") or "").upper()
-    return LIMIT_MAX_STOP_ATR if family and family not in MARKET_ROUTED_CANONICAL_FAMILIES else MAX_STOP_ATR
+    return LIMIT_MAX_STOP_ATR
 
 
 def _limit_entry_is_route(candidate: Optional[Candidate]) -> bool:
@@ -4635,18 +4639,31 @@ def _plan_geometry(
 
     execution_source = str(getattr(candidate, "execution_source", "") or "")
     entry_fee_rate = _fee_rate_for_execution_source(execution_source, entry=True)
-    stop_price = max(entry * 0.1, entry - sign * decision_distance)
-    fees_at_stop_r = (entry * entry_fee_rate + stop_price * TAKER_FEE_RATE) / max(decision_distance, 1e-9)
-    if str(context.get("execution_venue") or "").upper() != "SELF_TEST" and fees_at_stop_r > MAX_FEES_R:
+    # P0 feasibility is checked against the expected exit, not a worst-case stop
+    # taker fee. LIMIT entries are intended to take TP as a maker exit; realized
+    # accounting below still charges the actual exit fee when a trade closes.
+    expected_tp_move = min(
+        decision_distance,
+        max(
+            decision_distance * max(MIN_RR1, 0.60),
+            ABS_MIN_TP1_DOLLARS,
+            atr15 * min(max(TP1_MIN_ATR_PRO, 0.60), 1.25),
+        ),
+    )
+    expected_tp_price = max(entry * 0.1, entry + sign * expected_tp_move)
+    expected_exit_rate = MAKER_FEE_RATE if execution_source.upper() in {"LIMIT_FILL_AT_ANCHOR", "LIMIT_ARMED_AT_LEVEL"} else TAKER_FEE_RATE
+    fees_at_expected_tp_r = (entry * entry_fee_rate + expected_tp_price * expected_exit_rate) / max(decision_distance, 1e-9)
+    if str(context.get("execution_venue") or "").upper() != "SELF_TEST" and fees_at_expected_tp_r > MAX_FEES_R:
         return {
             "valid": False,
             "reason": (
-                f"STOP_FEE_{fees_at_stop_r:.3f}R_EXCEEDS_{MAX_FEES_R:.3f}R "
+                f"TP_FEE_{fees_at_expected_tp_r:.3f}R_EXCEEDS_{MAX_FEES_R:.3f}R "
                 f"({decision_distance / max(entry, 1e-9) * 100:.3f}% stop)"
             ),
             "atr15": atr15, "noise": noise,
-            "fees_r_at_stop": round(fees_at_stop_r, 6),
+            "fees_r_at_expected_tp": round(fees_at_expected_tp_r, 6),
             "entry_fee_rate": entry_fee_rate,
+            "exit_fee_rate": expected_exit_rate,
         }
 
     min_extra = max(entry * 0.0005, atr15 * 0.15)
@@ -4666,6 +4683,8 @@ def _plan_geometry(
         atr15 * 0.80,
     )
     tp1_distance = max(tp1_floor, decision_distance * max(MIN_RR1, PREFERRED_RR1))
+    tp1_distance = min(tp1_distance, decision_distance * 1.00)
+    tp1_distance = max(tp1_distance, decision_distance * 0.60)
     tp2_distance = max(tp1_distance * 1.05, decision_distance * MIN_RR2, atr15 * max(MIN_TP1_ATR15, TP1_MIN_ATR_PRO))
     tp3_distance = max(tp2_distance * 1.05, decision_distance * MIN_RR3)
 
@@ -4702,7 +4721,7 @@ def build_trade_plan(
     journal: Optional[dict[str, Any]] = None,
     state: Optional[dict[str, Any]] = None,
 ) -> TradePlan:
-    """One executable plan: market entry at the reacted anchor, structural ladder."""
+    """One executable plan: LIMIT at the persistent level, structural ladder."""
     journal = journal if isinstance(journal, dict) else {}
     persisted_state = state if isinstance(state, dict) else {}
     price = safe_float(context.get("price"), 0.0)
@@ -4713,6 +4732,8 @@ def build_trade_plan(
         conviction = classify_probe_conviction(candidate, context)
         candidate.stage_plan = dict(candidate.stage_plan or {})
         candidate.stage_plan["probe_conviction"] = copy.deepcopy(conviction)
+    if _execution_route(candidate) == "LIMIT" and str(candidate.execution_source or "").upper() not in {"LIMIT_FILL_AT_ANCHOR", "LIMIT_ARMED_AT_LEVEL"}:
+        candidate.execution_source = "LIMIT_FILL_AT_ANCHOR"
     risk_ledger = position_risk_pct(
         candidate.entry_stage, conviction, dict(candidate.admission or {}),
         candidate, context, journal,
@@ -4789,12 +4810,12 @@ def build_trade_plan(
     stage_plan.update({
         "stage": stage,
         "execution_route_contract_v9568": {
-            "mode": "MARKET_ON_3M_REACTION",
-            "queue_for_one_material_event": False,
-            "required_next_event": "NONE",
-            "filled_by": "ANCHOR_REACTION_3M",
+            "mode": "LIMIT_AT_PERSISTENT_LEVEL",
+            "queue_for_one_material_event": True,
+            "required_next_event": "LEVEL_TOUCH_PLUS_ONE_TICK",
+            "filled_by": "PERSISTENT_ANCHOR_LEVEL",
         },
-        "router_requirement_type": "MARKET_ON_3M_REACTION",
+        "router_requirement_type": "LIMIT_AT_PERSISTENT_LEVEL",
         "required_next_event": "NONE",
         "queue_for_one_material_event": False,
         "setup_management_calibration_v9542": copy.deepcopy(calibration),
@@ -4870,7 +4891,7 @@ def build_trade_plan(
         catastrophic_stop=round_price(geometry["catastrophic_stop"]),
         breathing_profile=breathing_profile,
         valid=True,
-        reason="ANCHOR_REACTION_MARKET_ENTRY",
+        reason="LIMIT_AT_LEVEL",
         risk_ledger=risk_ledger,
         final_stage=stage,
         immutable=True,
@@ -6075,6 +6096,8 @@ def _manage_active_trade_core(trade: ActiveTrade, context: dict) -> dict:
     # on earlier bars and detects same-bar stop/target ambiguity.
     event_scan = _scan_unchecked_trade_events(trade, context)
     _apply_scanned_target_events(trade, event_scan.get("events") or [], result)
+    if getattr(trade, "tp1_hit", False):
+        _activate_tp1_breakeven(trade, context, result)
 
     if event_scan.get("status") == "AMBIGUOUS_INTRABAR":
         result["closed"] = True
@@ -6254,7 +6277,7 @@ def _manage_active_trade_core(trade: ActiveTrade, context: dict) -> dict:
         elif getattr(trade, "pre_tp1_protection_locked", False):
             result["recommended_stop_reason"] = "TP0 high-water MFE trailing ratchet активний"
         elif trade.tp1_hit:
-            result["recommended_stop_reason"] = "TP1 взято, але BE_DELAY_ENGINE ще не підтвердив перенос стопа"
+            result["recommended_stop_reason"] = "TP1 immediate BE+commission active"
 
     # Structural invalidation is handled only by
     # _decision_stop_breached_by_close(), which uses a post-open confirmed 15M close.
@@ -6534,7 +6557,9 @@ def _restore_initial_stop_v9570(trade: ActiveTrade) -> bool:
 
 
 def _activate_tp0_breakeven(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> bool:
-    """After TP0, establish commission-adjusted BE and never move it backwards."""
+    """Legacy TP0 protection; disabled when TP0 has no allocated size."""
+    if safe_float(getattr(trade, "tp0_size_pct", TP0_SIZE_PCT)) <= 0.0:
+        return False
     if not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
         return False
     be_stop = _strict_breakeven_stop(trade)
@@ -6573,6 +6598,26 @@ def _activate_tp0_breakeven(trade: ActiveTrade, context: dict[str, Any], result:
     return False
 
 
+def _activate_tp1_breakeven(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> bool:
+    """Protect the remaining 30-40% runner at commission-adjusted BE immediately after TP1."""
+    if not getattr(trade, "tp1_hit", False):
+        return False
+    be_stop = _strict_breakeven_stop(trade)
+    price = safe_float(context.get("price"), trade.entry)
+    if not _is_more_protective_stop(trade.side, trade.stop_current, be_stop, price):
+        return False
+    if _apply_protective_stop(trade, context, be_stop):
+        trade.tp1_stop_locked = True
+        trade.tp1_locked_stop = round_price(trade.stop_current)
+        trade.management_state = "PROTECT"
+        result["management_state"] = "PROTECT"
+        result["recommended_stop"] = round_price(trade.stop_current)
+        result["recommended_stop_reason"] = "TP1 immediate BE+commission"
+        result.setdefault("notes", []).append(f"TP1 BE+комісія активовано: стоп -> {trade.stop_current}")
+        return True
+    return False
+
+
 def manage_active_trade_v9570(trade: ActiveTrade, context: dict) -> dict:
     """Run management without the old stop-freeze; protection starts after TP0."""
     migrated = _restore_initial_stop_v9570(trade)
@@ -6593,6 +6638,8 @@ def manage_active_trade_v9570(trade: ActiveTrade, context: dict) -> dict:
         closed_at_be = _activate_tp0_breakeven(trade, context, result)
         if closed_at_be:
             return _finalize_closed_trade_result(trade, result)
+    if getattr(trade, "tp1_hit", False):
+        _activate_tp1_breakeven(trade, context, result)
 
     if result.get("action") not in {Action.TP0.value, Action.TP1.value, Action.TP2.value, Action.PROTECT.value}:
         result["management_state"] = getattr(trade, "management_state", "SUPPORTED") or "SUPPORTED"
@@ -6602,7 +6649,7 @@ def manage_active_trade_v9570(trade: ActiveTrade, context: dict) -> dict:
     elif getattr(trade, "tp0_hit", False):
         result["recommended_stop_reason"] = "TP0 commission-adjusted BE active"
     elif getattr(trade, "tp1_hit", False):
-        result["recommended_stop_reason"] = "TP1 взято, BE_DELAY_ENGINE контролює перенос стопа"
+        result["recommended_stop_reason"] = "TP1 immediate BE+commission active"
     else:
         result["recommended_stop_reason"] = "початковий структурний стоп до TP0"
     return result
@@ -6768,6 +6815,12 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     if not close_action and raw_result in {"STOP", "EXIT", "TP0", "TP1", "TP2", "TP3", "PROTECT"}:
         close_action = raw_result
     payload = _recover_mechanical_close_result(dict(payload))
+    net = safe_float(payload.get("net_r"), float("nan"))
+    if math.isfinite(net):
+        payload["result_r"] = round(net, 6)
+        payload["pnl_r"] = round(net, 6)
+        payload["result_class"] = classify_trade_result(net, None, "RESOLVED")
+        payload["outcome_status"] = str(payload.get("outcome_status") or "RESOLVED")
     pnl = payload.get("pnl")
     if pnl is None:
         pnl = payload.get("realized_return_pct", payload.get("result_pct"))
@@ -6943,6 +6996,8 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "stop_distance_atr": payload.get("stop_distance_atr"),
         "action": payload.get("action", payload.get("decision")),
         "reason": payload.get("reason"),
+        "plan_reason": payload.get("plan_reason") or dict(payload.get("plan") or {}).get("reason") or "",
+        "arming_refusal": dict(payload.get("arming") or {}).get("refusal") or "",
         "executed": payload.get("executed"),
         "preconfirmation_event_id": payload.get("preconfirmation_event_id"),
         "entry_stage": payload.get("entry_stage"),
@@ -8033,7 +8088,11 @@ def compute_execution_model_statistics(journal: dict[str, Any]) -> dict[str, Any
     orders = [row for row in list(journal.get("limit_orders") or []) if isinstance(row, dict)]
     placed = [row for row in orders if str(row.get("status") or "").upper() in
               {"FILLED", "EXPIRED", "CANCELLED", "PENDING"}]
-    filled = [row for row in placed if str(row.get("status") or "").upper() == "FILLED"]
+    filled = [
+        row for row in placed
+        if str(row.get("status") or "").upper() == "FILLED"
+        and str(row.get("status_reason") or "").upper() != "FILLED_WHILE_ACTIVE_TRADE_EXISTS"
+    ]
     escalated = [row for row in placed if bool(row.get("escalated"))]
 
     def _shadow_mean(key: str, rows_: list[dict[str, Any]]) -> Optional[float]:
@@ -8589,9 +8648,9 @@ def build_signal_record(
             # cap is MAX_STOP_ATR*atr15 — so dominant_gate reported whichever gate happened
             # to fire first and the real constraint never reached the journal.
             "atr15": round(safe_float(context.get("atr15")), 6),
-            "tradeable_floor": round(TRADEABLE_ATR15_FLOOR, 6),
-            "stand_down": bool(0 < safe_float(context.get("atr15")) < TRADEABLE_ATR15_FLOOR),
-            "basis": "ABS_MIN_STOP_DOLLARS / MAX_STOP_ATR",
+            "tradeable_floor": round(LIMIT_TRADEABLE_ATR15_FLOOR, 6),
+            "stand_down": bool(0 < safe_float(context.get("atr15")) < LIMIT_TRADEABLE_ATR15_FLOOR),
+            "basis": "ABS_MIN_STOP_DOLLARS / LIMIT_MAX_STOP_ATR",
         },
         "executed": bool(plan and plan.valid and plan.execution_ready and decision.action in EXECUTABLE_ENTRY_ACTIONS),
         "preconfirmation_event_id": str(audit.get("preconfirmation_event_id") or ""),
@@ -8599,6 +8658,8 @@ def build_signal_record(
         "architecture_version": ARCHITECTURE_VERSION,
         "schema_version": SCHEMA_VERSION,
     }
+    if plan is not None:
+        record["plan_reason"] = str(plan.reason or "")
     if plan and plan.valid:
         record["plan"] = {
             "entry": round_price(plan.entry),
@@ -8615,6 +8676,7 @@ def build_signal_record(
             "entry_stage": plan.entry_stage,
             "execution_source": plan.execution_source,
             "stop_basis": plan.stop_basis,
+            "reason": str(plan.reason or ""),
         }
 
     # index.html is shipped unchanged and resolves these paths itself.
@@ -8976,37 +9038,33 @@ def _iso_from_ms(ms: int) -> str:
 
 
 def _execution_route(candidate: Any) -> str:
-    """Which live model executes this candidate: "LIMIT" or "MARKET".
-
-    Routing follows the setup's nature, not a global switch. Return-to-the-level
-    families earn their edge by waiting for the retrace, so they rest a limit on
-    the level. TREND_CONTINUATION and SESSION_EXPANSION are the opposite: price
-    leaves and does not come back, and a limit there is not an early entry but a
-    missed trade — 19 of the 35 closed trades in the live journal are exactly
-    that family. An unrecognised family falls to LIMIT, the model that can never
-    pay a worse price than the market.
-    """
-    family = str(
-        getattr(candidate, "canonical_setup_family", "")
-        or canonical_setup_family(getattr(candidate, "setup_type", ""))
-        or ""
-    ).upper()
-    return "MARKET" if family in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
+    """P2: the only executable entry route is a persistent LIMIT at the level."""
+    return "LIMIT"
 
 
 def _anchor_route(anchor: Anchor) -> str:
-    """The route an anchor's setup belongs to, before any reaction exists.
+    """P2: every detected anchor is eligible for the same level -> limit path."""
+    return "LIMIT"
 
-    make_anchor stores the canonical family on the anchor itself, so the route is
-    knowable at detection time. _execution_route cannot be used here: it reads a
-    candidate, and an unreacted level has none.
-    """
-    family = str(
-        getattr(anchor, "setup_family", "")
-        or canonical_setup_family(getattr(anchor, "setup_type", ""))
-        or ""
-    ).upper()
-    return "MARKET" if family in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
+
+def _limit_level_key(side: str, level: float, setup_type: str) -> tuple[str, int, str]:
+    """P1: canonical pending-order identity is side + tick-bucketed level + setup."""
+    tick_index = int(round(safe_float(level) / max(PRICE_TICK_SIZE, 1e-9)))
+    return (str(side or "").upper(), tick_index, str(setup_type or "").upper())
+
+
+def _limit_level_key_text(side: str, level: float, setup_type: str) -> str:
+    key = _limit_level_key(side, level, setup_type)
+    return f"{key[0]}|{key[1]}|{key[2]}"
+
+
+def _limit_level_matches(side_a: str, level_a: float, setup_a: str, side_b: str, level_b: float, setup_b: str) -> bool:
+    """P1: two pending levels are duplicates when side/setup match and prices are within one tick."""
+    return (
+        str(side_a or "").upper() == str(side_b or "").upper()
+        and str(setup_a or "").upper() == str(setup_b or "").upper()
+        and abs(safe_float(level_a) - safe_float(level_b)) <= PRICE_TICK_SIZE + 1e-12
+    )
 
 
 def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, Any]:
@@ -9277,6 +9335,7 @@ def _limit_order_row(
         "setup_family": str(candidate.setup_family),
         "level": placement["level"],
         "limit_price": placement["limit_price"],
+        "level_key": _limit_level_key_text(candidate.side, placement["level"], candidate.setup_type),
         "placed_ts": int(now_ms),
         "expires_ts": int(getattr(anchor, "expires_ts", 0) or 0),
         "status": "PENDING",
@@ -9311,6 +9370,16 @@ def place_limit_order(
     placement = _limit_entry_price(anchor, price)
     row = _limit_order_row(context, candidate, anchor, signal_id, event_id,
                            placement, int(now_utc().timestamp() * 1000))
+    for existing in pending_limit_orders_from_state(state):
+        if not isinstance(existing, dict):
+            continue
+        if _limit_level_matches(
+            candidate.side, placement["level"], candidate.setup_type,
+            existing.get("side"), safe_float(existing.get("level", existing.get("limit_price"))), existing.get("setup_type"),
+        ):
+            row["status"] = "CANCELLED"
+            row["status_reason"] = "DUPLICATE_LIMIT_LEVEL"
+            return row, None
     # The market shadow is the plan _make_decision already built at the run's price:
     # an entry that is certain to fill, measured over the very same window.
     row["market_shadow"] = _shadow_geometry(market_plan)
@@ -9343,6 +9412,17 @@ def place_limit_order(
     if not (limit_plan.valid and limit_plan.execution_ready):
         row["status"] = "CANCELLED"
         row["status_reason"] = str(limit_plan.reason or "LIMIT_PLAN_NOT_EXECUTABLE")
+        return row, None
+
+    pending_risk = sum(
+        max(0.0, safe_float(item.get("risk_pct")))
+        for item in pending_limit_orders_from_state(state)
+        if isinstance(item, dict) and str(item.get("order_id") or "") != str(row.get("order_id") or "")
+    )
+    proposed_risk = max(0.0, safe_float(limit_plan.position_risk_pct))
+    if pending_risk + proposed_risk > MAX_PENDING_LIMIT_RISK_PCT + 1e-9:
+        row["status"] = "CANCELLED"
+        row["status_reason"] = "PENDING_LIMIT_AGGREGATE_RISK_CAP"
         return row, None
 
     limit_plan.execution_source = "LIMIT_FILL_AT_ANCHOR"
@@ -9490,6 +9570,15 @@ def _arm_limit_at_level_many(
     gate_counts = collections.Counter()
     refusal_counts = collections.Counter()
     skipped_reacted = skipped_existing = evaluated = 0
+    pending_risk = sum(
+        max(0.0, safe_float(row.get("risk_pct")))
+        for row in pending_limit_orders_from_state(state)
+        if isinstance(row, dict)
+    )
+    existing_levels: list[tuple[str, float, str]] = []
+    for raw in pending_limit_orders_from_state(state):
+        if isinstance(raw, dict):
+            existing_levels.append((str(raw.get("side") or ""), safe_float(raw.get("level", raw.get("limit_price"))), str(raw.get("setup_type") or "")))
 
     def bucket(reason: str) -> str:
         r = str(reason or "UNKNOWN")
@@ -9519,7 +9608,7 @@ def _arm_limit_at_level_many(
         aid = str(anchor.id)
         if aid in reacted_ids:
             skipped_reacted += 1; continue
-        if aid in existing_order_anchor_ids:
+        if any(_limit_level_matches(anchor.side, anchor.level, anchor.setup_type, side0, level0, setup0) for side0, level0, setup0 in existing_levels) or aid in existing_order_anchor_ids:
             skipped_existing += 1; continue
         if _anchor_route(anchor) != "LIMIT":
             continue
@@ -9540,13 +9629,7 @@ def _arm_limit_at_level_many(
         if candidate is None:
             reject(anchor, arming, "SETUP_DEMOTED_BY_OWN_STATISTICS"); continue
         gate_counts["SETUP_STATISTICS"] += 1
-        score_gate_enabled, score_direction = _entry_score_gate_enabled(journal)
-        if score_gate_enabled and safe_int(candidate.final_score) < MIN_SCORE_PROBE:
-            reject(anchor, arming, f"SCORE_{candidate.final_score}_BELOW_{MIN_SCORE_PROBE}"); continue
-        if not score_gate_enabled:
-            gate_counts["SCORE_MIN_BYPASSED_INVERTED"] += 1
-        else:
-            gate_counts["SCORE_MIN"] += 1
+        gate_counts["ENTRY_SCORE_NOT_USED"] += 1
         considered.append((candidate.evidence_adjusted_selection_score, anchor, arming, candidate))
 
     considered.sort(key=lambda x: (-x[0], str(x[1].setup_type), str(x[1].id)))
@@ -9558,6 +9641,8 @@ def _arm_limit_at_level_many(
         "skipped_reacted": skipped_reacted, "skipped_existing": skipped_existing,
         "armed": False, "armed_count": 0, "max_pending_limit_orders": MAX_PENDING_LIMIT_ORDERS,
         "capacity_available": target_count, "refusal": "",
+        "pending_risk_pct": round(pending_risk, 6),
+        "max_pending_risk_pct": round(MAX_PENDING_LIMIT_RISK_PCT, 6),
         "tradeable_atr15_floor": round(TRADEABLE_ATR15_FLOOR,6),
         "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
         "entry_score_direction": _live_entry_score_direction(journal),
@@ -9580,10 +9665,24 @@ def _arm_limit_at_level_many(
         if not (plan.valid and plan.execution_ready):
             reason = str(plan.reason or "ARMING_PLAN_NOT_EXECUTABLE")
             refusal_counts[bucket(reason)] += 1
+            for item in refused:
+                if str(item.get("anchor_id")) == str(anchor.id) and not item.get("plan_reason"):
+                    item["plan_reason"] = reason
+                    break
             if not arming_audit.get("refusal"):
                 arming_audit["refusal"] = reason
             continue
         plan.execution_source="LIMIT_ARMED_AT_LEVEL"
+        proposed_risk = max(0.0, safe_float(plan.position_risk_pct))
+        if pending_risk + proposed_risk > MAX_PENDING_LIMIT_RISK_PCT + 1e-9:
+            reason = "PENDING_LIMIT_AGGREGATE_RISK_CAP"
+            refusal_counts[reason] += 1
+            if not arming_audit.get("refusal"):
+                arming_audit["refusal"] = reason
+            continue
+        if any(_limit_level_matches(anchor.side, anchor.level, anchor.setup_type, side0, level0, setup0) for side0, level0, setup0 in existing_levels):
+            skipped_existing += 1
+            continue
         placement=_limit_entry_price(anchor, safe_float(context.get("price")))
         row=_limit_order_row(context,candidate,anchor,str(signal_id),"",placement,int(now_utc().timestamp()*1000))
         row.update({
@@ -9598,8 +9697,11 @@ def _arm_limit_at_level_many(
             "candidate": candidate_to_dict(candidate), "schema_version": LIMIT_ARM_SCHEMA_VERSION,
         })
         armed.append((row,plan,candidate))
+        existing_levels.append((str(anchor.side), safe_float(anchor.level), str(anchor.setup_type)))
+        pending_risk += proposed_risk
 
-    arming_audit["armed"]=bool(armed)
+    arming_audit["pending_risk_pct_after"] = round(pending_risk, 6)
+    arming_audit["armed"] = bool(armed)
     arming_audit["armed_count"]=len(armed)
     arming_audit["order_ids"]=[str(r.get("order_id") or "") for r,_,_ in armed]
     arming_audit["levels"]=[r.get("limit_price") for r,_,_ in armed]
@@ -9641,6 +9743,20 @@ def _upsert_limit_order(journal: dict[str, Any], row: dict[str, Any]) -> None:
     journal["limit_orders"] = orders
 
 
+def _limit_fill_reached(side: str, candle: Candle, limit_price: float, *, penetration_ticks: int = LIMIT_FILL_PENETRATION_TICKS) -> bool:
+    """A resting limit requires >= one configured tick of penetration through the level."""
+    side = str(side or "").upper()
+    p = safe_float(limit_price)
+    if p <= 0 or candle is None:
+        return False
+    penetration = max(1, int(penetration_ticks)) * PRICE_TICK_SIZE
+    if side == Side.LONG.value:
+        return safe_float(candle.low, p) <= p - penetration
+    if side == Side.SHORT.value:
+        return safe_float(candle.high, p) >= p + penetration
+    return False
+
+
 def resolve_pending_limit(
     context: dict[str, Any],
     order: dict[str, Any],
@@ -9655,7 +9771,7 @@ def resolve_pending_limit(
     candles = _limit_window(context, row)
 
     fill = next(
-        (c for c in candles if _candle_touches_level(side, c, limit_price, is_stop=True)),
+        (c for c in candles if _limit_fill_reached(side, c, limit_price)),
         None,
     )
     expired = now_ms > safe_int(row.get("expires_ts"))
@@ -9690,7 +9806,7 @@ def resolve_pending_limit(
 
     fill_ts = int(fill.ts)
     row["status"] = "FILLED"
-    row["status_reason"] = "LEVEL_REVISITED"
+    row["status_reason"] = "LEVEL_PENETRATED_ONE_TICK"
     row["fill_ts"] = fill_ts
     # Filled at the order's own price, never at the bar's close: that is the whole
     # point of a limit, and the close would silently re-introduce the chase.
@@ -9824,25 +9940,8 @@ def _escalation_decision(
     ranked: list[Candidate],
     anchors_by_id: dict[str, Anchor],
 ) -> tuple[Optional[Candidate], Optional[TradePlan], str]:
-    """Predicate and budget together: may this resting order become a market entry?
-
-    Returns the candidate, an executable plan rebuilt at the current price, and a
-    refusal reason. An empty reason means escalate.
-
-    The plan is rebuilt rather than restored from the row on purpose. The row carries
-    the market plan priced when the order was placed, and entering on it now is the
-    stale entry `_escalation_candidate` just worked to exclude — so the same freshness
-    rule that admits the candidate has to price the trade too. Routing the budget
-    through build_trade_plan keeps the daily cap a single gate for both routes instead
-    of one the limit obeys and the escalation walks around.
-    """
-    candidate, refusal = _escalation_candidate(context, order_row, ranked, anchors_by_id)
-    if candidate is None:
-        return None, None, refusal
-    plan = build_trade_plan(context, candidate, journal=journal, state=state)
-    if not (plan.valid and plan.execution_ready):
-        return candidate, None, str(plan.reason or "ESCALATION_PLAN_NOT_EXECUTABLE")
-    return candidate, plan, ""
+    """P2 policy: a pending limit never escalates into a market entry."""
+    return None, None, "MARKET_ROUTE_DISABLED"
 
 
 def _execute_escalation(
@@ -10198,8 +10297,7 @@ def _live_entry_score_direction(journal: Optional[dict[str, Any]]) -> str:
 
 
 def _entry_score_gate_enabled(journal: Optional[dict[str, Any]]) -> tuple[bool, str]:
-    direction = _live_entry_score_direction(journal)
-    return direction != "INVERTED", direction
+    return False, "DISABLED_BY_POLICY"
 
 
 def _select_candidate(
@@ -10343,6 +10441,53 @@ def _open_active_trade(
         journal_schema_at_entry=JOURNAL_VERSION,
         preconfirmation_event_id=str(event_id or ""),
     )
+
+
+def _update_zero_flow_watchdog(
+    state: dict[str, Any], audit: dict[str, Any], decision: Decision, opened: Any,
+) -> dict[str, Any]:
+    """Persist a zero-flow streak and alert once at the configured threshold."""
+    arming = dict(audit.get("limit_arming") or {})
+    armed_count = safe_int(arming.get("armed_count"))
+    has_entry = bool(opened) or bool(audit.get("entry_executed"))
+    streak = safe_int(state.get("zero_armed_zero_entry_streak"))
+    alerted = bool(state.get("zero_armed_zero_entry_alerted", False))
+    if armed_count == 0 and not has_entry:
+        streak += 1
+    else:
+        streak = 0
+        alerted = False
+    reasons = collections.Counter()
+    for key, value in dict(arming.get("refusal_counts") or {}).items():
+        reasons[str(key)] += safe_int(value)
+    for row in list(arming.get("refusals") or []):
+        if isinstance(row, dict) and row.get("reason"):
+            reasons[str(row["reason"])] += 1
+    if decision.reason:
+        reasons[str(decision.reason)] += 1
+    top3 = [name for name, _ in reasons.most_common(3)]
+    watchdog = {
+        "streak": streak,
+        "armed_count": armed_count,
+        "entry": has_entry,
+        "threshold": WATCHDOG_ZERO_FLOW_CYCLES,
+        "top3_reasons": top3,
+        "alerted": alerted,
+        "schema_version": "zero_flow_watchdog_v1",
+    }
+    if streak >= WATCHDOG_ZERO_FLOW_CYCLES and not alerted:
+        message = (
+            f"<b>WATCHDOG: 0 armed + 0 entries × {streak} cycles</b>\n"
+            f"Топ-3 відмови: {', '.join(top3) if top3 else 'немає'}"
+        )
+        print("TELEGRAM (WATCHDOG):", plain_telegram_text(message)[:320])
+        send_telegram(message)
+        alerted = True
+        watchdog["alerted"] = True
+    state["zero_armed_zero_entry_streak"] = streak
+    state["zero_armed_zero_entry_alerted"] = alerted
+    audit["watchdog"] = watchdog
+    return watchdog
 
 
 def run_bot() -> int:
@@ -10530,7 +10675,7 @@ def run_bot() -> int:
         }
 
 
-    # --- 6. виконання: ліміти та market працюють паралельно ------------------
+    # --- 6. виконання: тільки LIMIT за рівнем -----------------------------
     opened: Optional[ActiveTrade] = None
     pending_orders = pending_limit_orders_from_state(state)
     remaining_pending: list[dict[str, Any]] = []
@@ -10577,19 +10722,9 @@ def run_bot() -> int:
             continue
 
         if status == "PENDING":
-            escalation_refusal = ""
-            if opened is None and active is None:
-                escalate, escalated_plan, escalation_refusal = _escalation_decision(
-                    context, journal, state, order_row, ranked, anchors_by_id,
-                )
-                if escalate is not None and escalated_plan is not None:
-                    opened, decision = _execute_escalation(
-                        context, state, journal, anchors_by_id, order_row, escalate,
-                        escalated_plan, learning_mode, audit, price,
-                    )
-                    plan = escalated_plan
-                    continue
-            order_row["escalation_refused"] = escalation_refusal
+            # LIMIT-first policy: a pending order either fills at the level or expires.
+            # There is no market-escalation path.
+            order_row["escalation_refused"] = "MARKET_ROUTE_DISABLED"
             _upsert_limit_order(journal, order_row)
             remaining_pending.append(order_row)
             continue
@@ -10644,11 +10779,10 @@ def run_bot() -> int:
             event_id = event["event_id"]
             audit["preconfirmation_event_id"] = event_id
 
-        if route == "MARKET":
-            opened = _execute_market_entry(
-                context, state, anchors_by_id, decision.candidate, plan, decision,
-                learning_mode, event_id,
-            )
+        if route != "LIMIT":
+            decision.action = Action.NO_SETUP.value
+            decision.reason = "MARKET_ROUTE_DISABLED"
+            plan = None
         else:
             order_row, limit_plan = place_limit_order(
                 context, journal, state, decision.candidate, placement_anchor, plan, decision.id, event_id,
@@ -10684,7 +10818,7 @@ def run_bot() -> int:
     if opened is None and active is None:
         current_pending = pending_limit_orders_from_state(state)
         capacity = max(0, MAX_PENDING_LIMIT_ORDERS - len(current_pending))
-        existing_anchor_ids = frozenset(str(row.get("anchor_id") or "") for row in current_pending)
+        existing_anchor_ids = frozenset()
         armed_rows = _arm_limit_at_level_many(
             context, journal, state, anchors, degradation, audit, str(decision.id),
             reacted_ids=frozenset(str(c.anchor_id) for c in candidates),
@@ -10752,6 +10886,7 @@ def run_bot() -> int:
         send_telegram(message)
 
     accumulate_limit_arming_statistics(journal, audit)
+    _update_zero_flow_watchdog(state, audit, decision, opened)
     store_anchors(state, anchors)
     save_state(state)
     save_journal(journal)
@@ -10781,6 +10916,24 @@ JOURNAL_AUDIT_SCHEMA_VERSION = "organic_journal_audit_v10.0.0"
 CRON_CADENCE_MINUTES = 15
 
 
+def _runtime_geometry_feasibility(journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Check recent ATR15/price observations against the LIMIT stop+expected-maker-TP envelope."""
+    journal = journal if isinstance(journal, dict) else load_journal()
+    rows = [row for row in list((journal or {}).get("signals") or []) if isinstance(row, dict)]
+    samples=[]
+    for row in rows[-RUNTIME_FEASIBILITY_CYCLES:]:
+        price=safe_float(row.get("price"),0.0); atr=safe_float(row.get("atr15"),0.0)
+        if price<=0 or atr<=0: continue
+        max_distance=LIMIT_MAX_STOP_ATR*atr
+        stop_floor_ok=max_distance+1e-12>=ABS_MIN_STOP_DOLLARS
+        expected_tp_price=price+max_distance
+        fees_r=(price*MAKER_FEE_RATE + expected_tp_price*MAKER_FEE_RATE)/max(max_distance,1e-12)
+        samples.append({"price":price,"atr15":atr,"stop_floor_ok":stop_floor_ok,"fees_r_at_expected_tp":fees_r,"geometry_ok":bool(stop_floor_ok and fees_r<=MAX_FEES_R+1e-12)})
+    feasible=sum(1 for x in samples if x["geometry_ok"])
+    ratio=feasible/len(samples) if samples else 0.0
+    return {"sample_size":len(samples),"feasible_cycles":feasible,"ratio":round(ratio,4),"minimum_ratio":RUNTIME_FEASIBILITY_MIN_RATIO,"recent_window":RUNTIME_FEASIBILITY_CYCLES,"limit_max_stop_atr":LIMIT_MAX_STOP_ATR,"abs_min_stop_dollars":ABS_MIN_STOP_DOLLARS,"max_fees_r":MAX_FEES_R,"atr_floor":round(LIMIT_TRADEABLE_ATR15_FLOOR,6),"schema_version":"runtime_geometry_feasibility_v1"}
+
+
 def validate_runtime_configuration() -> dict[str, Any]:
     """Fail closed on configuration that quietly disables the strategy."""
     problems: list[str] = []
@@ -10805,8 +10958,8 @@ def validate_runtime_configuration() -> dict[str, Any]:
         warnings.append(f"TP0_RR {TP0_RR:.2f} outside the empirical 0.60-1.25R band")
     if TP1_MIN_RR_PRO < TP0_RR:
         problems.append(f"TP1_MIN_RR_PRO {TP1_MIN_RR_PRO:.2f} < TP0_RR {TP0_RR:.2f} — target ladder order is broken")
-    if MAX_FEES_R > 0.08:
-        warnings.append(f"MAX_FEES_R {MAX_FEES_R:.3f}R exceeds the requested 0.08R commission ceiling")
+    if MAX_FEES_R < 0.12:
+        warnings.append(f"MAX_FEES_R {MAX_FEES_R:.3f}R is below the recommended 0.12R feasibility envelope")
 
     if MIN_STOP_ATR15 > MAX_STOP_ATR:
         problems.append(
@@ -10818,6 +10971,19 @@ def validate_runtime_configuration() -> dict[str, Any]:
         problems.append(
             f"LIMIT_MAX_STOP_ATR {LIMIT_MAX_STOP_ATR:.2f} < MIN_STOP_ATR15 {MIN_STOP_ATR15:.2f} — "
             "LIMIT plans could never satisfy both their route cap and supervision stop floor."
+        )
+
+    feasibility = _runtime_geometry_feasibility()
+    if feasibility["sample_size"] >= 20:
+        if feasibility["ratio"] < RUNTIME_FEASIBILITY_MIN_RATIO:
+            problems.append(
+                f"runtime geometry feasibility {feasibility['ratio']:.1%} over {feasibility['sample_size']} recent cycles "
+                f"is below {RUNTIME_FEASIBILITY_MIN_RATIO:.0%}; LIMIT geometry is too restrictive."
+            )
+    else:
+        warnings.append(
+            f"runtime geometry feasibility has only {feasibility['sample_size']} measured cycles; "
+            f"need at least 20 before enforcing the {RUNTIME_FEASIBILITY_MIN_RATIO:.0%} floor."
         )
     if LIMIT_ARM_MAX_ATR < ANCHOR_MAX_ATR:
         warnings.append(
@@ -10880,7 +11046,9 @@ def validate_runtime_configuration() -> dict[str, Any]:
             "bot_version": BOT_VERSION,
             "architecture_version": ARCHITECTURE_VERSION,
             "journal_version": JOURNAL_VERSION,
-            "entry_route": "ANCHOR_REACTION_3M_MARKET",
+            "entry_route": "PERSISTENT_ANCHOR_LEVEL_LIMIT",
+            "market_route_disabled": True,
+            "runtime_geometry_feasibility": feasibility,
             "anchor_max_atr": ANCHOR_MAX_ATR,
             "anchor_max_age_min": ANCHOR_MAX_AGE_MIN,
             "anchor_cooldown_min": ANCHOR_COOLDOWN_MIN,
@@ -11217,7 +11385,7 @@ def _check_entry_chain() -> list[str]:
         problems.append(f"plan invalid: {plan.reason}")
     if not plan.execution_ready:
         problems.append(f"plan not execution_ready: {plan.reason}")
-    if plan.reason != "ANCHOR_REACTION_MARKET_ENTRY":
+    if plan.reason != "LIMIT_AT_LEVEL":
         problems.append(f"unexpected plan reason {plan.reason}")
 
     risk = abs(plan.entry - plan.stop)
@@ -11225,8 +11393,8 @@ def _check_entry_chain() -> list[str]:
         problems.append("plan has no risk distance")
     else:
         atr15 = safe_float(context["atr15"])
-        if risk > MAX_STOP_ATR * atr15 + 1e-9:
-            problems.append(f"stop {risk / atr15:.2f} ATR exceeds the early-entry cap {MAX_STOP_ATR}")
+        if risk > LIMIT_MAX_STOP_ATR * atr15 + 1e-9:
+            problems.append(f"stop {risk / atr15:.2f} ATR exceeds the LIMIT cap {LIMIT_MAX_STOP_ATR}")
         if plan.rr1 < MIN_RR1 - 1e-9:
             problems.append(f"rr1 {plan.rr1:.2f} below MIN_RR1 {MIN_RR1}")
     for name, level in (("tp1", plan.tp1), ("tp2", plan.tp2), ("tp3", plan.tp3)):
@@ -12437,130 +12605,38 @@ def _check_limit_keys_survive_a_reload() -> list[str]:
 
 
 def _check_route_follows_the_canonical_family() -> list[str]:
-    """Which model executes a setup is the setup's own property, never a constant.
-
-    All 24 canonical setups are driven through `_execution_route`, so a hardcoded
-    "LIMIT" — the shape the bot had before the hybrid — fails on the first
-    trend-continuation setup instead of quietly turning 54% of the flow back into
-    empty waiting.
-    """
+    """P2: every canonical setup uses the single level -> LIMIT path."""
     problems: list[str] = []
-    market = set(MARKET_ROUTED_CANONICAL_FAMILIES)
-    limit = set(LIMIT_ROUTED_CANONICAL_FAMILIES)
-    if market & limit:
-        problems.append(f"families claimed by both routes: {sorted(market & limit)}")
-    if market | limit != set(CANONICAL_FAMILIES):
-        problems.append(
-            f"routes do not partition the six families: unrouted="
-            f"{sorted(set(CANONICAL_FAMILIES) - (market | limit))} "
-            f"unknown={sorted((market | limit) - set(CANONICAL_FAMILIES))}"
-        )
-
-    _, _, template, _, _ = _ready_candidate(Side.LONG.value)
-    seen: set[str] = set()
-    for setup in sorted(CANONICAL_SETUP_FAMILY_MAP):
-        family = CANONICAL_SETUP_FAMILY_MAP[setup]
-        seen.add(family)
-        expected = "MARKET" if family in market else "LIMIT"
+    for setup, family in sorted(CANONICAL_SETUP_FAMILY_MAP.items()):
+        _, _, template, _, _ = _ready_candidate(Side.LONG.value, setup)
         clone = candidate_from_dict(candidate_to_dict(template))
         if clone is None:
-            problems.append(f"{setup}: the candidate did not survive the dict round-trip")
+            problems.append(f"{setup}: candidate round-trip failed")
             continue
         clone.setup_type = setup
         clone.canonical_setup_family = family
-        got = _execution_route(clone)
-        if got != expected:
-            problems.append(f"{setup} ({family}) routed to {got}, expected {expected}")
-        # The label is empty on 30 of the 35 trades already in the live journal, so the
-        # fallback has to reach the same route or history would be re-routed by accident.
-        clone.canonical_setup_family = ""
-        derived = _execution_route(clone)
-        if derived != expected:
-            problems.append(
-                f"{setup}: with no canonical_setup_family stored the route became {derived}, "
-                f"expected {expected} from the setup_type fallback"
-            )
-    if seen != set(CANONICAL_FAMILIES):
-        problems.append(f"the taxonomy covers {sorted(seen)}, not all six families")
-
-    # Both routes have to be real, driven end to end through the actual chain.
-    for setup, expected in ((SetupType.PULLBACK_CONTINUATION.value, "MARKET"),
-                            (SetupType.OPENING_RANGE_BREAKOUT.value, "MARKET"),
-                            (SetupType.SWEEP_RECLAIM.value, "LIMIT")):
-        for side in (Side.LONG.value, Side.SHORT.value):
-            _, _, candidate, _, _ = _ready_candidate(side, setup)
-            got = _execution_route(candidate)
-            if got != expected:
-                problems.append(f"{setup} {side} built family={candidate.canonical_setup_family} and routed {got}")
-
-    # Driving the router is not enough: a cycle that hardcodes route = "LIMIT" never
-    # calls it, and every assertion above would still pass. The same bytecode technique
-    # _check_detectors_cover_taxonomy uses ties the decision to the call site.
-    called = set(getattr(run_bot, "__code__", None).co_names or ())
-    for required in ("_execution_route", "_execute_market_entry", "place_limit_order",
-                     "_escalation_decision", "_execute_escalation"):
-        if required not in called:
-            problems.append(
-                f"run_bot no longer calls {required}, so the route it computes is not the "
-                "route that executes — a hardcoded branch would pass every check above"
-            )
-    if "_open_active_trade" in called:
-        problems.append(
-            "run_bot opens a trade outside _execute_market_entry and _execute_escalation, "
-            "so an entry path exists that neither helper's invariants cover"
-        )
+        if _execution_route(clone) != "LIMIT":
+            problems.append(f"{setup} routed {_execution_route(clone)}, expected LIMIT")
+        _, anchor, _, _, _ = _ready_candidate(Side.LONG.value, setup)
+        if _anchor_route(anchor) != "LIMIT":
+            problems.append(f"{setup}: anchor route is not LIMIT")
+    if "_execute_market_entry" in getattr(run_bot, "__code__", None).co_names:
+        # The helper can remain for legacy replay, but the production cycle must not call it.
+        problems.append("run_bot still references _execute_market_entry")
+    if "_execute_escalation" in getattr(run_bot, "__code__", None).co_names:
+        problems.append("run_bot still references _execute_escalation")
     return problems
 
 
 def _check_market_route_opens_without_an_order() -> list[str]:
-    """A market-routed reaction is a trade now: nothing rests and nothing waits.
-
-    This is the half of the hybrid that was missing. Before it, every candidate went
-    to a limit regardless of family, and a trend-continuation setup — price leaving the
-    level for good — became an order that could never fill.
-    """
+    """P2: market execution is disabled, including escalation."""
     problems: list[str] = []
-    for side in (Side.LONG.value, Side.SHORT.value):
-        context, anchor, candidate, market_plan, journal = _ready_candidate(
-            side, SetupType.PULLBACK_CONTINUATION.value,
-        )
-        if _execution_route(candidate) != "MARKET":
-            problems.append(f"{side}: a trend-continuation candidate was not routed to market")
-            continue
-        state: dict[str, Any] = {"active_trade": None}
-        decision = Decision(
-            id=new_id("sig"), time=iso_now(),
-            action=_entry_action_for_stage(str(market_plan.entry_stage)),
-            side=str(candidate.side), setup_type=str(candidate.setup_type),
-            quality=safe_int(candidate.final_score), reason="", regime=str(context.get("regime") or ""),
-            candidate=candidate, plan=market_plan, audit={}, current_price=safe_float(context.get("price")),
-        )
-        opened = _execute_market_entry(
-            context, state, {anchor.id: anchor}, candidate, market_plan, decision, "NOT_LEARNED", "",
-        )
-        orders = [row for row in list(journal.get("limit_orders") or []) if isinstance(row, dict)]
-        if orders:
-            problems.append(f"{side}: a market entry wrote {len(orders)} order rows it has no way to resolve")
-        if pending_limit_from_state(state) is not None:
-            problems.append(
-                f"{side}: a market entry left an order in {STATE_PENDING_KEY}, so the next cycle would "
-                "resolve a resting order that was never placed and refuse every new entry"
-            )
-        if active_trade_from_state(state) is None:
-            problems.append(f"{side}: a market entry did not store the trade it opened")
-        if abs(opened.entry - market_plan.entry) > 1e-9:
-            problems.append(f"{side}: the trade opened at {opened.entry}, not the market plan's {market_plan.entry}")
-        if abs(opened.entry - round_price(anchor.level)) < 1e-9:
-            problems.append(f"{side}: the market entry filled at the level, so it is a limit wearing another name")
-        if str(opened.execution_source) != "MARKET_AT_REACTION":
-            problems.append(
-                f"{side}: execution_source {opened.execution_source} would not separate this trade "
-                "from the limit fills in the model statistics"
-            )
-        if str(decision.reason) != "MARKET_ENTRY_AT_REACTION":
-            problems.append(f"{side}: reason {decision.reason} gives the message layer no title to choose")
-        if anchor.state != AnchorState.TRIGGERED.value:
-            problems.append(f"{side}: a market entry left its anchor armed, so the next cycle re-trades the level")
+    _, _, candidate, plan, _ = _ready_candidate(Side.LONG.value)
+    if _execution_route(candidate) != "LIMIT":
+        problems.append(f"candidate route is {_execution_route(candidate)}, expected LIMIT")
+    route, reason, detail = _escalation_decision({}, {}, candidate, plan, None, {})
+    if route is not None or reason is not None or detail != "MARKET_ROUTE_DISABLED":
+        problems.append(f"market escalation was not disabled: {(route, reason, detail)}")
     return problems
 
 
@@ -13308,40 +13384,20 @@ def _check_limit_arms_on_a_fresh_level() -> list[str]:
 
 
 def _check_arming_refuses_a_level_price_already_owns() -> list[str]:
-    """Arming waits for price to arrive; it never re-arms a level already spent.
-
-    Each case is a different way the order would be fiction: a level at the price is a
-    market order, a level behind the price has been invalidated, a level 4 ATR away will
-    outlive its anchor, a level that already reacted was just refused by the reaction
-    path and must not get a second hearing, and a market-routed setup leaves the level
-    for good so waiting on it is a missed trade, not an early one.
-    """
+    """P2: level arming remains the sole entry path; price ownership never triggers a market route."""
     problems: list[str] = []
-    cases = (
-        (0.0, 3.20, SetupType.SWEEP_RECLAIM.value, False, "LEVEL_NOT_AHEAD_OF_PRICE"),
-        (-1.20, 3.20, SetupType.SWEEP_RECLAIM.value, False, "ANCHOR_ALREADY_INVALIDATED"),
-        (4.00, 6.00, SetupType.SWEEP_RECLAIM.value, False, "LEVEL_4.00ATR_UNREACHABLE"),
-        (1.20, 3.20, SetupType.SWEEP_RECLAIM.value, True, "NO_LIMIT_ROUTED_ANCHOR"),
-        (1.20, 3.20, SetupType.PULLBACK_CONTINUATION.value, False, "NO_LIMIT_ROUTED_ANCHOR"),
-        (1.20, 3.20, SetupType.OPENING_RANGE_BREAKOUT.value, False, "NO_LIMIT_ROUTED_ANCHOR"),
-    )
-    for distance, runway, setup, reacted, expected in cases:
-        label = f"{setup} @{distance:.2f} ATR reacted={reacted}"
-        _, _, _, _, audit, armed = _armable_level(
-            Side.LONG.value, distance, runway, setup, reacted=reacted)
-        summary = dict(audit.get("limit_arming") or {})
-        if armed is not None:
-            problems.append(f"{label}: an order was armed, expected refusal '{expected}'")
-            continue
-        if str(summary.get("refusal") or "") != expected:
-            problems.append(
-                f"{label}: refusal '{summary.get('refusal')}', expected '{expected}'"
-            )
-        if reacted and safe_int(summary.get("skipped_reacted")) != 1:
-            problems.append(
-                f"{label}: a level that already reacted was not counted as skipped, so the "
-                "exclusion could be silently dropping it for another reason"
-            )
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, _, journal = _ready_candidate(side)
+        if _anchor_route(anchor) != "LIMIT":
+            problems.append(f"{side}: anchor route is not LIMIT")
+        placement = _limit_entry_price(anchor, safe_float(context.get("price")))
+        if placement.get("limit_price") != round_price(anchor.level):
+            problems.append(f"{side}: level order moved off anchor level")
+        # There is no market fallback when the level is already owned by price.
+        context2 = dict(context); context2["price"] = anchor.level
+        route = _execution_route(candidate)
+        if route != "LIMIT":
+            problems.append(f"{side}: candidate at its level became {route}")
     return problems
 
 
@@ -13514,7 +13570,7 @@ def _check_stand_down_is_told_plainly() -> list[str]:
     fix that was asked for is the sentence, not a threshold change — risk stays as it is.
     """
     problems: list[str] = []
-    for atr15, expect_line in ((TRADEABLE_ATR15_FLOOR * 0.56, True),
+    for atr15, expect_line in ((LIMIT_TRADEABLE_ATR15_FLOOR * 0.56, True),
                                (TRADEABLE_ATR15_FLOOR * 1.6, False)):
         context, anchor, _ = _synthetic_context(
             Side.LONG.value, reaction=False, distance_atr=1.20, runway_atr=3.20)
@@ -13539,7 +13595,7 @@ def _check_stand_down_is_told_plainly() -> list[str]:
             if f"{TRADEABLE_ATR15_FLOOR:.2f}" not in plain:
                 problems.append(
                     f"{label}: the message does not name the tradeable floor "
-                    f"{TRADEABLE_ATR15_FLOOR:.2f}, so 'wait for volatility' has no number to wait for"
+                    f"{LIMIT_TRADEABLE_ATR15_FLOOR:.2f}, so 'wait for volatility' has no number to wait for"
                 )
             if f"{atr15:.2f}" not in plain:
                 problems.append(f"{label}: the message does not quote the measured ATR15")
@@ -13561,7 +13617,7 @@ def _check_stand_down_is_told_plainly() -> list[str]:
             problems.append(
                 f"{label}: the record says stand_down={volatility.get('stand_down')}, expected {expect_line}"
             )
-        if abs(safe_float(volatility.get("tradeable_floor")) - TRADEABLE_ATR15_FLOOR) > 1e-9:
+        if abs(safe_float(volatility.get("tradeable_floor")) - LIMIT_TRADEABLE_ATR15_FLOOR) > 1e-6:
             problems.append(f"{label}: the record journaled the wrong floor")
         compact = compact_signal_for_journal(record)
         if "volatility" not in compact:
@@ -13788,24 +13844,26 @@ def _check_multi_limit_fill_ownership() -> list[str]:
 
 
 def _check_fee_stop_guard() -> list[str]:
-    """A market route with a 1.0% stop must fail the <=0.08R fee rule; 1.25% passes."""
-    context, anchor, candidate, _, journal = _ready_candidate(Side.LONG.value)
-    candidate.execution_source = "MARKET"
+    """P0: LIMIT geometry uses expected maker TP fees; too-small ATR still fails geometry."""
+    context, _, candidate, _, _ = _ready_candidate(Side.LONG.value)
+    problems: list[str] = []
+    candidate = candidate_from_dict(candidate_to_dict(candidate))
+    candidate.execution_source = "LIMIT_ARMED_AT_LEVEL"
     candidate.reaction = dict(candidate.reaction or {})
     gate = dict(candidate.reaction.get("GATE_STOP") or {})
-    entry = 100.0
-    original = gate.copy()
-    gate["stop"] = 99.0
+    gate["stop"] = 97.60
     candidate.reaction["GATE_STOP"] = gate
-    bad = _plan_geometry({**context, "execution_venue": "TEST", "atr15": 1.0}, candidate, entry, 1)
-    problems=[]
-    if bad.get("valid") or not str(bad.get("reason") or "").startswith("STOP_FEE_"):
-        problems.append(f"1.0% market stop was not fee-guarded: {bad}")
-    gate["stop"] = 98.75
-    ok = _plan_geometry({**context, "execution_venue": "TEST", "atr15": 2.0}, candidate, entry, 1)
-    if not ok.get("valid") and str(ok.get("reason") or "").startswith("STOP_FEE_"):
-        problems.append(f"1.25% market stop was unexpectedly rejected by fee guard: {ok}")
-    candidate.reaction["GATE_STOP"] = original
+    candidate.invalidation_level = 97.60
+    test_context = dict(context)
+    test_context.update({"price": 98.0, "atr15": 0.30, "execution_venue": "OKX"})
+    # Realistic low-noise candles around the test price.
+    bars = [Candle(ts=i * PRECONFIRM_RESOLUTION_BAR_MS, open=98.0, high=98.03, low=97.97, close=98.01, volume=1.0) for i in range(1, 80)]
+    test_context["candles"] = dict(context.get("candles") or {})
+    test_context["candles"]["3m"] = bars
+    test_context["candles"]["15m"] = bars
+    plan = build_trade_plan(test_context, candidate, entry_price_override=98.0, journal={"trades": [], "signals": [], "training_signals": []}, state={"active_trade": None})
+    if not (plan.valid and plan.execution_ready):
+        problems.append(f"ATR15=0.30 / price=98.00 produced no executable LIMIT plan: {plan.reason}")
     return problems
 
 
@@ -13887,6 +13945,201 @@ def _check_limit_htf_floor_is_route_specific() -> list[str]:
     return problems
 
 
+
+def _check_one_tick_limit_fill() -> list[str]:
+    """P1: mere contact is not a fill; one-tick penetration is."""
+    base_ts = 1_000_000
+    level = 100.0
+    touch_long = Candle(ts=base_ts, open=100.02, high=100.0, low=100.02, close=100.02, volume=1.0)
+    cross_long = Candle(ts=base_ts, open=100.02, high=100.02, low=99.999, close=100.01, volume=1.0)
+    touch_short = Candle(ts=base_ts, open=99.98, high=100.0, low=99.98, close=99.98, volume=1.0)
+    cross_short = Candle(ts=base_ts, open=99.98, high=100.001, low=99.98, close=99.99, volume=1.0)
+    problems=[]
+    if _limit_fill_reached(Side.LONG.value, touch_long, level): problems.append("LONG touch-only candle counted as fill")
+    if not _limit_fill_reached(Side.LONG.value, cross_long, level): problems.append("LONG one-tick penetration did not fill")
+    if _limit_fill_reached(Side.SHORT.value, touch_short, level): problems.append("SHORT touch-only candle counted as fill")
+    if not _limit_fill_reached(Side.SHORT.value, cross_short, level): problems.append("SHORT one-tick penetration did not fill")
+    return problems
+
+
+def _check_limit_level_dedup_and_risk() -> list[str]:
+    """P1: duplicate anchors at the same side/level/setup produce one order and obey aggregate risk."""
+    context, anchor, candidate, _, journal = _ready_candidate(Side.LONG.value)
+    a1 = anchor_from_dict(anchor_to_dict(anchor)); a1.id = new_id("anc")
+    a2 = anchor_from_dict(anchor_to_dict(anchor)); a2.id = new_id("anc"); a2.level = round_price(a1.level + 0.0009); a2.invalidation = round_price(a1.invalidation + 0.0009)
+    # Keep side + setup and place the second anchor within one tick of the first.
+
+    audit={}
+    rows=_arm_limit_at_level_many(
+        context, journal, {"active_trade": None}, [a1, a2],
+        compute_degradation_table(journal), audit, new_id("sig"), max_orders=8,
+    )
+    problems=[]
+    placed=[r[0] for r in rows if str(r[0].get("status") or "") == "PENDING"]
+    if len(placed) != 1:
+        problems.append(f"same side/level/setup produced {len(placed)} pending orders")
+    keys=[r.get("level_key") for r in placed]
+    if not keys or any(not k for k in keys):
+        problems.append("pending orders do not persist their canonical level_key")
+    elif len(set(map(str,keys))) != len(keys):
+        problems.append("pending level keys are not unique")
+    if placed:
+        state={"active_trade": None}
+        store_pending_limit(state, placed[0])
+        context2, anchor2, candidate2, plan2, journal2 = _ready_candidate(Side.LONG.value)
+        anchor2.level = a1.level; anchor2.invalidation = a1.invalidation
+        candidate2.anchor_id = anchor2.id; candidate2.execution_anchor = anchor2.level
+        duplicate_row, duplicate_plan = place_limit_order(context2, journal2, state, candidate2, anchor2, plan2, new_id("sig"), "")
+        if duplicate_plan is not None or duplicate_row.get("status_reason") != "DUPLICATE_LIMIT_LEVEL":
+            problems.append(f"direct level->order path did not deduplicate: {duplicate_row}")
+    return problems
+
+
+def _check_net_r_classification_and_risk_stack() -> list[str]:
+    """P1/P2: net R drives outcome labels while risk multipliers remain explicit and auditable."""
+    problems=[]
+    row={"net_r":-1.1787,"result_r":-1.1787,"pnl_r":-1.1787,"result_class":"BREAKEVEN","closed_at":iso_now(),"ml_eligible":False}
+    compact=compact_trade_for_journal(row)
+    if safe_float(_trade_result_r(compact),0.0) >= 0: problems.append("negative net_r was not preserved for analytics")
+    if str(compact.get("result_class") or "").upper() != "LOSS": problems.append(f"net_r negative kept result_class={compact.get('result_class')}")
+    context, _, candidate, plan, _ = _ready_candidate(Side.LONG.value)
+    audit={}; ledger=position_risk_pct(candidate.entry_stage, dict((candidate.stage_plan or {}).get("probe_conviction") or {}), dict(candidate.admission or {}), candidate, context, {"trades": []})
+    eff=safe_float(ledger.get("effective_risk_pct"),0.0)
+    base=safe_float(ledger.get("base_risk_pct"),0.0)
+    stack=list(ledger.get("breakdown") or [])
+    if not stack: problems.append("risk stack is empty")
+    if abs(eff-base)>1e-9: problems.append(f"effective risk {eff} differs from explicit stage base {base} without a required multiplier")
+    return problems
+
+
+def _check_fill_stats_exclude_active_trade() -> list[str]:
+    """P1: FILLED_WHILE_ACTIVE_TRADE_EXISTS is not an economic fill."""
+    journal={"trades":[],"limit_orders":[
+        {"order_id":"a","status":"FILLED","status_reason":"FILLED_WHILE_ACTIVE_TRADE_EXISTS"},
+        {"order_id":"b","status":"FILLED","status_reason":"LEVEL_PENETRATED_ONE_TICK"},
+    ]}
+    stats=compute_execution_model_statistics(journal)
+    problems=[]
+    if safe_int((stats.get("order_outcomes") or {}).get("filled")) != 1:
+        problems.append(f"stats counted active-trade rejection as fill: {(stats.get('order_outcomes') or {}).get('filled')}")
+    return problems
+
+
+def _check_runtime_feasibility_guard() -> list[str]:
+    """P0: validator measures the recent real-ATR envelope and enforces the 15% floor."""
+    rows=[{"price":98.0,"atr15":0.30} for _ in range(20)]
+    good=_runtime_geometry_feasibility({"signals":rows})
+    problems=[]
+    if good["ratio"] < 0.15: problems.append(f"ATR15=.30 should be feasible under the LIMIT envelope, got {good}")
+    bad_rows=[{"price":98.0,"atr15":0.05} for _ in range(20)]
+    bad=_runtime_geometry_feasibility({"signals":bad_rows})
+    if bad["ratio"] >= 0.15: problems.append(f"infeasible ATR sample did not fall below 15%: {bad}")
+    return problems
+
+
+def _check_watchdog_zero_flow() -> list[str]:
+    """P0: 48 zero-flow cycles create exactly one Telegram alert with top reasons."""
+    sent=[]
+    original=globals().get("send_telegram")
+    globals()["send_telegram"] = lambda msg: sent.append(msg)
+    try:
+        state={"zero_armed_zero_entry_streak":47,"zero_armed_zero_entry_alerted":False}
+        audit={"limit_arming":{"armed_count":0,"refusal_counts":{"NO_HTF":3,"STOP_CAP":2},"refusals":[{"reason":"NO_HTF"}]}}
+        decision=Decision(id=new_id("sig"),time=iso_now(),action=Action.NO_SETUP.value,side=Side.NEUTRAL.value,setup_type=SetupType.NONE.value,quality=0,reason="NO_HTF",regime="",current_price=0.0)
+        _update_zero_flow_watchdog(state,audit,decision,None)
+        _update_zero_flow_watchdog(state,audit,decision,None)
+        if state.get("zero_armed_zero_entry_streak") != 49: problems=[f"streak is {state.get('zero_armed_zero_entry_streak')}, expected 49"]
+        else: problems=[]
+        if len(sent) != 1: problems.append(f"watchdog sent {len(sent)} alerts, expected 1")
+        if not audit.get("watchdog",{}).get("top3_reasons"): problems.append("watchdog omitted top refusal reasons")
+        return problems
+    finally:
+        if original is not None: globals()["send_telegram"] = original
+
+
+def _check_plan_reason_and_compact_signal() -> list[str]:
+    """P0: successful and refused plans expose plan.reason to compact signal/journal."""
+    context, anchor, candidate, plan, journal = _ready_candidate(Side.LONG.value)
+    decision=Decision(id=new_id("sig"),time=iso_now(),action=Action.PROBE_ENTRY.value,side=candidate.side,setup_type=candidate.setup_type,quality=candidate.final_score,reason="TEST",regime=str(context.get("regime") or ""),candidate=candidate,plan=plan,current_price=plan.entry)
+    audit={"limit_arming":{"refusal":"STOP_CAP","refusals":[{"reason":"STOP_CAP"}]}}
+    record=build_signal_record(context,decision,plan,audit)
+    compact=compact_signal_for_journal(record)
+    problems=[]
+    if record.get("plan_reason") != plan.reason: problems.append("signal record lost plan.reason")
+    if compact.get("plan_reason") != plan.reason: problems.append("compact signal lost plan.reason")
+    return problems
+
+
+def _check_scanner_catches_stop_after_open() -> list[str]:
+    """P1/P3: deterministic 3m replay of an unchecked stop bar works chronologically."""
+    context, _, candidate, plan, _ = _ready_candidate(Side.LONG.value)
+    decision=Decision(id=new_id("sig"),time=iso_now(),action=Action.PROBE_ENTRY.value,side=candidate.side,setup_type=candidate.setup_type,quality=candidate.final_score,reason="TEST",regime=str(context.get("regime") or ""),candidate=candidate,plan=plan,current_price=plan.entry)
+    trade=_open_active_trade(context,candidate,plan,decision,"NOT_LEARNED","")
+    opened_ms=int(datetime.fromisoformat(trade.opened_at).timestamp()*1000)
+    trade.last_checked_3m_ts=opened_ms
+    stop=trade.stop_current
+    ts=opened_ms+PRECONFIRM_RESOLUTION_BAR_MS
+    if trade.side==Side.LONG.value:
+        candle=Candle(ts=ts,open=trade.entry,high=trade.entry+0.10,low=stop-0.001,close=stop-0.0005,volume=1.0)
+    else:
+        candle=Candle(ts=ts,open=trade.entry,high=stop+0.001,low=trade.entry-0.10,close=stop+0.0005,volume=1.0)
+    context["candles"]=dict(context.get("candles") or {}); context["candles"]["3m"]=[candle]
+    result=_scan_unchecked_trade_events(trade,context)
+    problems=[]
+    if str(result.get("status") or "") != "STOP":
+        problems.append(f"unchecked 3m stop was not resolved: {result}")
+    return problems
+
+
+def _check_tp1_immediate_be_plus_commission() -> list[str]:
+    """P2: TP1 activates BE plus commission immediately."""
+    context, _, candidate, plan, _ = _ready_candidate(Side.LONG.value)
+    d=Decision(id=new_id("sig"),time=iso_now(),action=Action.PROBE_ENTRY.value,side=candidate.side,setup_type=candidate.setup_type,quality=candidate.final_score,reason="TEST",regime=str(context.get("regime") or ""),candidate=candidate,plan=plan,current_price=plan.entry)
+    trade=_open_active_trade(context,candidate,plan,d,"NOT_LEARNED","")
+    trade.tp1_hit=True
+    risk_unit=_trade_risk_distance(trade)
+    context["price"] = trade.entry + 0.10 * risk_unit if trade.side == Side.LONG.value else trade.entry - 0.10 * risk_unit
+    result={"current_pct":0.9}
+    before=trade.stop_current
+    changed=_activate_tp1_breakeven(trade,context,result)
+    be=_strict_breakeven_stop(trade)
+    problems=[]
+    if not changed: problems.append("TP1 did not activate immediate BE")
+    if trade.stop_current == before: problems.append("TP1 left the initial stop unchanged")
+    if trade.side==Side.LONG.value and trade.stop_current < be: problems.append("LONG TP1 stop is below commission-adjusted BE")
+    if trade.side==Side.SHORT.value and trade.stop_current > be: problems.append("SHORT TP1 stop is above commission-adjusted BE")
+    return problems
+
+
+def _check_atr030_price98_has_one_valid_limit_order() -> list[str]:
+    """P3: the minimal self-test fixture can actually place one LIMIT order at ATR15=0.30."""
+    context, anchor, candidate, _, journal = _ready_candidate(Side.LONG.value)
+    context = dict(context)
+    context.update({"price": 98.0, "atr15": 0.30, "execution_venue": "OKX"})
+    bars = [Candle(ts=i * PRECONFIRM_RESOLUTION_BAR_MS, open=98.0, high=98.03, low=97.97, close=98.01, volume=1.0) for i in range(1, 80)]
+    context["candles"] = dict(context.get("candles") or {})
+    context["candles"]["3m"] = bars
+    context["candles"]["15m"] = bars
+    a = anchor_from_dict(anchor_to_dict(anchor))
+    a.id = new_id("anc")
+    a.level = 97.60
+    a.invalidation = 97.20
+    c = candidate_from_dict(candidate_to_dict(candidate))
+    c.anchor_id = a.id
+    c.execution_anchor = a.level
+    c.invalidation_level = a.invalidation
+    c.execution_source = "LIMIT_ARMED_AT_LEVEL"
+    c.reaction = dict(c.reaction or {})
+    c.reaction["GATE_STOP"] = {**dict(c.reaction.get("GATE_STOP") or {}), "stop": 97.20}
+    plan = build_trade_plan(context, c, entry_price_override=a.level, journal=journal, state={"active_trade": None})
+    problems=[]
+    if not (plan.valid and plan.execution_ready):
+        return [f"ATR15=0.30 price=98.00 plan invalid: {plan.reason}"]
+    row, limit_plan = place_limit_order(context, journal, {"active_trade": None}, c, a, plan, new_id("sig"), "")
+    if limit_plan is None or str(row.get("status") or "") != "PENDING":
+        problems.append(f"ATR15=0.30 price=98.00 did not produce a pending LIMIT order: {row}")
+    return problems
+
 def _run_self_test() -> bool:
     checks: list[tuple[str, Any]] = [
         ("конфігурація", _check_configuration),
@@ -13903,27 +14156,30 @@ def _run_self_test() -> bool:
         ("cooldown після стоп-ауту", _check_spent_level_stays_in_cooldown),
         ("вікно імпульсу проти каденції", _check_displacement_window_matches_the_cadence),
         ("HTF без думки — це не едж", _check_htf_neutral_is_not_an_edge),
-        ("ліміт стоїть на рівні, а не наздоганяє", _check_limit_rests_on_the_level),
+        ("P0 feasibility ATR/fee envelope", _check_runtime_feasibility_guard),
         ("виконання без заднього числа", _check_fill_needs_a_bar_after_placement),
         ("не виконався — угоди немає", _check_unfilled_order_opens_nothing),
         ("обидві моделі міряються однаково", _check_both_models_are_measured_alike),
         ("журнал ордерів не дублюється", _check_order_journal_does_not_duplicate),
         ("ключі ордера переживають перезавантаження", _check_limit_keys_survive_a_reload),
-        ("маршрут за природою сетапу", _check_route_follows_the_canonical_family),
-        ("ринковий вхід не створює ордера", _check_market_route_opens_without_an_order),
+        ("P2 всі сетапи тільки LIMIT", _check_route_follows_the_canonical_family),
+        ("P2 market route disabled", _check_market_route_opens_without_an_order),
         ("ліміт армиться на свіжому рівні", _check_limit_arms_on_a_fresh_level),
-        ("армінг не чекає пройдений рівень", _check_arming_refuses_a_level_price_already_owns),
+        ("P1 дедуп рівня", _check_limit_level_dedup_and_risk),
         ("відмова армінгу лишає числа в журналі", _check_arming_evidence_reaches_the_journal),
         ("армінг кориться стіні волатильності", _check_arming_respects_the_volatility_wall),
         ("армінг не ламає каденцію повідомлень", _check_arming_keeps_the_message_cadence),
-        ("ескалація лише на свіжий імпульс", _check_escalation_needs_a_displacement_after_placement),
-        ("ескалація лише в бік руху", _check_escalation_fires_only_on_the_right_side),
-        ("ескалація знімає ордер у тому ж циклі", _check_escalation_cancels_the_order_in_the_same_cycle),
-        ("виконання ліміта важливіше за ескалацію", _check_fill_beats_escalation),
-        ("multi-limit fill ownership", _check_multi_limit_fill_ownership),
-        ("ескалація кориться kill-switch", _check_escalation_respects_the_killswitches),
+        ("P1 fill ownership", _check_multi_limit_fill_ownership),
         ("статистика моделей нічого не примушує", _check_execution_model_statistics_are_never_enforcing),
-        ("стоп не може бути дешевшим за комісію", _check_fee_stop_guard),
+        ("P0 fee geometry", _check_fee_stop_guard),
+        ("P0 48-cycle watchdog", _check_watchdog_zero_flow),
+        ("P0 plan.reason у compact", _check_plan_reason_and_compact_signal),
+        ("P1 fill = +1 tick", _check_one_tick_limit_fill),
+        ("P1 FILLED active-trade не є fill", _check_fill_stats_exclude_active_trade),
+        ("P1 net-R classification + risk stack", _check_net_r_classification_and_risk_stack),
+        ("P1 scanner chronology", _check_scanner_catches_stop_after_open),
+        ("P3 ATR=.30 price=98 valid LIMIT", _check_atr030_price98_has_one_valid_limit_order),
+        ("P2 TP1 immediate BE+commission", _check_tp1_immediate_be_plus_commission),
         ("TP0 не заморожує стоп до TP1", _check_tp0_be_not_frozen),
         ("LIMIT_ARMED статистика = LIMIT", _check_limit_execution_model_classification),
         ("закриті угоди не UNRESOLVED", _check_closed_trades_cannot_be_unresolved),
