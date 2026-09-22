@@ -110,8 +110,8 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.6.0-p0-p3-limit-first"
-ARCHITECTURE_VERSION = "ORGANIC_LEVEL_TO_LIMIT_V10_6_0_15M_CADENCE"
+BOT_VERSION = "pro-organic-v10.6.1-p0-p3-limit-first-signal-fanout"
+ARCHITECTURE_VERSION = "ORGANIC_LEVEL_TO_LIMIT_V10_6_1_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
 
@@ -9684,7 +9684,14 @@ def _arm_limit_at_level_many(
             skipped_existing += 1
             continue
         placement=_limit_entry_price(anchor, safe_float(context.get("price")))
-        row=_limit_order_row(context,candidate,anchor,str(signal_id),"",placement,int(now_utc().timestamp()*1000))
+        # P0/P2: every independently armed LIMIT is an independently actionable signal.
+        # Reusing one signal_id for several levels made the journal/Telegram fan-out
+        # report only the strongest order while silently hiding the others.
+        order_signal_id = new_id("sig")
+        row=_limit_order_row(
+            context, candidate, anchor, str(order_signal_id), "", placement,
+            int(now_utc().timestamp() * 1000)
+        )
         row.update({
             "armed_without_reaction": True, "arming": dict(arming), "market_shadow": {},
             "market_plan": {}, "market_candidate": {}, "execution_route": "LIMIT",
@@ -10490,6 +10497,61 @@ def _update_zero_flow_watchdog(
     return watchdog
 
 
+def _resurface_legacy_pending_limit_signals(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    journal: dict[str, Any],
+) -> list[tuple[Decision, dict[str, Any]]]:
+    """P0 repair: surface pending LIMIT orders created before signal fan-out existed.
+
+    Existing v10.6.0 orders can share one signal_id, while only the strongest order had
+    a Telegram/journal signal. On the first run of v10.6.1, every still-pending legacy
+    order that lacks signal_notified gets a fresh signal id and is surfaced exactly once.
+    """
+    surfaced: list[tuple[Decision, dict[str, Any]]] = []
+    for row in list(pending_limit_orders_from_state(state)):
+        if not isinstance(row, dict):
+            continue
+        if bool(row.get("signal_notified")):
+            continue
+        candidate = candidate_from_dict(row.get("candidate"))
+        plan = plan_from_dict(row.get("plan"))
+        if candidate is None or plan is None or not plan.valid or not plan.execution_ready:
+            continue
+        old_signal_id = str(row.get("signal_id") or "")
+        new_signal_id = new_id("sig")
+        row["legacy_signal_id"] = old_signal_id
+        row["signal_id"] = new_signal_id
+        row["signal_notified"] = True
+        row["signal_notified_version"] = BOT_VERSION
+        row["signal_fanout_reason"] = "LEGACY_PENDING_ORDER_RESURFACED"
+
+        decision = Decision(
+            id=new_signal_id,
+            time=iso_now(),
+            action=_entry_action_for_stage(str(plan.entry_stage)),
+            side=str(row.get("side") or candidate.side),
+            setup_type=str(row.get("setup_type") or candidate.setup_type),
+            quality=safe_int(row.get("score") or candidate.final_score),
+            reason="LEGACY_PENDING_LIMIT_SIGNAL",
+            regime=str(row.get("regime") or context.get("regime") or ""),
+            candidate=candidate,
+            plan=plan,
+            audit={
+                "fanout": True,
+                "legacy_resurface": True,
+                "execution_route": "LIMIT",
+                "limit_order_id": str(row.get("order_id") or ""),
+                "legacy_signal_id": old_signal_id,
+            },
+            current_price=safe_float(context.get("price")),
+        )
+        _upsert_limit_order(journal, row)
+        store_pending_limit(state, row)
+        surfaced.append((decision, row))
+    return surfaced
+
+
 def run_bot() -> int:
     """One 15-minute cycle: read the market, judge the levels, act, report, save."""
     state = load_state()
@@ -10793,6 +10855,8 @@ def run_bot() -> int:
                 decision.reason = str(order_row.get("status_reason") or "LIMIT_NOT_PLACED")
                 plan = None
             else:
+                order_row["signal_notified"] = True
+                order_row["signal_notified_version"] = BOT_VERSION
                 store_pending_limit(state, order_row)
                 remaining_pending = pending_limit_orders_from_state(state)
                 context["pending_limits"] = list(remaining_pending)
@@ -10826,6 +10890,8 @@ def run_bot() -> int:
             max_orders=capacity,
         )
         for order_row, armed_plan, armed_candidate in armed_rows:
+            order_row["signal_notified"] = False
+            order_row["signal_notified_version"] = ""
             _upsert_limit_order(journal, order_row)
             store_pending_limit(state, order_row)
             append_history(state, {
@@ -10858,6 +10924,7 @@ def run_bot() -> int:
         # the multi-order count carried in audit["limit_arming"].
         if armed_rows and decision.action == Action.NO_SETUP.value:
             order_row, armed_plan, armed_candidate = armed_rows[0]
+            decision.id = str(order_row.get("signal_id") or decision.id)
             decision.candidate = armed_candidate
             decision.side = str(armed_candidate.side)
             decision.setup_type = str(armed_candidate.setup_type)
@@ -10869,20 +10936,109 @@ def run_bot() -> int:
             audit["execution_route"] = "LIMIT"
 
 
-    # --- 7. один запис сигналу для журналу, навчання та дашборду ------------
-    # signal_events belongs to supervision (section 3); the decision row below already
-    # carries every field a lifecycle event would have repeated back.
+    # --- 7. signal fan-out --------------------------------------------------
+    # Every newly armed LIMIT order is a separate actionable signal. Previously only
+    # armed_rows[0] was surfaced; the other pending orders still existed but were
+    # invisible to Telegram and the signal journal. This caused an apparent 0-2/day
+    # flow even while the engine was arming several orders per cycle.
+    fanout_signals: list[Decision] = []
+    if armed_rows:
+        for order_row_i, armed_plan_i, armed_candidate_i in armed_rows:
+            order_signal_id_i = str(order_row_i.get("signal_id") or new_id("sig"))
+            # The strongest row reuses the already prepared decision/audit so the primary
+            # signal remains byte-for-byte compatible with the existing path.
+            if order_signal_id_i == str(decision.id):
+                continue
+            fanout_decision = Decision(
+                id=order_signal_id_i,
+                time=iso_now(),
+                action=_entry_action_for_stage(str(armed_plan_i.entry_stage)),
+                side=str(armed_candidate_i.side),
+                setup_type=str(armed_candidate_i.setup_type),
+                quality=safe_int(armed_candidate_i.final_score),
+                reason="LIMIT_ARMED_AT_LEVEL",
+                regime=str(context.get("regime") or ""),
+                candidate=armed_candidate_i,
+                plan=armed_plan_i,
+                audit={
+                    **dict(audit),
+                    "fanout": True,
+                    "execution_route": "LIMIT",
+                    "limit_order_id": str(order_row_i.get("order_id") or ""),
+                },
+                current_price=safe_float(context.get("price")),
+            )
+            fanout_signals.append(fanout_decision)
+            order_id_i = str(order_row_i.get("order_id") or "")
+            order_row_i["signal_notified"] = True
+            order_row_i["signal_notified_version"] = BOT_VERSION
+            _upsert_limit_order(journal, order_row_i)
+            # Keep the in-memory state row synchronized too.
+            for pending_row_i in pending_limit_orders_from_state(state):
+                if str(pending_row_i.get("order_id") or "") == order_id_i:
+                    pending_row_i["signal_notified"] = True
+                    pending_row_i["signal_notified_version"] = BOT_VERSION
+                    break
+
+    # The primary decision is always written once.
     record = build_signal_record(context, decision, plan, audit)
     journal.setdefault("signals", []).append(record)
+
+    # The primary armed order is represented by this decision record.
+    if armed_rows:
+        for primary_row_i, _, _ in armed_rows:
+            if str(primary_row_i.get("signal_id") or "") == str(decision.id):
+                primary_row_i["signal_notified"] = True
+                primary_row_i["signal_notified_version"] = BOT_VERSION
+                _upsert_limit_order(journal, primary_row_i)
+                for pending_row_i in pending_limit_orders_from_state(state):
+                    if str(pending_row_i.get("order_id") or "") == str(primary_row_i.get("order_id") or ""):
+                        pending_row_i["signal_notified"] = True
+                        pending_row_i["signal_notified_version"] = BOT_VERSION
+                        break
+                break
     lean = lean_training_signal(record)
     if lean:
         journal.setdefault("training_signals", []).append(lean)
+
+    # Write every additional armed LIMIT as its own signal record.
+    fanout_records = []
+    for fanout_decision in fanout_signals:
+        fanout_record = build_signal_record(
+            context, fanout_decision, fanout_decision.plan,
+            fanout_decision.audit,
+        )
+        journal.setdefault("signals", []).append(fanout_record)
+        fanout_lean = lean_training_signal(fanout_record)
+        if fanout_lean:
+            journal.setdefault("training_signals", []).append(fanout_lean)
+        fanout_records.append(fanout_record)
+
+    # Existing v10.6.0 pending orders may be invisible because several orders shared
+    # one signal_id. Run the upgrade resurface only after current-cycle rows have been
+    # marked notified, so newly armed orders are not emitted twice.
+    legacy_pending_signals = _resurface_legacy_pending_limit_signals(context, state, journal)
+    for legacy_decision, legacy_row in legacy_pending_signals:
+        legacy_record = build_signal_record(
+            context, legacy_decision, legacy_decision.plan, legacy_decision.audit
+        )
+        journal.setdefault("signals", []).append(legacy_record)
+
     state["latest_signal"] = compact_signal_for_journal(record)
 
     # --- 8. повідомлення (без входу — так само кожні п'ятнадцять хвилин) -----
+    # One Telegram message per actionable LIMIT signal, including every fan-out row.
     if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN:
         message = build_decision_message(context, decision)
         print("TELEGRAM (DECISION):", plain_telegram_text(message)[:320])
+        send_telegram(message)
+    for fanout_decision in fanout_signals:
+        message = build_decision_message(context, fanout_decision)
+        print("TELEGRAM (LIMIT FANOUT):", plain_telegram_text(message)[:320])
+        send_telegram(message)
+    for legacy_decision, _ in legacy_pending_signals:
+        message = build_decision_message(context, legacy_decision)
+        print("TELEGRAM (LEGACY LIMIT FANOUT):", plain_telegram_text(message)[:320])
         send_telegram(message)
 
     accumulate_limit_arming_statistics(journal, audit)
@@ -14140,6 +14296,84 @@ def _check_atr030_price98_has_one_valid_limit_order() -> list[str]:
         problems.append(f"ATR15=0.30 price=98.00 did not produce a pending LIMIT order: {row}")
     return problems
 
+def _check_limit_signal_fanout() -> list[str]:
+    """P0/P3: five independently armed LIMIT rows produce five signal records/IDs."""
+    context, anchor, candidate, plan, journal = _ready_candidate(Side.LONG.value)
+    state = {"pending_limit_v10": [], "active_trade": None}
+    audit = {}
+    # Construct several distinct anchors at valid, ahead-of-price levels.
+    anchors = []
+    base = float(context.get("price") or 98.0)
+    for idx in range(5):
+        a = anchor_from_dict(anchor_to_dict(anchor))
+        a.id = new_id("anc")
+        a.level = base - (0.30 + idx * 0.05)
+        a.invalidation = a.level - 0.35
+        a.setup_type = candidate.setup_type
+        a.setup_family = candidate.setup_family
+        a.side = Side.LONG.value
+        a.created_ts = int(now_utc().timestamp() * 1000)
+        a.expires_ts = a.created_ts + ANCHOR_MAX_AGE_MIN * 60 * 1000
+        anchors.append(a)
+    rows = _arm_limit_at_level_many(
+        context, journal, state, anchors, {"statistics": {}, "executable_count": 999}, audit,
+        "fanout-test", max_orders=5,
+    )
+    problems = []
+    if len(rows) < 1:
+        return [f"expected at least one LIMIT arm, got {len(rows)}"]
+    ids = [str(r[0].get("signal_id") or "") for r in rows]
+    if len(ids) != len(set(ids)):
+        problems.append("armed LIMIT rows reused the same signal_id")
+    if any(not x for x in ids):
+        problems.append("an armed LIMIT row has empty signal_id")
+    if any(str(r[0].get("execution_route") or "") != "LIMIT" for r in rows):
+        problems.append("fanout row lost LIMIT execution route")
+    return problems
+
+
+def _check_legacy_pending_signal_resurface() -> list[str]:
+    """P0 repair: legacy pending orders without signal_notified are surfaced once."""
+    context, anchor, candidate, plan, journal = _ready_candidate(Side.LONG.value)
+    state = {"pending_limit_v10": []}
+    now_ms = int(now_utc().timestamp() * 1000)
+    legacy_id = new_id("sig")
+    row = {
+        "order_id": new_id("lim"),
+        "signal_id": legacy_id,
+        "status": "PENDING",
+        "side": candidate.side,
+        "setup_type": candidate.setup_type,
+        "regime": context.get("regime", ""),
+        "score": candidate.final_score,
+        "risk_pct": plan.position_risk_pct,
+        "placed_ts": now_ms,
+        "expires_ts": now_ms + 3600000,
+        "limit_price": plan.entry,
+        "candidate": candidate_to_dict(candidate),
+        "plan": plan_to_dict(plan),
+    }
+    store_pending_limit(state, row)
+    surfaced = _resurface_legacy_pending_limit_signals(context, state, journal)
+    problems = []
+    if len(surfaced) != 1:
+        problems.append(f"expected one surfaced legacy order, got {len(surfaced)}")
+    else:
+        decision, surfaced_row = surfaced[0]
+        if surfaced_row.get("signal_id") == legacy_id:
+            problems.append("legacy order kept its old signal_id")
+        if not surfaced_row.get("signal_notified"):
+            problems.append("legacy order was not marked signal_notified")
+        if surfaced_row.get("legacy_signal_id") != legacy_id:
+            problems.append("legacy signal id was not preserved")
+        if decision.reason != "LEGACY_PENDING_LIMIT_SIGNAL":
+            problems.append("legacy resurface reason missing")
+    surfaced_again = _resurface_legacy_pending_limit_signals(context, state, journal)
+    if surfaced_again:
+        problems.append("legacy pending order was resurfaced twice")
+    return problems
+
+
 def _run_self_test() -> bool:
     checks: list[tuple[str, Any]] = [
         ("конфігурація", _check_configuration),
@@ -14174,6 +14408,8 @@ def _run_self_test() -> bool:
         ("P0 fee geometry", _check_fee_stop_guard),
         ("P0 48-cycle watchdog", _check_watchdog_zero_flow),
         ("P0 plan.reason у compact", _check_plan_reason_and_compact_signal),
+        ("P0 кожен LIMIT має окремий signal_id", _check_limit_signal_fanout),
+        ("P0 legacy pending LIMIT resurfacing", _check_legacy_pending_signal_resurface),
         ("P1 fill = +1 tick", _check_one_tick_limit_fill),
         ("P1 FILLED active-trade не є fill", _check_fill_stats_exclude_active_trade),
         ("P1 net-R classification + risk stack", _check_net_r_classification_and_risk_stack),
