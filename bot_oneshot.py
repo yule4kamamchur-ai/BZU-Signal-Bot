@@ -284,7 +284,11 @@ ENTRY_QUALITY_VERY_LOW_RISK_MULT = min(ENTRY_QUALITY_LOW_RISK_MULT, max(0.01, fl
 BOOTSTRAP_RISK_MULTIPLIER = float(os.getenv("BOOTSTRAP_RISK_MULTIPLIER", "0.75") or 0.75)
 WEAK_DIRECTION_RISK_MULTIPLIER = float(os.getenv("WEAK_DIRECTION_RISK_MULTIPLIER", "0.55") or 0.55)
 
-ABS_MIN_STOP_DOLLARS = float(os.getenv("ABS_MIN_STOP_DOLLARS", "0.40") or 0.40)
+# The absolute stop floor is a fraction of the price, not a sum of money. A fixed
+# $0.40 happens to be 0.40% at this instrument's ~$99, but the same sum means a
+# different risk on any other asset or after the price drifts, and every ATR15
+# threshold derived from it was arithmetic between dollars and ATR.
+ABS_MIN_STOP_PCT = min(0.05, max(0.0005, float(os.getenv("ABS_MIN_STOP_PCT", "0.004") or 0.004)))
 COMMISSION_BUFFER_DOLLARS = float(os.getenv("COMMISSION_BUFFER_DOLLARS", "0.02") or 0.02)
 # LIMIT geometry gets its own caps so the market route stays conservative while
 # resting orders can cover a wider but still explicitly bounded level universe.
@@ -323,7 +327,7 @@ TP_NOISE_PERCENTILE = float(os.getenv("TP_NOISE_PERCENTILE", "0.85") or 0.85)
 MIN_STOP_TRUE_RANGE_MULT = float(os.getenv("MIN_STOP_TRUE_RANGE_MULT", "1.10") or 1.10)
 MIN_TP1_TRUE_RANGE_MULT = float(os.getenv("MIN_TP1_TRUE_RANGE_MULT", "1.25") or 1.25)
 CURRENT_CANDLE_STOP_MULT = float(os.getenv("CURRENT_CANDLE_STOP_MULT", "0.85") or 0.85)
-ABS_MIN_TP1_DOLLARS = max(0.05, float(os.getenv("ABS_MIN_TP1_DOLLARS", "0.18") or 0.18))
+ABS_MIN_TP1_PCT = min(0.02, max(0.0002, float(os.getenv("ABS_MIN_TP1_PCT", "0.0018") or 0.0018)))
 CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.25") or 1.25)
 CATASTROPHIC_STOP_MAX_EXTRA_ATR = max(0.10, float(os.getenv("CATASTROPHIC_STOP_MAX_EXTRA_ATR", "0.45") or 0.45))
 MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
@@ -431,7 +435,8 @@ ACCEPTANCE_MAX_AGE_BARS = max(1, int(os.getenv("ACCEPTANCE_MAX_AGE_BARS", "4") o
 ANCHOR_MAX_AGE_MIN = max(15, int(os.getenv("ANCHOR_MAX_AGE_MIN", "180") or 180))
 # Максимальна відстань стопа від входу (ATR15) — інакше вхід уже запізний.
 MAX_STOP_ATR = min(4.0, max(0.5, float(os.getenv("MAX_STOP_ATR", "1.60") or 1.60)))
-LIMIT_TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
+# The tradeable ATR15 floor is no longer a constant: it follows the stop floor, which
+# is a fraction of the price. See tradeable_atr15_floor(price) beside _effective_atr15.
 # Runway: найближча протилежна ціль має давати хоча б стільки R,
 # щоб 0.25R MFE був досяжний у вікні no-followthrough.
 MIN_RUNWAY_R = float(os.getenv("MIN_RUNWAY_R", "1.60") or 1.60)
@@ -457,21 +462,21 @@ LIMIT_ORDER_SCHEMA_VERSION = "organic_limit_order_v10.1.0"
 LIMIT_ARM_SCHEMA_VERSION = "organic_limit_arming_v10.2.0"
 
 # Стіна волатильності. _plan_geometry відмовляє, коли noise_floor — який ніколи не
-# менший за ABS_MIN_STOP_DOLLARS — перевищує MAX_STOP_ATR*atr15. Нижче цього atr15
+# менший за price*ABS_MIN_STOP_PCT — перевищує MAX_STOP_ATR*atr15. Нижче цього atr15
 # валідного плану не існує на жодному маршруті, ні лімітному, ні ринковому. Це
-# арифметика двох констант в різних одиницях (долари проти ATR), а не евристика,
+# арифметика двох величин в різних одиницях (частка ціни проти ATR), а не евристика,
 # тому повідомлення називає її прямо, а не ховає за GATE_PROXIMITY.
 #
-# Це УНІВЕРСАЛЬНА підлога: noise_floor не залежить від структури, тож нижче 0.25 не
-# входить нічого. Окремо існує структурна підлога — _provisional_stop (p07) виносить
-# invalidation ще на buffer = max(0.10*atr15, COMMISSION_BUFFER_DOLLARS), тож рівень,
-# чий фальсифікатор стоїть на відстані ABS_MIN_STOP_DOLLARS, потребує
-# 0.40 + 0.10*atr15 <= 1.60*atr15, тобто atr15 >= 0.2667. Чим ширша структура, тим
-# вища її власна підлога. Це факт про окремий рівень, а не про ринок, і його показує
-# лічильник відмов STOP_EXCEEDS_CAP у журналі — повідомлення ж називає лише ту межу,
-# нижче якої не входить нічого взагалі. Константа лиш звітна: вона нічого не відкриває
-# і не закриває, армінг і план перевіряють стоп самі.
-TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
+# Це УНІВЕРСАЛЬНА підлога: noise_floor не залежить від структури, тож нижче
+# tradeable_atr15_floor(price) не входить нічого. Окремо існує структурна підлога —
+# _provisional_stop (p07) виносить invalidation ще на
+# buffer = max(0.10*atr15, COMMISSION_BUFFER_DOLLARS), тож рівень, чий фальсифікатор
+# стоїть на самій підлозі, потребує price*PCT + 0.10*atr15 <= MAX_STOP_ATR*atr15,
+# тобто atr15 >= price*PCT/(MAX_STOP_ATR - 0.10) — вища межа, ніж універсальна.
+# Чим ширша структура, тим вища її власна підлога. Це факт про окремий рівень, а не
+# про ринок, і його показує лічильник відмов STOP_EXCEEDS_CAP у журналі — повідомлення
+# ж називає лише ту межу, нижче якої не входить нічого взагалі. Підлога лиш звітна:
+# вона нічого не відкриває і не закриває, армінг і план перевіряють стоп самі.
 
 # ==========================================================
 ## LIMIT-FIRST EXECUTION ROUTING  (один живий шлях: рівень -> LIMIT)
@@ -2014,6 +2019,29 @@ def _effective_atr15(atr15: float, price: float) -> float:
     return max(atr15, price * atr_floor_pct)
 
 
+def min_stop_distance(price: float) -> float:
+    """The absolute stop floor for one reference price, in quote currency."""
+    return max(safe_float(price) * ABS_MIN_STOP_PCT, 1e-9)
+
+
+def min_tp1_distance(price: float) -> float:
+    """The absolute TP1 floor for one reference price, in quote currency."""
+    return max(safe_float(price) * ABS_MIN_TP1_PCT, 1e-9)
+
+
+def tradeable_atr15_floor(price: float) -> float:
+    """Below this atr15 no plan exists on any route, because the stop floor alone
+    is already wider than LIMIT_MAX_STOP_ATR permits.
+
+    The reference price is a parameter rather than a read from context because the
+    callers do not share one origin: the reaction engine measures from the live
+    price, the plan builder from the intended entry, and limit arming from the
+    anchor level where the order will actually fill. Passing the wrong one does not
+    fail loudly — it just prices the floor against the wrong number.
+    """
+    return min_stop_distance(price) / max(LIMIT_MAX_STOP_ATR, 1e-9)
+
+
 def build_context(data: dict[str, Any], state: dict[str, Any], journal: dict[str, Any]) -> dict[str, Any]:
     """Everything one decision needs, computed once per run.
 
@@ -2260,7 +2288,7 @@ def make_anchor(
     # The falsifier must sit on the wrong side of the level, at least a quarter
     # ATR away. An anchor with a degenerate invalidation cannot be risk-managed.
     if sign * (invalidation - level) > -0.25 * atr15:
-        invalidation = round_price(level - sign * max(0.75 * atr15, ABS_MIN_STOP_DOLLARS))
+        invalidation = round_price(level - sign * max(0.75 * atr15, min_stop_distance(price)))
     ttl = ttl_minutes or ANCHOR_MAX_AGE_MIN
     now_ms = int(now_utc().timestamp() * 1000)
     return Anchor(
@@ -2536,6 +2564,7 @@ def detect_pullback_continuation(context: dict[str, Any]) -> Optional[Anchor]:
         return None
     c15 = list((context.get("candles") or {}).get("15m") or [])
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     if len(c15) < 60:
         return None
     ladder = _ema_ladder(c15)
@@ -2565,14 +2594,14 @@ def detect_pullback_continuation(context: dict[str, Any]) -> Optional[Anchor]:
             continue
         # The level must be behind price relative to the trend, i.e. a pullback
         # target rather than a chase target.
-        if sign * (level - safe_float(context.get("price"))) > 0.10 * atr15:
+        if sign * (level - price) > 0.10 * atr15:
             continue
         if best is None or score > best[2]:
             best = (name, level, score)
     if best is None:
         return None
     name, level, score = best
-    invalidation = level - sign * max(0.90 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.90 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.PULLBACK_CONTINUATION.value, side, level, invalidation,
         AnchorKind.VALUE_LEVEL.value if name in {"EMA20", "EMA50", "VWAP"} else AnchorKind.DEMAND_ZONE.value if side == Side.LONG.value else AnchorKind.SUPPLY_ZONE.value,
@@ -2589,6 +2618,7 @@ def detect_fresh_base_continuation(context: dict[str, Any]) -> Optional[Anchor]:
         return None
     c15 = list((context.get("candles") or {}).get("15m") or [])
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     base = (context.get("zones") or {}).get("consolidation") or {}
     if not base.get("found") or len(c15) < 20:
         return None
@@ -2598,7 +2628,7 @@ def detect_fresh_base_continuation(context: dict[str, Any]) -> Optional[Anchor]:
         return None
     rows = _confirmed(c15, 4)
     level = low if side == Side.LONG.value else high
-    invalidation = level - side_sign(side) * max(0.70 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - side_sign(side) * max(0.70 * atr15, min_stop_distance(price))
     displaced = any(_body(c) >= 0.9 * atr15 and ((_is_bull(c) and side == Side.LONG.value) or (not _is_bull(c) and side == Side.SHORT.value)) for c in rows)
     # 2026-09: displacement used to be a +8 score bonus, not a requirement — a
     # base with zero impulse into it still armed an anchor at score 58 and
@@ -2632,10 +2662,11 @@ def detect_acceptance_retest_continuation(context: dict[str, Any]) -> Optional[A
     side = str(shift.get("side") or "").upper()
     level = safe_float(shift.get("level"))
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     if side not in {Side.LONG.value, Side.SHORT.value} or level <= 0:
         return None
     sign = side_sign(side)
-    invalidation = level - sign * max(0.85 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.85 * atr15, min_stop_distance(price))
     age = safe_int(shift.get("age_bars"), 0)
     # 2026-09: score decayed with age but never rejected, so a break accepted
     # 8-10 bars ago still armed at the score floor (50) and traded at PROBE
@@ -2661,6 +2692,7 @@ def detect_momentum_no_pullback_continuation(context: dict[str, Any]) -> Optiona
         return None
     c15 = list((context.get("candles") or {}).get("15m") or [])
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     if len(c15) < 20:
         return None
     rows = _confirmed(c15, 6)
@@ -2686,7 +2718,7 @@ def detect_momentum_no_pullback_continuation(context: dict[str, Any]) -> Optiona
         kind = AnchorKind.STRUCTURE_SHIFT.value
         evidence = {"impulse_bars": len(impulse), "net_move_atr": round(net / atr15, 3),
                     "impulse_open": round(last.open, 6)}
-    invalidation = level - sign * max(0.75 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.75 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value, side, level, invalidation, kind,
         f"Імпульс без відкату; робоча точка {level:.4f}", context, score=strength,
@@ -2703,6 +2735,7 @@ def detect_acceleration_pullback_reentry(context: dict[str, Any]) -> Optional[An
     c15 = list((context.get("candles") or {}).get("15m") or [])
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
     atr3 = max(safe_float(context.get("atr3"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     if len(c3) < 30 or len(c15) < 20:
         return None
     rows = _confirmed(c3, 24)
@@ -2718,7 +2751,7 @@ def detect_acceleration_pullback_reentry(context: dict[str, Any]) -> Optional[An
     depth = sign * (first_leg_end.close - level)
     if not (0.30 * atr15 <= depth <= 1.60 * atr15):
         return None
-    invalidation = level - sign * max(0.55 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.55 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.ACCELERATION_PULLBACK_REENTRY.value, side, level, invalidation,
         AnchorKind.DEMAND_ZONE.value if sign > 0 else AnchorKind.SUPPLY_ZONE.value,
@@ -2740,12 +2773,13 @@ def detect_direction_flip_15m(context: dict[str, Any]) -> Optional[Anchor]:
     side = str(shift.get("side") or "").upper()
     level = safe_float(shift.get("level"))
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     structure = dict(context.get("structure15") or {})
     if side not in {Side.LONG.value, Side.SHORT.value} or level <= 0:
         return None
     sign = side_sign(side)
     htf = htf_alignment_for_side(dict(context.get("htf_fact") or {}), side)
-    invalidation = level - sign * max(1.00 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(1.00 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.DIRECTION_FLIP.value, side, level, invalidation,
         AnchorKind.STRUCTURE_SHIFT.value,
@@ -2761,6 +2795,7 @@ def detect_trend_ignition(context: dict[str, Any]) -> Optional[Anchor]:
     base = (context.get("zones") or {}).get("consolidation") or {}
     c15 = list((context.get("candles") or {}).get("15m") or [])
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    price = safe_float(context.get("price"))
     regime_profile = dict(context.get("regime_profile") or {})
     if not base.get("found") or len(c15) < 20:
         return None
@@ -2778,7 +2813,7 @@ def detect_trend_ignition(context: dict[str, Any]) -> Optional[Anchor]:
     else:
         return None
     sign = side_sign(side)
-    invalidation = level - sign * max(0.80 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.80 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.TREND_IGNITION.value, side, level, invalidation,
         AnchorKind.BREAK_LEVEL.value,
@@ -2811,7 +2846,7 @@ def detect_breakout_retest(context: dict[str, Any]) -> Optional[Anchor]:
         broke = any(sign * (c.close - level) > 0.10 * atr15 for c in rows)
         if not broke:
             continue
-        invalidation = level - sign * max(0.70 * atr15, ABS_MIN_STOP_DOLLARS)
+        invalidation = level - sign * max(0.70 * atr15, min_stop_distance(price))
         return make_anchor(
             SetupType.BREAKOUT_RETEST.value, side, level, invalidation, kind,
             f"{level_key.replace('_', ' ')} {level:.4f} пробито, чекаємо ретест",
@@ -2836,7 +2871,7 @@ def detect_range_compression_breakout(context: dict[str, Any]) -> Optional[Ancho
     side = Side.LONG.value if price >= mid else Side.SHORT.value
     level = low if side == Side.LONG.value else high
     sign = side_sign(side)
-    invalidation = level - sign * max(0.55 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.55 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.RANGE_COMPRESSION_BREAKOUT.value, side, level, invalidation,
         AnchorKind.RANGE_EDGE.value,
@@ -2865,7 +2900,7 @@ def detect_opening_range_breakout(context: dict[str, Any]) -> Optional[Anchor]:
     level = high if price >= (high + low) / 2 else low
     side = Side.LONG.value if level == high else Side.SHORT.value
     sign = side_sign(side)
-    invalidation = level - sign * max(0.75 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.75 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.OPENING_RANGE_BREAKOUT.value, side, level, invalidation,
         AnchorKind.RANGE_EDGE.value,
@@ -2895,7 +2930,7 @@ def detect_liquidity_ladder(context: dict[str, Any]) -> Optional[Anchor]:
         if level <= 0 or abs(level - price) > 2.5 * atr15:
             continue
         sign = side_sign(side)
-        invalidation = level - sign * max(0.85 * atr15, ABS_MIN_STOP_DOLLARS)
+        invalidation = level - sign * max(0.85 * atr15, min_stop_distance(price))
         return make_anchor(
             SetupType.LIQUIDITY_LADDER.value, side, level, invalidation, kind,
             f"Сходи ліквідності: {int(pool.get('touches', 0))} дотики до {level:.4f}",
@@ -3035,7 +3070,7 @@ def detect_session_mean_reclaim(context: dict[str, Any]) -> Optional[Anchor]:
     displaced = any(sign * (c.close - vwap) > 1.10 * atr15 for c in rows[:-1])
     if not displaced:
         return None
-    invalidation = vwap - sign * max(0.70 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = vwap - sign * max(0.70 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.SESSION_MEAN_RECLAIM.value, side, vwap, invalidation,
         AnchorKind.VALUE_LEVEL.value,
@@ -3062,7 +3097,7 @@ def detect_daily_weekly_open_reclaim(context: dict[str, Any]) -> Optional[Anchor
         traded_through = any(sign * (c.close - level) < -0.35 * atr15 for c in rows[:-1])
         if not traded_through:
             continue
-        invalidation = level - sign * max(0.75 * atr15, ABS_MIN_STOP_DOLLARS)
+        invalidation = level - sign * max(0.75 * atr15, min_stop_distance(price))
         return make_anchor(
             SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, side, level, invalidation,
             AnchorKind.VALUE_LEVEL.value,
@@ -3092,7 +3127,7 @@ def detect_time_of_day_adaptive(context: dict[str, Any]) -> Optional[Anchor]:
     else:
         return None
     sign = side_sign(side)
-    invalidation = level - sign * max(0.65 * atr15, ABS_MIN_STOP_DOLLARS)
+    invalidation = level - sign * max(0.65 * atr15, min_stop_distance(price))
     return make_anchor(
         SetupType.TIME_OF_DAY_ADAPTIVE.value, side, level, invalidation,
         AnchorKind.RANGE_EDGE.value,
@@ -3172,7 +3207,7 @@ REACTION_SCHEMA_VERSION = "anchor_reaction_3m_v10.0.0"
 
 def _anchor_zone(anchor: Anchor, atr15: float) -> tuple[float, float]:
     """Price band around the anchor inside which a touch counts as a touch."""
-    half = max(ANCHOR_ZONE_ATR * atr15, ABS_MIN_STOP_DOLLARS * 0.5)
+    half = max(ANCHOR_ZONE_ATR * atr15, min_stop_distance(anchor.level) * 0.5)
     return anchor.level - half, anchor.level + half
 
 
@@ -3385,7 +3420,7 @@ def evaluate_reaction(context: dict[str, Any], anchor: Anchor) -> Reaction:
     # GATE_RUNWAY — 0.25R of MFE must physically exist inside the no-followthrough window.
     # Both floors are required: OR-ing them let a wide stop buy its way past MIN_RUNWAY_R,
     # because the wider the stop gets, the easier the absolute-ATR floor is to clear.
-    risk = max(stop_profile["distance"], ABS_MIN_STOP_DOLLARS, 1e-9)
+    risk = max(stop_profile["distance"], min_stop_distance(price), 1e-9)
     runway = nearest_runway_r(context, anchor.side, price, risk)
     runway_ok = bool(runway.get("meets_min_r") and runway.get("meets_min_atr"))
     gates["GATE_RUNWAY"] = {
@@ -3441,7 +3476,7 @@ def _anchors_are_the_same(left: Anchor, right: Anchor, atr15: float) -> bool:
         return False
     if left.kind != right.kind:
         return False
-    tolerance = max(0.20 * atr15, ABS_MIN_STOP_DOLLARS * 0.5)
+    tolerance = max(0.20 * atr15, min_stop_distance(min(left.level, right.level)) * 0.5)
     return abs(left.level - right.level) <= tolerance
 
 
@@ -3943,7 +3978,7 @@ def build_candidate(
     if not profile.get("executable", True):
         return None
 
-    risk = max(safe_float((reaction.gates.get("GATE_STOP") or {}).get("distance")), ABS_MIN_STOP_DOLLARS, 1e-9)
+    risk = max(safe_float((reaction.gates.get("GATE_STOP") or {}).get("distance")), min_stop_distance(reaction.entry_price), 1e-9)
     runway = nearest_runway_r(context, anchor.side, reaction.entry_price, risk)
 
     route = "LIMIT"
@@ -4154,7 +4189,7 @@ def candle_noise_profile(context: dict[str, Any], price: float, atr15: float) ->
     """
     recent = _v9532_recent_confirmed(context, "15m", 48)
     tr_values = true_ranges(recent)
-    fallback = max(float(atr15 or 0.0), price * 0.0012, ABS_MIN_STOP_DOLLARS * 0.50)
+    fallback = max(float(atr15 or 0.0), price * 0.0012, min_stop_distance(price) * 0.50)
     p70 = percentile(tr_values, STOP_NOISE_PERCENTILE) or fallback
     p85 = max(percentile(tr_values, TP_NOISE_PERCENTILE) or 0.0, fallback, p70)
     current = 0.0
@@ -4556,7 +4591,7 @@ def runway_target_management_profile(
     """
     sign = side_sign(str(candidate.side or Side.NEUTRAL.value))
     atr15 = max(safe_float(context.get("atr15"), 0.0), abs(entry) * 0.001, 1e-6)
-    risk = max(abs(entry - stop), ABS_MIN_STOP_DOLLARS, 1e-9)
+    risk = max(abs(entry - stop), min_stop_distance(entry), 1e-9)
     stage = str(candidate.entry_stage or (candidate.stage_plan or {}).get("stage") or "").upper()
 
     live: list[dict[str, Any]] = []
@@ -4622,7 +4657,7 @@ def _plan_geometry(
     # has to lift past the early-entry cap, the level is not tradeable early and
     # the plan fails closed instead of silently becoming a late, wide entry.
     noise_floor = max(
-        ABS_MIN_STOP_DOLLARS,
+        min_stop_distance(entry),
         noise["tr_p70"] * MIN_STOP_TRUE_RANGE_MULT * 0.60,
         noise["current_tr"] * CURRENT_CANDLE_STOP_MULT * 0.60,
         atr15 * MIN_STOP_ATR15 * 0.45,
@@ -4646,7 +4681,7 @@ def _plan_geometry(
         decision_distance,
         max(
             decision_distance * max(MIN_RR1, 0.60),
-            ABS_MIN_TP1_DOLLARS,
+            min_tp1_distance(entry),
             atr15 * min(max(TP1_MIN_ATR_PRO, 0.60), 1.25),
         ),
     )
@@ -4673,7 +4708,7 @@ def _plan_geometry(
 
     tp1_floor = max(
         decision_distance * TP1_MIN_RR_PRO,
-        ABS_MIN_TP1_DOLLARS,
+        min_tp1_distance(entry),
         noise["tr_p85"] * MIN_TP1_TRUE_RANGE_MULT,
         atr15 * TP1_MIN_ATR_PRO,
     )
@@ -4749,7 +4784,7 @@ def build_trade_plan(
             risk_ledger=risk_ledger, final_stage="NOT_EXECUTABLE",
         )
 
-    risk = max(geometry["decision_distance"], ABS_MIN_STOP_DOLLARS, 1e-9)
+    risk = max(geometry["decision_distance"], min_stop_distance(entry), 1e-9)
     stop = geometry["decision_stop"]
     tp0 = round_price(entry + sign * geometry["tp0_distance"])
     tp1 = round_price(entry + sign * geometry["tp1_distance"])
@@ -7540,22 +7575,27 @@ def _volatility_stand_down_line(
     """Say the wall out loud when it is the reason nothing can be entered.
 
     _plan_geometry refuses every candidate once noise_floor — never smaller than
-    ABS_MIN_STOP_DOLLARS — exceeds MAX_STOP_ATR*atr15. That is arithmetic of two
-    constants in different units, not a judgement about the setup, and it holds on
-    both routes. Without this line the operator sees only "no entry" for 220 cycles
-    straight and cannot tell a squeeze from a broken bot.
+    min_stop_distance(price) — exceeds MAX_STOP_ATR*atr15. That is arithmetic between
+    a price-relative floor and an ATR multiple, not a judgement about the setup, and it
+    holds on both routes. Without this line the operator sees only "no entry" for 220
+    cycles straight and cannot tell a squeeze from a broken bot.
 
     That floor is the universal one, and it is not the only wall. make_anchor repairs a
-    degenerate falsifier out to ABS_MIN_STOP_DOLLARS and _provisional_stop then adds
+    degenerate falsifier out to min_stop_distance(price) and _provisional_stop then adds
     max(0.10*atr15, COMMISSION_BUFFER_DOLLARS) on top, so a repaired level needs
-    0.40 + 0.10*atr15 <= 1.60*atr15 — atr15 >= 0.2667. Between the two thresholds the
-    market reads as tradeable while every repaired level dies on the stop cap: a live
-    cycle at atr15 0.25 lost six of eight that way. Silence there is the same failure
-    this line exists to prevent, so the cap is named too, with the ATR it would take.
+    price*ABS_MIN_STOP_PCT + 0.10*atr15 <= 1.60*atr15, i.e. atr15 >=
+    price*ABS_MIN_STOP_PCT/(MAX_STOP_ATR - 0.10), roughly 0.26 at this instrument's ~$99
+    — no longer a number that survives a price move or another asset. Between the two
+    thresholds the market reads as tradeable while every repaired level dies on the stop
+    cap: a live cycle at atr15 0.25 lost six of eight that way. Silence there is the same
+    failure this line exists to prevent, so the cap is named too, with the ATR it would take.
     """
     atr15 = safe_float(context.get("atr15"))
+    price = safe_float(context.get("price"))
     if atr15 <= 0:
         return ""
+
+    floor = tradeable_atr15_floor(price)
 
     arming = dict((audit or {}).get("limit_arming") or {})
     rows = [row for row in (arming.get("refusals") or []) if isinstance(row, dict)]
@@ -7579,11 +7619,11 @@ def _volatility_stand_down_line(
                 f"тобто реакція на цих рівнях не дасть входу. Вхід можливий від ATR15 ≈ {needed:.2f}."
             )
 
-    if atr15 < TRADEABLE_ATR15_FLOOR:
+    if atr15 < floor:
         return (
-            f"<b>Ринок у стисненні:</b> ATR15 {atr15:.2f} проти market-порогу {TRADEABLE_ATR15_FLOOR:.2f}. "
+            f"<b>Ринок у стисненні:</b> ATR15 {atr15:.2f} проти market-порогу {floor:.2f}. "
             f"MARKET-план зараз не проходить волатильність; LIMIT-поріг становить "
-            f"{LIMIT_TRADEABLE_ATR15_FLOOR:.2f}. Чекаємо або відновлення волатильності, або валідний LIMIT-рівень."
+            f"{floor:.2f}. Чекаємо або відновлення волатильності, або валідний LIMIT-рівень."
         )
     return ""
 
@@ -8588,6 +8628,10 @@ def build_signal_record(
 
     freshness = dict(getattr(candidate, "score_components", {}) or {}).get("anchor_reaction_freshness", {}) if candidate else {}
     limit_arming = dict(audit.get("limit_arming") or {})
+    # One reference price for the recorded price and for the floor derived from it, so
+    # volatility.tradeable_floor stays arithmetically consistent with price in the same row.
+    ref_price = safe_float(decision.current_price, safe_float(context.get("price")))
+    atr15_floor = tradeable_atr15_floor(ref_price)
     record: dict[str, Any] = {
         "id": decision.id,
         "time": decision.time,
@@ -8608,7 +8652,7 @@ def build_signal_record(
         "regime": decision.regime,
         "regime_type": decision.regime,
         "session": context.get("session_name"),
-        "price": safe_float(decision.current_price, safe_float(context.get("price"))),
+        "price": ref_price,
         "entry_level": round_price(plan.entry) if plan else 0.0,
         "atr15": round(safe_float(context.get("atr15")), 6),
         "spread_atr": round(safe_float(context.get("spread_atr")), 4),
@@ -8644,13 +8688,14 @@ def build_signal_record(
         "volatility": {
             # A refusal names the gate that fired; the gate ladder cannot name the wall
             # underneath it. Below this atr15 _plan_geometry refuses every candidate on
-            # every route, because noise_floor is at least ABS_MIN_STOP_DOLLARS while the
-            # cap is MAX_STOP_ATR*atr15 — so dominant_gate reported whichever gate happened
-            # to fire first and the real constraint never reached the journal.
+            # every route, because noise_floor is at least min_stop_distance(price) while
+            # the cap is MAX_STOP_ATR*atr15 — so dominant_gate reported whichever gate
+            # happened to fire first and the real constraint never reached the journal.
+            # The floor is recorded per cycle because it now moves with the price.
             "atr15": round(safe_float(context.get("atr15")), 6),
-            "tradeable_floor": round(LIMIT_TRADEABLE_ATR15_FLOOR, 6),
-            "stand_down": bool(0 < safe_float(context.get("atr15")) < LIMIT_TRADEABLE_ATR15_FLOOR),
-            "basis": "ABS_MIN_STOP_DOLLARS / LIMIT_MAX_STOP_ATR",
+            "tradeable_floor": round(atr15_floor, 6),
+            "stand_down": bool(0 < safe_float(context.get("atr15")) < atr15_floor),
+            "basis": "price * ABS_MIN_STOP_PCT / LIMIT_MAX_STOP_ATR",
         },
         "executed": bool(plan and plan.valid and plan.execution_ready and decision.action in EXECUTABLE_ENTRY_ACTIONS),
         "preconfirmation_event_id": str(audit.get("preconfirmation_event_id") or ""),
@@ -9163,7 +9208,7 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
         return out
     out["gates"]["STOP_CAP"] = True
 
-    risk = max(safe_float(stop_profile.get("distance")), ABS_MIN_STOP_DOLLARS, 1e-9)
+    risk = max(safe_float(stop_profile.get("distance")), min_stop_distance(level), 1e-9)
     # nearest_runway_r passes its entry to technical_targets, which measures every
     # distance from context["price"] and not from the entry it was handed. GATE_RUNWAY
     # can afford that: GATE_PROXIMITY has already put the price within 0.35 ATR of the
@@ -9643,7 +9688,7 @@ def _arm_limit_at_level_many(
         "capacity_available": target_count, "refusal": "",
         "pending_risk_pct": round(pending_risk, 6),
         "max_pending_risk_pct": round(MAX_PENDING_LIMIT_RISK_PCT, 6),
-        "tradeable_atr15_floor": round(TRADEABLE_ATR15_FLOOR,6),
+        "tradeable_atr15_floor": round(tradeable_atr15_floor(safe_float(context.get("price"))),6),
         "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
         "entry_score_direction": _live_entry_score_direction(journal),
         "score_gate_enabled": _entry_score_gate_enabled(journal)[0],
@@ -11080,14 +11125,15 @@ def _runtime_geometry_feasibility(journal: Optional[dict[str, Any]] = None) -> d
     for row in rows[-RUNTIME_FEASIBILITY_CYCLES:]:
         price=safe_float(row.get("price"),0.0); atr=safe_float(row.get("atr15"),0.0)
         if price<=0 or atr<=0: continue
+        stop_floor=min_stop_distance(price)
         max_distance=LIMIT_MAX_STOP_ATR*atr
-        stop_floor_ok=max_distance+1e-12>=ABS_MIN_STOP_DOLLARS
+        stop_floor_ok=max_distance+1e-12>=stop_floor
         expected_tp_price=price+max_distance
         fees_r=(price*MAKER_FEE_RATE + expected_tp_price*MAKER_FEE_RATE)/max(max_distance,1e-12)
-        samples.append({"price":price,"atr15":atr,"stop_floor_ok":stop_floor_ok,"fees_r_at_expected_tp":fees_r,"geometry_ok":bool(stop_floor_ok and fees_r<=MAX_FEES_R+1e-12)})
+        samples.append({"price":price,"atr15":atr,"stop_floor":stop_floor,"stop_floor_ok":stop_floor_ok,"fees_r_at_expected_tp":fees_r,"geometry_ok":bool(stop_floor_ok and fees_r<=MAX_FEES_R+1e-12)})
     feasible=sum(1 for x in samples if x["geometry_ok"])
     ratio=feasible/len(samples) if samples else 0.0
-    return {"sample_size":len(samples),"feasible_cycles":feasible,"ratio":round(ratio,4),"minimum_ratio":RUNTIME_FEASIBILITY_MIN_RATIO,"recent_window":RUNTIME_FEASIBILITY_CYCLES,"limit_max_stop_atr":LIMIT_MAX_STOP_ATR,"abs_min_stop_dollars":ABS_MIN_STOP_DOLLARS,"max_fees_r":MAX_FEES_R,"atr_floor":round(LIMIT_TRADEABLE_ATR15_FLOOR,6),"schema_version":"runtime_geometry_feasibility_v1"}
+    return {"sample_size":len(samples),"feasible_cycles":feasible,"ratio":round(ratio,4),"minimum_ratio":RUNTIME_FEASIBILITY_MIN_RATIO,"recent_window":RUNTIME_FEASIBILITY_CYCLES,"limit_max_stop_atr":LIMIT_MAX_STOP_ATR,"abs_min_stop_pct":ABS_MIN_STOP_PCT,"max_fees_r":MAX_FEES_R,"schema_version":"runtime_geometry_feasibility_v2"}
 
 
 def validate_runtime_configuration() -> dict[str, Any]:
@@ -12636,14 +12682,28 @@ def _check_both_models_are_measured_alike() -> list[str]:
             f"the limit model risks {limit_shadow.get('risk')} against the market model's "
             f"{market_shadow.get('risk')} — the benefit being measured is missing"
         )
-    # The comparison has to be able to show the benefit even when the absolute-dollar
-    # stop floor pins both risks equal, which it did on 3 of the 4 live v10 trades. What
-    # survives the floor is the geometry against the market as it stands at placement.
+    # The benefit shows on whichever axis the stop floor is not pinning. When the floor
+    # binds, both risks come out equal and the limit model wins on room — its stop sits the
+    # same distance below a lower entry, which is farther from the waiting price; that is
+    # what it did on 3 of the 4 live v10 trades. When the floor does not bind, both models
+    # share the anchor's structural stop and the limit model wins on risk instead. Equal on
+    # BOTH is the failure: a shadow comparison that cannot show a difference measures nothing.
     price = safe_float(context.get("price"))
-    if abs(price - safe_float(limit_shadow.get("stop"))) <= abs(price - safe_float(market_shadow.get("stop"))) + 1e-9:
+    limit_room = abs(price - safe_float(limit_shadow.get("stop")))
+    market_room = abs(price - safe_float(market_shadow.get("stop")))
+    limit_risk = safe_float(limit_shadow.get("risk"))
+    market_risk = safe_float(market_shadow.get("risk"))
+    if limit_room + 1e-9 < market_room:
         problems.append(
-            f"the limit stop {limit_shadow.get('stop')} is no farther from price {price} "
-            f"than the market stop {market_shadow.get('stop')}"
+            f"the limit stop {limit_shadow.get('stop')} is closer to price {price} "
+            f"than the market stop {market_shadow.get('stop')} — the model meant to be "
+            "cheaper is being measured with a worse stop"
+        )
+    if limit_room <= market_room + 1e-9 and limit_risk >= market_risk - 1e-9:
+        problems.append(
+            f"neither model is better than the other: stop room {limit_room:.6f} vs "
+            f"{market_room:.6f} and risk {limit_risk} vs {market_risk}, so the comparison "
+            "cannot show the price benefit"
         )
     if abs(price - safe_float(limit_shadow.get("tp1"))) >= abs(price - safe_float(market_shadow.get("tp1"))) - 1e-9:
         problems.append(
@@ -13569,7 +13629,7 @@ def _check_arming_evidence_reaches_the_journal() -> list[str]:
     """
     problems: list[str] = []
 
-    # 0.40 ATR of runway against a stop that is never smaller than ABS_MIN_STOP_DOLLARS:
+    # 0.40 ATR of runway against a stop that is never smaller than min_stop_distance(price):
     # the level is refused on the runway floor, and the measurement is the point of it.
     context, anchor, _, _, audit, armed = _armable_level(Side.LONG.value, 1.20, 0.40)
     if armed is not None:
@@ -13679,25 +13739,44 @@ def _check_arming_evidence_reaches_the_journal() -> list[str]:
 
 
 def _check_arming_respects_the_volatility_wall() -> list[str]:
-    """Below TRADEABLE_ATR15_FLOOR no order rests, and the reason names the wall.
+    """Below tradeable_atr15_floor(price) no order rests, and the reason names the wall.
 
     This is the constraint that produced 205 entry-less cycles at atr15 < 0.25 while
-    dominant_gate reported whichever gate happened to fire first. It is arithmetic of
-    two constants in different units — noise_floor is never below ABS_MIN_STOP_DOLLARS
-    while the cap is MAX_STOP_ATR*atr15 — so it is derivable, and the check asserts the
-    derivation rather than a magic number that could drift from it.
+    dominant_gate reported whichever gate happened to fire first. It is arithmetic
+    between a price-relative floor and an ATR multiple — noise_floor is never below
+    min_stop_distance(price) while the cap is MAX_STOP_ATR*atr15 — so it is derivable.
+    The floor is read off the harness's own synthetic price rather than quoted, because
+    the whole point of the conversion is that no single number is the wall any more.
     """
     problems: list[str] = []
-    floor = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR, 1e-9)
-    if abs(LIMIT_TRADEABLE_ATR15_FLOOR - floor) > 1e-9:
-        problems.append(
-            f"LIMIT_TRADEABLE_ATR15_FLOOR is {LIMIT_TRADEABLE_ATR15_FLOOR}, but ABS_MIN_STOP_DOLLARS / "
-            f"LIMIT_MAX_STOP_ATR is {floor:.6f} — the reported LIMIT threshold is not the real one"
+    context, anchor, _, _, _, _ = _armable_level(Side.LONG.value)
+    floor = tradeable_atr15_floor(safe_float(context.get("price")))
+
+    # The synthetic walk hands this anchor a 0.30 falsifier, which at the harness price is
+    # WIDER than a 0.4% floor, so the structural stop would refuse every probe first and
+    # the wall under trial would never be reached. Pull the falsifier inside the floor to
+    # isolate it; the second-wall block below does the opposite, pushing it back out to the
+    # floor to measure the cap that sits above.
+    anchor.invalidation = round_price(
+        safe_float(anchor.level)
+        - side_sign(str(anchor.side)) * 0.5 * min_stop_distance(safe_float(anchor.level)))
+
+    def arm(atr15: float) -> tuple[dict[str, Any], Any]:
+        probed = dict(context)
+        probed["atr15"] = atr15
+        journal: dict[str, Any] = {"trades": [], "signals": [], "training_signals": [],
+                                   "signal_events": [], "preconfirmation_events": [],
+                                   "limit_orders": []}
+        audit: dict[str, Any] = {}
+        armed = _arm_limit_at_level(
+            probed, journal, {"active_trade": None}, [anchor],
+            compute_degradation_table(journal), audit, new_id("sig"),
         )
+        return audit, armed
 
     below = floor * 0.96
     above = floor * 1.04
-    _, _, _, _, low_audit, low_armed = _armable_level(Side.LONG.value, atr15=below)
+    low_audit, low_armed = arm(below)
     if low_armed is not None:
         problems.append(
             f"an order was armed at atr15 {below:.3f}, below the tradeable floor {floor:.3f} — "
@@ -13709,7 +13788,7 @@ def _check_arming_respects_the_volatility_wall() -> list[str]:
             f"at atr15 {below:.3f} the refusal was '{refusal}', which does not name the noise "
             "floor — the operator would still be guessing which constraint bit"
         )
-    _, _, _, _, _, high_armed = _armable_level(Side.LONG.value, atr15=above)
+    _, high_armed = arm(above)
     if high_armed is None:
         problems.append(
             f"nothing armed at atr15 {above:.3f}, just above the floor {floor:.3f} — the wall "
@@ -13726,8 +13805,13 @@ def _check_stand_down_is_told_plainly() -> list[str]:
     fix that was asked for is the sentence, not a threshold change — risk stays as it is.
     """
     problems: list[str] = []
-    for atr15, expect_line in ((LIMIT_TRADEABLE_ATR15_FLOOR * 0.56, True),
-                               (TRADEABLE_ATR15_FLOOR * 1.6, False)):
+    # The floor is a fraction of the price, so the harness reads its own: at the
+    # synthetic 70.00 it is deliberately not the production instrument's wall.
+    probe, _, _ = _synthetic_context(
+        Side.LONG.value, reaction=False, distance_atr=1.20, runway_atr=3.20)
+    floor = tradeable_atr15_floor(safe_float(probe.get("price")))
+    for atr15, expect_line in ((floor * 0.56, True),
+                               (floor * 1.6, False)):
         context, anchor, _ = _synthetic_context(
             Side.LONG.value, reaction=False, distance_atr=1.20, runway_atr=3.20)
         context["atr15"] = atr15
@@ -13748,10 +13832,10 @@ def _check_stand_down_is_told_plainly() -> list[str]:
         if expect_line:
             if "стисненні" not in plain:
                 problems.append(f"{label}: the message does not say the market is in a squeeze")
-            if f"{TRADEABLE_ATR15_FLOOR:.2f}" not in plain:
+            if f"{floor:.2f}" not in plain:
                 problems.append(
                     f"{label}: the message does not name the tradeable floor "
-                    f"{LIMIT_TRADEABLE_ATR15_FLOOR:.2f}, so 'wait for volatility' has no number to wait for"
+                    f"{floor:.2f}, so 'wait for volatility' has no number to wait for"
                 )
             if f"{atr15:.2f}" not in plain:
                 problems.append(f"{label}: the message does not quote the measured ATR15")
@@ -13773,8 +13857,11 @@ def _check_stand_down_is_told_plainly() -> list[str]:
             problems.append(
                 f"{label}: the record says stand_down={volatility.get('stand_down')}, expected {expect_line}"
             )
-        if abs(safe_float(volatility.get("tradeable_floor")) - LIMIT_TRADEABLE_ATR15_FLOOR) > 1e-6:
-            problems.append(f"{label}: the record journaled the wrong floor")
+        if abs(safe_float(volatility.get("tradeable_floor")) - floor) > 1e-6:
+            problems.append(
+                f"{label}: the record journaled floor {volatility.get('tradeable_floor')}, "
+                f"expected {floor:.6f} for this price"
+            )
         compact = compact_signal_for_journal(record)
         if "volatility" not in compact:
             problems.append(
@@ -13783,19 +13870,22 @@ def _check_stand_down_is_told_plainly() -> list[str]:
             )
 
     # The second wall sits ABOVE the universal floor. make_anchor repairs a degenerate
-    # falsifier out to ABS_MIN_STOP_DOLLARS and _provisional_stop then adds
+    # falsifier out to min_stop_distance(price) and _provisional_stop then adds
     # max(0.10*atr15, COMMISSION_BUFFER_DOLLARS) on top, so a repaired level needs
-    # atr15 >= ABS_MIN_STOP_DOLLARS / (MAX_STOP_ATR - 0.10). A live cycle at atr15 0.25
-    # lost six of eight levels to it while the market still read as tradeable, and the
-    # message said nothing at all — the same silence this check exists to prevent.
-    repaired_floor = ABS_MIN_STOP_DOLLARS / max(LIMIT_MAX_STOP_ATR - 0.10, 1e-9)
+    # atr15 >= min_stop_distance(level) / (LIMIT_MAX_STOP_ATR - 0.10). A live cycle at
+    # atr15 0.25 lost six of eight levels to it while the market still read as tradeable,
+    # and the message said nothing at all — the same silence this check exists to prevent.
     # 0.20 ATR puts the level inside 2*ANCHOR_ZONE_ATR, so the message takes the
     # "вхід наближається" branch exactly as the live cycle did — the branch whose
     # "чекаємо 3m-реакцію" promise the wall contradicts.
     context, anchor, journal, _, _, _ = _armable_level(
-        Side.LONG.value, 0.20, 3.20, atr15=LIMIT_TRADEABLE_ATR15_FLOOR)
+        Side.LONG.value, 0.20, 3.20, atr15=floor)
     anchor.invalidation = round_price(
-        safe_float(anchor.level) - side_sign(str(anchor.side)) * ABS_MIN_STOP_DOLLARS)
+        safe_float(anchor.level)
+        - side_sign(str(anchor.side)) * min_stop_distance(safe_float(anchor.level)))
+    # From the level, not the live price: that is where the order fills, and it is the
+    # distance the refusal rows the message quotes were measured with.
+    repaired_floor = min_stop_distance(safe_float(anchor.level)) / max(LIMIT_MAX_STOP_ATR - 0.10, 1e-9)
     cap_audit: dict[str, Any] = {}
     _arm_limit_at_level(context, journal, {"active_trade": None}, [anchor],
                         compute_degradation_table(journal), cap_audit, new_id("sig"))
@@ -13803,8 +13893,8 @@ def _check_stand_down_is_told_plainly() -> list[str]:
     cap_rows = [row for row in dict(cap_audit.get("limit_arming") or {}).get("refusals") or []]
     if not cap_rows or not all(str(row.get("reason") or "").startswith("STOP_") for row in cap_rows):
         problems.append(
-            f"a level whose falsifier was repaired to ABS_MIN_STOP_DOLLARS refused as "
-            f"{[row.get('reason') for row in cap_rows]} at atr15 {LIMIT_TRADEABLE_ATR15_FLOOR:.3f}, so "
+            f"a level whose falsifier was repaired to min_stop_distance(level) refused as "
+            f"{[row.get('reason') for row in cap_rows]} at atr15 {floor:.3f}, so "
             "the stop-cap case is not being reproduced and the line below is untested"
         )
     else:
@@ -13822,7 +13912,7 @@ def _check_stand_down_is_told_plainly() -> list[str]:
             )
         if "Стоп не вміщається" not in plain:
             problems.append(
-                f"every level was refused on the stop cap at atr15 {LIMIT_TRADEABLE_ATR15_FLOOR:.3f} and "
+                f"every level was refused on the stop cap at atr15 {floor:.3f} and "
                 f"the message did not say so: {plain[:160]}"
             )
         if "чекаємо 3m-реакцію" in plain:
@@ -13882,6 +13972,87 @@ def _check_stand_down_is_told_plainly() -> list[str]:
                 f"the line does not carry its own count, so it claims every level was refused "
                 f"when two of three were: {majority[:160]}"
             )
+    return problems
+
+
+def _check_stop_floor_scales_with_price() -> list[str]:
+    """The absolute stop floor is a fraction of the price, so it has to move with the price.
+
+    A dollar floor is only accidentally right: $0.40 is 0.40% at this instrument's ~$99 and
+    0.57% at the self-test's synthetic $70, and on another asset it is whatever the price
+    happens to make it. Every ATR15 threshold derived from it was arithmetic between dollars
+    and ATR. This pins the property the old constants could not express, through the three
+    places the floor is load-bearing: the helper, the anchor repair that feeds it into real
+    geometry, and the number the journal carries.
+    """
+    problems: list[str] = []
+    low, high = 70.00, 700.00
+
+    for price in (low, high):
+        want_floor = min_stop_distance(price) / max(LIMIT_MAX_STOP_ATR, 1e-9)
+        if abs(tradeable_atr15_floor(price) - want_floor) > 1e-12:
+            problems.append(
+                f"tradeable_atr15_floor({price}) is {tradeable_atr15_floor(price):.9f}, but "
+                f"min_stop_distance(price) / LIMIT_MAX_STOP_ATR is {want_floor:.9f}"
+            )
+        if abs(min_stop_distance(price) - price * ABS_MIN_STOP_PCT) > 1e-12:
+            problems.append(
+                f"min_stop_distance({price}) is {min_stop_distance(price):.9f}, expected "
+                f"{price * ABS_MIN_STOP_PCT:.9f} — the floor is not the percentage it claims"
+            )
+        if abs(min_tp1_distance(price) - price * ABS_MIN_TP1_PCT) > 1e-12:
+            problems.append(
+                f"min_tp1_distance({price}) is {min_tp1_distance(price):.9f}, expected "
+                f"{price * ABS_MIN_TP1_PCT:.9f}"
+            )
+    scaled = tradeable_atr15_floor(high) / max(tradeable_atr15_floor(low), 1e-12)
+    if abs(scaled - high / low) > 1e-6:
+        problems.append(
+            f"the tradeable floor moved {scaled:.4f}x between price {low} and {high}, not "
+            f"{high / low:.0f}x — a floor that does not track the price is the dollar "
+            "constant wearing a new name"
+        )
+
+    # Through the repair that feeds real geometry. atr15 is starved so the floor is the
+    # binding term of make_anchor's max(0.75*atr15, min_stop_distance(price)), and the
+    # invalidation sits ON the level so the degenerate-falsifier branch has to fire.
+    for price in (low, high):
+        anchor = make_anchor(
+            SetupType.SWEEP_RECLAIM.value, Side.LONG.value, price, price,
+            "SELF_TEST", "DEGENERATE_FALSIFIER", {"price": price, "atr15": 1e-9},
+        )
+        if anchor is None:
+            problems.append(f"make_anchor returned None at price {price}, so the repair is untested")
+            continue
+        repaired = abs(safe_float(anchor.level) - safe_float(anchor.invalidation))
+        want = min_stop_distance(price)
+        if abs(repaired - want) > 1e-6:
+            problems.append(
+                f"at price {price} a degenerate falsifier was repaired to {repaired:.6f}, "
+                f"expected {want:.6f} — the repair is not reading the percent floor"
+            )
+
+    # And through the number the journal carries, so the audit trail cannot disagree.
+    context, _, _ = _synthetic_context(
+        Side.LONG.value, reaction=False, distance_atr=1.20, runway_atr=3.20)
+    price = safe_float(context.get("price"))
+    decision = Decision(
+        id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+        side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value, quality=0,
+        reason="NO_ANCHOR_WITH_CONFIRMED_3M_REACTION", regime=str(context.get("regime") or ""),
+        audit={}, current_price=price,
+    )
+    volatility = dict(build_signal_record(context, decision, None, {}).get("volatility") or {})
+    if abs(safe_float(volatility.get("tradeable_floor")) - tradeable_atr15_floor(price)) > 1e-6:
+        problems.append(
+            f"the journal recorded floor {volatility.get('tradeable_floor')} at price {price}, "
+            f"expected {tradeable_atr15_floor(price):.6f}"
+        )
+    basis = str(volatility.get("basis") or "")
+    if "DOLLARS" in basis.upper():
+        problems.append(f"the journal still names a dollar floor as its basis: {basis!r}")
+    elif "ABS_MIN_STOP_PCT" not in basis:
+        problems.append(f"the journal basis {basis!r} does not name the percent floor")
     return problems
 
 
@@ -14424,6 +14595,7 @@ def _run_self_test() -> bool:
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
         ("стиснення назване прямо", _check_stand_down_is_told_plainly),
+        ("підлога стопа масштабується з ціною", _check_stop_floor_scales_with_price),
     ]
     failed: list[str] = []
     print(f"SELF-TEST {BOT_VERSION} ({len(checks)} перевірок, офлайн)")
