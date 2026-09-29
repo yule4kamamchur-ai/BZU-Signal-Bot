@@ -10924,6 +10924,9 @@ def run_bot() -> int:
     # Independently arm every other eligible untouched LIMIT anchor up to capacity.
     # This is intentionally independent of the selected reaction and of other pending
     # orders: each anchor gets its own order_id and lifecycle.
+    # Keep the collection defined even when a live position/fill skips arming; it is
+    # consumed later by the signal fan-out and journal paths on every execution.
+    armed_rows: list[tuple[dict[str, Any], TradePlan, Candidate]] = []
     if opened is None and active is None:
         current_pending = pending_limit_orders_from_state(state)
         capacity = max(0, MAX_PENDING_LIMIT_ORDERS - len(current_pending))
