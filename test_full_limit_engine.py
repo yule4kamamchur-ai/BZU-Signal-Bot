@@ -18,6 +18,41 @@ NOW = 1_791_288_000_000  # fixed time; fixtures have exactly aligned candle clos
 NOW = NOW//b.TF["4H"]*b.TF["4H"]
 
 
+def preservation_ast_dump(node):
+    """Render the existing Python 3.12 manifest format across Python versions.
+
+    Python 3.11 lacks FunctionDef/ClassDef.type_params; Python 3.13 also
+    changes ast.dump's empty-field defaults. Keep every original semantic
+    field and normalize only the missing, empty type-parameter field.
+    Existing manifest hashes remain authoritative and are never regenerated
+    from the bot being checked. Source locations are intentionally omitted.
+    """
+    def render(value):
+        if isinstance(value, ast.AST):
+            names = list(value._fields)
+            has_type_params = isinstance(value, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            if has_type_params and 'type_params' not in names:
+                names.append('type_params')
+            parts = []
+            for name in names:
+                if name == 'type_params' and has_type_params and not hasattr(value, name):
+                    item = []
+                elif hasattr(value, name):
+                    item = getattr(value, name)
+                else:
+                    continue
+                if item is None and getattr(type(value), name, ...) is None:
+                    continue
+                parts.append(name+'='+render(item))
+            return type(value).__name__+'('+', '.join(parts)+')'
+        if isinstance(value, list):
+            return '['+', '.join(render(item) for item in value)+']'
+        return repr(value)
+    if not isinstance(node, ast.AST):
+        raise TypeError('Expected AST node')
+    return render(node)
+
+
 def candle(ts, o=101, h=102, l=100.5, c=101, confirmed=True):
     return b.Candle(ts, o, h, l, c, 100, confirmed)
 
@@ -383,8 +418,32 @@ class FullSetupTests(unittest.TestCase):
         self.assertTrue(set(manifest["original_symbols"])<=all_symbols)
         for row in manifest["detectors"]:
             with self.subTest(detector=row["name"]):
-                actual = hashlib.sha256(ast.dump(nodes[row["name"]],include_attributes=False).encode()).hexdigest()
+                actual = hashlib.sha256(preservation_ast_dump(nodes[row["name"]]).encode()).hexdigest()
                 self.assertEqual(actual,row["ast_sha256"])
+
+    def test_preservation_hash_handles_python_311_ast_without_type_params(self):
+        manifest = json.loads((b.ROOT/'setup_preservation_manifest.json').read_text())
+        nodes = {n.name:n for n in ast.parse(Path(core.__file__).read_text()).body if isinstance(n,ast.FunctionDef)}
+        for row in manifest['detectors']:
+            with self.subTest(detector=row['name']):
+                node = copy.deepcopy(nodes[row['name']])
+                for item in ast.walk(node):
+                    if 'type_params' in item._fields:
+                        item._fields = tuple(f for f in item._fields if f != 'type_params')
+                        if hasattr(item,'type_params'):
+                            del item.type_params
+                actual = hashlib.sha256(preservation_ast_dump(node).encode()).hexdigest()
+                self.assertEqual(actual,row['ast_sha256'])
+
+    def test_preservation_hash_still_detects_real_setup_change(self):
+        manifest = json.loads((b.ROOT/'setup_preservation_manifest.json').read_text())
+        row = manifest['detectors'][0]
+        node = next(n for n in ast.parse(Path(core.__file__).read_text()).body
+                    if isinstance(n,ast.FunctionDef) and n.name==row['name'])
+        number = next(n for n in ast.walk(node) if isinstance(n,ast.Constant) and type(n.value) in (int,float))
+        number.value += 1
+        actual = hashlib.sha256(preservation_ast_dump(node).encode()).hexdigest()
+        self.assertNotEqual(actual,row['ast_sha256'])
 
     def test_all_detectors_actually_called_in_new_production_cycle(self):
         cfg,ctx,a,s = full_fixture()
