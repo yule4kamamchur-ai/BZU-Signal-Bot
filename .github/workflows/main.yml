@@ -1,4 +1,4 @@
-name: BZU Auto Bot
+name: BZU Auto Bot — Full ICT v12
 
 on:
   schedule:
@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+# Keep the original lock so queued runs of the old workflow cannot overlap.
 concurrency:
   group: bzu-signal-memory
   cancel-in-progress: false
@@ -16,103 +17,132 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      BOT_BRANCH: ${{ github.event.repository.default_branch }}
+      JOURNAL_PERSISTENCE_CONFIRMED: 'true'
+      SIGNAL_MEMORY_FILE: last_signal_v6_4.json
+      SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
+      OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
+      PRICE_TICK_SIZE: ${{ vars.PRICE_TICK_SIZE || '0.001' }}
+      MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
+      TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
+      PYTHONUNBUFFERED: '1'
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout latest default branch
+        uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: true
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      # v12 has a stdlib fallback; requirements.txt is not required.
+      - name: Verify complete v12 files
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python - <<'PY'
+          from pathlib import Path
+          required = ['bot_oneshot.py', 'full_limit_engine.py',
+                      'test_full_limit_engine.py', 'setup_preservation_manifest.json']
+          missing = [name for name in required if not Path(name).is_file()]
+          if missing:
+              raise SystemExit('Upload the complete v12 package. Missing: ' + ', '.join(missing))
+          import bot_oneshot as core
+          import full_limit_engine as engine
+          if core.BOT_VERSION != engine.VERSION or len(core.DETECTORS) != 24:
+              raise SystemExit('Incompatible bot files: all 24 detectors and matching v12 versions are required')
+          PY
 
-      - name: Sync latest state before run
+      - name: Validate full v12 bot offline
         run: |
-          git fetch origin main
-          git reset --hard origin/main
-
-      - name: Validate current bot
-        env:
-          PRECONFIRM_EXPIRED_LABEL_MODE: "NEGATIVE"
-        run: |
-          python -m py_compile bot_oneshot.py
+          python -m py_compile bot_oneshot.py full_limit_engine.py test_full_limit_engine.py
           python bot_oneshot.py --self-test
+          python bot_oneshot.py --legacy-self-test
 
-      - name: Run bot
+      - name: Verify Telegram settings
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          JOURNAL_PERSISTENCE_CONFIRMED: "true"
-          SIGNAL_MEMORY_FILE: last_signal_v6_4.json
-          SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
-          SIGNAL_JOURNAL_LIMIT: "500"
-          JOURNAL_VERBOSE: "false"
-          JOURNAL_HYPOTHESIS_TOP: "3"
-          SETUP_LIFECYCLE_RECENT_RUN_LIMIT: "300"
-          PRECONFIRMATION_LAYER_ENABLED: "true"
-          PRECONFIRM_EMBEDDED_JOURNAL_LIMIT: "500"
-          PRECONFIRM_EXPIRED_LABEL_MODE: "NEGATIVE"
-        run: python bot_oneshot.py
+        run: |
+          python - <<'PY'
+          import os
+          if not os.environ.get('TELEGRAM_TOKEN') or not os.environ.get('TELEGRAM_CHAT_ID'):
+              raise SystemExit('Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in GitHub Actions secrets')
+          PY
+
+      - name: Run full v12 signal cycle
+        id: bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_NOTIFY_EVERY_RUN: 'true'
+        run: python bot_oneshot.py --notify
 
       - name: Save signal memory and journal
+        id: persist
+        if: ${{ always() && steps.bot.outcome != 'skipped' && steps.bot.outcome != '' }}
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          git rm --cached -q last_signal_v6_4.json.bak signal_journal_v6_4.json.bak preconfirmation_journal_v9_4.json 2>/dev/null || true
-
+          # Commit only runtime files, never remove unrelated or legacy files.
           for file in last_signal_v6_4.json signal_journal_v6_4.json; do
             if [ -f "$file" ]; then
-              git add "$file"
-            else
-              echo "Skip missing $file"
+              git add -f -- "$file"
             fi
           done
 
           if git diff --cached --quiet; then
-            echo "No memory/journal changes to commit."
+            echo 'No memory/journal changes to commit.'
             exit 0
           fi
 
-          git commit -m "Update signal memory and journal [skip ci]"
+          git commit -m 'Update full ICT v12 memory and journal [skip ci]'
 
-          push_succeeded=false
-          for i in 1 2 3 4 5; do
-            if git push origin HEAD:main; then
-              echo "Pushed successfully."
-              push_succeeded=true
-              break
-            fi
-
-            echo "Push rejected, resyncing with latest main (attempt $i)..."
-            git fetch origin main
-            git reset --soft origin/main
-
-            for file in last_signal_v6_4.json signal_journal_v6_4.json; do
-              if [ -f "$file" ]; then
-                git add "$file"
-              fi
-            done
-
-            if git diff --cached --quiet; then
-              echo "State already up to date on remote, nothing left to commit."
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:${BOT_BRANCH}"; then
+              echo 'Memory and journal saved.'
               exit 0
             fi
 
-            git commit -m "Update signal memory and journal [skip ci]"
-            sleep 3
+            if [ "$attempt" -eq 5 ]; then
+              break
+            fi
+
+            git fetch origin "$BOT_BRANCH"
+            base_revision=$(git rev-parse HEAD^)
+            remote_revision=$(git rev-parse "origin/${BOT_BRANCH}")
+
+            # A different writer changed the same ledger: preserve both copies.
+            if ! git diff --quiet "$base_revision" "$remote_revision" -- \
+                last_signal_v6_4.json signal_journal_v6_4.json; then
+              echo '::error::Remote state changed during this run. Refusing to overwrite it; recover this run from its state artifact.'
+              exit 1
+            fi
+
+            # Keep remote code changes while replaying our state-only commit.
+            if ! git rebase "$remote_revision"; then
+              git rebase --abort || true
+              echo '::error::Could not rebase the state-only commit. State will be kept as an artifact.'
+              exit 1
+            fi
           done
 
-          if [ "$push_succeeded" != "true" ]; then
-            echo "::error::State/journal push failed after 5 attempts."
-            exit 1
-          fi
+          echo '::error::State/journal push failed after 5 attempts. Download the state artifact from this run.'
+          exit 1
+
+      - name: Keep state if repository save failed
+        if: ${{ always() && steps.persist.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-v12-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            last_signal_v6_4.json
+            signal_journal_v6_4.json
+          if-no-files-found: warn
+          retention-days: 7
