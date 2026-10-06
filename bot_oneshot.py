@@ -1,37 +1,11 @@
 #!/usr/bin/env python3
-"""BZU Signal Bot v10.0.0 "ORGANIC".
+"""Full ICT Bot v12: all 24 original setup detectors and analytics retained.
 
-Одна органічна архітектура замість 55 000 рядків нашарувань.
-
-Принцип входу (єдиний для всіх 24 сетапів):
-
-    РІВЕНЬ (anchor)  ->  РЕАКЦІЯ на 3m  ->  ВХІД РИНКОМ
-
-Старий бот чекав закриття 15m-свічки як підтвердження і дозволяв вхід на
-відстані до 3.75 ATR від рівня. При 15-хвилинному cron це давало запізнення
-15-30 хв і вхід уже після того, як рух відбувся: 18 з 30 угод мали MFE < 0.2R
-і помирали як NO_FOLLOWTHROUGH_EXIT.
-
-Нова схема робить пізній вхід структурно неможливим:
-  1. Детектор знаходить ПРИЧИНУ і фіксує її як anchor (рівень + інвалідація).
-  2. Anchor арміться і живе кілька запусків, поки ціна не підійде.
-  3. Вхід дозволено лише коли ціна ВПРИТУЛ до рівня (<= 0.35 ATR15) і на 3m
-     вже є відбій з викидом + імпульсним корпусом у бік угоди.
-  4. Вхід ринком, негайно, без очікування закриття 15m.
-  5. Перевірка runway: найближча протилежна ціль має бути досить далеко, щоб
-     0.25R MFE був реальний у вікні no-followthrough.
-
-Супровід угод (manage_active_trade та вся підсистема TP0/TP1/TP2/TP3,
-BE_DELAY_ENGINE, структурний трейлінг, PROBE no-followthrough, path-decay,
-класична політика стопа v9.5.70) перенесено ДОСЛІВНО з попереднього бота —
-без жодної зміни поведінки, лише розкладено з п'яти вкладених обгорток у
-явний ланцюжок з одним визначенням на ім'я.
-
-Джерело ціни (OKX v5 market API, TradingView scanner як display-only fallback)
-також перенесено дослівно. TradingView ніколи не використовується для виконання.
-
-Файли стану та журналу, імена, схеми записів і GitHub Actions workflow —
-без змін: last_signal_v6_4.json, signal_journal_v6_4.json, bot_oneshot.py.
+Production: full_limit_engine.py orchestrates closed 3m/15m/1H/4H data,
+all setup hypotheses, directional arbitration and chronological LIMIT lifecycle.
+The original routing/supervision functions remain as compatibility and offline
+regression reference; run_bot_legacy is not the production entry point.
+No exchange order execution or deposit allocation is performed by this script.
 """
 
 from __future__ import annotations
@@ -110,8 +84,8 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.6.1-p0-p3-limit-first-signal-fanout"
-ARCHITECTURE_VERSION = "ORGANIC_LEVEL_TO_LIMIT_V10_6_1_15M_CADENCE"
+BOT_VERSION = "full-ict-v12.0.0-all-24-limit-optimizer"
+ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
 
@@ -1133,7 +1107,7 @@ def pct(new: float, old: float) -> float:
 
 
 def side_sign(side: str) -> int:
-    return 1 if side == Side.LONG.value else -1
+    return 1 if side == Side.LONG.value else -1 if side == Side.SHORT.value else 0
 
 
 def opposite(side: str) -> str:
@@ -1371,11 +1345,14 @@ def resolve_smt_asset_id() -> str:
     return SMT_ASSET_ID_ALIASES.get(configured, configured)
 
 
-def resample_candles(candles: list[Candle], minutes: int) -> list[Candle]:
-    """Aggregate confirmed lower-timeframe candles into a higher timeframe."""
+def resample_candles(candles: list[Candle], minutes: int, source_minutes: int = 15) -> list[Candle]:
+    """Resample complete contiguous source intervals, including 15m HTF fallback."""
     if minutes <= 0 or not candles:
         return []
+    if source_minutes <= 0 or minutes % source_minutes:
+        return []
     step_ms = minutes * 60 * 1000
+    source_step = source_minutes * 60 * 1000
     buckets: dict[int, list[Candle]] = {}
     for c in candles:
         if not getattr(c, "confirmed", True):
@@ -1383,8 +1360,8 @@ def resample_candles(candles: list[Candle], minutes: int) -> list[Candle]:
         buckets.setdefault((int(c.ts) // step_ms) * step_ms, []).append(c)
     out: list[Candle] = []
     for bucket_ts in sorted(buckets):
-        rows = sorted(buckets[bucket_ts], key=lambda c: int(c.ts))
-        complete = len(rows) >= max(1, minutes // 3)
+        rows = sorted({int(c.ts): c for c in buckets[bucket_ts]}.values(), key=lambda c: int(c.ts))
+        complete = [int(c.ts) for c in rows] == list(range(bucket_ts, bucket_ts+step_ms, source_step))
         out.append(Candle(
             ts=bucket_ts,
             open=rows[0].open,
@@ -1407,7 +1384,7 @@ def fetch_timeframe(bar: str, direct_limit: int, resample_minutes: int = 0) -> t
     source = get_okx_candles(OKX_INST_ID, "15m", HTF_SOURCE_15M_LIMIT)
     if not source:
         return [], "UNAVAILABLE"
-    resampled = resample_candles(source, resample_minutes)
+    resampled = [c for c in resample_candles(source, resample_minutes, 15) if c.confirmed]
     min_bars = HTF_RESAMPLE_1H_MIN_BARS if resample_minutes == 60 else HTF_RESAMPLE_4H_MIN_BARS
     if len(resampled) < min_bars:
         return [], f"RESAMPLE_INSUFFICIENT_{len(resampled)}"
@@ -1460,6 +1437,8 @@ def collect_market_data() -> dict[str, Any]:
         "volume24h": safe_float(ticker.get("volume24h")),
         "ticker_ts": safe_int(ticker.get("ts")),
         "spread": spread,
+        "bid": bid,
+        "ask": ask,
         "candles": {"3m": c3m, "15m": c15m, "1H": c1h, "4H": c4h},
         "htf_source": {"1H": src1h, "4H": src4h},
         "smt_candles_15m": smt,
@@ -2170,7 +2149,7 @@ def technical_targets(context: dict[str, Any], side: str, entry: float) -> list[
     governed by structural RR, exactly as in the unchanged supervision layer.
     """
     sign = side_sign(side)
-    price = safe_float(context.get("price"), entry)
+    price = safe_float(entry)
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
     session = dict(context.get("session") or {})
     structure = dict(context.get("structure15") or {})
@@ -3526,6 +3505,9 @@ def sync_anchors(
         # newer evidence but preserve the earlier creation time and cooldown so
         # a level cannot be re-armed forever by a repeating print.
         duplicate.score = max(duplicate.score, anchor.score)
+        duplicate.created_ts = min(int(duplicate.created_ts), int(anchor.created_ts))
+        duplicate.expires_ts = min(int(duplicate.expires_ts), int(anchor.expires_ts))
+        duplicate.cooldown_until_ts = max(int(duplicate.cooldown_until_ts), int(anchor.cooldown_until_ts))
         duplicate.reason = anchor.reason
         duplicate.evidence = dict(anchor.evidence or {})
         duplicate.last_checked_ts = now_ms
@@ -7644,7 +7626,7 @@ def _plan_lines(plan: TradePlan) -> list[str]:
         lines.append(f"TP1 {_fmt_price(plan.tp1)} (RR {plan.rr1})")
     lines.append(f"TP2 {_fmt_price(plan.tp2)} (RR {plan.rr2}) | TP3 {_fmt_price(plan.tp3)} (RR {plan.rr3})")
     lines.append(
-        f"Стадія: <b>{_esc(plan.entry_stage)}</b> | Ризик: {safe_float(plan.position_risk_pct):.3f}% | "
+        f"Стадія: <b>{_esc(plan.entry_stage)}</b> | "
         f"Стоп: {stop_atr:.2f} ATR"
     )
     runway = dict(stage_plan.get("runway_target_management") or {})
@@ -9236,7 +9218,7 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     out["runway_nearest_kind"] = str(nearest_target.get("kind") or "")
     out["runway_nearest_level"] = nearest_target.get("level")
     out["runway_measured_from"] = "ANCHOR_LEVEL"
-    out["runway_r_from_current_price"] = runway.get("runway_r")
+    out["runway_r_from_current_price"] = nearest_runway_r(context, str(anchor.side), price, risk).get("runway_r")
     out["meets_min_r"] = meets_min_r
     out["meets_min_atr"] = meets_min_atr
     if not meets_min_r:
@@ -10597,7 +10579,7 @@ def _resurface_legacy_pending_limit_signals(
     return surfaced
 
 
-def run_bot() -> int:
+def run_bot_legacy() -> int:
     """One 15-minute cycle: read the market, judge the levels, act, report, save."""
     state = load_state()
     journal = load_journal()
@@ -13588,7 +13570,7 @@ def _check_limit_arms_on_a_fresh_level() -> list[str]:
 
     # Driving the helper is not enough: a cycle that never calls it arms nothing and
     # every assertion above still passes. Same bytecode tie _check_detectors_cover_taxonomy uses.
-    called = set(getattr(run_bot, "__code__", None).co_names or ())
+    called = set(getattr(run_bot_legacy, "__code__", None).co_names or ())
     for required in ("_arm_limit_at_level_many",):
         if required not in called:
             problems.append(
@@ -14625,33 +14607,13 @@ def _run_self_test() -> bool:
 # ==========================================================
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="BZU Professional Oil 15M Signal Bot v10.0.0 ORGANIC — Journal v3"
-    )
-    parser.add_argument("--self-test", action="store_true",
-                        help="Run the offline self-test and exit")
-    parser.add_argument("--audit-journal", type=str,
-                        help="Replay journal decisions without trading")
-    args = parser.parse_args()
+    from full_limit_engine import main as full_main
+    raise SystemExit(full_main(sys.modules[__name__]))
 
-    report = validate_runtime_configuration()
-    for warning in report["warnings"]:
-        print(f"[WARN] {warning}", file=sys.stderr)
-    if not report["passed"]:
-        print(json.dumps(report, ensure_ascii=False, indent=2), file=sys.stderr)
-        raise SystemExit("Runtime configuration invalid")
 
-    if args.audit_journal:
-        print(json.dumps(run_audit_journal(args.audit_journal), ensure_ascii=False, indent=2))
-        return
-
-    if args.self_test:
-        if not _run_self_test():
-            raise SystemExit(1)
-        print("SELF-TEST PASSED")
-        return
-
-    raise SystemExit(run_bot())
+def run_bot() -> int:
+    from full_limit_engine import run_live
+    return run_live(sys.modules[__name__])
 
 
 if __name__ == "__main__":
