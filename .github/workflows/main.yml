@@ -23,7 +23,7 @@ jobs:
       SIGNAL_MEMORY_FILE: last_signal_v6_4.json
       SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
-      PRICE_TICK_SIZE: ${{ vars.PRICE_TICK_SIZE || '0.001' }}
+      # Live price tick is read from OKX by full_limit_engine.py.
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
       TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
       PYTHONUNBUFFERED: '1'
