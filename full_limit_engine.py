@@ -1299,6 +1299,33 @@ def migrate_state(raw: dict, cfg: Config) -> dict:
     return out
 
 
+def resolve_live_config(cfg: Config) -> Config:
+    """Use OKX's current price grid before initializing or migrating state.
+
+    PRICE_TICK_SIZE remains an offline/replay setting. Live exchange metadata
+    is authoritative; an outdated workflow variable must not stop the bot.
+    Existing open-plan geometry is still protected by the config-hash guard.
+    """
+    core = cfg.core
+    url = 'https://www.okx.com/api/v5/public/instruments?'+urllib.parse.urlencode(
+        {'instType':'SWAP' if cfg.instrument.endswith('-SWAP') else 'SPOT','instId':cfg.instrument})
+    response = core.http_get(url)
+    body = response.json() if response else {}
+    if str(body.get('code')) != '0':
+        raise ValueError('Unable to verify instrument metadata from OKX')
+    record = next((r for r in body.get('data',[]) if r.get('instId')==cfg.instrument),None)
+    if record is None or record.get('state')!='live':
+        raise ValueError('Instrument unavailable or not live')
+    tick = finite(record.get('tickSz',0))
+    if tick <= 0:
+        raise ValueError('OKX returned an invalid price tick size')
+    effective = replace(cfg,tick=tick)
+    effective.validate()
+    if abs(tick-cfg.tick)>max(tick,cfg.tick)*1e-8:
+        print(f'[INFO] OKX price tick: {tick:g}; live calculations use the exchange price grid')
+    return effective
+
+
 def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
     core = cfg.core
     data = core.collect_market_data()
@@ -1321,16 +1348,6 @@ def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
     data['trusted'] = data.get('execution_price_trusted',False)
     data['candles'] = {tf:[asdict(c) for c in rows] for tf,rows in data.get('candles',{}).items()}
     data['smt_candles_15m'] = [asdict(c) for c in data.get('smt_candles_15m',[])]
-    if data.get('execution_price_trusted'):
-        url = 'https://www.okx.com/api/v5/public/instruments?'+urllib.parse.urlencode(
-            {'instType':'SWAP' if cfg.instrument.endswith('-SWAP') else 'SPOT','instId':cfg.instrument})
-        resp = core.http_get(url)
-        records = resp.json().get('data',[]) if resp else []
-        if not records or records[0].get('state')!='live':
-            raise ValueError('Instrument unavailable or not live')
-        actual_tick = finite(records[0]['tickSz'])
-        if abs(actual_tick-cfg.tick)>max(actual_tick,cfg.tick)*1e-8:
-            raise ValueError(f'Set PRICE_TICK_SIZE={actual_tick}; incorrect tick size')
     return Snapshot.parse(data)
 
 
@@ -1342,6 +1359,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
     if notify and (not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID):
         raise ValueError('Telegram credentials required before starting --notify')
     with locked(Path(str(state_path)+'.lock')):
+        if snapshot_path is None:
+            cfg = resolve_live_config(cfg)
         state = load_state(state_path,cfg)
         read_json(journal_path)
         if ack and state.get('reconciliation'):

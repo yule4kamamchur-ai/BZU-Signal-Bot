@@ -2,14 +2,17 @@
 import copy
 import ast
 import hashlib
+import io
 import json
 import math
+import os
 import tempfile
 import unittest
 from dataclasses import replace, asdict
+from contextlib import redirect_stdout
 from functools import wraps
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import full_limit_engine as b
 import bot_oneshot as core
@@ -384,6 +387,83 @@ def full_fixture(side="LONG"):
                           "candles":{tf:[asdict(c) for c in rows] for tf,rows in data["candles"].items()},
                           "smt_candles_15m":[asdict(c) for c in data.get("smt_candles_15m",[])]})
     return cfg, ctx, anchor, s
+
+
+class LiveTickTests(unittest.TestCase):
+    def metadata(self, **changes):
+        record = {"instId":"BZ-USDT-SWAP", "state":"live", "tickSz":"0.01"}
+        record.update(changes)
+        return Mock(json=Mock(return_value={"code":"0", "data":[record]}))
+
+    def test_live_tick_overrides_stale_environment_without_mutating_config(self):
+        cfg = replace(b.Config(), core=core)
+        with patch.object(core, 'http_get', return_value=self.metadata()) as fetch, redirect_stdout(io.StringIO()):
+            resolved = b.resolve_live_config(cfg)
+        self.assertEqual(resolved.tick, .01)
+        self.assertEqual(cfg.tick, .001)
+        self.assertIs(resolved.core, core)
+        self.assertIn('instId=BZ-USDT-SWAP', fetch.call_args.args[0])
+        self.assertIn('instType=SWAP', fetch.call_args.args[0])
+        fetch.assert_called_once()
+
+    def test_invalid_live_metadata_never_falls_back_to_stale_tick(self):
+        cfg = replace(b.Config(), core=core)
+        responses = [None, Mock(json=Mock(return_value={"code":"500", "data":[]})),
+                     Mock(json=Mock(return_value={"code":"0", "data":[]})),
+                     self.metadata(instId='OTHER-USDT-SWAP'), self.metadata(state='suspend')]
+        responses += [self.metadata(tickSz=value) for value in ('0', '-0.01', 'nan', 'inf', 'bad')]
+        for response in responses:
+            with self.subTest(response=response), patch.object(core, 'http_get', return_value=response):
+                with self.assertRaises(ValueError):
+                    b.resolve_live_config(cfg)
+
+    def test_live_initialization_and_restart_use_exchange_tick_for_pending_plan(self):
+        cfg, _, _, snap = full_fixture()
+        later = copy.deepcopy(snap)
+        later.now += 900_000
+        later.ticker_ts = later.now
+        later.price, later.bid, later.ask = 70.02, 70.01, 70.03
+        later.candles['3m'] += [candle(NOW+i*180_000,70,70.05,69.98,70.02) for i in range(5)]
+        later.candles['15m'].append(candle(NOW,70,70.05,69.98,70.02))
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path, journal_path = Path(tmp)/'state.json', Path(tmp)/'journal.json'
+            with patch.dict(os.environ, {'PRICE_TICK_SIZE':'0.001'}), \
+                 patch.object(core, 'STATE_FILE', str(state_path)), \
+                 patch.object(core, 'JOURNAL_FILE', str(journal_path)), \
+                 patch.object(core, 'http_get', return_value=self.metadata()) as fetch, \
+                 patch.object(b, 'collect_snapshot', side_effect=[snap,later]) as collect, \
+                 patch.object(b, 'load_state', wraps=b.load_state) as load, redirect_stdout(io.StringIO()):
+                self.assertEqual(b.run_live(core), 0)
+                first = b.read_json(state_path)
+                plan = first['pending']
+                self.assertIsNotNone(plan)
+                for key in ('entry','stop','tp1','tp2','tp3'):
+                    self.assertAlmostEqual(plan[key]/.01, round(plan[key]/.01))
+                self.assertEqual(b.run_live(core), 0)
+                second = b.read_json(state_path)
+            self.assertEqual(fetch.call_count, 2)
+            self.assertTrue(all(call.args[0].tick == .01 for call in collect.call_args_list))
+            self.assertTrue(all(call.args[1].tick == .01 for call in load.call_args_list))
+            self.assertEqual(first['config_hash'], second['config_hash'])
+            self.assertEqual(second['pending']['id'], plan['id'])
+            self.assertEqual(second['pending']['entry'], plan['entry'])
+
+    def test_offline_snapshot_keeps_explicit_tick_without_exchange_requests(self):
+        cfg, _, _, snap = full_fixture()
+        payload = {"now":snap.now, "price":snap.price, "bid":snap.bid, "ask":snap.ask,
+                   "trusted":True, "ticker_ts":snap.ticker_ts, "instrument":snap.instrument,
+                   "candles":{tf:[asdict(c) for c in rows] for tf,rows in snap.candles.items()}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'snapshot.json'
+            b.atomic_write(path, payload)
+            with patch.dict(os.environ, {'PRICE_TICK_SIZE':'0.001'}), \
+                 patch.object(core, 'STATE_FILE', str(Path(tmp)/'state.json')), \
+                 patch.object(core, 'JOURNAL_FILE', str(Path(tmp)/'journal.json')), \
+                 patch.object(core, 'http_get', side_effect=AssertionError('offline network request')), \
+                 patch.object(b, 'resolve_live_config', side_effect=AssertionError('offline metadata request')), \
+                 patch.object(b, 'load_state', wraps=b.load_state) as load, redirect_stdout(io.StringIO()):
+                self.assertEqual(b.run_live(core, snapshot_path=path), 0)
+            self.assertEqual(load.call_args.args[1].tick, .001)
 
 
 class FullSetupTests(unittest.TestCase):
