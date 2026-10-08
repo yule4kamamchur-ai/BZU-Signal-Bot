@@ -28,8 +28,7 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.2.0-confirmed-ict-quality"
-import signal_quality as quality
+VERSION = "full-ict-v12.1.0-two-slots-clear-followup"
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -309,7 +308,8 @@ def setup_statistics(state: dict, cfg: Config) -> dict:
     report = {}
     for setup in cfg.core.DETECTED_SETUP_TYPES:
         rows = [t for t in state.get("trades", []) if t.get("setup_type") == setup
-                and t.get("bot_version_at_entry",t.get("entry_version")) == VERSION]
+                and t.get("bot_version_at_entry",t.get("entry_version")) == VERSION
+                and not t.get("ambiguous_ohlc")]
         stat = statistics(rows)
         n = stat["trades"]
         status = "INSUFFICIENT_SAMPLE" if n < cfg.setup_min_sample else (
@@ -546,56 +546,28 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 refused[reason] = refused.get(reason,0)+1
                 watch.append({"setup": a.setup_type,"anchor_id": a.id,"side": core.side_sign(a.side),
                               "level": a.level,"reason": reason,"score": a.score})
-    if set(quality.CONTRACTS)!=set(core.DETECTED_SETUP_TYPES):
-        raise ValueError('Quality contracts must cover all 24 original setups')
-    ledger = quality.ensure(state,cfg)
-    # Evaluate every scenario BEFORE combining nearby levels. A high-score
-    # unconfirmed continuation must not suppress a valid reversal at that price.
-    assessments = {p['id']:quality.assess(p,s,ctx,cfg,sys.modules[__name__],ledger['observations']) for p in plans}
-    for p in plans:
-        q = assessments[p['id']]
-        p['quality'] = q
-        p['probability'] = q['statistics']['estimate'] if q['statistics']['observations']>=quality.Settings().minimum_observations else None
-        p['probability_status'] = q['status']
-        p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
-    def priority(p):
-        q=p['quality'];stat=q['statistics']
-        supported=stat['observations']>=quality.Settings().minimum_observations
-        structural=quality.structural_reason(q['features'])=='CONFIRMED'
-        return (q['accepted'],structural,supported,stat['lower_95'] if supported else 0.,p['score'],p['net_rr'],p['zone_created_ts'])
-    plans.sort(key=priority,reverse=True)
+    plans.sort(key=lambda p:(p["score"],p["net_rr"],p["zone_created_ts"]),reverse=True)
     clusters = []
     for p in plans:
         cluster = next((q for q in clusters if q["side"] == p["side"]
                         and abs(q["entry"]-p["entry"]) <= max(3*cfg.tick,.15*ctx["atr3"])),None)
         if cluster is None:
-            p["supporting_setups"] = [p["setup"]] if p['quality']['accepted'] else []
-            p["supporting_families"] = [p["canonical_setup_family"]] if p['quality']['accepted'] else []
-            p['alternative_scenarios'] = [{'id':p['id'],'setup':p['setup'],'reason':p['quality']['reason']}]
+            p["supporting_setups"] = [p["setup"]]
+            p["supporting_families"] = [p["canonical_setup_family"]]
             p["parent_keys"] = []
             clusters.append(p)
         else:
-            cluster['alternative_scenarios'].append({'id':p['id'],'setup':p['setup'],'reason':p['quality']['reason']})
-            if p['quality']['accepted'] and p["setup"] not in cluster["supporting_setups"]:
+            if p["setup"] not in cluster["supporting_setups"]:
                 cluster["supporting_setups"].append(p["setup"])
             cluster["parent_keys"].append(p["event_key"])
-            if p['quality']['accepted'] and p["canonical_setup_family"] not in cluster["supporting_families"]:
+            if p["canonical_setup_family"] not in cluster["supporting_families"]:
                 cluster["supporting_families"].append(p["canonical_setup_family"])
-    # Correlated votes do not manufacture a higher success probability or score.
-    clusters.sort(key=priority,reverse=True)
-    quality.watch_candidates(state,clusters,assessments,cfg)
-    accepted = []
     for p in clusters:
-        q = assessments[p['id']]
-        if q['accepted']:
-            accepted.append(p)
-        else:
-            refused[q['reason']] = refused.get(q['reason'],0)+1
-            watch.append({'setup':p['setup'],'side':p['side'],'level':p['entry'],'reason':q['reason'],'score':p['score']})
+        p["score"] = min(100,p["score"]+min(8,3*(len(p["supporting_families"])-1)))
+    clusters.sort(key=lambda p:(p["score"],p["net_rr"]),reverse=True)
     contexts = {tf:{**bias(s.candles[tf]), "side": core.side_sign(core.structure_snapshot(s.candles[tf],60,2)["direction"])}
                 for tf in ("15m","1H","4H")}
-    return {"health": [],"plans": accepted,"candidate_plans":clusters,"quality_assessments":assessments,
-            "watch": sorted(watch,key=lambda w:-w["score"])[:24],
+    return {"health": [],"plans": clusters,"watch": sorted(watch,key=lambda w:-w["score"])[:24],
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
             "raw_plans": len(plans),"registered_setups": len(core.DETECTORS)}
@@ -953,7 +925,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     bind_order_numbers(state)
     advance_lifecycle(state, s, cfg)
     amend_at_report(state, s, cfg)
-    quality.advance(state,s,cfg,sys.modules[__name__])
     # A non-PAPER reconciliation still needs a human check. Existing positions
     # continue to be managed; one uncertain interval never erases another plan.
     unresolved = [view['reconciliation'] for _,view in slot_views(state) if view.get('reconciliation')]
@@ -1321,11 +1292,6 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "occupied_slots": occupied_slots(state), "max_slots": 2,
                       "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
                       "reconciliation_history": state.get('reconciliation_history',[]),
-                      "quality_summary": {"strategy":quality.STRATEGY,
-                                          "observed_outcomes":len(state.get('quality',{}).get('observations',[])),
-                                          "shadow_plans":len(state.get('quality',{}).get('pending',[])),
-                                          "target_win_rate":quality.Settings().target_win_rate,
-                                          "target_validated":False},
                       "statistics": statistics(state["trades"]),"setup_statistics": state.get("setup_statistics",{})}
     # Preserve complete legacy history and unknown fields. New ledger is merged by
     # stable identity; state remains authoritative if journal export fails once.
@@ -1429,7 +1395,6 @@ def replay(data: dict, cfg: Config) -> dict:
             "trades": state["trades"], "orders": state["orders"], "events": state["events"],
             "active_at_end": state["active"], "pending_at_end": state["pending"],
             "open_plans_at_end": open_plans(state), "second_slot_at_end": state['second_slot'],
-            "quality": state.get('quality',{}),
             "limitations": ["OHLC execution proxy; no queue position or actual exchange fills",
                             "Stop wins same-bar ambiguity; entry-bar TP needs a close beyond TP",
                             "Stop adjustments only at 15m reports, effective next whole 3m bar",
@@ -1625,15 +1590,6 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         if snapshot_path is None:
             cfg = resolve_live_config(cfg)
         state = load_state(state_path,cfg)
-        try:
-            quality.seed(state,cfg,Path(os.environ.get('QUALITY_MODEL_FILE',str(ROOT/'quality_model.json'))))
-            state.pop('quality_model_warning',None)
-        except (ValueError,OSError,KeyError,TypeError) as exc:
-            # An optional research artifact must never stop open-trade care.
-            # Its incompatible evidence is not used; existing matching evidence
-            # and the closed-bar confirmation policy remain available.
-            state['quality_model_warning']={'reason':str(exc),'ts':int(time.time()*1000)}
-            print('QUALITY_MODEL_REJECTED: '+str(exc)+'; continuing lifecycle',file=sys.stderr)
         read_json(journal_path)
         if ack and state.get('reconciliation'):
             state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(state['reconciliation']),
@@ -1678,7 +1634,7 @@ def main(core) -> int:
         return 0 if core._run_self_test() else 1
     if args.self_test:
         import unittest
-        suite = unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
+        suite = unittest.defaultTestLoader.discover(str(ROOT),pattern='test_full_limit_engine.py')
         if not suite.countTestCases():
             raise ValueError('test_full_limit_engine.py required')
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1

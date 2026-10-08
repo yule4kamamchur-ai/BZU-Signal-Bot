@@ -418,7 +418,7 @@ class LiveTickTests(unittest.TestCase):
                     b.resolve_live_config(cfg)
 
     def test_live_initialization_and_restart_use_exchange_tick_for_pending_plan(self):
-        cfg, _, _, snap = full_fixture()
+        cfg, ctx, anchor, snap = full_fixture()
         later = copy.deepcopy(snap)
         later.now += 900_000
         later.ticker_ts = later.now
@@ -432,6 +432,7 @@ class LiveTickTests(unittest.TestCase):
                  patch.object(core, 'JOURNAL_FILE', str(journal_path)), \
                  patch.object(core, 'http_get', return_value=self.metadata()) as fetch, \
                  patch.object(b, 'collect_snapshot', side_effect=[snap,later]) as collect, \
+                 patch.object(b, 'analyze', side_effect=lambda s,c,st:analysis([b.full_plan(anchor,ctx,s,c,{})[0]])), \
                  patch.object(b, 'load_state', wraps=b.load_state) as load, redirect_stdout(io.StringIO()):
                 self.assertEqual(b.run_live(core), 0)
                 first = b.read_json(state_path)
@@ -476,7 +477,7 @@ class FullSetupTests(unittest.TestCase):
     def test_neutral_htf_matches_plan_and_report(self):
         cfg,ctx,a,s = full_fixture()
         out = b.run_cycle(b.new_state(cfg),s,cfg)
-        p = out['selected']
+        p = out['analysis']['candidate_plans'][0]
         self.assertEqual(p['htf_1h'],out['analysis']['contexts']['1H']['side'])
         self.assertEqual(p['htf_4h'],out['analysis']['contexts']['4H']['side'])
         self.assertEqual(p['htf_1h'],0)
@@ -539,7 +540,8 @@ class FullSetupTests(unittest.TestCase):
         self.assertEqual(calls,[d.__name__ for d in core.DETECTORS])
         self.assertEqual(out["analysis"]["registered_setups"],24)
         self.assertFalse([d for d in out["analysis"]["detectors"] if d["status"]=="ERROR"])
-        self.assertEqual(out["action"],"PLACE_LIMIT")
+        self.assertEqual(out["action"],"WATCH")
+        self.assertTrue(out['analysis']['quality_assessments'])
 
     def test_incomplete_registry_cannot_run_silently(self):
         cfg,ctx,a,s = full_fixture()
@@ -599,7 +601,7 @@ class FullSetupTests(unittest.TestCase):
         cfg,ctx,a,s = full_fixture()
         state = b.new_state(cfg)
         out = b.run_cycle(state,s,cfg)
-        p = state["pending"]
+        p = out['analysis']['candidate_plans'][0]
         for key in ("qty","quantity","position_size","position_risk_pct","deposit","margin","leverage"):
             self.assertNotIn(key,p)
         msg = b.build_message(state,s,out,cfg).lower()
@@ -627,14 +629,14 @@ class FullSetupTests(unittest.TestCase):
             anchors.append(clone)
         self.assertEqual(len(b.merge_full_anchors(anchors,b.new_state(cfg),s,cfg)),24)
 
-    def test_statistics_do_not_mix_old_architecture_or_ambiguous_fills(self):
+    def test_statistics_exclude_old_architecture_but_keep_conservative_losses(self):
         cfg,ctx,a,s = full_fixture()
         state = b.new_state(cfg)
         state["trades"] = [{"setup_type":a.setup_type,"bot_version_at_entry":"v10","net_r":-1} for _ in range(80)]
         state["trades"] += [{"setup_type":a.setup_type,"bot_version_at_entry":b.VERSION,"net_r":-1,"ambiguous_ohlc":True} for _ in range(30)]
         stat = b.setup_statistics(state,cfg)[a.setup_type]
-        self.assertEqual(stat["trades"],0)
-        self.assertEqual(stat["status"],"INSUFFICIENT_SAMPLE")
+        self.assertEqual(stat["trades"],30)
+        self.assertEqual(stat["status"],"NEGATIVE_EXPECTANCY")
         self.assertFalse(stat["probability_validated"])
 
     def test_confirmed_15m_resample_uses_four_and_sixteen_bars(self):
@@ -742,10 +744,12 @@ class FullLifecycleTests(unittest.TestCase):
         self.assertIsNotNone(state["active"])
         self.assertFalse(state["trades"])
 
-    def test_clean_real_cycle_places_plan_then_duplicate_does_not_repeat(self):
+    def test_weak_real_cycle_is_filtered_then_duplicate_does_not_repeat(self):
         cfg,ctx,a,s = full_fixture()
         state = b.new_state(cfg)
-        self.assertEqual(b.run_cycle(state,s,cfg)["action"],"PLACE_LIMIT")
+        self.assertEqual(b.run_cycle(state,s,cfg)["action"],"WATCH")
+        self.assertIsNone(state['pending'])
+        self.assertTrue(state['quality']['pending'])
         before = copy.deepcopy(state)
         self.assertEqual(b.run_cycle(state,s,cfg)["action"],"DUPLICATE_OR_OUT_OF_ORDER")
         self.assertEqual(state,before)
