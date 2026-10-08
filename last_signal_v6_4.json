@@ -1,6 +1,6 @@
 {
   "schema": "full_ict_limit_state_v12",
-  "version": "full-ict-v12.0.0-all-24-limit-optimizer",
+  "version": "full-ict-v12.1.0-two-slots-clear-followup",
   "instrument": "BZ-USDT-SWAP",
   "config_hash": "88ea5205cb24e9e976",
   "pending": null,
@@ -812,7 +812,9 @@
       "architecture_version_at_entry": "full_ict_limit_state_v12",
       "result": "LOSS",
       "close_action": "STOP",
-      "ambiguous_ohlc": false
+      "ambiguous_ohlc": false,
+      "order_number": 1,
+      "display_id": "#001"
     },
     {
       "id": "c2b838eaefd7ad22ee",
@@ -1654,7 +1656,9 @@
       "architecture_version_at_entry": "full_ict_limit_state_v12",
       "result": "WIN",
       "close_action": "STOP",
-      "ambiguous_ohlc": false
+      "ambiguous_ohlc": false,
+      "order_number": 2,
+      "display_id": "#002"
     },
     {
       "id": "94a21150034686a47b",
@@ -2155,7 +2159,9 @@
       "architecture_version_at_entry": "full_ict_limit_state_v12",
       "result": "LOSS",
       "close_action": "STOP",
-      "ambiguous_ohlc": false
+      "ambiguous_ohlc": false,
+      "order_number": 3,
+      "display_id": "#003"
     }
   ],
   "orders": [
@@ -2931,7 +2937,9 @@
         "SESSION_EXPANSION"
       ],
       "reason": "PAPER_ONE_TICK_PENETRATION",
-      "resolved_ts": 1791286920000
+      "resolved_ts": 1791286920000,
+      "order_number": 1,
+      "display_id": "#001"
     },
     {
       "id": "c2b838eaefd7ad22ee",
@@ -3730,7 +3738,9 @@
         "VALUE_RECLAIM"
       ],
       "reason": "PAPER_ONE_TICK_PENETRATION",
-      "resolved_ts": 1791290340000
+      "resolved_ts": 1791290340000,
+      "order_number": 2,
+      "display_id": "#002"
     },
     {
       "id": "94a21150034686a47b",
@@ -4204,7 +4214,9 @@
         "VALUE_RECLAIM"
       ],
       "reason": "PAPER_ONE_TICK_PENETRATION",
-      "resolved_ts": 1791301320000
+      "resolved_ts": 1791301320000,
+      "order_number": 3,
+      "display_id": "#003"
     },
     {
       "id": "b6bfc3db5cf4cb849a",
@@ -4757,7 +4769,7 @@
       "entry_stage": "CORE",
       "execution_source": "LIMIT_ARMED_AT_LEVEL",
       "execution": "PAPER_SIGNAL",
-      "status": "UNRESOLVED",
+      "status": "UNCONFIRMED",
       "last_bar": 0,
       "parent_keys": [],
       "version": "full-ict-v12.0.0-all-24-limit-optimizer",
@@ -4769,7 +4781,12 @@
         "LIQUIDITY_REVERSAL"
       ],
       "reason": "PLACEMENT_INSIDE_TOUCHED_BAR",
-      "resolved_ts": 1791307260000
+      "resolved_ts": 1791307260000,
+      "order_number": 4,
+      "display_id": "#004",
+      "original_status": "UNRESOLVED",
+      "excluded_from_win_rate": true,
+      "released_ts": 1791457442893
     }
   ],
   "events": [
@@ -4929,6 +4946,14 @@
       "kind": "UNRESOLVED",
       "ts": 1791307260000,
       "time": "2026-10-06T17:21:00+00:00",
+      "order_id": "b6bfc3db5cf4cb849a",
+      "reason": "PLACEMENT_INSIDE_TOUCHED_BAR"
+    },
+    {
+      "id": "8f0dd906e282b84f11",
+      "kind": "UNCONFIRMED_RELEASED",
+      "ts": 1791457442893,
+      "time": "2026-10-08T11:04:02.893000+00:00",
       "order_id": "b6bfc3db5cf4cb849a",
       "reason": "PLACEMENT_INSIDE_TOUCHED_BAR"
     }
@@ -8305,15 +8330,132 @@
       ],
       "raw_plans": 3,
       "registered_setups": 24
+    },
+    {
+      "ts": 1791457442893,
+      "time": "2026-10-08T11:04:02.893000+00:00",
+      "action": "WATCH",
+      "price": 104.53,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [],
+      "occupied_slots": 0,
+      "max_slots": 2,
+      "rejections": {
+        "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS": 3,
+        "LIMIT_UNREACHABLE": 3
+      },
+      "health": [],
+      "daily": {
+        "net_r": 0,
+        "losses_r": 0,
+        "entries": 0
+      },
+      "detectors": [
+        {
+          "detector": "detect_sweep_reclaim",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_capitulation_recovery",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_range_edge_reversal",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_failed_auction_rejection",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_liquidity_sweep_reversal_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_buyer_exhaustion_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_pullback_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_fresh_base_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_acceptance_retest_continuation",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_momentum_no_pullback_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_acceleration_pullback_reentry",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_direction_flip_15m",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_trend_ignition",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_breakout_retest",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_range_compression_breakout",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_opening_range_breakout",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_liquidity_ladder",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_failed_opening_range_breakout",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_failed_breakout_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_mss_reversal_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_or_failure_2_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_session_mean_reclaim",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_daily_weekly_open_reclaim",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_time_of_day_adaptive",
+          "status": "DETECTED"
+        }
+      ],
+      "raw_plans": 0,
+      "registered_setups": 24
     }
   ],
-  "last_run_ts": 1791307982985,
+  "last_run_ts": 1791457442893,
   "notification_queue": [],
-  "reconciliation": {
-    "order_id": "b6bfc3db5cf4cb849a",
-    "reason": "PLACEMENT_INSIDE_TOUCHED_BAR",
-    "ts": 1791307260000
-  },
+  "reconciliation": null,
   "anchor_memory": {
     "d88a712644dbdd8773": {
       "id": "anc-20261006110430-84934074",
@@ -11179,108 +11321,178 @@
       "cooldown_until_ts": 0,
       "reject_reason": "",
       "schema_version": "organic_v10.0.0"
+    },
+    "0ac656c7d7e0a43623": {
+      "id": "anc-20261008110402-cc368fb5",
+      "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
+      "setup_family": "TREND_CONTINUATION",
+      "side": "LONG",
+      "level": 103.57,
+      "kind": "BREAK_LEVEL",
+      "invalidation": 103.152,
+      "created_ts": 1791457442893,
+      "expires_ts": 1791468242893,
+      "reason": "Рівень 103.5700 пробито й прийнято, чекаємо ретест",
+      "score": 66.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "break_level": 103.57,
+        "shift_kind": "CHoCH_UP",
+        "age_bars": 0
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "a06f0450dfdb797659": {
+      "id": "anc-20261008110402-ce3a6d64",
+      "setup_type": "DIRECTION_FLIP_15M",
+      "setup_family": "STRUCTURAL_EXPANSION",
+      "side": "LONG",
+      "level": 103.57,
+      "kind": "STRUCTURE_SHIFT",
+      "invalidation": 103.152,
+      "created_ts": 1791457442893,
+      "expires_ts": 1791468242893,
+      "reason": "Зміна напрямку 15m: контроль перейшов через 103.5700",
+      "score": 68.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "broken_pivot": 103.57,
+        "shift_kind": "CHoCH_UP",
+        "htf_state": "MIXED",
+        "structure_direction": "NEUTRAL"
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "9cc1f06cbecea343a2": {
+      "id": "anc-20261008110402-c1607127",
+      "setup_type": "BREAKOUT_RETEST",
+      "setup_family": "STRUCTURAL_EXPANSION",
+      "side": "LONG",
+      "level": 102.23,
+      "kind": "BREAK_LEVEL",
+      "invalidation": 101.812,
+      "created_ts": 1791457442893,
+      "expires_ts": 1791468242893,
+      "reason": "prev day high 102.2300 пробито, чекаємо ретест",
+      "score": 57.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "broken_level_key": "prev_day_high",
+        "broken_level": 102.23,
+        "distance_atr": 6.453
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "192e2c30a6e0f02df9": {
+      "id": "anc-20261008110402-4870d161",
+      "setup_type": "OPENING_RANGE_BREAKOUT",
+      "setup_family": "SESSION_EXPANSION",
+      "side": "LONG",
+      "level": 100.88,
+      "kind": "RANGE_EDGE",
+      "invalidation": 100.462,
+      "created_ts": 1791457442893,
+      "expires_ts": 1791468242893,
+      "reason": "Opening range 100.4200-100.8800, робоча межа 100.8800",
+      "score": 53.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "or_high": 100.88,
+        "or_low": 100.42,
+        "or_width_atr": 1.291
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "9f76246929f0383ece": {
+      "id": "anc-20261008110402-8e363160",
+      "setup_type": "SESSION_MEAN_RECLAIM",
+      "setup_family": "VALUE_RECLAIM",
+      "side": "LONG",
+      "level": 102.71,
+      "kind": "VALUE_LEVEL",
+      "invalidation": 102.292,
+      "created_ts": 1791457442893,
+      "expires_ts": 1791468242893,
+      "reason": "Повернення до VWAP сесії 102.7100",
+      "score": 55.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "vwap": 102.709998,
+        "max_displacement_atr": 4.545
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "c8b93231eca9420a20": {
+      "id": "anc-20261008110402-f979c5cd",
+      "setup_type": "TIME_OF_DAY_ADAPTIVE",
+      "setup_family": "VALUE_RECLAIM",
+      "side": "SHORT",
+      "level": 104.55,
+      "kind": "RANGE_EDGE",
+      "invalidation": 104.968,
+      "created_ts": 1791457442893,
+      "expires_ts": 1791462842893,
+      "reason": "Межа азійського діапазону 104.5500 у сесію LONDON",
+      "score": 52.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "session": "LONDON",
+        "asia_low": 100.08,
+        "asia_high": 104.55
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
     }
   },
-  "level_cooldown": {
-    "9be75158f2acb78758": 1791312660000
-  },
+  "level_cooldown": {},
   "setup_statistics": {
-    "BUYER_EXHAUSTION_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "OPENING_RANGE_BREAKOUT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "FAILED_BREAKOUT_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "MSS_REVERSAL_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "RANGE_COMPRESSION_BREAKOUT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "OR_FAILURE_2_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
     "FRESH_BASE_CONTINUATION": {
       "trades": 0,
       "wins": 0,
@@ -11294,39 +11506,7 @@
       "max_drawdown_r": 0.0,
       "status": "INSUFFICIENT_SAMPLE",
       "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "SWEEP_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "RANGE_EDGE_REVERSAL": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
       "probability_validated": false
     },
     "FAILED_AUCTION_REJECTION": {
@@ -11342,215 +11522,7 @@
       "max_drawdown_r": 0.0,
       "status": "INSUFFICIENT_SAMPLE",
       "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "DIRECTION_FLIP_15M": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "DAILY_WEEKLY_OPEN_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "MOMENTUM_NO_PULLBACK_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "ACCELERATION_PULLBACK_REENTRY": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "PULLBACK_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "LIQUIDITY_LADDER": {
-      "trades": 1,
-      "wins": 0,
-      "losses": 1,
-      "breakeven": 0,
-      "win_rate": 0.0,
-      "wilson_lower_95": 0.0,
-      "net_r": -1.1949983533333242,
-      "expectancy_r": -1.1949983533333242,
-      "profit_factor": 0.0,
-      "max_drawdown_r": 1.1949983533333242,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "FAILED_OPENING_RANGE_BREAKOUT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "SESSION_MEAN_RECLAIM": {
-      "trades": 1,
-      "wins": 0,
-      "losses": 1,
-      "breakeven": 0,
-      "win_rate": 0.0,
-      "wilson_lower_95": 0.0,
-      "net_r": -1.2129522523809555,
-      "expectancy_r": -1.2129522523809555,
-      "profit_factor": 0.0,
-      "max_drawdown_r": 1.2129522523809555,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "ACCEPTANCE_RETEST_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "BREAKOUT_RETEST": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "TIME_OF_DAY_ADAPTIVE": {
-      "trades": 1,
-      "wins": 1,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": 1.0,
-      "wilson_lower_95": 0.20654329147389294,
-      "net_r": 1.711246547441905,
-      "expectancy_r": 1.711246547441905,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "TREND_IGNITION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
-      "probability_validated": false
-    },
-    "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
       "probability_validated": false
     },
     "CAPITULATION_RECOVERY": {
@@ -11566,207 +11538,414 @@
       "max_drawdown_r": 0.0,
       "status": "INSUFFICIENT_SAMPLE",
       "required_sample": 20,
-      "version": "full-ict-v12.0.0-all-24-limit-optimizer",
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "BUYER_EXHAUSTION_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "BREAKOUT_RETEST": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "FAILED_BREAKOUT_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "SESSION_MEAN_RECLAIM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "RANGE_EDGE_REVERSAL": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "FAILED_OPENING_RANGE_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "OPENING_RANGE_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "MSS_REVERSAL_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "TREND_IGNITION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "ACCELERATION_PULLBACK_REENTRY": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "DAILY_WEEKLY_OPEN_RECLAIM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "RANGE_COMPRESSION_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "OR_FAILURE_2_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "TIME_OF_DAY_ADAPTIVE": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "SWEEP_RECLAIM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "DIRECTION_FLIP_15M": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "PULLBACK_CONTINUATION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "ACCEPTANCE_RETEST_CONTINUATION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "MOMENTUM_NO_PULLBACK_CONTINUATION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
+      "probability_validated": false
+    },
+    "LIQUIDITY_LADDER": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.1.0-two-slots-clear-followup",
       "probability_validated": false
     }
   },
   "regime_memory": {
-    "last_regime": "TRANSITION",
+    "last_regime": "TREND",
     "last_bias": "NEUTRAL",
-    "updated_at": "2026-10-06T17:33:02.985000+00:00"
+    "updated_at": "2026-10-08T11:04:02.893000+00:00"
   },
   "watch": [
     {
-      "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
-      "anchor_id": "anc-20261006161837-069c82ab",
+      "setup": "DIRECTION_FLIP_15M",
+      "anchor_id": "anc-20261008110402-ce3a6d64",
       "side": 1,
-      "level": 99.02,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 68.38
-    },
-    {
-      "setup": "PULLBACK_CONTINUATION",
-      "anchor_id": "anc-20261006164833-cb63b089",
-      "side": 1,
-      "level": 97.48,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 67.51
-    },
-    {
-      "setup": "PULLBACK_CONTINUATION",
-      "anchor_id": "anc-20261006163426-97bda63a",
-      "side": 1,
-      "level": 97.48,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 66.86
-    },
-    {
-      "setup": "PULLBACK_CONTINUATION",
-      "anchor_id": "anc-20261006154804-92db5124",
-      "side": 1,
-      "level": 97.48,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 66.44
-    },
-    {
-      "setup": "PULLBACK_CONTINUATION",
-      "anchor_id": "anc-20261006161837-51edfee5",
-      "side": 1,
-      "level": 97.48,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 66.2
+      "level": 103.57,
+      "reason": "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS",
+      "score": 68.0
     },
     {
       "setup": "ACCEPTANCE_RETEST_CONTINUATION",
-      "anchor_id": "anc-20261006154804-1c35e233",
+      "anchor_id": "anc-20261008110402-cc368fb5",
       "side": 1,
-      "level": 98.59,
-      "reason": "LIMIT_UNREACHABLE",
+      "level": 103.57,
+      "reason": "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS",
       "score": 66.0
-    },
-    {
-      "setup": "ACCEPTANCE_RETEST_CONTINUATION",
-      "anchor_id": "anc-20261006160414-738b5654",
-      "side": 1,
-      "level": 98.59,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 66.0
-    },
-    {
-      "setup": "ACCEPTANCE_RETEST_CONTINUATION",
-      "anchor_id": "anc-20261006143349-e26f11ba",
-      "side": 1,
-      "level": 98.28,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 63.0
-    },
-    {
-      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
-      "anchor_id": "anc-20261006164833-93087d56",
-      "side": -1,
-      "level": 99.98,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 58.0
-    },
-    {
-      "setup": "FAILED_BREAKOUT_SHORT",
-      "anchor_id": "anc-20261006164833-c5da0561",
-      "side": -1,
-      "level": 99.98,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 58.0
-    },
-    {
-      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
-      "anchor_id": "anc-20261006170429-a3c2b32f",
-      "side": -1,
-      "level": 100.13,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 58.0
     },
     {
       "setup": "BREAKOUT_RETEST",
-      "anchor_id": "anc-20261006154804-5aae9ff4",
-      "side": -1,
-      "level": 99.7,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
+      "anchor_id": "anc-20261008110402-c1607127",
+      "side": 1,
+      "level": 102.23,
+      "reason": "LIMIT_UNREACHABLE",
       "score": 57.0
     },
     {
-      "setup": "DAILY_WEEKLY_OPEN_RECLAIM",
-      "anchor_id": "anc-20261006170429-5d4db835",
+      "setup": "SESSION_MEAN_RECLAIM",
+      "anchor_id": "anc-20261008110402-8e363160",
       "side": 1,
-      "level": 100.17,
-      "reason": "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION",
-      "score": 56.0
+      "level": 102.71,
+      "reason": "LIMIT_UNREACHABLE",
+      "score": 55.0
     },
     {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006143349-621530ed",
+      "setup": "OPENING_RANGE_BREAKOUT",
+      "anchor_id": "anc-20261008110402-4870d161",
+      "side": 1,
+      "level": 100.88,
+      "reason": "LIMIT_UNREACHABLE",
+      "score": 53.0
+    },
+    {
+      "setup": "TIME_OF_DAY_ADAPTIVE",
+      "anchor_id": "anc-20261008110402-f979c5cd",
       "side": -1,
-      "level": 99.0044,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 55.0
-    },
+      "level": 104.55,
+      "reason": "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS",
+      "score": 52.0
+    }
+  ],
+  "second_slot": {
+    "pending": null,
+    "active": null,
+    "reconciliation": null
+  },
+  "ledger_revision": 2,
+  "order_sequence": 4,
+  "reconciliation_history": [
     {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006144730-1ce8ddfb",
-      "side": -1,
-      "level": 99.0006,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006150416-539796f6",
-      "side": -1,
-      "level": 98.9934,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006151909-1a2ef968",
-      "side": -1,
-      "level": 98.9885,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006153359-c04d178d",
-      "side": -1,
-      "level": 98.9837,
-      "reason": "LIMIT_WOULD_CROSS_SPREAD",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006163426-e0b64c6b",
-      "side": 1,
-      "level": 99.0072,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006164833-acf66e70",
-      "side": 1,
-      "level": 99.0265,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006170429-44eb2ad4",
-      "side": 1,
-      "level": 99.0554,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006171836-95acf2e7",
-      "side": 1,
-      "level": 99.0717,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 55.0
-    },
-    {
-      "setup": "SESSION_MEAN_RECLAIM",
-      "anchor_id": "anc-20261006173302-775c0b67",
-      "side": 1,
-      "level": 99.0895,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 55.0
-    },
-    {
-      "setup": "DIRECTION_FLIP_15M",
-      "anchor_id": "anc-20261006143349-d1f18a8e",
-      "side": 1,
-      "level": 98.28,
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 54.0
+      "order_id": "b6bfc3db5cf4cb849a",
+      "reason": "PLACEMENT_INSIDE_TOUCHED_BAR",
+      "ts": 1791307260000,
+      "released_ts": 1791457442893
     }
   ]
 }
