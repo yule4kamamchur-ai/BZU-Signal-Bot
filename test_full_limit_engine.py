@@ -828,5 +828,270 @@ class FullLifecycleTests(unittest.TestCase):
             self.assertEqual(journal["custom_field"],{"keep":True})
 
 
+class TwoSlotTests(unittest.TestCase):
+    def plan(self, number, entry=100, side=1):
+        p = order(side)
+        p.update(id=f'order-{number}',order_id=f'order-{number}',event_key=f'event-{number}',
+                 entry=entry,stop=entry-side,initial_stop=entry-side,tp=entry+2*side,
+                 invalidation=entry-side,score=90-number,execution='PAPER_SIGNAL')
+        return p
+
+    def report(self, state, plans, now=NOW, bars=None, price=101):
+        snap = snapshot(now,price)
+        if bars is not None:
+            snap.candles['3m'] = bars
+        with patch.object(b,'analyze',return_value=analysis(plans)):
+            return b.run_cycle(state,snap,b.Config())
+
+    def test_two_distinct_limits_can_be_placed_and_third_cannot(self):
+        state = b.new_state(b.Config())
+        result = self.report(state,[self.plan(1),self.plan(2,99),self.plan(3,98)])
+        self.assertEqual(len(result['selected_plans']),2)
+        self.assertEqual(b.occupied_slots(state),2)
+        self.assertEqual([p['id'] for p in b.open_plans(state)],['order-1','order-2'])
+        self.assertEqual(state['signals'][-1]['followed_ids'],['order-1','order-2'])
+        self.assertEqual(state['signals'][-1]['placed_ids'],['order-1','order-2'])
+
+    def test_nearby_or_same_event_proposals_do_not_consume_second_slot(self):
+        for change in ({'entry':100.001},{'event_key':'event-1'},{'parent_keys':['event-1']}):
+            with self.subTest(change=change):
+                state = b.new_state(b.Config())
+                duplicate = self.plan(2,99)
+                duplicate.update(change)
+                self.report(state,[self.plan(1),duplicate])
+                self.assertEqual(b.occupied_slots(state),1)
+
+    def test_pending_and_filled_orders_both_reserve_capacity(self):
+        state = b.new_state(b.Config())
+        second = self.plan(2,98)
+        second['tp'] = 104
+        self.report(state,[self.plan(1),second])
+        bars = [candle(NOW+i*180_000,101,101.5,99.9 if i==0 else 100.5,101) for i in range(5)]
+        result = self.report(state,[self.plan(3,97)],NOW+900_000,bars)
+        self.assertIsNotNone(state['active'])
+        self.assertIsNotNone(state['second_slot']['pending'])
+        self.assertEqual(b.occupied_slots(state),2)
+        self.assertFalse(result['selected_plans'])
+
+    def test_partial_take_profit_does_not_free_capacity(self):
+        state = b.new_state(b.Config())
+        p = self.plan(1)
+        p.update(tp1=102,tp2=103,tp3=104,partials={'TP1':.65,'TP2':.2,'TP3':.15})
+        second = self.plan(2,98)
+        second['tp'] = 104
+        self.report(state,[p,second])
+        bars = [candle(NOW,101,101.5,99.9,101),candle(NOW+180_000,101,102.2,100.5,102)]
+        bars += [candle(NOW+i*180_000,102,102.2,101.5,102) for i in range(2,5)]
+        self.report(state,[self.plan(3,97)],NOW+900_000,bars,price=102)
+        self.assertTrue(state['active']['tp1_hit'])
+        self.assertAlmostEqual(state['active']['remaining'],.35)
+        self.assertEqual(b.occupied_slots(state),2)
+        self.assertFalse([e for e in state['events'] if e['kind']=='PLACED' and e['order_id']=='order-3'])
+
+    def test_closed_position_frees_only_its_slot_for_one_replacement(self):
+        state = b.new_state(b.Config())
+        self.report(state,[self.plan(1),self.plan(2,98)])
+        bars = [candle(NOW,101,101.5,99.9,101),candle(NOW+180_000,101,101.2,98.9,99.5)]
+        bars += [candle(NOW+i*180_000,99.5,99.7,99.2,99.5) for i in range(2,5)]
+        result = self.report(state,[self.plan(3,97),self.plan(4,96)],NOW+900_000,bars,99.5)
+        self.assertEqual(len(state['trades']),1)
+        self.assertEqual([p['id'] for p in result['selected_plans']],['order-3'])
+        self.assertEqual(state['second_slot']['pending']['id'],'order-2')
+        self.assertEqual(b.occupied_slots(state),2)
+
+    def test_two_fills_and_exit_of_only_second_position_are_independent(self):
+        state = b.new_state(b.Config())
+        state['pending'] = self.plan(1)
+        second = self.plan(2,99.5)
+        state['second_slot']['pending'] = second
+        bars = [candle(NOW,101,101.2,99.4,100.8),candle(NOW+180_000,100.8,101.6,100.3,101)]
+        b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
+        self.assertEqual(state['active']['id'],'order-1')
+        self.assertIsNone(state['second_slot']['active'])
+        self.assertEqual(state['trades'][0]['id'],'order-2')
+        self.assertEqual(state['trades'][0]['close_reason'],'TAKE_PROFIT')
+        self.assertEqual(state['trades'][0]['remaining'],0)
+        closed_order = next(o for o in state['orders'] if o['id']=='order-2')
+        self.assertEqual(closed_order['position_status'],'CLOSED')
+        self.assertEqual(closed_order['trade_net_r'],state['trades'][0]['net_r'])
+        self.assertEqual(len(state['orders']),2)
+        b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
+        self.assertEqual(len(state['orders']),2)
+        self.assertEqual(len(state['trades']),1)
+
+    def test_cancelling_second_slot_cannot_erase_first_order(self):
+        state = b.new_state(b.Config())
+        self.report(state,[self.plan(1),self.plan(2,99)])
+        view = list(b.slot_views(state))[1][1]
+        b.request_cancel(view,view['pending'],'TEST_CANCEL',NOW+180_000)
+        b.store_slot(state,2,view)
+        self.assertEqual(state['pending']['id'],'order-1')
+        self.assertIsNone(state['second_slot']['pending'])
+        self.assertEqual(state['orders'][0]['id'],'order-2')
+
+    def test_new_order_ignores_entire_pre_activation_candle(self):
+        state = b.new_state(b.Config())
+        p = self.plan(1)
+        p.update(placed_ts=NOW+60_000,effective_ts=NOW+180_000)
+        state['pending'] = p
+        bars = [candle(NOW,101,101.5,99.8,101),candle(NOW+180_000)]
+        b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
+        self.assertIsNotNone(state['pending'])
+        self.assertIsNone(state['reconciliation'])
+        self.assertFalse(state['orders'])
+        bars.append(candle(NOW+360_000,101,101.5,99.9,101))
+        b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
+        self.assertIsNotNone(state['active'])
+
+    def test_production_plan_activation_and_expiry_are_on_whole_bars(self):
+        cfg,ctx,a,snap = full_fixture()
+        snap.now += 60_000
+        snap.ticker_ts = snap.now
+        plan,reason = b.full_plan(a,ctx,snap,cfg,{})
+        self.assertIsNotNone(plan,reason)
+        self.assertEqual(plan['effective_ts'],NOW+180_000)
+        self.assertEqual(plan['expires_ts']%180_000,0)
+        self.assertGreaterEqual(plan['expires_ts']-plan['effective_ts'],900_000)
+
+    def test_aligned_cancellation_does_not_create_new_partial_bar_uncertainty(self):
+        state = b.new_state(b.Config())
+        state['pending'] = self.plan(1)
+        state['pending']['effective_ts'] = NOW
+        b.request_cancel(state,state['pending'],'TEST_CANCEL',NOW+60_000)
+        self.assertEqual(state['pending']['cancel_effective_ts'],NOW+180_000)
+        b.advance_lifecycle(state,lifecycle_snapshot([candle(NOW),candle(NOW+180_000,l=99.8)]),b.Config())
+        self.assertIsNone(state['reconciliation'])
+        self.assertEqual(state['orders'][0]['status'],'CANCELLED')
+
+    def test_missing_history_for_second_slot_freezes_both_without_mutation(self):
+        state = b.new_state(b.Config())
+        state['second_slot']['pending'] = self.plan(2)
+        state['last_run_ts'] = NOW
+        before = copy.deepcopy(state)
+        snap = snapshot(NOW+900_000)
+        snap.candles['3m'] = [candle(NOW+180_000)]
+        self.assertEqual(b.run_cycle(state,snap,b.Config())['action'],'DATA_HOLD')
+        self.assertEqual(state,before)
+
+    def test_daily_entry_limit_also_reserves_unfilled_orders(self):
+        cfg = replace(b.Config(),max_daily_trades=1)
+        state = b.new_state(cfg)
+        with patch.object(b,'analyze',return_value=analysis([self.plan(1),self.plan(2,99)])):
+            b.run_cycle(state,snapshot(),cfg)
+        self.assertEqual(b.occupied_slots(state),1)
+
+    def test_opposing_proposal_cannot_hedge_existing_order(self):
+        state = b.new_state(b.Config())
+        state['pending'] = self.plan(1)
+        result = self.report(state,[self.plan(2,102,-1)])
+        self.assertEqual(state['pending']['side'],1)
+        self.assertFalse(result['selected_plans'])
+
+    def test_old_v12_restart_keeps_history_geometry_and_readable_ids(self):
+        cfg = b.Config()
+        raw = b.new_state(cfg)
+        raw.pop('second_slot');raw.pop('order_sequence');raw.pop('ledger_revision')
+        raw['pending'] = self.plan(1)
+        raw['version'] = 'full-ict-v12.0.0-all-24-limit-optimizer'
+        raw['custom_field'] = {'keep':True}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'state.json'
+            b.atomic_write(path,raw)
+            migrated = b.load_state(path,cfg)
+            geometry = tuple(migrated['pending'][k] for k in ('entry','stop','tp','expires_ts'))
+            self.assertEqual(geometry,tuple(raw['pending'][k] for k in ('entry','stop','tp','expires_ts')))
+            self.assertEqual(migrated['custom_field'],raw['custom_field'])
+            label = migrated['pending']['display_id']
+            b.atomic_write(path,migrated)
+            self.assertEqual(b.load_state(path,cfg)['pending']['display_id'],label)
+
+    def test_two_slots_restart_preserves_both_and_export_is_idempotent(self):
+        state = b.new_state(b.Config())
+        self.report(state,[self.plan(1),self.plan(2,99)])
+        with tempfile.TemporaryDirectory() as tmp:
+            path,journal = Path(tmp)/'state.json',Path(tmp)/'journal.json'
+            b.atomic_write(path,state)
+            restored = b.load_state(path,b.Config())
+            self.assertEqual(b.open_plans(restored),b.open_plans(state))
+            b.export_journal(journal,restored);b.export_journal(journal,restored)
+            out = b.read_json(journal)['full_v12']
+            self.assertEqual(out['occupied_slots'],2)
+            self.assertEqual(len(out['open_plans']),2)
+            self.assertEqual(out['second_slot']['pending']['id'],'order-2')
+
+    def test_config_change_is_blocked_with_only_second_slot_open(self):
+        state = b.new_state(b.Config())
+        state['second_slot']['pending'] = self.plan(2)
+        with self.assertRaises(ValueError):
+            b.run_cycle(state,snapshot(),replace(b.Config(),tick=.01))
+
+    def uncertain_state(self):
+        state = b.new_state(b.Config())
+        p = self.plan(4)
+        p.update(status='UNRESOLVED',reason='PLACEMENT_INSIDE_TOUCHED_BAR',resolved_ts=NOW+180_000)
+        state['orders'] = [p]
+        state['reconciliation'] = {'order_id':p['id'],'reason':p['reason'],'ts':NOW+180_000}
+        return state
+
+    def test_old_paper_uncertainty_is_archived_after_deadline_without_invented_pnl(self):
+        state = self.uncertain_state()
+        result = self.report(state,[],now=NOW+86_400_000)
+        self.assertEqual(result['action'],'WATCH')
+        self.assertIsNone(state['reconciliation'])
+        self.assertEqual(state['orders'][0]['status'],'UNCONFIRMED')
+        self.assertTrue(state['orders'][0]['excluded_from_win_rate'])
+        self.assertFalse(state['trades'])
+        self.assertEqual(b.statistics(state['trades'])['trades'],0)
+        self.assertEqual(len(state['reconciliation_history']),1)
+
+    def test_unconfirmed_paper_reserves_slot_until_deadline_but_second_can_work(self):
+        state = self.uncertain_state()
+        result = self.report(state,[self.plan(1),self.plan(2,99)],now=NOW+900_000)
+        self.assertEqual(len(result['selected_plans']),1)
+        self.assertIsNotNone(state['reconciliation'])
+        self.assertIsNotNone(state['second_slot']['pending'])
+        self.assertEqual(b.occupied_slots(state),2)
+
+    def test_unknown_actual_execution_is_never_automatically_acknowledged(self):
+        state = self.uncertain_state()
+        state['orders'][0]['execution'] = 'LIVE_EXCHANGE'
+        result = self.report(state,[self.plan(1)],now=NOW+86_400_000)
+        self.assertEqual(result['action'],'RECONCILIATION_REQUIRED')
+        self.assertIsNotNone(state['reconciliation'])
+        self.assertFalse(result['selected_plans'])
+
+    def test_messages_identify_both_orders_and_omit_detector_noise(self):
+        state = b.new_state(b.Config())
+        result = self.report(state,[self.plan(1),self.plan(2,99)])
+        text = b.build_message(state,snapshot(),result,b.Config())
+        self.assertIn('#001 LONG',text);self.assertIn('#002 LONG',text)
+        self.assertIn('Зайнято місць: 2/2',text)
+        self.assertIn('Новий ордер — після звільнення',text)
+        for noise in ('Оцінка умов','Відхилення','Підстава','Контекст','24','COMBINED_'):
+            self.assertNotIn(noise,text)
+        self.assertLess(len(text),1800)
+
+    def test_profit_after_tp1_tp2_and_stop_is_reported_as_profitable_close(self):
+        state = b.new_state(b.Config())
+        trade = self.plan(1)
+        trade.update(status='CLOSED',net_r=1.711246547441905,closed_ts=NOW,tp1_hit=True,tp2_hit=True)
+        state['trades'] = [trade]
+        b.bind_order_numbers(state)
+        event = {'kind':'CLOSED','ts':NOW,'order_id':trade['id'],'reason':'STOP','net_r':trade['net_r']}
+        text = b.build_message(state,snapshot(),{'action':'WATCH','events':[event]},b.Config())
+        self.assertIn('#001 ЗАКРИТО: +1.71R — прибуток',text)
+        self.assertIn('TP1, TP2 досягнуто; стоп',text)
+        self.assertNotIn('збиток',text)
+
+    def test_current_stop_is_not_reported_as_already_replaced_before_effective_time(self):
+        state = b.new_state(b.Config())
+        p = self.plan(1)
+        p.update(status='OPEN',exit_deadline=NOW+3600000,pending_stop={'price':100.1,'effective_ts':NOW+180000})
+        state['active'] = p
+        text = b.build_message(state,snapshot(),{'action':'FOLLOW'},b.Config())
+        self.assertIn('SL: 99',text)
+        self.assertIn('Новий SL 100.1 з',text)
+
+
 if __name__ == "__main__":
     unittest.main()

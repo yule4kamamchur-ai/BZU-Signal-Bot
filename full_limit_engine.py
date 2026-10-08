@@ -28,7 +28,7 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.0.0-all-24-limit-optimizer"
+VERSION = "full-ict-v12.1.0-two-slots-clear-followup"
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -466,8 +466,12 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     score = round(min(100,max(0,score)), 2)
     if score < cfg.min_score:
         return None, "COMBINED_CONTEXT_SCORE_LOW"
-    expires = min(a.expires_ts, s.now+cfg.ttl_minutes*60_000, session_cutoff(s.now,cfg))
-    if expires-s.now < TF["15m"]:
+    # A 15m report usually arrives inside a 3m candle. Start PAPER observation
+    # on the next whole candle, so its pre-report extremes cannot invent a fill.
+    effective = ((s.now+TF["3m"]-1)//TF["3m"])*TF["3m"]
+    expires = min(a.expires_ts, effective+cfg.ttl_minutes*60_000, session_cutoff(s.now,cfg))
+    expires = (expires//TF["3m"])*TF["3m"]
+    if expires-effective < TF["15m"]:
         return None, "ORDER_LIFETIME_BELOW_REPORT_CADENCE"
     arming = {"distance_atr": distance, "age_minutes": (s.now-a.created_ts)/60_000,
               "runway_r": rr1, "runway": {"targets": targets, "nearest": nearest}, "armable": True}
@@ -493,7 +497,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
             "risk": risk, "gross_rr": rr1, "net_rr": net_rr, "costs_r": costs,
             "placement_price": s.price, "target_cancel_armed": sign*(s.price-tp1)<0,
             "score": score, "stop_distance_pct": risk/entry*100,
-            "placed_ts": s.now, "expires_ts": expires, "zone_created_ts": a.created_ts,
+            "placed_ts": s.now, "effective_ts": effective, "expires_ts": expires, "zone_created_ts": a.created_ts,
             "invalidation": a.invalidation, "target_source": nearest["kind"],
             "evidence": [a.reason]+candidate.confirmations, "candidate": core.candidate_to_dict(candidate),
             "htf_1h": core.side_sign(b1), "htf_4h": core.side_sign(b4),
@@ -579,7 +583,86 @@ def new_state(cfg: Config) -> dict:
             "pending": None, "active": None, "used_events": {}, "trades": [],
             "orders": [], "events": [], "signals": [], "last_run_ts": 0,
             "notification_queue": [], "reconciliation": None,
-            "anchor_memory": {}, "level_cooldown": {}, "setup_statistics": {}}
+            "anchor_memory": {}, "level_cooldown": {}, "setup_statistics": {},
+            "ledger_revision": 2, "order_sequence": 0,
+            "second_slot": {"pending": None, "active": None, "reconciliation": None}}
+
+
+def slot_views(state: dict):
+    """Two independent lifecycles share one event/history ledger.
+
+    The original pending/active fields remain slot 1 to preserve v12 state
+    identity and compatibility. A shallow view shares lists, not open plans.
+    """
+    yield 1, state
+    extra = state.get('second_slot', {'pending':None, 'active':None, 'reconciliation':None})
+    yield 2, {**state, **extra}
+
+
+def store_slot(state: dict, number: int, view: dict) -> None:
+    if number == 2:
+        state['second_slot'] = {key:view.get(key) for key in ('pending','active','reconciliation')}
+
+
+def open_plans(state: dict) -> list[dict]:
+    return [view[key] for _,view in slot_views(state) for key in ('pending','active') if view.get(key)]
+
+
+def occupied_slots(state: dict) -> int:
+    return sum(bool(view.get('pending') or view.get('active') or view.get('reconciliation'))
+               for _,view in slot_views(state))
+
+
+def bind_order_numbers(state: dict) -> None:
+    """Permanent readable IDs; historical and current copies share a number."""
+    rows = [row for row in state.get('orders',[])+state.get('trades',[])+open_plans(state) if row.get('id')]
+    known = {str(row['id']):int(row['order_number']) for row in rows if row.get('order_number')}
+    sequence = max([state.get('order_sequence',0)]+list(known.values()))
+    for row in rows:
+        key = str(row['id'])
+        if key not in known:
+            sequence += 1
+            known[key] = sequence
+        row['order_number'] = known[key]
+        row['display_id'] = f"#{known[key]:03d}"
+    state['order_sequence'] = sequence
+    for number,view in slot_views(state):
+        for key in ('pending','active'):
+            if view.get(key):
+                view[key]['slot'] = number
+
+
+PAPER_UNCERTAINTY = frozenset({'PLACEMENT_INSIDE_TOUCHED_BAR', 'EXPIRY_INSIDE_BAR', 'CANCEL_INSIDE_TOUCHED_BAR'})
+
+
+def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
+    """Keep uncertain outcomes out of WR, release only after their age limit.
+
+    No exchange fill is acknowledged. An unknown live/manual reconciliation
+    stays blocked. Historical PAPER intervals stay in the ledger for audit.
+    """
+    for number,view in slot_views(state):
+        r = view.get('reconciliation')
+        if not r or r.get('reason') not in PAPER_UNCERTAINTY:
+            continue
+        order = next((o for o in reversed(state['orders']) if o['id']==r['order_id']),None)
+        if not order or order.get('execution') != 'PAPER_SIGNAL':
+            continue
+        # Unknown fill can occur anywhere before expiry. Retain its slot until
+        # even the latest possible fill has reached the intraday age boundary.
+        expiry = order.get('expires_ts',r['ts'])
+        release_ts = max(r['ts'], min(expiry+cfg.max_hold_minutes*60_000, session_cutoff(expiry,cfg)))
+        if now < release_ts:
+            r['release_ts'] = release_ts
+            continue
+        order['original_status'] = order.get('original_status',order['status'])
+        order['status'] = 'UNCONFIRMED'
+        order['excluded_from_win_rate'] = True
+        order['released_ts'] = now
+        state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(r),'released_ts':now})
+        emit(state,'UNCONFIRMED_RELEASED',now,order_id=order['id'],reason=r['reason'])
+        view['reconciliation'] = None
+        store_slot(state,number,view)
 
 
 def emit(state: dict, kind: str, ts: int, **fields: Any) -> None:
@@ -624,6 +707,7 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
     gross = p.get("realized_gross_r",0)+remaining*side*(price-p["entry"])/risk
     fees = p["entry"]*p.get("entry_fee_rate",cfg.maker_fee)/risk+p.get("realized_exit_fees_r",0)+remaining*price*cfg.taker_fee/risk
     closed = {**copy.deepcopy(p), "status": "CLOSED", "exit": price, "closed_ts": ts,
+              "remaining": 0.0, "final_exit_fraction": remaining,
               "closed_at": iso(ts), "close_reason": reason, "gross_r": gross,
               "fees_r": fees, "net_r": gross-fees, "pnl_r": gross-fees,
               "stop_initial": p["initial_stop"], "stop_at_close": p["stop"],
@@ -634,6 +718,10 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
               "version": VERSION, "execution": "PAPER_SIGNAL"}
     if not any(t["id"] == closed["id"] for t in state["trades"]):
         state["trades"].append(closed)
+    for record in state['orders']:
+        if record['id']==p['id']:
+            record.update(position_status='CLOSED',closed_ts=ts,trade_net_r=closed['net_r'],
+                          trade_result=closed['result'])
     state["active"] = None
     emit(state, "CLOSED", ts, order_id=p["id"], reason=reason, net_r=closed["net_r"],
          ambiguous_ohlc=ambiguous)
@@ -703,7 +791,7 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False) -> N
     p["last_bar"] = c.ts
 
 
-def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
+def _amend_slot_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
     """Decisions happen at the 15m report, never at historical intra-cycle bars."""
     p = state.get("active")
     if not p or p.get("pending_stop") or (p.get("strong_closes", 0) < 2 and not p.get("tp1_hit")):
@@ -727,7 +815,13 @@ def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
         emit(state, "PAPER_STOP_AMENDED", s.now, order_id=p["id"], stop=be, effective_ts=effective)
 
 
-def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
+def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
+    for number,view in slot_views(state):
+        _amend_slot_at_report(view,s,cfg)
+        store_slot(state,number,view)
+
+
+def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
     for c in s.candles.get("3m", []):
         if state["active"]:
@@ -737,13 +831,14 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
         if not p or c.ts <= p.get("last_bar", -1):
             continue
         end = c.ts+TF["3m"]
-        if c.ts < p["placed_ts"]:
-            if end > p["placed_ts"]:
+        effective = p.get('effective_ts',p['placed_ts'])
+        if c.ts < effective:
+            if 'effective_ts' not in p and end > p["placed_ts"]:
                 possible_fill = c.low < p["entry"]-cfg.tick/2 if p["side"] == 1 else c.high > p["entry"]+cfg.tick/2
                 if possible_fill:
                     end_order(state, p, "UNRESOLVED", "PLACEMENT_INSIDE_TOUCHED_BAR", end)
             continue
-        cancel_ts = p.get("cancel_requested_ts", 0)
+        cancel_ts = p.get("cancel_effective_ts",p.get("cancel_requested_ts", 0))
         if cancel_ts and c.ts >= cancel_ts:
             end_order(state, p, "CANCELLED", p["cancel_reason"], cancel_ts)
             continue
@@ -782,6 +877,12 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             end_order(state, p, "EXPIRED", "LIMIT_TTL", p["expires_ts"])
 
 
+def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
+    for number,view in slot_views(state):
+        _advance_slot_lifecycle(view,s,cfg)
+        store_slot(state,number,view)
+
+
 def day_stats(state: dict, now: int, cfg: Config) -> dict:
     tz = ZoneInfo(cfg.timezone)
     day = datetime.fromtimestamp(now/1000, tz).date()
@@ -802,86 +903,137 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
         # Current partial candle might contain a fill BEFORE cancellation.
         # Reserve the slot until that candle closes; do not erase that interval.
         p.update(cancel_requested_ts=now, cancel_reason=reason)
+        if 'effective_ts' in p:
+            p['cancel_effective_ts'] = ((now+TF['3m']-1)//TF['3m'])*TF['3m']
         emit(state, "CANCEL_REQUESTED", now, order_id=p["id"], reason=reason)
 
 
 def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     if s.now <= state.get("last_run_ts", 0):
         return {"action": "DUPLICATE_OR_OUT_OF_ORDER", "events": [], "analysis": {}}
-    if state.get("reconciliation") and not state.get("active"):
-        return {"action": "RECONCILIATION_REQUIRED", "events": [], "analysis": {}}
     if state["instrument"] != cfg.instrument:
         raise ValueError("Instrument changed: use a separate state path")
     config_hash = ident(json.dumps(config_dict(cfg), sort_keys=True))
-    if state.get("config_hash") != config_hash and (state.get("active") or state.get("pending")):
+    if state.get("config_hash") != config_hash and open_plans(state):
         raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
     start = len(state["events"])
-    # Validate lifecycle before changing ANY state. Missing bars cannot be skipped.
     faults = health(s, cfg)
-    lifecycle_faults = execution_health(s, state) if state.get("active") or state.get("pending") else []
+    lifecycle_faults = execution_health(s, state) if open_plans(state) else []
     if lifecycle_faults or any(x in faults for x in ("UNTRUSTED_PRICE", "WRONG_INSTRUMENT", "STALE_TICKER", "STALE_3m")):
         return {"action": "DATA_HOLD", "events": [], "analysis": {"health": faults+lifecycle_faults}}
+    release_unconfirmed_paper(state,s.now,cfg)
+    bind_order_numbers(state)
     advance_lifecycle(state, s, cfg)
     amend_at_report(state, s, cfg)
-    analysis = analyze(s, cfg, state)
+    # A non-PAPER reconciliation still needs a human check. Existing positions
+    # continue to be managed; one uncertain interval never erases another plan.
+    unresolved = [view['reconciliation'] for _,view in slot_views(state) if view.get('reconciliation')]
+    def needs_manual_check(r):
+        record = next((o for o in reversed(state['orders']) if o['id']==r['order_id']),{})
+        return r.get('reason') not in PAPER_UNCERTAINTY or record.get('execution')!='PAPER_SIGNAL'
+    manual_block = any(needs_manual_check(r) for r in unresolved)
+    analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
     ctx = analysis.get("contexts", {})
-    pending = state.get("pending")
-    if pending and ctx:
-        if pending["side"]*(s.price-pending["tp"]) < 0:
-            pending["target_cancel_armed"] = True
-        opposite = -pending["side"]
-        if (cfg.cancel_on_bias_flip and ctx["1H"]["side"] == opposite and ctx["4H"]["side"] == opposite
-                and not (pending.get("htf_1h")==opposite and pending.get("htf_4h")==opposite)):
-            request_cancel(state, pending, "CONFIRMED_HTF_FLIP", s.now)
-        elif pending["side"]*(s.price-pending["invalidation"]) <= 0:
-            request_cancel(state, pending, "STRUCTURE_INVALIDATED_NOW", s.now)
-        elif pending.get("target_cancel_armed",True) and pending["side"]*(s.price-pending["tp"]) >= 0:
-            request_cancel(state, pending, "TARGET_REACHED_WITHOUT_FILL", s.now)
+    for number,view in slot_views(state):
+        pending = view.get("pending")
+        if pending and ctx:
+            if pending["side"]*(s.price-pending["tp"]) < 0:
+                pending["target_cancel_armed"] = True
+            opposite = -pending["side"]
+            if (cfg.cancel_on_bias_flip and ctx["1H"]["side"] == opposite and ctx["4H"]["side"] == opposite
+                    and not (pending.get("htf_1h")==opposite and pending.get("htf_4h")==opposite)):
+                request_cancel(view, pending, "CONFIRMED_HTF_FLIP", s.now)
+            elif pending["side"]*(s.price-pending["invalidation"]) <= 0:
+                request_cancel(view, pending, "STRUCTURE_INVALIDATED_NOW", s.now)
+            elif pending.get("target_cancel_armed",True) and pending["side"]*(s.price-pending["tp"]) >= 0:
+                request_cancel(view, pending, "TARGET_REACHED_WITHOUT_FILL", s.now)
+        store_slot(state,number,view)
+    release_unconfirmed_paper(state,s.now,cfg)
     daily = day_stats(state, s.now, cfg)
-    action, selected = "WATCH", None
-    if state.get("reconciliation"):
+    busy = open_plans(state)
+    action, selected = "WATCH", []
+    if any(view.get('reconciliation') for _,view in slot_views(state)):
         action = "RECONCILIATION_REQUIRED"
-    elif state.get("active"):
+    elif any(view.get('active') for _,view in slot_views(state)):
         action = "FOLLOW"
-    elif state.get("pending"):
-        action = "CANCEL_LIMIT" if state["pending"].get("cancel_requested_ts") else "WAIT_LIMIT"
-    elif analysis["health"]:
-        action = "DATA_HOLD"
-    elif s.now >= session_cutoff(s.now, cfg)-TF["15m"]:
-        action = "SESSION_CLOSED"
-    elif daily["losses_r"] >= cfg.day_loss_cap_r or daily["entries"] >= cfg.max_daily_trades:
-        action = "DAILY_PAUSE"
-    elif analysis["plans"]:
-        top = analysis["plans"][0]
-        opposing = next((p for p in analysis["plans"] if p["side"] != top["side"]), None)
-        if opposing and top["score"]-opposing["score"] < cfg.conflict_margin:
-            action = "DIRECTION_CONFLICT"
-        elif top["event_key"] not in state["used_events"] and not any(
-                key in state["used_events"] for key in top.get("parent_keys", [])):
-            state["pending"] = copy.deepcopy(top)
-            selected = top
-            action = "PLACE_LIMIT"
-            emit(state, "PLACED", s.now, order_id=top["id"], side=top["side"],
-                 entry=top["entry"], stop=top["stop"], tp=top["tp"])
-    state["last_run_ts"] = s.now
-    state["config_hash"] = config_hash
-    state["version"] = VERSION
-    # Used keys outlive all eligible setups, including cancelled / expired events.
+    elif busy:
+        action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
+    reserved = sum(bool(view.get('pending')) for _,view in slot_views(state))
+    can_place = occupied_slots(state)<2 and not manual_block
+    if can_place and analysis['health']:
+        if not busy:
+            action = 'DATA_HOLD'
+        can_place = False
+    elif can_place and s.now >= session_cutoff(s.now,cfg)-TF['15m']:
+        if not busy:
+            action = 'SESSION_CLOSED'
+        can_place = False
+    elif can_place and (daily['losses_r']>=cfg.day_loss_cap_r or daily['entries']+reserved>=cfg.max_daily_trades):
+        if not busy:
+            action = 'DAILY_PAUSE'
+        can_place = False
+    if can_place:
+        plans = analysis.get('plans',[])
+        sides = {p['side'] for p in busy}
+        if not sides and plans:
+            top = plans[0]
+            opposing = next((p for p in plans if p['side']!=top['side']),None)
+            if opposing and top['score']-opposing['score']<cfg.conflict_margin:
+                action, can_place = 'DIRECTION_CONFLICT', False
+            else:
+                sides = {top['side']}
+        # Opposing proposals never hedge or replace an existing thesis.
+        for top in plans if can_place and len(sides)==1 else []:
+            busy = open_plans(state)
+            if occupied_slots(state)>=2 or daily['entries']+reserved>=cfg.max_daily_trades:
+                break
+            keys = {top['event_key'],*top.get('parent_keys',[])}
+            live_keys = {key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
+            tolerance = max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
+            if top['side'] not in sides or keys.intersection(state['used_events']) or keys.intersection(live_keys):
+                continue
+            if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
+                continue
+            for number,view in slot_views(state):
+                if view.get('pending') or view.get('active') or view.get('reconciliation'):
+                    continue
+                plan = copy.deepcopy(top)
+                # Also enforce timing for injected/replay planner proposals.
+                plan['placed_ts'] = s.now
+                plan.setdefault('effective_ts',((s.now+TF['3m']-1)//TF['3m'])*TF['3m'])
+                plan['slot'] = number
+                view['pending'] = plan
+                store_slot(state,number,view)
+                bind_order_numbers(state)
+                selected.append(plan)
+                reserved += 1
+                emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
+                     stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
+                action = 'PLACE_LIMIT'
+                break
+    state['last_run_ts'] = s.now
+    state['config_hash'] = config_hash
+    state['version'] = VERSION
+    state['ledger_revision'] = 2
     cutoff = s.now-2*86_400_000
-    state["used_events"] = {k: v for k, v in state["used_events"].items() if v >= cutoff}
-    state["level_cooldown"] = {k:v for k,v in state.get("level_cooldown",{}).items() if v>s.now}
-    summary = {"ts": s.now, "time": iso(s.now), "action": action, "price": s.price,
-               "plan_id": selected["id"] if selected else None,
-               "rejections": analysis["rejections"] if "rejections" in analysis else {},
-               "health": analysis["health"], "daily": daily,
-               "detectors": analysis.get("detectors",[]),
-               "raw_plans": analysis.get("raw_plans",0),"registered_setups": analysis.get("registered_setups",24)}
-    state["signals"].append(summary)
-    state["signals"] = state["signals"][-1000:]
-    state["watch"] = analysis.get("watch", [])
-    return {"action": action, "events": state["events"][start:], "analysis": analysis,
-            "selected": selected, "daily": daily}
+    state['used_events'] = {k:v for k,v in state['used_events'].items() if v>=cutoff}
+    state['level_cooldown'] = {k:v for k,v in state.get('level_cooldown',{}).items() if v>s.now}
+    # Keep IDs for every followed plan, not only the newly selected candidate.
+    summary = {'ts':s.now,'time':iso(s.now),'action':action,'price':s.price,
+               'plan_id':selected[0]['id'] if selected else None,
+               'placed_ids':[p['id'] for p in selected],
+               'followed_ids':[p['id'] for p in open_plans(state)],
+               'occupied_slots':occupied_slots(state),'max_slots':2,
+               'rejections':analysis.get('rejections',{}),'health':analysis['health'],'daily':daily,
+               'detectors':analysis.get('detectors',[]),'raw_plans':analysis.get('raw_plans',0),
+               'registered_setups':analysis.get('registered_setups',24)}
+    state['signals'].append(summary)
+    state['signals'] = state['signals'][-1000:]
+    state['watch'] = analysis.get('watch',[])
+    events = sorted(state['events'][start:],key=lambda e:e['ts'])
+    return {'action':action,'events':events,'analysis':analysis,'selected':selected[0] if selected else None,
+            'selected_plans':selected,'daily':daily,'occupied_slots':occupied_slots(state)}
 
 
 def statistics(trades: list[dict], key: str = "net_r") -> dict:
@@ -938,68 +1090,118 @@ def audit_journal(path: Path) -> dict:
             "limitation": "Mixed strategy versions; no OHLC dataset. Cannot backtest v11 from this journal."}
 
 
+def display_order(state: dict, order_id: str) -> str:
+    row = next((p for p in open_plans(state)+state.get('trades',[])+state.get('orders',[])
+                if p['id']==order_id),{})
+    return row.get('display_id') or '#'+order_id[:6]
+
+
+def local_time(ts: int, cfg: Config) -> str:
+    return datetime.fromtimestamp(ts/1000,ZoneInfo(cfg.timezone)).strftime('%H:%M')
+
+
+def target_line(p: dict) -> str:
+    names = [name for name in ('TP1','TP2','TP3') if p.get('partials',{'TP1':1}).get(name,0)>0]
+    return ' • '.join(f"{name} {p.get(name.lower(),p['tp']):.6g} "
+                    + ('✅' if p.get(name.lower()+'_hit') else '⏳') for name in names)
+
+
+def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
+    kind = event['kind']
+    label = display_order(state,event.get('order_id',''))
+    at = local_time(event['ts'],cfg)
+    if kind=='CLOSED':
+        trade = next((t for t in reversed(state['trades']) if t['id']==event['order_id']),{})
+        reason = event.get('reason')
+        text = {'STOP':'стоп','STOP_GAP':'стоп із розривом ціни',
+                'TAKE_PROFIT':'усі тейки','INTRADAY_TIME_EXIT':'кінець часу угоди'}.get(reason,'завершення')
+        value = event['net_r']
+        outcome = 'прибуток' if value>0 else 'збиток' if value<0 else 'беззбитково'
+        achieved = [name for name in ('TP1','TP2','TP3') if trade.get(name.lower()+'_hit')]
+        details = ', '.join(achieved)+' досягнуто; ' if achieved else 'тейків не досягнуто; '
+        uncertainty = ' • порядок SL/TP у свічці невідомий, узято стоп' if event.get('ambiguous_ohlc') else ''
+        return f"{at} {label} ЗАКРИТО: {value:+.2f}R — {outcome}\n{details}{text}{uncertainty}"
+    if kind=='FILLED':
+        return f"{at} {label} ВХІД ВИКОНАНО — почався супровід"
+    if kind in ('TP1','TP2','TP3'):
+        return f"{at} {label} {kind} ДОСЯГНУТО — закрито {event['fraction']*100:.0f}%"
+    if kind=='PAPER_STOP_AMENDED':
+        return f"{at} {label} Новий SL: {event['stop']:.6g}, чинний з {local_time(event['effective_ts'],cfg)}"
+    if kind in ('CANCELLED','EXPIRED'):
+        text = 'скасовано' if kind=='CANCELLED' else 'строк очікування завершився'
+        reasons = {'CONFIRMED_HTF_FLIP':'змінився напрямок', 'STRUCTURE_INVALIDATED_NOW':'сетап утратив чинність',
+                   'TARGET_REACHED_WITHOUT_FILL':'ціль досягнута без входу'}
+        suffix = '; '+reasons[event['reason']] if event.get('reason') in reasons else ''
+        return f"{at} {label} Ордер {text}, входу не було{suffix}"
+    if kind=='CANCEL_REQUESTED':
+        return f"{at} {label} Скасувати невиконаний ліміт; перевірити, чи не було входу"
+    if kind=='UNRESOLVED':
+        return f"{at} {label} Виконання не підтверджене: порядок подій у свічці невідомий"
+    if kind=='UNCONFIRMED_RELEASED':
+        return f"{at} {label} Строк супроводу минув; результат не підтверджений і не включений у win rate"
+    return None
+
+
 def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
-    a = result["action"]
-    labels = {"PLACE_LIMIT": "НОВИЙ ЛІМІТНИЙ ПЛАН", "WAIT_LIMIT": "ОЧІКУЄМО ЛІМІТ",
-              "FOLLOW": "СУПРОВІД", "WATCH": "СПОСТЕРЕЖЕННЯ", "DATA_HOLD": "НЕМАЄ НАДІЙНИХ ДАНИХ",
-              "DIRECTION_CONFLICT": "КОНФЛІКТ НАПРЯМКІВ", "DAILY_PAUSE": "ДЕННА ПАУЗА",
-              "SESSION_CLOSED": "СЕСІЯ ЗАВЕРШЕНА",
-              "RECONCILIATION_REQUIRED": "ПОТРІБНА ЗВІРКА ОРДЕРА",
-              "CANCEL_LIMIT": "СКАСУВАТИ НЕВИКОНАНИЙ ЛІМІТ"}
-    local = datetime.fromtimestamp(s.now/1000, ZoneInfo(cfg.timezone))
-    lines = [f"{cfg.instrument} • {local:%d.%m %H:%M}", labels.get(a, a), f"Ціна: {s.price:.6g}"]
-    ctx = result.get("analysis", {}).get("contexts", {})
-    names = {1: "вгору", -1: "вниз", 0: "діапазон/перехід"}
-    if ctx:
-        lines.append("Контекст: "+" • ".join(f"{tf} {names[ctx[tf]['side']]}" for tf in ("4H", "1H", "15m")))
-    p = state.get("active") or state.get("pending")
-    if p:
-        lines += [f"{'LONG' if p['side'] == 1 else 'SHORT'} • {p['setup']} • {p['timeframe']}",
-                  f"Ліміт: {p['entry']:.6g}", f"SL: {p.get('pending_stop', {}).get('price', p['stop']):.6g} • TP: {p['tp']:.6g}",
-                  f"Стоп від входу: {p['stop_distance_pct']:.2f}% • чистий R:R плану: {p['net_rr']:.2f}",
-                  f"Умова: повернення до зони; інвалідація {p['invalidation']:.6g}"]
-        if state.get("pending"):
-            end = datetime.fromtimestamp(p["expires_ts"]/1000, ZoneInfo(cfg.timezone))
-            lines.append(f"Скасувати невиконаний ордер о {end:%H:%M} або за сигналом скасування.")
-            if p.get("cancel_requested_ts"):
-                lines.append(f"СКАСУВАТИ ЗАРАЗ: {p['cancel_reason']}; звірити, чи не виконаний.")
-        else:
-            end = datetime.fromtimestamp(p["exit_deadline"]/1000, ZoneInfo(cfg.timezone))
-            lines.append(f"Завершити угоду до {end:%H:%M}; SL/TP мають діяти між повідомленнями.")
-        if p.get("tp2"):
-            lines.append(f"Цілі: TP1 {p['tp1']:.6g} • TP2 {p['tp2']:.6g} • TP3 {p['tp3']:.6g}")
-        if p.get("supporting_setups"):
-            lines.append("Узгоджені сетапи: "+", ".join(p["supporting_setups"]))
-        lines.append("Підстава: "+"; ".join(e for e in p["evidence"][:3] if not e.startswith("parent:")))
-        lines.append(f"Оцінка умов: {p['score']:.0f}/100; імовірність успіху ще не валідована.")
-    for e in result.get("events", []):
-        if e["kind"] == "CLOSED":
-            lines.append(f"PAPER закриття: {e['reason']} • {e['net_r']:+.2f}R")
-        elif e["kind"] in ("EXPIRED", "CANCELLED", "UNRESOLVED"):
-            lines.append(f"Ордер {e['order_id']}: {e['kind']} ({e['reason']})")
-        elif e["kind"] == "FILLED":
-            lines.append("PAPER: ліміт перетнуто ціною; фактичне виконання перевірте на біржі.")
-        elif e["kind"] == "PAPER_STOP_AMENDED":
-            lines.append(f"PAPER SL змінено: {e['stop']:.6g}; перевірте фактичний ордер.")
-        elif e["kind"] in {"TP1","TP2","TP3"}:
-            lines.append(f"PAPER {e['kind']}: {e['price']:.6g} • зафіксовано {e['fraction']*100:.0f}% позиції")
-    errors = result.get("analysis", {}).get("health", [])
-    if state.get("reconciliation"):
-        r = state["reconciliation"]
-        lines.append(f"Ордер {r['order_id']}: {r['reason']}. Порядок подій у свічці невідомий.")
-        lines.append("Нові плани призупинено; звірте виконання/скасування на біржі.")
-    if errors:
-        lines.append("Причина: "+", ".join(errors))
-    rejections = result.get("analysis", {}).get("rejections", {})
-    if not p and rejections:
-        lines.append("Відхилення: "+", ".join(f"{k} ({v})" for k, v in sorted(rejections.items(), key=lambda x:-x[1])[:3]))
-    if not p and not rejections and not errors:
-        lines.append("Усі 24 сетапи перевірено; чекаємо узгоджений лімітний сценарій.")
-    detectors = result.get("analysis",{}).get("detectors",[])
-    if detectors:
-        lines.append(f"Сетапи: {len(detectors)}/24 перевірено • помилки: {sum(d['status']=='ERROR' for d in detectors)}")
-    lines.append("PAPER/сигнали • 3m/15m/1h/4h • звіт кожні 15 хв • виконання на біржі не підключене")
-    return "\n".join(lines)[:3900]
+    local = datetime.fromtimestamp(s.now/1000,ZoneInfo(cfg.timezone))
+    lines = [f"{cfg.instrument} • {local:%d.%m %H:%M} • PAPER",f"Зайнято місць: {occupied_slots(state)}/2"]
+    new_ids = {p['id'] for p in result.get('selected_plans',[])}
+    if result.get('selected'):
+        new_ids.add(result['selected']['id'])
+    for number,view in slot_views(state):
+        p = view.get('active') or view.get('pending')
+        if p:
+            label = display_order(state,p['id'])
+            side = 'LONG' if p['side']==1 else 'SHORT'
+            status = 'СУПРОВІД' if view.get('active') else 'НОВИЙ ЛІМІТ' if p['id'] in new_ids else 'ОЧІКУЄ ВХОДУ'
+            lines += ['',f"{label} {side} — {status}",f"Вхід: {p['entry']:.6g} • SL: {p['stop']:.6g}",target_line(p)]
+            if view.get('pending'):
+                effective = p.get('effective_ts',p['placed_ts'])
+                lines.append(f"Облік входу з {local_time(effective,cfg)}; невиконаний ліміт діє до {local_time(p['expires_ts'],cfg)}")
+                splits = p.get('partials',{})
+                if len([v for v in splits.values() if v>0])>1:
+                    lines.append('Частки на тейках: '+' / '.join(f"{name} {size*100:.0f}%" for name,size in splits.items() if size>0))
+                if p.get('cancel_requested_ts'):
+                    lines.append('СКАСУВАТИ невиконаний ліміт; перевірити виконання')
+            else:
+                remaining = p.get('remaining',1)
+                gross = p.get('realized_gross_r',0)+remaining*p['side']*(s.price-p['entry'])/p['risk']
+                fees = p['entry']*p.get('entry_fee_rate',cfg.maker_fee)/p['risk']+p.get('realized_exit_fees_r',0)+remaining*s.price*cfg.taker_fee/p['risk']
+                slip = remaining*s.price*cfg.slippage_bps/10_000/p['risk']
+                lines.append(f"Відкрито: {remaining*100:.0f}% • оцінка при закритті зараз: {gross-fees-slip:+.2f}R")
+                if p.get('pending_stop'):
+                    amend = p['pending_stop']
+                    lines.append(f"Новий SL {amend['price']:.6g} з {local_time(amend['effective_ts'],cfg)}")
+                lines.append(f"Завершити до {local_time(p['exit_deadline'],cfg)}")
+        if view.get('reconciliation'):
+            r = view['reconciliation']
+            lines += ['',f"{display_order(state,r['order_id'])} — ВИКОНАННЯ НЕ ПІДТВЕРДЖЕНЕ",'Перевірте фактичний ордер на біржі. Результат не включено у win rate.']
+            if r.get('release_ts'):
+                end = datetime.fromtimestamp(r['release_ts']/1000,ZoneInfo(cfg.timezone))
+                lines.append(f"Місце зарезервовано до {end:%d.%m %H:%M}")
+    events = [message_event(state,e,cfg) for e in result.get('events',[])]
+    events = [e for e in events if e]
+    # After upgrading a stale state, never hide the last completed result.
+    if not events and not open_plans(state) and state.get('trades'):
+        t = max(state['trades'],key=lambda row:row['closed_ts'])
+        events = ['Остання завершена угода: '+display_order(state,t['id'])+f" • {t['net_r']:+.2f}R"]
+    if events:
+        lines += ['','Події:']+events
+    action = result['action']
+    reasons = {'WATCH':'Нових входів немає.', 'DIRECTION_CONFLICT':'Нових входів немає: конфлікт напрямків.',
+               'DAILY_PAUSE':'Нові входи призупинені: денний ліміт ризику або угод.',
+               'SESSION_CLOSED':'Нові входи призупинені до наступної торгової сесії.',
+               'DATA_HOLD':'Нові рішення призупинені: дані неповні або застарілі.',
+               'DUPLICATE_OR_OUT_OF_ORDER':'Цей звіт уже оброблено.'}
+    if action in reasons:
+        lines += ['',reasons[action]]
+    if occupied_slots(state)==2:
+        lines.append('Новий ордер — після звільнення одного місця.')
+    if state.get('trades'):
+        stats = statistics(state['trades'])
+        lines.append(f"Закрито: {stats['trades']} • win rate {stats['win_rate']*100:.1f}% • разом {stats['net_r']:+.2f}R")
+    lines.append('PAPER = облік за ціною; фактичне виконання перевіряйте на біржі.')
+    return '\n'.join(lines)
 
 
 def read_json(path: Path) -> dict:
@@ -1048,10 +1250,31 @@ def load_state(path: Path, cfg: Config) -> dict:
     if not raw:
         return new_state(cfg)
     if raw.get("schema") != SCHEMA:
-        return migrate_state(raw,cfg)
+        raw = migrate_state(raw,cfg)
     for key in ("trades", "orders", "events", "signals", "notification_queue", "used_events"):
         if key not in raw:
             raise ValueError(f"State missing {key}; refusing reset")
+    if 'second_slot' not in raw:
+        raw['second_slot'] = {'pending':None,'active':None,'reconciliation':None}
+    if not isinstance(raw['second_slot'],dict):
+        raise ValueError('Invalid second slot; refusing reset')
+    for key in ('pending','active','reconciliation'):
+        if key not in raw['second_slot']:
+            raise ValueError('Incomplete second slot; refusing reset')
+    # Preserve the rare older state holding both a position and one limit.
+    if raw.get('pending') and raw.get('active') and not any(raw['second_slot'].values()):
+        raw['second_slot']['pending'], raw['pending'] = raw['pending'], None
+    for _,view in slot_views(raw):
+        if view.get('pending') and view.get('active'):
+            raise ValueError('Two plans in one slot; refusing to drop either')
+        if view.get('reconciliation') and (view.get('pending') or view.get('active')):
+            raise ValueError('Uncertain and open plan share one slot; reconciliation required')
+    plans = open_plans(raw)
+    if len({p['id'] for p in plans}) != len(plans):
+        raise ValueError('Duplicate open order identity; refusing reset')
+    raw.setdefault('ledger_revision',2)
+    raw.setdefault('order_sequence',0)
+    bind_order_numbers(raw)
     return raw
 
 
@@ -1065,6 +1288,10 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "signals": state["signals"], "events": state["events"],
                       "pending": state.get("pending"), "active": state.get("active"),
                       "reconciliation": state.get("reconciliation"),
+                      "second_slot": state.get('second_slot'), "open_plans": open_plans(state),
+                      "occupied_slots": occupied_slots(state), "max_slots": 2,
+                      "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
+                      "reconciliation_history": state.get('reconciliation_history',[]),
                       "statistics": statistics(state["trades"]),"setup_statistics": state.get("setup_statistics",{})}
     # Preserve complete legacy history and unknown fields. New ledger is merged by
     # stable identity; state remains authoritative if journal export fails once.
@@ -1167,6 +1394,7 @@ def replay(data: dict, cfg: Config) -> dict:
             "statistics": statistics(state["trades"]), "actions": actions,
             "trades": state["trades"], "orders": state["orders"], "events": state["events"],
             "active_at_end": state["active"], "pending_at_end": state["pending"],
+            "open_plans_at_end": open_plans(state), "second_slot_at_end": state['second_slot'],
             "limitations": ["OHLC execution proxy; no queue position or actual exchange fills",
                             "Stop wins same-bar ambiguity; entry-bar TP needs a close beyond TP",
                             "Stop adjustments only at 15m reports, effective next whole 3m bar",
@@ -1364,10 +1592,16 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         state = load_state(state_path,cfg)
         read_json(journal_path)
         if ack and state.get('reconciliation'):
-            emit(state,'RECONCILIATION_ACKNOWLEDGED',int(time.time()*1000),
-                 order_id=state['reconciliation']['order_id'])
+            state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(state['reconciliation']),
+                                                                 'acknowledged_ts':int(time.time()*1000)})
+            emit(state,'RECONCILIATION_ACKNOWLEDGED',int(time.time()*1000),order_id=state['reconciliation']['order_id'])
             state['reconciliation'] = None
             state['legacy_pending_orders'] = []
+        if ack and state.get('second_slot',{}).get('reconciliation'):
+            r = state['second_slot']['reconciliation']
+            state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(r),'acknowledged_ts':int(time.time()*1000)})
+            emit(state,'RECONCILIATION_ACKNOWLEDGED',int(time.time()*1000),order_id=r['order_id'])
+            state['second_slot']['reconciliation'] = None
         snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else collect_snapshot(cfg,state['last_run_ts'])
         result = run_cycle(state,snap,cfg)
         message = build_message(state,snap,result,cfg)
