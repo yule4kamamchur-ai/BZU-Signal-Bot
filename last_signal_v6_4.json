@@ -22158,9 +22158,133 @@
       ],
       "raw_plans": 1,
       "registered_setups": 24
+    },
+    {
+      "ts": 1791546508523,
+      "time": "2026-10-09T11:48:28.523000+00:00",
+      "action": "WATCH",
+      "price": 101.26,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [],
+      "occupied_slots": 0,
+      "max_slots": 2,
+      "rejections": {
+        "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION": 9,
+        "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS": 9,
+        "ANCHOR_INVALIDATED": 1,
+        "ORDER_LIFETIME_BELOW_REPORT_CADENCE": 1,
+        "NO_CONFIRMED_3M_CONTROL": 1
+      },
+      "health": [],
+      "daily": {
+        "net_r": 0,
+        "losses_r": 0,
+        "entries": 0
+      },
+      "detectors": [
+        {
+          "detector": "detect_sweep_reclaim",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_capitulation_recovery",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_range_edge_reversal",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_failed_auction_rejection",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_liquidity_sweep_reversal_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_buyer_exhaustion_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_pullback_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_fresh_base_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_acceptance_retest_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_momentum_no_pullback_continuation",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_acceleration_pullback_reentry",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_direction_flip_15m",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_trend_ignition",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_breakout_retest",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_range_compression_breakout",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_opening_range_breakout",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_liquidity_ladder",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_failed_opening_range_breakout",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_failed_breakout_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_mss_reversal_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_or_failure_2_short",
+          "status": "NO_SETUP"
+        },
+        {
+          "detector": "detect_session_mean_reclaim",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_daily_weekly_open_reclaim",
+          "status": "DETECTED"
+        },
+        {
+          "detector": "detect_time_of_day_adaptive",
+          "status": "DETECTED"
+        }
+      ],
+      "raw_plans": 1,
+      "registered_setups": 24
     }
   ],
-  "last_run_ts": 1791545631130,
+  "last_run_ts": 1791546508523,
   "notification_queue": [],
   "reconciliation": null,
   "anchor_memory": {
@@ -26559,7 +26683,7 @@
       "evidence": {
         "or_high": 102.72,
         "or_low": 102.22,
-        "or_width_atr": 1.351
+        "or_width_atr": 1.502
       },
       "target_levels": [],
       "touched": false,
@@ -27281,7 +27405,7 @@
       "evidence": {
         "pool_level": 101.755,
         "touches": 2,
-        "distance_atr": 1.041
+        "distance_atr": 1.487
       },
       "target_levels": [],
       "touched": false,
@@ -27318,26 +27442,93 @@
       "cooldown_until_ts": 0,
       "reject_reason": "",
       "schema_version": "organic_v10.0.0"
+    },
+    "bf1d3a937b8cd9f7b0": {
+      "id": "anc-20261009114828-9690e811",
+      "setup_type": "SESSION_MEAN_RECLAIM",
+      "setup_family": "VALUE_RECLAIM",
+      "side": "SHORT",
+      "level": 101.802,
+      "kind": "VALUE_LEVEL",
+      "invalidation": 102.207,
+      "created_ts": 1791546508523,
+      "expires_ts": 1791557308523,
+      "reason": "Повернення до VWAP сесії 101.8022",
+      "score": 55.0,
+      "htf_state": "AGAINST",
+      "regime": "RANGE",
+      "state": "ARMED",
+      "evidence": {
+        "vwap": 101.802242,
+        "max_displacement_atr": 1.449
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "f36c1dce14df0e1339": {
+      "id": "anc-20261009114828-e03c3ae0",
+      "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+      "setup_family": "VALUE_RECLAIM",
+      "side": "SHORT",
+      "level": 101.59,
+      "kind": "VALUE_LEVEL",
+      "invalidation": 101.995,
+      "created_ts": 1791546508523,
+      "expires_ts": 1791557308523,
+      "reason": "Reclaim відкриття тижня 101.5900",
+      "score": 56.0,
+      "htf_state": "AGAINST",
+      "regime": "RANGE",
+      "state": "ARMED",
+      "evidence": {
+        "reference": "week_open",
+        "level": 101.59,
+        "max_adverse_atr": -0.661
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
+    },
+    "3e681ae83f240e2aef": {
+      "id": "anc-20261009114828-c2f26eee",
+      "setup_type": "TIME_OF_DAY_ADAPTIVE",
+      "setup_family": "VALUE_RECLAIM",
+      "side": "LONG",
+      "level": 101.02,
+      "kind": "RANGE_EDGE",
+      "invalidation": 100.615,
+      "created_ts": 1791546508523,
+      "expires_ts": 1791551908523,
+      "reason": "Межа азійського діапазону 101.0200 у сесію LONDON",
+      "score": 52.0,
+      "htf_state": "AGAINST",
+      "regime": "RANGE",
+      "state": "ARMED",
+      "evidence": {
+        "session": "LONDON",
+        "asia_low": 101.02,
+        "asia_high": 102.72
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
     }
   },
   "level_cooldown": {},
   "setup_statistics": {
-    "SWEEP_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
     "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
       "trades": 0,
       "wins": 0,
@@ -27354,55 +27545,7 @@
       "version": "full-ict-v12.2.0-confirmed-ict-quality",
       "probability_validated": false
     },
-    "DAILY_WEEKLY_OPEN_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "OPENING_RANGE_BREAKOUT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "RANGE_EDGE_REVERSAL": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "FAILED_OPENING_RANGE_BREAKOUT": {
+    "FAILED_BREAKOUT_SHORT": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -27450,7 +27593,7 @@
       "version": "full-ict-v12.2.0-confirmed-ict-quality",
       "probability_validated": false
     },
-    "TREND_IGNITION": {
+    "SWEEP_RECLAIM": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -27466,55 +27609,7 @@
       "version": "full-ict-v12.2.0-confirmed-ict-quality",
       "probability_validated": false
     },
-    "MSS_REVERSAL_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "PULLBACK_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "DIRECTION_FLIP_15M": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "ACCELERATION_PULLBACK_REENTRY": {
+    "FAILED_OPENING_RANGE_BREAKOUT": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -27546,70 +27641,6 @@
       "version": "full-ict-v12.2.0-confirmed-ict-quality",
       "probability_validated": false
     },
-    "OR_FAILURE_2_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "BREAKOUT_RETEST": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "SESSION_MEAN_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "MOMENTUM_NO_PULLBACK_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
     "FAILED_AUCTION_REJECTION": {
       "trades": 0,
       "wins": 0,
@@ -27626,39 +27657,7 @@
       "version": "full-ict-v12.2.0-confirmed-ict-quality",
       "probability_validated": false
     },
-    "LIQUIDITY_LADDER": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "CAPITULATION_RECOVERY": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.2.0-confirmed-ict-quality",
-      "probability_validated": false
-    },
-    "BUYER_EXHAUSTION_SHORT": {
+    "PULLBACK_CONTINUATION": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -27690,7 +27689,215 @@
       "version": "full-ict-v12.2.0-confirmed-ict-quality",
       "probability_validated": false
     },
-    "FAILED_BREAKOUT_SHORT": {
+    "SESSION_MEAN_RECLAIM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "ACCELERATION_PULLBACK_REENTRY": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "TREND_IGNITION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "BUYER_EXHAUSTION_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "DIRECTION_FLIP_15M": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "MSS_REVERSAL_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "BREAKOUT_RETEST": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "DAILY_WEEKLY_OPEN_RECLAIM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "CAPITULATION_RECOVERY": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "RANGE_EDGE_REVERSAL": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "LIQUIDITY_LADDER": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "OR_FAILURE_2_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "OPENING_RANGE_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.2.0-confirmed-ict-quality",
+      "probability_validated": false
+    },
+    "MOMENTUM_NO_PULLBACK_CONTINUATION": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -27710,15 +27917,16 @@
   "regime_memory": {
     "last_regime": "RANGE",
     "last_bias": "NEUTRAL",
-    "updated_at": "2026-10-09T11:33:51.130000+00:00"
+    "updated_at": "2026-10-09T11:48:28.523000+00:00"
   },
   "watch": [
     {
       "setup": "SWEEP_RECLAIM",
+      "anchor_id": "anc-20261009090303-529103f5",
       "side": 1,
       "level": 101.09,
-      "reason": "COSTS_CONSUME_EDGE",
-      "score": 68.36
+      "reason": "ORDER_LIFETIME_BELOW_REPORT_CADENCE",
+      "score": 73.0
     },
     {
       "setup": "CAPITULATION_RECOVERY",
@@ -27727,6 +27935,13 @@
       "level": 101.09,
       "reason": "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION",
       "score": 62.0
+    },
+    {
+      "setup": "TIME_OF_DAY_ADAPTIVE",
+      "side": 1,
+      "level": 101.02,
+      "reason": "NO_CONFIRMED_3M_CONTROL",
+      "score": 60.98
     },
     {
       "setup": "LIQUIDITY_LADDER",
@@ -27741,7 +27956,7 @@
       "anchor_id": "anc-20261009084900-450e1031",
       "side": -1,
       "level": 101.37,
-      "reason": "LIMIT_UNREACHABLE",
+      "reason": "ANCHOR_INVALIDATED",
       "score": 56.0
     },
     {
@@ -27765,6 +27980,14 @@
       "anchor_id": "anc-20261009113351-78bbdd2c",
       "side": -1,
       "level": 101.4,
+      "reason": "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION",
+      "score": 56.0
+    },
+    {
+      "setup": "DAILY_WEEKLY_OPEN_RECLAIM",
+      "anchor_id": "anc-20261009114828-e03c3ae0",
+      "side": -1,
+      "level": 101.59,
       "reason": "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS",
       "score": 56.0
     },
@@ -27849,6 +28072,14 @@
       "score": 55.0
     },
     {
+      "setup": "SESSION_MEAN_RECLAIM",
+      "anchor_id": "anc-20261009114828-9690e811",
+      "side": -1,
+      "level": 101.802,
+      "reason": "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS",
+      "score": 55.0
+    },
+    {
       "setup": "RANGE_EDGE_REVERSAL",
       "anchor_id": "anc-20261009084900-d26a9172",
       "side": 1,
@@ -27876,7 +28107,78 @@
     "schema": "ict_quality_v1",
     "strategy": "confirmed-ict-quality-v1",
     "signature": "e2c8d25bce30896958a42a927fa651e482ee79ad2cb529371a5eb4a6aaa7617b",
-    "pending": [],
+    "pending": [
+      {
+        "pending": {
+          "id": "f1b14a5af87902595c",
+          "order_id": "f1b14a5af87902595c",
+          "event_key": "3e681ae83f240e2aef",
+          "zone_key": "3e681ae83f240e2aef",
+          "side": 1,
+          "instrument": "BZ-USDT-SWAP",
+          "setup": "TIME_OF_DAY_ADAPTIVE",
+          "setup_type": "TIME_OF_DAY_ADAPTIVE",
+          "setup_family": "RANGE_EXECUTION",
+          "canonical_setup_family": "VALUE_RECLAIM",
+          "entry": 101.02,
+          "limit_price": 101.02,
+          "stop": 100.59,
+          "initial_stop": 100.59,
+          "tp": 101.63,
+          "tp0": 101.27799999999999,
+          "tp1": 101.63,
+          "tp2": 101.74,
+          "tp3": 101.87,
+          "risk": 0.4299999999999926,
+          "partials": {
+            "TP1": 0.65,
+            "TP2": 0.2,
+            "TP3": 0.14999999999999997
+          },
+          "placed_ts": 1791546508523,
+          "effective_ts": 1791546660000,
+          "expires_ts": 1791551880000,
+          "invalidation": 100.615,
+          "htf_1h": -1,
+          "htf_4h": 1,
+          "score": 60.98,
+          "net_rr": 1.2061744186046703,
+          "gross_rr": 1.4186046511628136,
+          "costs_r": 0.2124302325581432,
+          "timeframe": "15m+3m",
+          "zone_created_ts": 1791546508523,
+          "last_bar": 0,
+          "execution": "PAPER_SIGNAL",
+          "status": "PENDING",
+          "target_cancel_armed": true,
+          "version": "full-ict-v12.2.0-confirmed-ict-quality",
+          "features": {
+            "setup": "TIME_OF_DAY_ADAPTIVE",
+            "family": "VALUE_RECLAIM",
+            "kind": "range",
+            "side": 1,
+            "regime": "RANGE",
+            "alignment": "mixed",
+            "side3": 0,
+            "side15": 0,
+            "shift3": false,
+            "shift15": false,
+            "impulse": false,
+            "acceptance": false,
+            "range_position": 0.0,
+            "shock": false,
+            "distance_atr": 0.721,
+            "cost_fraction": 0.1497,
+            "as_of_ts": 1791546508523,
+            "strategy": "confirmed-ict-quality-v1"
+          },
+          "qualified": false,
+          "strategy": "confirmed-ict-quality-v1",
+          "decision_ts": 1791546508523
+        },
+        "active": null
+      }
+    ],
     "observations": [
       {
         "id": "4f10f3903778c68cd0",
@@ -28127,8 +28429,9 @@
       "81783ed3c803d10f67aebd9f1f9a346a65a874a480fa69fcdd391279d74f954b": 1791533912739,
       "ee91f5e6d9d0ba7376efbe628c7ee3da7352c9cdd77948731b78879358740458": 1791534831074,
       "4641ec4c5f54c558f54499e23100f649887c2368b276140d0feafa8615220b31": 1791535740835,
-      "2ae64ceed50c0156a42ed73985e1e23934266c6ae6ad845886890b661c1e3b7e": 1791536583323
+      "2ae64ceed50c0156a42ed73985e1e23934266c6ae6ad845886890b661c1e3b7e": 1791536583323,
+      "dcfa26ef41cb4a8aa66771137919771067ba5abc68a7574dca5e3d309f375915": 1791546508523
     },
-    "last_run_ts": 1791545631130
+    "last_run_ts": 1791546508523
   }
 }
