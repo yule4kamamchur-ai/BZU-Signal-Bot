@@ -204,7 +204,7 @@ def validate(data: dict, folds: int=3) -> dict:
     cfg.validate();data_quality=audit_data(data);samples=list(snapshots(data))
     if not samples:
         raise ValueError('No evaluation snapshots')
-    baseline=baseline_module();base_cfg=baseline.Config(**{k:v for k,v in vars(cfg).items() if k!='core'},core=core)
+    baseline=baseline_module();base_cfg=baseline.Config(**{k:v for k,v in vars(cfg).items() if k!='core' and k in {field.name for field in __import__('dataclasses').fields(baseline.Config)}},core=core)
     embargo=(cfg.ttl_minutes+cfg.max_hold_minutes)*60_000+engine.TF['15m']
     middle=start+(end-start)//2
     cuts=[middle+(end-middle)*i//folds for i in range(folds+1)]

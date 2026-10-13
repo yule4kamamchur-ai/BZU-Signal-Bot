@@ -284,6 +284,31 @@ def watch_candidates(state: dict, candidates: list[dict], assessments: dict, cfg
     q['seen']={key:ts for key,ts in q['seen'].items() if ts>=cutoff}
 
 
+def refresh_confirmations(state: dict, snapshot, context: dict, cfg, engine) -> None:
+    """Record a later *pre-fill* confirmation, effective only for future bars.
+
+    The original decision stays in the audit trail. A confirmation after the
+    entry cannot upgrade a losing observation retroactively.
+    """
+    q=ensure(state,cfg)
+    for item in q['pending']:
+        plan=item.get('pending')
+        if not plan or plan.get('qualified') or plan.get('confirmed_ts'):
+            continue
+        if snapshot.now >= plan['expires_ts']:
+            continue
+        f=features(plan,snapshot,context,cfg,engine)
+        if structural_reason(f)!='CONFIRMED':
+            continue
+        # Start an independent future-only PAPER episode; no retrospective fill.
+        plan['features']=f
+        plan['qualified']=True
+        plan['confirmed_ts']=snapshot.now
+        plan['decision_ts']=snapshot.now
+        plan['effective_ts']=((snapshot.now+TF['3m']-1)//TF['3m'])*TF['3m']
+        item.setdefault('confirmation_history',[]).append({'ts':snapshot.now,'source':'CLOSED_BARS_ONLY'})
+
+
 def engine_key(plan,cfg):
     return digest([plan['side'],round(plan['entry']/cfg.tick),plan.get('zone_created_ts',plan['placed_ts'])//900_000])
 

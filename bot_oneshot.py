@@ -84,7 +84,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v12.2.0-confirmed-ict-quality"
+BOT_VERSION = "full-ict-v12.3.0-causal-geometry-reports"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -226,7 +226,7 @@ TRADINGVIEW_SYMBOLS = ("BINANCE:BZUSDT.P", "BINANCE:BZUSDT")
 
 CANDLES_3M_LIMIT = max(120, min(300, int(os.getenv("CANDLES_3M_LIMIT", "240") or 240)))
 CANDLES_15M_LIMIT = max(120, min(300, int(os.getenv("CANDLES_15M_LIMIT", "200") or 200)))
-CANDLES_1H_LIMIT = max(80, min(300, int(os.getenv("CANDLES_1H_LIMIT", "160") or 160)))
+CANDLES_1H_LIMIT = max(200, min(300, int(os.getenv("CANDLES_1H_LIMIT", "220") or 220)))
 CANDLES_4H_LIMIT = max(60, min(300, int(os.getenv("CANDLES_4H_LIMIT", "140") or 140)))
 SMT_CANDLES_15M_LIMIT = max(80, min(300, int(os.getenv("SMT_CANDLES_15M_LIMIT", "200") or 200)))
 HTF_SOURCE_15M_LIMIT = max(240, min(300, int(os.getenv("HTF_SOURCE_15M_LIMIT", "300") or 300)))
@@ -1852,7 +1852,7 @@ def utc_day_start_ms(when: Optional[datetime] = None) -> int:
     return int(datetime(moment.year, moment.month, moment.day, tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def session_profile(candles15: list[Candle], when: Optional[datetime] = None) -> dict[str, Any]:
+def session_profile(candles15: list[Candle], when: Optional[datetime] = None, candles1h: Optional[list[Candle]] = None) -> dict[str, Any]:
     """Session identity, opening range and daily/weekly reference levels."""
     moment = when or now_utc()
     hour = moment.hour
@@ -1885,13 +1885,25 @@ def session_profile(candles15: list[Candle], when: Optional[datetime] = None) ->
     prev_high = max((c.high for c in prev_rows), default=0.0)
     prev_low = min((c.low for c in prev_rows), default=0.0)
 
-    week_rows = [c for c in candles15 if int(c.ts) >= monday_ts]
+    # Use >= 7 days of 1H history for weekly references. Never call a
+    # truncated 50-hour 15m window a weekly high or weekly open.
+    hour_rows = sorted((c for c in (candles1h or []) if getattr(c, 'confirmed', True)), key=lambda c: c.ts)
+    weekly_complete = bool(hour_rows and hour_rows[0].ts <= monday_ts
+                           and any(c.ts == monday_ts for c in hour_rows))
+    week_rows = [c for c in hour_rows if int(c.ts) >= monday_ts] if weekly_complete else []
     week_open = safe_float(week_rows[0].open) if week_rows else 0.0
     week_high = max((c.high for c in week_rows), default=0.0)
     week_low = min((c.low for c in week_rows), default=0.0)
 
-    # Opening range = the first four 15m bars of the UTC day.
-    or_rows = rows[:4]
+    # Asia is a FIXED completed UTC 02:00–07:00 window, not moving day extrema.
+    asia_start, asia_end = day_ts+2*3_600_000, day_ts+7*3_600_000
+    asia_rows = [c for c in rows if asia_start <= c.ts < asia_end and getattr(c,'confirmed',True)]
+    asia_complete = len(asia_rows) == 20 and [c.ts for c in asia_rows] == list(range(asia_start,asia_end,900_000))
+    asia_high = max((c.high for c in asia_rows),default=0.0) if asia_complete else 0.0
+    asia_low = min((c.low for c in asia_rows),default=0.0) if asia_complete else 0.0
+
+    # Opening range = exactly the first four 15m bars of the UTC day.
+    or_rows = [c for c in rows if day_ts <= c.ts < day_ts+3_600_000]
     or_high = max((c.high for c in or_rows), default=0.0)
     or_low = min((c.low for c in or_rows), default=0.0)
 
@@ -1908,9 +1920,13 @@ def session_profile(candles15: list[Candle], when: Optional[datetime] = None) ->
         "week_open": round(week_open, 6),
         "week_high": round(week_high, 6),
         "week_low": round(week_low, 6),
+        "week_complete": weekly_complete,
+        "asia_high": round(asia_high, 6),
+        "asia_low": round(asia_low, 6),
+        "asia_complete": asia_complete,
         "opening_range_high": round(or_high, 6),
         "opening_range_low": round(or_low, 6),
-        "opening_range_complete": len(or_rows) >= 4,
+        "opening_range_complete": len(or_rows) == 4 and [c.ts for c in or_rows] == list(range(day_ts,day_ts+3_600_000,900_000)),
         "schema_version": SCHEMA_VERSION,
     }
 
@@ -2039,7 +2055,7 @@ def build_context(data: dict[str, Any], state: dict[str, Any], journal: dict[str
     atr1h = atr(c1h, 14) if c1h else atr15
 
     regime_profile = detect_regime(c15m, c1h)
-    session = session_profile(c15m)
+    session = session_profile(c15m, now_utc(), c1h)
     structure15 = regime_profile["structure"]
     structure3m = structure_snapshot(c3m, 40, SWING_PIVOT_STRENGTH)
     htf = htf_fact(structure15, c1h, c4h)
@@ -2771,17 +2787,18 @@ def detect_direction_flip_15m(context: dict[str, Any]) -> Optional[Anchor]:
 
 def detect_trend_ignition(context: dict[str, Any]) -> Optional[Anchor]:
     """Compression resolves with displacement; the breakout edge is the anchor."""
-    base = (context.get("zones") or {}).get("consolidation") or {}
     c15 = list((context.get("candles") or {}).get("15m") or [])
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
     price = safe_float(context.get("price"))
     regime_profile = dict(context.get("regime_profile") or {})
-    if not base.get("found") or len(c15) < 20:
-        return None
-    rows = _confirmed(c15, 3)
-    if not rows:
+    rows = [c for c in c15 if getattr(c, 'confirmed', True)]
+    if len(rows) < 20:
         return None
     last = rows[-1]
+    # A breakout MUST be measured against the base before the breakout candle.
+    base = detect_consolidation(rows[:-1], atr15)
+    if not base.get('found'):
+        return None
     low = safe_float(base.get("low"))
     high = safe_float(base.get("high"))
     efficiency = safe_float(regime_profile.get("efficiency_15m"))
@@ -2945,7 +2962,7 @@ def detect_failed_opening_range_breakout(context: dict[str, Any]) -> Optional[An
         last = pierced[-1]
         extreme = safe_float(getattr(last, extreme_key))
         sign = side_sign(side)
-        invalidation = extreme + sign * 0.20 * atr15
+        invalidation = extreme - sign * 0.20 * atr15
         return make_anchor(
             SetupType.FAILED_OPENING_RANGE_BREAKOUT.value, side, level, invalidation,
             AnchorKind.RANGE_EDGE.value,
@@ -3095,8 +3112,10 @@ def detect_time_of_day_adaptive(context: dict[str, Any]) -> Optional[Anchor]:
     price = safe_float(context.get("price"))
     if name not in {"LONDON_OPEN", "LONDON", "NY_OVERLAP", "NY_PM"} or price <= 0:
         return None
-    asia_low = safe_float(session.get("day_low"))
-    asia_high = safe_float(session.get("day_high"))
+    if not session.get('asia_complete'):
+        return None
+    asia_low = safe_float(session.get("asia_low"))
+    asia_high = safe_float(session.get("asia_high"))
     if asia_low <= 0 or asia_high <= 0 or (asia_high - asia_low) < 0.8 * atr15:
         return None
     if abs(price - asia_low) <= 0.75 * atr15:

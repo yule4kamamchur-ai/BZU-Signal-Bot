@@ -38,6 +38,16 @@
     padding: 16px;
   }
 
+  .v12panel{background:var(--surface);border:1px solid var(--border2);border-radius:12px;padding:15px;margin:12px 0}
+  .v12heading{font-size:14px;font-weight:700;color:var(--text);margin-bottom:10px}
+  .v12sub{font-size:12px;color:var(--muted);line-height:1.7}
+  .v12slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:12px}
+  .v12slot{background:var(--surface2);padding:12px;border-radius:10px;border:1px solid var(--border2);font-size:13px;line-height:1.8}
+  .v12slot b{font-size:14px}
+  .v12slot .money{font-family:var(--mono);font-weight:600;color:var(--text)}
+  .v12events{font-size:12px;line-height:1.9;max-height:270px;overflow:auto}
+  .v12event{padding:6px 0;border-bottom:1px solid var(--border)}
+
   /* HEADER */
   .header {
     display: flex;
@@ -600,6 +610,23 @@
   </div>
 </div>
 
+<!-- AUTHORITATIVE v12 TWO-SLOT LEDGER -->
+<section id="v12Board" style="display:none;margin-bottom:18px;">
+  <div class="v12panel">
+    <div class="v12heading">📋 Два лімітні місця · реальний стан PAPER-обліку</div>
+    <div id="v12Summary" class="v12sub"></div>
+    <div id="v12Slots" class="v12slots"></div>
+  </div>
+  <div class="v12panel">
+    <div class="v12heading">📣 Події по ордерах</div>
+    <div id="v12Events" class="v12events"></div>
+  </div>
+  <div class="v12panel">
+    <div class="v12heading">🧪 Перевірка 24 детекторів</div>
+    <div id="v12Detectors" class="v12sub"></div>
+  </div>
+</section>
+
 <!-- JOURNAL -->
 <div class="info-card" style="margin-bottom:14px;">
   <div class="info-card-title">Журнал сигналів (останні 10)</div>
@@ -614,8 +641,8 @@
 
 <script>
 const REPO = 'yule4kamamchur-ai/BZU-Signal-Bot';
-const SIGNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/last_signal.json`;
-const JOURNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/signal_journal.json`;
+const SIGNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/last_signal_v6_4.json`;
+const JOURNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/signal_journal_v6_4.json`;
 const REFRESH_MS = 60000;
 const LIVE_SYMBOL_OKX = 'BZ-USDT-SWAP';
 const LIVE_SYMBOL_BINANCE = 'BZUSDT';
@@ -1336,6 +1363,56 @@ async function fetchLiveMarket(fallbackPrice) {
   return { price: null, change24h: null, source: 'немає live-ціни', fallback: true };
 }
 
+function renderV12Board(state, journal) {
+  const full = isObj(journal?.full_v12) ? journal.full_v12 : {};
+  const active = !!(state?.schema === 'full_ict_limit_state_v12' || full.version);
+  $('v12Board').style.display = active ? '' : 'none';
+  $('signalCard').style.display = active ? 'none' : '';
+  if (!active) return false;
+  // Hide unsupported legacy metric sections rather than displaying made-up zeros.
+  document.querySelectorAll('.info-card').forEach(el => el.style.display='none');
+  const snapshots = [state, state?.second_slot || full?.second_slot || {}];
+  const tradeRows = asArray(firstDefined(state?.trades,full?.trades));
+  const live = snapshots.map((slot,i) => {
+    const plan = slot?.active || slot?.pending;
+    const r = slot?.reconciliation;
+    if (!plan && !r) return `<div class="v12slot">⚪ Місце ${i+1} · вільне</div>`;
+    if (!plan) return `<div class="v12slot">⚠️ Місце ${i+1} · потрібна перевірка<br>${escapeHtml(r.order_id)}</div>`;
+    const kind = !!slot.active;
+    const id = escapeHtml(plan.display_id || `#${String(plan.order_number || i+1).padStart(3,'0')}`);
+    const side = plan.side===1 ? '📈 LONG · купівля' : '📉 SHORT · продаж';
+    const status = kind ? '🟢 ПОЗИЦІЯ ВІДКРИТА' : '⏳ ЛІМІТ ЧЕКАЄ';
+    const targets = ['tp1','tp2','tp3'].filter(t => num(plan?.partials?.[t.toUpperCase()]) !== 0 && num(plan[t]) != null)
+      .map(t => `${t.toUpperCase()}: <span class="money">${escapeHtml(formatPrice(plan[t]))}</span> ${plan[t+'_hit']?'✅':'⏳'}`).join('<br>');
+    const expiry = !kind ? `⏰ Очікуємо до ${escapeHtml(formatDateTime(new Date(plan.expires_ts).toISOString()))}` :
+      `📦 Залишилось ${(Number(plan.remaining ?? 1)*100).toFixed(0)}%`;
+    return `<div class="v12slot"><b>${id} · ${escapeHtml(side)}</b><br>${status}<br>`+
+      `🎯 Вхід: <span class="money">${escapeHtml(formatPrice(plan.entry))}</span><br>`+
+      `🛑 Чинний SL: <span class="money">${escapeHtml(formatPrice(plan.stop))}</span><br>`+
+      `🏁 ${targets || 'Цілей немає'}<br>${expiry}<br>`+
+      `📌 ${escapeHtml(plan.setup || '')} · ${escapeHtml(plan.probability_status || 'НЕ ВАЛІДОВАНО')}</div>`;
+  });
+  const filled=tradeRows.filter(t => Number(t.net_r)>0).length;
+  const losses=tradeRows.filter(t => Number(t.net_r)<=0 && t.net_r != null).length;
+  const pct=(filled+losses)?(100*filled/(filled+losses)).toFixed(1)+'%':'ще немає завершень';
+  const latest=asArray(state?.signals).at(-1) || asArray(full.signals).at(-1) || {};
+  const stamp=state?.last_run_ts || Date.parse(full.updated_at);
+  $('v12Summary').textContent=`Зайнято: ${snapshots.filter(x=>x.pending||x.active||x.reconciliation).length}/2 • Закрито: ${filled+losses} • win rate: ${pct} (PAPER) • Останній цикл: ${stamp?new Date(stamp).toLocaleString('uk-UA'):'—'}`;
+  $('v12Slots').innerHTML=live.join('');
+  const events=asArray(state?.events).length ? state.events : asArray(full.events);
+  $('v12Events').innerHTML=events.length ? events.slice(-12).reverse().map(e=>{
+    const icon = {PLACED:'🆕',FILLED:'🟢',CLOSED:'🏁',TP1:'🎯',TP2:'🎯',TP3:'🎯',CANCELLED:'⚪',EXPIRED:'⌛',PAPER_STOP_AMENDED:'🛡️'}[e.kind] || '•';
+    const n=asArray(state?.orders).find(x=>x.id===e.order_id)?.display_id || String(e.order_id||'').slice(0,8);
+    return `<div class="v12event">${icon} ${escapeHtml(e.ts?new Date(e.ts).toLocaleString('uk-UA'):'')} · ${escapeHtml(n)} · ${escapeHtml(e.kind)} ${e.net_r != null?'· '+Number(e.net_r).toFixed(2)+'R':''}</div>`;
+  }).join(''):'Поки немає подій';
+  const detectors=asArray(latest.detectors);
+  const detected=detectors.filter(d=>d.status==='DETECTED').length;
+  const errors=detectors.filter(d=>d.status==='ERROR').length;
+  const quality=full.quality_summary || {};
+  $('v12Detectors').textContent=`Перевірено ${detectors.length}/24, знайдено сценаріїв: ${detected}, помилок: ${errors}. Спостережень моделі: ${quality.observed_outcomes ?? '—'}, ціль 70%: ${quality.target_validated?'підтверджена':'НЕ підтверджена'}.`;
+  return true;
+}
+
 function buildSyntheticTradeFromSignal(signal) {
   const action = normalizeAction(signal);
   if (!(action === 'entry' || action === 'risky_entry')) return null;
@@ -1381,19 +1458,27 @@ async function loadData() {
     LAST_CONTEXT = ctx || {};
     LAST_ACTIVE_TRADE = activeTrade || null;
 
-    renderPrice(ctx, signal, state, activeTrade);
-    setSignalCard(signal, ctx, state);
-    renderPlan(signal);
-    renderActiveTrade(activeTrade, currentPrice);
-    renderTechAnalysis(ctx);
-    renderIctFlow(ctx, signal);
-    renderRegime(ctx, signal);
-    renderConfirmations(firstDefined(signal.confirmations, ctx.confirmations), firstDefined(signal.conflicts, ctx.conflicts));
-    renderICTZones(firstDefined(ctx.pending_ict_zones, state.pending_ict_zones, state.ict_memory?.pending_zones, []));
-    renderNews(firstDefined(ctx.news, signal.news, state.news));
-    renderJournal(extractJournalItems(state, journal));
+    const isV12 = renderV12Board(state, journal);
+    if (isV12) {
+      const latest = asArray(state.signals).at(-1) || {};
+      renderPrice({}, {price:latest.price}, state, state.active || state.second_slot?.active || null);
+      $('activeTradeBanner').style.display='none';
+    } else {
+      document.querySelectorAll('.info-card').forEach(el => el.style.display='');
+      renderPrice(ctx, signal, state, activeTrade);
+      setSignalCard(signal, ctx, state);
+      renderPlan(signal);
+      renderActiveTrade(activeTrade, currentPrice);
+      renderTechAnalysis(ctx);
+      renderIctFlow(ctx, signal);
+      renderRegime(ctx, signal);
+      renderConfirmations(firstDefined(signal.confirmations, ctx.confirmations), firstDefined(signal.conflicts, ctx.conflicts));
+      renderICTZones(firstDefined(ctx.pending_ict_zones, state.pending_ict_zones, state.ict_memory?.pending_zones, []));
+      renderNews(firstDefined(ctx.news, signal.news, state.news));
+      renderJournal(extractJournalItems(state, journal));
+    }
 
-    const updatedAt = firstDefined(state.updated_at, state.time, signal.time, ctx.price_checked_at, activeTrade?.opened_at);
+    const updatedAt = isV12 ? new Date(state.last_run_ts || Date.parse(journal?.full_v12?.updated_at) || 0).toISOString() : firstDefined(state.updated_at, state.time, signal.time, ctx.price_checked_at, activeTrade?.opened_at);
     const age = ageMinutes(updatedAt);
     const dot = $('liveDot');
     if (age < 20) dot.className = 'live-dot';

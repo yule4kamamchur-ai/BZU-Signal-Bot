@@ -28,7 +28,7 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.2.0-confirmed-ict-quality"
+VERSION = "full-ict-v12.3.0-causal-geometry-reports"
 import signal_quality as quality
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
@@ -62,10 +62,11 @@ class Config:
     max_target_r: float = 2.0
     max_stop_atr: float = 2.0
     min_stop_atr3: float = 0.65
+    min_stop_pct: float = 0.004  # 0.40% of ENTRY, applied to every new limit
     max_entry_distance_atr: float = 3.0
     min_score: float = 60.0
     conflict_margin: float = 8.0
-    ttl_minutes: int = 90
+    ttl_minutes: int = 120
     setup_age_minutes: int = 180
     max_hold_minutes: int = 360
     day_loss_cap_r: float = 3.0
@@ -95,7 +96,7 @@ class Config:
             raise ValueError("Invalid intraday boundaries")
         if not 0 <= self.min_score <= 100 or self.max_daily_trades < 1:
             raise ValueError("Invalid ranking / daily trade limit")
-        if self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
+        if not 0.004 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
             raise ValueError("Invalid stop bounds")
         if self.partial_tp1+self.partial_tp2 >= 1 or self.setup_min_sample < 10:
             raise ValueError("Invalid partial plan / calibration sample")
@@ -110,6 +111,7 @@ class Config:
             "max_target_r": ("MAX_TARGET_R", float), "ttl_minutes": ("LIMIT_TTL_MINUTES", int),
             "setup_age_minutes": ("SETUP_AGE_MINUTES", int),
             "max_hold_minutes": ("MAX_HOLD_MINUTES", int),
+            "min_stop_pct": ("ABS_MIN_STOP_PCT", float),
             "day_loss_cap_r": ("DAILY_LOSS_CAP_R", float),
             "max_daily_trades": ("MAX_DAILY_TRADES", int),
             "timezone": ("TRADING_TIMEZONE", str),
@@ -404,11 +406,17 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     if any(c.low <= entry if sign == 1 else c.high >= entry for c in observed):
         return None, "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION"
     buffer = max(.15*a3, 2*cfg.tick)
-    stop = round_tick(a.invalidation-sign*buffer, cfg.tick, up=sign == -1)
+    structural_stop = round_tick(a.invalidation-sign*buffer, cfg.tick, up=sign == -1)
+    structural_risk = sign*(entry-structural_stop)
+    # One shared stop geometry for all 24 setups: structural invalidation,
+    # >= 0.40% absolute floor, >= short-term volatility noise and tick size.
+    floor = max(cfg.min_stop_pct*entry, cfg.min_stop_atr3*a3, 4*cfg.tick)
+    risk_required = max(structural_risk, floor)
+    stop = round_tick(entry-sign*risk_required, cfg.tick, up=sign == -1)
     risk = sign*(entry-stop)
-    if risk < max(cfg.min_stop_atr3*a3, 4*cfg.tick):
+    if risk+1e-9 < floor:
         return None, "STOP_INSIDE_NOISE"
-    if risk > cfg.max_stop_atr*a15:
+    if risk > max(cfg.max_stop_atr*a15, 1.25*floor):
         return None, "STRUCTURAL_STOP_TOO_WIDE"
     b1 = core.structure_snapshot(s.candles["1H"], 60, 2)["direction"]
     b4 = core.structure_snapshot(s.candles["4H"], 60, 2)["direction"]
@@ -442,8 +450,10 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     rr1 = sign*(tp1-entry)/risk
     costs = fees_r(entry, tp1, risk, cfg)+tp1*cfg.slippage_bps/10_000/risk
     net_rr = rr1-costs
-    if net_rr < cfg.min_net_rr:
+    if rr1 <= 0 or net_rr < cfg.min_net_rr:
         return None, "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS"
+    if costs > .25*rr1:
+        return None, "COSTS_CONSUME_EDGE"
     # The remaining targets also respect real obstacles, never synthetic 5R promises.
     later = [t for t in targets if t["distance"]-buffer > sign*(tp1-entry)+.25*risk]
     tp2 = round_tick(entry+sign*min(later[0]["distance"]-buffer if later else sign*(tp1-entry), 3*risk),
@@ -469,7 +479,11 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     # A 15m report usually arrives inside a 3m candle. Start PAPER observation
     # on the next whole candle, so its pre-report extremes cannot invent a fill.
     effective = ((s.now+TF["3m"]-1)//TF["3m"])*TF["3m"]
-    expires = min(a.expires_ts, effective+cfg.ttl_minutes*60_000, session_cutoff(s.now,cfg))
+    # Anchor age limits NEW placements; once placed, a fresh full TTL applies.
+    # An old 135-minute anchor no longer truncates a 120-minute waiting order.
+    if s.now >= a.expires_ts or s.now-a.created_ts > cfg.setup_age_minutes*60_000:
+        return None, "ANCHOR_TOO_OLD_TO_PLACE"
+    expires = min(effective+cfg.ttl_minutes*60_000, session_cutoff(s.now,cfg))
     expires = (expires//TF["3m"])*TF["3m"]
     if expires-effective < TF["15m"]:
         return None, "ORDER_LIFETIME_BELOW_REPORT_CADENCE"
@@ -943,7 +957,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         raise ValueError("Instrument changed: use a separate state path")
     config_hash = ident(json.dumps(config_dict(cfg), sort_keys=True))
     if state.get("config_hash") != config_hash and open_plans(state):
-        raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
+        # One-time release migration: keep EXISTING stop/TP/TTL unchanged.
+        # Later operator configuration changes still require closed slots.
+        if state.get('version') not in ('full-ict-v12.2.0-confirmed-ict-quality',):
+            raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
+        state.setdefault('config_migrations',[]).append({'from':state.get('version'),
+                 'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
     start = len(state["events"])
     faults = health(s, cfg)
     lifecycle_faults = execution_health(s, state) if open_plans(state) else []
@@ -963,6 +982,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     manual_block = any(needs_manual_check(r) for r in unresolved)
     analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
+    if analysis.get('full_context'):
+        quality.refresh_confirmations(state,s,analysis['full_context'],cfg,sys.modules[__name__])
     ctx = analysis.get("contexts", {})
     for number,view in slot_views(state):
         pending = view.get("pending")
@@ -1149,19 +1170,20 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         achieved = [name for name in ('TP1','TP2','TP3') if trade.get(name.lower()+'_hit')]
         details = ', '.join(achieved)+' досягнуто; ' if achieved else 'тейків не досягнуто; '
         uncertainty = ' • порядок SL/TP у свічці невідомий, узято стоп' if event.get('ambiguous_ohlc') else ''
-        return f"{at} {label} ЗАКРИТО: {value:+.2f}R — {outcome}\n{details}{text}{uncertainty}"
+        emoji='✅' if value>0 else '🔴' if value<0 else '⚪'
+        return f"{emoji} {at} {label} ЗАКРИТО: {value:+.2f}R — {outcome}\n   {details}{text}{uncertainty}"
     if kind=='FILLED':
-        return f"{at} {label} ВХІД ВИКОНАНО — почався супровід"
+        return f"🟢 {at} {label} ЛІМІТ СПРАЦЮВАВ — позиція відкрита, супровід розпочато"
     if kind in ('TP1','TP2','TP3'):
-        return f"{at} {label} {kind} ДОСЯГНУТО — закрито {event['fraction']*100:.0f}%"
+        return f"🎯 {at} {label} {kind} досягнуто — зафіксовано {event['fraction']*100:.0f}% позиції"
     if kind=='PAPER_STOP_AMENDED':
-        return f"{at} {label} Новий SL: {event['stop']:.6g}, чинний з {local_time(event['effective_ts'],cfg)}"
+        return f"🛡️ {at} {label} Перенесення стопа на {event['stop']:.6g} з {local_time(event['effective_ts'],cfg)}"
     if kind in ('CANCELLED','EXPIRED'):
         text = 'скасовано' if kind=='CANCELLED' else 'строк очікування завершився'
         reasons = {'CONFIRMED_HTF_FLIP':'змінився напрямок', 'STRUCTURE_INVALIDATED_NOW':'сетап утратив чинність',
                    'TARGET_REACHED_WITHOUT_FILL':'ціль досягнута без входу'}
         suffix = '; '+reasons[event['reason']] if event.get('reason') in reasons else ''
-        return f"{at} {label} Ордер {text}, входу не було{suffix}"
+        return f"⚪ {at} {label} Ліміт {text}, угода НЕ відкрилася{suffix}"
     if kind=='CANCEL_REQUESTED':
         return f"{at} {label} Скасувати невиконаний ліміт; перевірити, чи не було входу"
     if kind=='UNRESOLVED':
@@ -1173,7 +1195,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
     local = datetime.fromtimestamp(s.now/1000,ZoneInfo(cfg.timezone))
-    lines = [f"{cfg.instrument} • {local:%d.%m %H:%M} • PAPER",f"Зайнято місць: {occupied_slots(state)}/2"]
+    lines = [f"📊 BZU • {local:%d.%m %H:%M} (Київ)",
+             f"🧪 Сигнали PAPER, не біржові ордери • Зайнято місць: {occupied_slots(state)}/2"]
     new_ids = {p['id'] for p in result.get('selected_plans',[])}
     if result.get('selected'):
         new_ids.add(result['selected']['id'])
@@ -1182,11 +1205,14 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
         if p:
             label = display_order(state,p['id'])
             side = 'LONG' if p['side']==1 else 'SHORT'
-            status = 'СУПРОВІД' if view.get('active') else 'НОВИЙ ЛІМІТ' if p['id'] in new_ids else 'ОЧІКУЄ ВХОДУ'
-            lines += ['',f"{label} {side} — {status}",f"Вхід: {p['entry']:.6g} • SL: {p['stop']:.6g}",target_line(p)]
+            status = '🟢 ВІДКРИТО' if view.get('active') else '🆕 НОВИЙ ЛІМІТ' if p['id'] in new_ids else '⏳ ЧЕКАЄМО ЦІНУ'
+            direction = '📈 Купівля LONG' if p['side']==1 else '📉 Продаж SHORT'
+            lines += ['',f"{label} {side} • {direction} • {status}",
+                      f"🎯 Вхід: {p['entry']:.6g}   🛑 SL: {p['stop']:.6g} ({p.get('stop_distance_pct',p['risk']/p['entry']*100):.2f}%)",
+                      '🏁 '+target_line(p)]
             if view.get('pending'):
                 effective = p.get('effective_ts',p['placed_ts'])
-                lines.append(f"Облік входу з {local_time(effective,cfg)}; невиконаний ліміт діє до {local_time(p['expires_ts'],cfg)}")
+                lines.append(f"⏰ Початок перевірки: {local_time(effective,cfg)} • Чекаємо до {local_time(p['expires_ts'],cfg)}")
                 splits = p.get('partials',{})
                 if len([v for v in splits.values() if v>0])>1:
                     lines.append('Частки на тейках: '+' / '.join(f"{name} {size*100:.0f}%" for name,size in splits.items() if size>0))
@@ -1197,7 +1223,7 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
                 gross = p.get('realized_gross_r',0)+remaining*p['side']*(s.price-p['entry'])/p['risk']
                 fees = p['entry']*p.get('entry_fee_rate',cfg.maker_fee)/p['risk']+p.get('realized_exit_fees_r',0)+remaining*s.price*cfg.taker_fee/p['risk']
                 slip = remaining*s.price*cfg.slippage_bps/10_000/p['risk']
-                lines.append(f"Відкрито: {remaining*100:.0f}% • оцінка при закритті зараз: {gross-fees-slip:+.2f}R")
+                lines.append(f"📦 Залишилось {remaining*100:.0f}% • Поточний оцінний результат: {gross-fees-slip:+.2f}R")
                 if p.get('pending_stop'):
                     amend = p['pending_stop']
                     lines.append(f"Новий SL {amend['price']:.6g} з {local_time(amend['effective_ts'],cfg)}")
@@ -1215,7 +1241,7 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
         t = max(state['trades'],key=lambda row:row['closed_ts'])
         events = ['Остання завершена угода: '+display_order(state,t['id'])+f" • {t['net_r']:+.2f}R"]
     if events:
-        lines += ['','Події:']+events
+        lines += ['','📣 Що змінилося за останні 15 хв:']+events
     action = result['action']
     reasons = {'WATCH':'Нових входів немає.', 'DIRECTION_CONFLICT':'Нових входів немає: конфлікт напрямків.',
                'DAILY_PAUSE':'Нові входи призупинені: денний ліміт ризику або угод.',
@@ -1228,8 +1254,8 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
         lines.append('Новий ордер — після звільнення одного місця.')
     if state.get('trades'):
         stats = statistics(state['trades'])
-        lines.append(f"Закрито: {stats['trades']} • win rate {stats['win_rate']*100:.1f}% • разом {stats['net_r']:+.2f}R")
-    lines.append('PAPER = облік за ціною; фактичне виконання перевіряйте на біржі.')
+        lines.append(f"📈 Історія: {stats['trades']} закритих • виграшів {stats['win_rate']*100:.1f}% • сума {stats['net_r']:+.2f}R")
+    lines.append('ℹ️ PAPER = модель за свічками, не підтвердження виконання на OKX.')
     return '\n'.join(lines)
 
 
@@ -1647,9 +1673,19 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             emit(state,'RECONCILIATION_ACKNOWLEDGED',int(time.time()*1000),order_id=r['order_id'])
             state['second_slot']['reconciliation'] = None
         snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else collect_snapshot(cfg,state['last_run_ts'])
+        old_events = len(state.get('events',[]))
+        # A separate scan runs every five minutes; deliver all its lifecycle
+        # changes in the NEXT 15-minute report, never send a Telegram every 5m.
+        event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
-        message = build_message(state,snap,result,cfg)
-        print(message)
+        if notify:
+            result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
+        message = build_message(state,snap,result,cfg) if notify else ''
+        state.setdefault('last_notified_event_count',old_events)
+        if notify and result['action']!='DUPLICATE_OR_OUT_OF_ORDER':
+            state['last_notified_event_count']=len(state['events'])
+        if message:
+            print(message)
         if result['action']=='DUPLICATE_OR_OUT_OF_ORDER':
             export_journal(journal_path,state,core)
             return 0 if not notify or notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path) else 2
@@ -1659,7 +1695,9 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         export_journal(journal_path,state,core)
         if notify and not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):
             return 2
-        return 1 if result['action']=='DATA_HOLD' else 0
+        if result['action']=='DATA_HOLD':
+            print('DATA_HOLD: no new orders; Telegram summary/state were processed',file=sys.stderr)
+        return 0  # preserve queued notifications/ledger even when data are on hold
 
 
 def main(core) -> int:

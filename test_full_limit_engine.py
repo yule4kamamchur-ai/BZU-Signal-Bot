@@ -477,7 +477,10 @@ class FullSetupTests(unittest.TestCase):
     def test_neutral_htf_matches_plan_and_report(self):
         cfg,ctx,a,s = full_fixture()
         out = b.run_cycle(b.new_state(cfg),s,cfg)
-        p = out['analysis']['candidate_plans'][0]
+        # Stronger RR/cost geometry can veto every live candidate; use an
+        # independently viable anchor for this neutral-HTF serialization test.
+        p,reason = b.full_plan(a,ctx,s,cfg,{})
+        self.assertIsNotNone(p,reason)
         self.assertEqual(p['htf_1h'],out['analysis']['contexts']['1H']['side'])
         self.assertEqual(p['htf_4h'],out['analysis']['contexts']['4H']['side'])
         self.assertEqual(p['htf_1h'],0)
@@ -541,7 +544,7 @@ class FullSetupTests(unittest.TestCase):
         self.assertEqual(out["analysis"]["registered_setups"],24)
         self.assertFalse([d for d in out["analysis"]["detectors"] if d["status"]=="ERROR"])
         self.assertEqual(out["action"],"WATCH")
-        self.assertTrue(out['analysis']['quality_assessments'])
+        self.assertTrue(out['analysis']['rejections'] or out['analysis']['quality_assessments'])
 
     def test_incomplete_registry_cannot_run_silently(self):
         cfg,ctx,a,s = full_fixture()
@@ -601,7 +604,8 @@ class FullSetupTests(unittest.TestCase):
         cfg,ctx,a,s = full_fixture()
         state = b.new_state(cfg)
         out = b.run_cycle(state,s,cfg)
-        p = out['analysis']['candidate_plans'][0]
+        p,reason = b.full_plan(a,ctx,s,cfg,{})
+        self.assertIsNotNone(p,reason)
         for key in ("qty","quantity","position_size","position_risk_pct","deposit","margin","leverage"):
             self.assertNotIn(key,p)
         msg = b.build_message(state,s,out,cfg).lower()
@@ -749,7 +753,9 @@ class FullLifecycleTests(unittest.TestCase):
         state = b.new_state(cfg)
         self.assertEqual(b.run_cycle(state,s,cfg)["action"],"WATCH")
         self.assertIsNone(state['pending'])
-        self.assertTrue(state['quality']['pending'])
+        # The stronger stop floor can reject a weak candidate BEFORE shadow
+        # observation; no fictitious training trade is manufactured.
+        self.assertTrue(state['quality']['pending'] or state['signals'][-1]['rejections'])
         before = copy.deepcopy(state)
         self.assertEqual(b.run_cycle(state,s,cfg)["action"],"DUPLICATE_OR_OUT_OF_ORDER")
         self.assertEqual(state,before)
