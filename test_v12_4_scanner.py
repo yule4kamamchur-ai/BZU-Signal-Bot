@@ -233,7 +233,7 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         p.update(placement_price=102.70,setup_timeframe='1H',expires_ts=s.now+3600000)
         state['pending']=p;engine.bind_order_numbers(state)
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
-        for text in ('Ціна зараз: 101.25','До входу: 0.54%','наближення 73%',
+        for text in ('Ціна зараз: 101.25','До входу: 0.543%','наближення 73%',
                      'SWEEP_RECLAIM • 1h','Умови на момент сигналу: 100%','Очікуваний win rate: н/д','SL:','TP1'):
             self.assertIn(text,message)
         for noise in ('PAPER','не біржові ордери','Нових входів немає','PAPER ='):
@@ -247,19 +247,18 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         self.assertIn('80.0%',text)
         self.assertIn('65.0%',text)
 
-    def test_watch_report_explains_missing_conditions_and_geometry_without_fallback_phrase(self):
+    def test_watch_report_explains_one_best_scenario_without_fallback_phrase(self):
         cfg,s,ctx,p=quality_snapshot();state=engine.new_state(cfg)
         watch=[{'setup':'SWEEP_RECLAIM','timeframe':'15m','side':1,'level':100.,
                 'readiness_pct':75.,'met_conditions':3,'total_conditions':4,
                 'reason':'SETUP_CONDITIONS_INCOMPLETE','missing_conditions':['Закриття повернулося над рівень']},
-               {'setup':'BREAKOUT_RETEST','timeframe':'1H','side':1,'level':99.,
-                'readiness_pct':100.,'reason':'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'}]
+               {'setup':'BREAKOUT_RETEST','timeframe':'1H','side':-1,'level':103.,
+                'readiness_pct':60.,'reason':'TARGET_RR_TOO_LOW'}]
         text=engine.build_message(state,s,{'action':'WATCH','analysis':{'watch':watch}},cfg)
-        self.assertIn('Умови: 75% (3/4)',text)
+        self.assertIn('Готовність до входу: 75.0% (3/4)',text)
         self.assertIn('Закриття повернулося над рівень',text)
-        self.assertIn('замало простору',text)
+        self.assertNotIn('BREAKOUT_RETEST',text)
         self.assertNotIn('Нових входів немає',text)
-        self.assertNotIn('NEAREST_TARGET_TOO_CLOSE',text)
 
     def test_active_level_is_not_duplicated_as_an_unexplained_ready_setup(self):
         cfg,s,ctx,p=quality_snapshot();state=engine.new_state(cfg)

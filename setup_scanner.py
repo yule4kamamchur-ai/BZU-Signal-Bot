@@ -11,6 +11,63 @@ PRIMARY = ('15m', '1H', '4H')
 MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
 
+ENTRY_CHECKS = (
+    ('PASSIVE_LIMIT','Ліміт стоїть на правильному боці ціни'),
+    ('FRESH_LEVEL','Рівень актуальний і ще не відвіданий'),
+    ('VALID_STOP','Структурний SL відповідає межам ризику'),
+    ('HTF_ALIGNMENT','Старші графіки допускають цей напрямок'),
+    ('TARGET_RR','Потенціал TP достатній відносно SL'),
+    ('CONTEXT_SCORE','Якість контексту проходить поріг'),
+    ('STRUCTURAL_CONFIRMATION','Структурні умови входу підтверджені'),
+    ('STATISTICAL_FILTER','Історичні дані не блокують вхід'),
+)
+
+
+def entry_checks():
+    return [{'key':key,'condition':label,'met':None} for key,label in ENTRY_CHECKS]
+
+
+def update_readiness(row):
+    """Count setup prerequisites AND actual admission checks, not distance.
+
+    None means not evaluated yet and does not count as passed. Portfolio
+    capacity is separate: an otherwise ready setup stays ready while busy.
+    """
+    pattern=row.get('setup_conditions',row.get('conditions',[]))
+    checks=row.setdefault('entry_checks',entry_checks())
+    passed=sum(c.get('met') is True for c in pattern+checks)
+    total=len(pattern)+len(checks)
+    row['setup_readiness_pct']=round(100*sum(c.get('met') is True for c in pattern)/len(pattern),1) if pattern else 0.
+    row['readiness_pct']=round(100*passed/total,1) if total else 0.
+    row['met_conditions']=passed
+    row['total_conditions']=total
+    row['missing_conditions']=[c['condition'] for c in pattern+checks if c.get('met') is not True]
+    return row
+
+
+def selection_key(row, price=None):
+    """Same deterministic ranking for the book, Telegram and dashboard.
+
+    Completion is first. With equal readiness use observed context quality,
+    then historical evidence when available, then current price distance.
+    An unvalidated estimate is never used as an invented win probability.
+    """
+    ready=row.get('readiness_pct',100. if row.get('quality',{}).get('accepted') else 0.) or 0.
+    stat=row.get('statistics',row.get('quality',{}).get('statistics',{}))
+    lower=stat.get('lower_95') if stat.get('observations',0)>=40 else None
+    level=row.get('level',row.get('entry'))
+    distance=proximity(price,level)['distance_pct'] if price else row.get('distance_pct')
+    tf=row.get('timeframe',row.get('setup_timeframe','15m'))
+    return (float(ready),float(row.get('score',0) or 0),float(lower or 0),
+            -float(distance) if distance is not None else float('-inf'),
+            MINUTES.get(tf,15),str(row.get('setup','')),str(row.get('id',row.get('event_key','')) or ''))
+
+
+def best_scenario(rows, price=None, sides=None):
+    eligible=[r for r in rows if r.get('status') not in ('ERROR','FOLLOWED')
+              and r.get('side') in (-1,1) and (sides is None or r.get('side') in sides)]
+    return max(eligible,key=lambda r:selection_key(r,price),default=None)
+
 
 def timeframe(plan):
     tf = plan.get('setup_timeframe', plan.get('timeframe', '15m'))

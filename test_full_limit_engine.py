@@ -275,15 +275,17 @@ class ExecutionTests(unittest.TestCase):
 
 
 class RouterTests(unittest.TestCase):
-    def test_direction_conflict_cannot_place_two_orders(self):
-        cfg = b.Config()
-        s = b.new_state(cfg)
-        p, q = order(), order(-1)
-        q["id"] = "opposite"
-        with patch.object(b, "analyze", return_value=analysis([p, q])):
-            out = b.run_cycle(s, snapshot(), cfg)
-        self.assertEqual(out["action"], "DIRECTION_CONFLICT")
-        self.assertIsNone(s["pending"])
+    def test_best_readiness_wins_without_opposing_second_order(self):
+        cfg = b.Config();state = b.new_state(cfg)
+        p,q = order(),order(-1)
+        p.update(readiness_pct=100.,score=70.)
+        q.update(id='opposite',event_key='opposite',readiness_pct=90.,score=95.)
+        with patch.object(b,'analyze',return_value=analysis([q,p])):
+            result=b.run_cycle(state,snapshot(),cfg)
+        self.assertEqual(result['action'],'PLACE_LIMIT')
+        self.assertEqual(len(result['selected_plans']),1)
+        self.assertEqual(state['pending']['side'],1)
+        self.assertEqual(b.occupied_slots(state),1)
 
     def test_pending_plan_persists_despite_better_new_setup(self):
         s = state_with_order()
@@ -714,7 +716,7 @@ class FullLifecycleTests(unittest.TestCase):
         state["pending"].update(tp1=102,tp2=103,tp3=104,partials={"TP1":.65,"TP2":.2,"TP3":.15})
         bars = [candle(NOW,101,101.5,99.9,100.8),candle(NOW+180_000,100.8,102.5,100,102),
                 candle(NOW+360_000,102,102,98.5,99)]
-        cfg = b.Config()
+        cfg = b.Config(include_commission=True)
         b.advance_lifecycle(state,lifecycle_snapshot(bars),cfg)
         t = state["trades"][0]
         tp_exit,stop_exit = 102*(1-.0002),99*(1-.0002)
@@ -728,7 +730,7 @@ class FullLifecycleTests(unittest.TestCase):
         state = state_with_order()
         state["pending"].update(tp1=102,tp2=103,tp3=104,partials={"TP1":.65,"TP2":.2,"TP3":.15})
         bars = [candle(NOW,101,101.5,99.9,100.8),candle(NOW+180_000,100.8,105,100,104)]
-        b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
+        b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config(include_commission=True))
         t = state["trades"][0]
         self.assertEqual(len(t["realized_legs"]),3)
         self.assertEqual(len(state["trades"]),1)
@@ -855,14 +857,28 @@ class TwoSlotTests(unittest.TestCase):
         with patch.object(b,'analyze',return_value=analysis(plans)):
             return b.run_cycle(state,snap,b.Config())
 
-    def test_two_distinct_limits_can_be_placed_and_third_cannot(self):
-        state = b.new_state(b.Config())
-        result = self.report(state,[self.plan(1),self.plan(2,99),self.plan(3,98)])
-        self.assertEqual(len(result['selected_plans']),2)
+    def seed_two(self,state,first,second):
+        # An existing two-order ledger from earlier scans. Selection now creates
+        # at most one NEW plan per cycle; lifecycle still supervises both slots.
+        state['pending']=copy.deepcopy(first)
+        state['second_slot']['pending']=copy.deepcopy(second)
+        state['last_run_ts']=NOW
+        for plan in b.open_plans(state):
+            plan.setdefault('target_cancel_armed',plan['side']*(101-plan['tp'])<0)
+        b.bind_order_numbers(state)
+
+    def test_one_best_limit_per_cycle_and_never_a_third_live_order(self):
+        state=b.new_state(b.Config());plans=[self.plan(1),self.plan(2,99),self.plan(3,98)]
+        first=self.report(state,plans)
+        self.assertEqual([p['id'] for p in first['selected_plans']],['order-1'])
+        second=self.report(state,plans,now=NOW+900_000)
+        self.assertEqual([p['id'] for p in second['selected_plans']],['order-2'])
+        third=self.report(state,plans,now=NOW+1800_000)
+        self.assertFalse(third['selected_plans'])
         self.assertEqual(b.occupied_slots(state),2)
         self.assertEqual([p['id'] for p in b.open_plans(state)],['order-1','order-2'])
         self.assertEqual(state['signals'][-1]['followed_ids'],['order-1','order-2'])
-        self.assertEqual(state['signals'][-1]['placed_ids'],['order-1','order-2'])
+        self.assertEqual(state['signals'][-1]['placed_ids'],[])
 
     def test_nearby_or_same_event_proposals_do_not_consume_second_slot(self):
         for change in ({'entry':100.001},{'event_key':'event-1'},{'parent_keys':['event-1']}):
@@ -870,14 +886,15 @@ class TwoSlotTests(unittest.TestCase):
                 state = b.new_state(b.Config())
                 duplicate = self.plan(2,99)
                 duplicate.update(change)
-                self.report(state,[self.plan(1),duplicate])
+                self.report(state,[self.plan(1)])
+                self.report(state,[duplicate],now=NOW+900_000)
                 self.assertEqual(b.occupied_slots(state),1)
 
     def test_pending_and_filled_orders_both_reserve_capacity(self):
         state = b.new_state(b.Config())
         second = self.plan(2,98)
         second['tp'] = 104
-        self.report(state,[self.plan(1),second])
+        self.seed_two(state,self.plan(1),second)
         bars = [candle(NOW+i*180_000,101,101.5,99.9 if i==0 else 100.5,101) for i in range(5)]
         result = self.report(state,[self.plan(3,97)],NOW+900_000,bars)
         self.assertIsNotNone(state['active'])
@@ -891,7 +908,7 @@ class TwoSlotTests(unittest.TestCase):
         p.update(tp1=102,tp2=103,tp3=104,partials={'TP1':.65,'TP2':.2,'TP3':.15})
         second = self.plan(2,98)
         second['tp'] = 104
-        self.report(state,[p,second])
+        self.seed_two(state,p,second)
         bars = [candle(NOW,101,101.5,99.9,101),candle(NOW+180_000,101,102.2,100.5,102)]
         bars += [candle(NOW+i*180_000,102,102.2,101.5,102) for i in range(2,5)]
         self.report(state,[self.plan(3,97)],NOW+900_000,bars,price=102)
@@ -902,7 +919,7 @@ class TwoSlotTests(unittest.TestCase):
 
     def test_closed_position_frees_only_its_slot_for_one_replacement(self):
         state = b.new_state(b.Config())
-        self.report(state,[self.plan(1),self.plan(2,98)])
+        self.seed_two(state,self.plan(1),self.plan(2,98))
         bars = [candle(NOW,101,101.5,99.9,101),candle(NOW+180_000,101,101.2,98.9,99.5)]
         bars += [candle(NOW+i*180_000,99.5,99.7,99.2,99.5) for i in range(2,5)]
         result = self.report(state,[self.plan(3,97),self.plan(4,96)],NOW+900_000,bars,99.5)
@@ -933,7 +950,7 @@ class TwoSlotTests(unittest.TestCase):
 
     def test_cancelling_second_slot_cannot_erase_first_order(self):
         state = b.new_state(b.Config())
-        self.report(state,[self.plan(1),self.plan(2,99)])
+        self.seed_two(state,self.plan(1),self.plan(2,99))
         view = list(b.slot_views(state))[1][1]
         b.request_cancel(view,view['pending'],'TEST_CANCEL',NOW+180_000)
         b.store_slot(state,2,view)
@@ -1019,7 +1036,7 @@ class TwoSlotTests(unittest.TestCase):
 
     def test_two_slots_restart_preserves_both_and_export_is_idempotent(self):
         state = b.new_state(b.Config())
-        self.report(state,[self.plan(1),self.plan(2,99)])
+        self.seed_two(state,self.plan(1),self.plan(2,99))
         with tempfile.TemporaryDirectory() as tmp:
             path,journal = Path(tmp)/'state.json',Path(tmp)/'journal.json'
             b.atomic_write(path,state)
@@ -1074,7 +1091,8 @@ class TwoSlotTests(unittest.TestCase):
 
     def test_messages_identify_both_orders_and_omit_detector_noise(self):
         state = b.new_state(b.Config())
-        result = self.report(state,[self.plan(1),self.plan(2,99)])
+        self.seed_two(state,self.plan(1),self.plan(2,99))
+        result = self.report(state,[],now=NOW+900_000)
         text = b.build_message(state,snapshot(),result,b.Config())
         self.assertIn('#001 LONG',text);self.assertIn('#002 LONG',text)
         self.assertIn('Зайнято місць: 2/2',text)

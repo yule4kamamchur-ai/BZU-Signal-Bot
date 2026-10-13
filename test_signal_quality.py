@@ -287,7 +287,7 @@ class ShadowAndModelTests(unittest.TestCase):
 
     def test_cost_change_archives_old_model_and_keeps_real_pending_plan(self):
         self.state['pending']=order();old=copy.deepcopy(self.state['pending'])
-        changed=replace(self.cfg,maker_fee=.001)
+        changed=replace(self.cfg,maker_fee=.001,include_commission=True)
         q=quality.ensure(self.state,changed)
         self.assertFalse(q['observations']);self.assertFalse(q['pending'])
         self.assertEqual(len(self.state['quality_archives']),1);self.assertEqual(self.state['pending'],old)
@@ -418,7 +418,7 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(new['statistics']['trades'],0)
 
     def test_fixed_period_end_liquidation_includes_filled_position_and_costs(self):
-        cfg=replace(engine.Config(),core=core)
+        cfg=replace(engine.Config(),core=core,include_commission=True)
         first=snapshot(NOW,101);later=snapshot(NOW+900_000,100.8)
         later.candles['3m'][-5:]=([candle(NOW,101,101.2,99.9,100.8)]+
                                 [candle(NOW+i*180_000,100.8,100.9,100.7,100.8) for i in range(1,5)])

@@ -624,6 +624,7 @@
   <div class="v12panel">
     <div class="v12heading">Сканер: 24 сетапи × 15m / 1h / 4h</div>
     <div id="v12Detectors" class="v12sub"></div>
+    <div id="v12Best" class="v12sub" style="margin-top:12px"></div>
     <div id="v12Setups" style="overflow-x:auto;margin-top:14px;"></div>
   </div>
 </section>
@@ -1399,7 +1400,7 @@ function renderV12Board(state, journal) {
       `🛑 Чинний SL: <span class="money">${escapeHtml(formatPrice(plan.stop))}</span><br>`+
       `🏁 ${targets || 'Цілей немає'}<br>${expiry}<br>`+
       `📌 ${escapeHtml(plan.setup || '')} · ${escapeHtml(plan.setup_timeframe || plan.timeframe || '15m')}<br>`+
-      `${!kind && num(plan.entry)>0 && num(asArray(state.signals).at(-1)?.price)>0 ? 'До входу: '+(100*Math.abs(asArray(state.signals).at(-1).price-plan.entry)/asArray(state.signals).at(-1).price).toFixed(2)+'%<br>' : ''}`+
+      `${!kind && num(plan.entry)>0 && num(asArray(state.signals).at(-1)?.price)>0 ? 'До входу: '+(100*Math.abs(asArray(state.signals).at(-1).price-plan.entry)/asArray(state.signals).at(-1).price).toFixed(3)+'%<br>' : ''}`+
       `${escapeHtml(estimateText(plan?.quality?.statistics))}</div>`;
   });
   const filled=tradeRows.filter(t => Number(t.net_r)>0).length;
@@ -1425,7 +1426,7 @@ function renderV12Board(state, journal) {
     SETUP_CONDITIONS_INCOMPLETE:'Умови ще формуються',
     LIMIT_WOULD_CROSS_SPREAD:'Потрібен прохід ціни за рівень',
     LIMIT_UNREACHABLE:'Рівень надто далеко',
-    NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS:'Замало простору до цілі',
+    NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS:'TP/SL нижче мінімуму',TARGET_RR_TOO_LOW:'TP/SL нижче мінімуму',
     STRUCTURAL_STOP_TOO_WIDE:'Стоп надто широкий',
     NO_STRUCTURAL_TARGET:'Немає структурної цілі',
     COMBINED_CONTEXT_SCORE_LOW:'Слабкий контекст',
@@ -1443,16 +1444,18 @@ function renderV12Board(state, journal) {
     EMPIRICAL_CONFIDENCE_TOO_LOW:'Недостатня впевненість вибірки',
     EXPECTANCY_TOO_LOW_AFTER_COSTS:'Низький історичний результат',DETECTOR_ERROR:'Помилка аналізу'
   };
+  const best=state?.best_scenario || full.best_scenario;
+  $('v12Best').textContent=best ? `Найкращий сценарій: ${best.setup} · ${String(best.timeframe).toLowerCase()} · ${best.side===1?'LONG':'SHORT'} · готовність ${Number(best.readiness_pct || 0).toFixed(1)}% · якість ${Number(best.score || 0).toFixed(1)}/100` : 'Новий сценарій не обрано; супровід чинних сигналів.';
   const names=[...new Set(matrix.map(r=>r.setup))];
   const cell=r=>{
     if (!r) return '<td style="padding:10px">—</td>';
     const price=num(latest.price),entry=num(r.level);
-    const distance=price>0 && entry>0 ? (100*Math.abs(price-entry)/price).toFixed(2)+'%' : '—';
+    const distance=price>0 && entry>0 ? (100*Math.abs(price-entry)/price).toFixed(3)+'%' : '—';
     const missing=asArray(r.missing_conditions);
-    const reason=r.reason==='SETUP_CONDITIONS_INCOMPLETE' ? missing.join('; ') : reasons[r.reason] || r.reason || '—';
+    const reason=(r.reason==='TARGET_RR_TOO_LOW' && r.gross_rr!=null) ? `TP дає ${Number(r.gross_rr).toFixed(2)}R; мінімум ${Number(r.required_rr || 1.2).toFixed(2)}R` : r.reason==='SETUP_CONDITIONS_INCOMPLETE' ? missing.join('; ') : reasons[r.reason] || r.reason || '—';
     const direction=r.side===1?'LONG':r.side===-1?'SHORT':'—';
     return `<td style="padding:10px;vertical-align:top;border-top:1px solid #233040;min-width:220px">`+
-      `<b>${escapeHtml(direction)} · умови ${r.readiness_pct==null?'—':Number(r.readiness_pct).toFixed(0)+'%'}</b><br>`+
+      `<b>${escapeHtml(direction)} · готовність ${r.readiness_pct==null?'—':Number(r.readiness_pct).toFixed(1)+'%'}</b><br>`+
       `${entry>0?'Рівень '+escapeHtml(formatPrice(entry))+' · до входу '+distance+'<br>':''}`+
       `<span style="color:var(--muted)">${escapeHtml(reason)}</span><br>`+
       `${escapeHtml(estimateText(r.statistics))}</td>`;

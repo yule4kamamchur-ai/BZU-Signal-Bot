@@ -34,6 +34,7 @@ class GeometryAndTimeTests(unittest.TestCase):
     def test_tight_target_is_rejected_after_widening_stop_and_charging_fees(self):
         cfg,ctx,a,s=full_fixture()
         a.invalidation=a.level-.01
+        cfg=replace(cfg,include_commission=True)
         with patch.object(engine,'full_targets',return_value=[{'kind':'TEST','level':a.level+.10,'distance':.10}]):
             p,why=engine.full_plan(a,ctx,s,cfg,{})
         self.assertIsNone(p)
