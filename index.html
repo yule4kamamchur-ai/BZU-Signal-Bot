@@ -613,7 +613,7 @@
 <!-- AUTHORITATIVE v12 TWO-SLOT LEDGER -->
 <section id="v12Board" style="display:none;margin-bottom:18px;">
   <div class="v12panel">
-    <div class="v12heading">📋 Два лімітні місця · реальний стан PAPER-обліку</div>
+    <div class="v12heading">📋 Два лімітні сигнали · супровід</div>
     <div id="v12Summary" class="v12sub"></div>
     <div id="v12Slots" class="v12slots"></div>
   </div>
@@ -622,8 +622,9 @@
     <div id="v12Events" class="v12events"></div>
   </div>
   <div class="v12panel">
-    <div class="v12heading">🧪 Перевірка 24 детекторів</div>
+    <div class="v12heading">Сканер: 24 сетапи × 15m / 1h / 4h</div>
     <div id="v12Detectors" class="v12sub"></div>
+    <div id="v12Setups" style="overflow-x:auto;margin-top:14px;"></div>
   </div>
 </section>
 
@@ -1363,6 +1364,13 @@ async function fetchLiveMarket(fallbackPrice) {
   return { price: null, change24h: null, source: 'немає live-ціни', fallback: true };
 }
 
+function estimateText(stat) {
+  const n=Number(stat?.observations || 0);
+  if (n<40 || stat?.estimate==null) return `Очікуваний win rate: н/д (${n}/40)`;
+  const scope=stat.scope==='setup'?'сетап':'сім’я';
+  return `Оцінка win rate: ${(100*stat.estimate).toFixed(1)}% (${scope}, n=${n}; нижня 95% межа ${(100*stat.lower_95).toFixed(1)}%)`;
+}
+
 function renderV12Board(state, journal) {
   const full = isObj(journal?.full_v12) ? journal.full_v12 : {};
   const active = !!(state?.schema === 'full_ict_limit_state_v12' || full.version);
@@ -1381,7 +1389,7 @@ function renderV12Board(state, journal) {
     const kind = !!slot.active;
     const id = escapeHtml(plan.display_id || `#${String(plan.order_number || i+1).padStart(3,'0')}`);
     const side = plan.side===1 ? '📈 LONG · купівля' : '📉 SHORT · продаж';
-    const status = kind ? '🟢 ПОЗИЦІЯ ВІДКРИТА' : '⏳ ЛІМІТ ЧЕКАЄ';
+    const status = kind ? '🟢 СУПРОВІД СИГНАЛУ' : '⏳ ЛІМІТНИЙ СИГНАЛ ЧЕКАЄ';
     const targets = ['tp1','tp2','tp3'].filter(t => num(plan?.partials?.[t.toUpperCase()]) !== 0 && num(plan[t]) != null)
       .map(t => `${t.toUpperCase()}: <span class="money">${escapeHtml(formatPrice(plan[t]))}</span> ${plan[t+'_hit']?'✅':'⏳'}`).join('<br>');
     const expiry = !kind ? `⏰ Очікуємо до ${escapeHtml(formatDateTime(new Date(plan.expires_ts).toISOString()))}` :
@@ -1390,14 +1398,16 @@ function renderV12Board(state, journal) {
       `🎯 Вхід: <span class="money">${escapeHtml(formatPrice(plan.entry))}</span><br>`+
       `🛑 Чинний SL: <span class="money">${escapeHtml(formatPrice(plan.stop))}</span><br>`+
       `🏁 ${targets || 'Цілей немає'}<br>${expiry}<br>`+
-      `📌 ${escapeHtml(plan.setup || '')} · ${escapeHtml(plan.probability_status || 'НЕ ВАЛІДОВАНО')}</div>`;
+      `📌 ${escapeHtml(plan.setup || '')} · ${escapeHtml(plan.setup_timeframe || plan.timeframe || '15m')}<br>`+
+      `${!kind && num(plan.entry)>0 && num(asArray(state.signals).at(-1)?.price)>0 ? 'До входу: '+(100*Math.abs(asArray(state.signals).at(-1).price-plan.entry)/asArray(state.signals).at(-1).price).toFixed(2)+'%<br>' : ''}`+
+      `${escapeHtml(estimateText(plan?.quality?.statistics))}</div>`;
   });
   const filled=tradeRows.filter(t => Number(t.net_r)>0).length;
   const losses=tradeRows.filter(t => Number(t.net_r)<=0 && t.net_r != null).length;
   const pct=(filled+losses)?(100*filled/(filled+losses)).toFixed(1)+'%':'ще немає завершень';
   const latest=asArray(state?.signals).at(-1) || asArray(full.signals).at(-1) || {};
   const stamp=state?.last_run_ts || Date.parse(full.updated_at);
-  $('v12Summary').textContent=`Зайнято: ${snapshots.filter(x=>x.pending||x.active||x.reconciliation).length}/2 • Закрито: ${filled+losses} • win rate: ${pct} (PAPER) • Останній цикл: ${stamp?new Date(stamp).toLocaleString('uk-UA'):'—'}`;
+  $('v12Summary').textContent=`Зайнято: ${snapshots.filter(x=>x.pending||x.active||x.reconciliation).length}/2 • Закрито: ${filled+losses} • win rate сигналів: ${pct} • Останній цикл: ${stamp?new Date(stamp).toLocaleString('uk-UA'):'—'}`;
   $('v12Slots').innerHTML=live.join('');
   const events=asArray(state?.events).length ? state.events : asArray(full.events);
   $('v12Events').innerHTML=events.length ? events.slice(-12).reverse().map(e=>{
@@ -1406,10 +1416,49 @@ function renderV12Board(state, journal) {
     return `<div class="v12event">${icon} ${escapeHtml(e.ts?new Date(e.ts).toLocaleString('uk-UA'):'')} · ${escapeHtml(n)} · ${escapeHtml(e.kind)} ${e.net_r != null?'· '+Number(e.net_r).toFixed(2)+'R':''}</div>`;
   }).join(''):'Поки немає подій';
   const detectors=asArray(latest.detectors);
-  const detected=detectors.filter(d=>d.status==='DETECTED').length;
-  const errors=detectors.filter(d=>d.status==='ERROR').length;
-  const quality=full.quality_summary || {};
-  $('v12Detectors').textContent=`Перевірено ${detectors.length}/24, знайдено сценаріїв: ${detected}, помилок: ${errors}. Спостережень моделі: ${quality.observed_outcomes ?? '—'}, ціль 70%: ${quality.target_validated?'підтверджена':'НЕ підтверджена'}.`;
+  const checks=detectors.flatMap(d=>asArray(d.timeframes));
+  const detected=checks.filter(d=>d.status==='DETECTED').length;
+  const errors=checks.filter(d=>d.status==='ERROR').length;
+  $('v12Detectors').textContent=`Перевірено ${checks.length}/72 сценаріїв; знайдено ${detected}, помилок ${errors}. Готовність — частка виконаних умов. Win rate — оцінка з минулих результатів.`;
+  const matrix=asArray(state?.setup_matrix || full.setup_matrix);
+  const reasons={
+    SETUP_CONDITIONS_INCOMPLETE:'Умови ще формуються',
+    LIMIT_WOULD_CROSS_SPREAD:'Потрібен прохід ціни за рівень',
+    LIMIT_UNREACHABLE:'Рівень надто далеко',
+    NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS:'Замало простору до цілі',
+    STRUCTURAL_STOP_TOO_WIDE:'Стоп надто широкий',
+    NO_STRUCTURAL_TARGET:'Немає структурної цілі',
+    COMBINED_CONTEXT_SCORE_LOW:'Слабкий контекст',
+    LEVEL_ALREADY_VISITED_AFTER_OBSERVATION:'Рівень уже відвідано',
+    LEVEL_OR_EVENT_COOLDOWN:'Рівень використано',
+    ANCHOR_INVALIDATED:'Структура порушена',
+    CONFIRMED:'Ліміт готовий',ACCEPTED:'Ліміт готовий',
+    LEVEL_ALREADY_FOLLOWED:'Рівень у супроводі',SLOTS_FULL:'Чекаємо вільне місце',
+    EXISTING_OPPOSITE_PLAN:'У супроводі протилежний напрямок',
+    DIRECTION_CONFLICT:'Конфлікт напрямків',DAILY_PAUSE:'Денний ліміт',
+    SESSION_CLOSED:'Кінець сесії 15m',HTF_REVERSAL_NOT_CONFIRMED:'Розворот проти HTF не підтверджено',
+    BOTH_HTF_AGAINST_WITHOUT_CONFIRMED_REVERSAL:'1h і 4h проти входу',
+    SHOCK_STILL_ACTIVE:'Стрибок волатильності',RETURN_PATH_TOO_LONG:'Рівень надто далеко',
+    EMPIRICAL_WIN_RATE_BELOW_TARGET:'Історична оцінка нижче порогу',
+    EMPIRICAL_CONFIDENCE_TOO_LOW:'Недостатня впевненість вибірки',
+    EXPECTANCY_TOO_LOW_AFTER_COSTS:'Низький історичний результат',DETECTOR_ERROR:'Помилка аналізу'
+  };
+  const names=[...new Set(matrix.map(r=>r.setup))];
+  const cell=r=>{
+    if (!r) return '<td style="padding:10px">—</td>';
+    const price=num(latest.price),entry=num(r.level);
+    const distance=price>0 && entry>0 ? (100*Math.abs(price-entry)/price).toFixed(2)+'%' : '—';
+    const missing=asArray(r.missing_conditions);
+    const reason=r.reason==='SETUP_CONDITIONS_INCOMPLETE' ? missing.join('; ') : reasons[r.reason] || r.reason || '—';
+    const direction=r.side===1?'LONG':r.side===-1?'SHORT':'—';
+    return `<td style="padding:10px;vertical-align:top;border-top:1px solid #233040;min-width:220px">`+
+      `<b>${escapeHtml(direction)} · умови ${r.readiness_pct==null?'—':Number(r.readiness_pct).toFixed(0)+'%'}</b><br>`+
+      `${entry>0?'Рівень '+escapeHtml(formatPrice(entry))+' · до входу '+distance+'<br>':''}`+
+      `<span style="color:var(--muted)">${escapeHtml(reason)}</span><br>`+
+      `${escapeHtml(estimateText(r.statistics))}</td>`;
+  };
+  $('v12Setups').innerHTML=names.length ? '<table style="width:100%;border-collapse:collapse;text-align:left;font-size:12px"><thead><tr><th>Сетап</th><th>15m</th><th>1h</th><th>4h</th></tr></thead><tbody>'+
+    names.map(name=>'<tr><td style="padding:10px;border-top:1px solid #233040">'+escapeHtml(name)+'</td>'+['15m','1H','4H'].map(tf=>cell(matrix.find(r=>r.setup===name && r.timeframe===tf))).join('')+'</tr>').join('')+'</tbody></table>' : 'Очікуємо перший цикл сканера.';
   return true;
 }
 

@@ -130,7 +130,7 @@ class QualityAndReportingTests(unittest.TestCase):
         p.update(status='PENDING',partials={'TP1':1.0},expires_ts=s.now+3_600_000)
         state['pending']=p
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
-        for label in ('📊','⏳','SL:','TP1','PAPER','Зайнято місць'):
+        for label in ('📊','⏳','SL:','TP1','ЛІМІТНИЙ СИГНАЛ','Зайнято місць','Ціна зараз','До входу'):
             self.assertIn(label,message)
 
 

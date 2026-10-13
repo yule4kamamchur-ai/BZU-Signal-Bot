@@ -28,8 +28,9 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.3.0-causal-geometry-reports"
+VERSION = "full-ict-v12.4.0-native-mtf-limit-scanner"
 import signal_quality as quality
+import setup_scanner as scanner
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -318,6 +319,12 @@ def setup_statistics(state: dict, cfg: Config) -> dict:
             "NEGATIVE_EXPECTANCY" if stat["expectancy_r"] <= 0 else "POSITIVE_EXPECTANCY")
         report[setup] = {**stat, "status": status, "required_sample": cfg.setup_min_sample,
                          "version": VERSION, "probability_validated": False}
+        report[setup]['timeframes']={}
+        for tf in scanner.PRIMARY:
+            subset=statistics([t for t in rows if scanner.timeframe(t)==tf])
+            subset['status']='INSUFFICIENT_SAMPLE' if subset['trades']<cfg.setup_min_sample else (
+                'NEGATIVE_EXPECTANCY' if subset['expectancy_r']<=0 else 'POSITIVE_EXPECTANCY')
+            report[setup]['timeframes'][tf]=subset
     return report
 
 
@@ -340,7 +347,9 @@ def build_full_context(s: Snapshot, state: dict, cfg: Config) -> dict:
 
 
 def anchor_key(a, cfg: Config) -> str:
-    return ident(a.setup_type, a.side, round(a.level/cfg.tick), round(a.invalidation/cfg.tick), a.kind)
+    tf = a.evidence.get('setup_timeframe', '15m')
+    parts = (a.setup_type, a.side, round(a.level/cfg.tick), round(a.invalidation/cfg.tick), a.kind)
+    return ident(*parts) if tf == '15m' else ident(*parts, tf)
 
 
 def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config) -> list:
@@ -355,10 +364,10 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config) -> li
             a.created_ts = previous["created_ts"]
             a.expires_ts = previous["expires_ts"]
             a.cooldown_until_ts = previous.get("cooldown_until_ts", 0)
-        a.expires_ts = min(a.expires_ts, a.created_ts+cfg.setup_age_minutes*60_000)
+        a.expires_ts = min(a.expires_ts, a.created_ts+cfg.setup_age_minutes*scanner.MINUTES[a.evidence.get("setup_timeframe","15m")]//15*60_000)
         memory[key] = core.anchor_to_dict(a)
     # Retain tombstones beyond setup lifetime to prevent a detector refreshing age.
-    memory = {k: v for k, v in memory.items() if s.now-v["created_ts"] <= 2*86_400_000}
+    memory = {k: v for k, v in memory.items() if s.now-v["created_ts"] <= 7*86_400_000}
     state["anchor_memory"] = memory
     return [a for raw in memory.values() for a in [core.anchor_from_dict(raw)] if a is not None
             and a.created_ts <= s.now < a.expires_ts
@@ -386,6 +395,8 @@ def full_targets(ctx: dict, s: Snapshot, side: str, entry: float, cfg: Config) -
 def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Optional[dict], str]:
     core = cfg.core
     side = str(a.side)
+    source_tf = a.evidence.get('setup_timeframe', '15m')
+    scale = scanner.MINUTES[source_tf] // 15
     sign = core.side_sign(side)
     a15, a3 = ctx["atr15"], ctx["atr3"]
     if not sign or min(a15, a3) <= 0:
@@ -469,6 +480,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     location = max(0, 100-22*distance)+min(15, 5*net_rr)
     score = .35*a.score+.25*min(100,max(0,support))+.20*min(100,location)+.10*regime_score+.05*smt_score+.05*cvd_score
     prior = stats.get(a.setup_type, {})
+    prior = prior.get('timeframes',{}).get(source_tf,prior)
     if prior.get("status") == "NEGATIVE_EXPECTANCY":
         score -= min(12, abs(prior["expectancy_r"])*10)
     elif prior.get("status") == "POSITIVE_EXPECTANCY":
@@ -481,9 +493,11 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     effective = ((s.now+TF["3m"]-1)//TF["3m"])*TF["3m"]
     # Anchor age limits NEW placements; once placed, a fresh full TTL applies.
     # An old 135-minute anchor no longer truncates a 120-minute waiting order.
-    if s.now >= a.expires_ts or s.now-a.created_ts > cfg.setup_age_minutes*60_000:
+    if s.now >= a.expires_ts or s.now-a.created_ts > cfg.setup_age_minutes*scale*60_000:
         return None, "ANCHOR_TOO_OLD_TO_PLACE"
-    expires = min(effective+cfg.ttl_minutes*60_000, session_cutoff(s.now,cfg))
+    expires = effective+cfg.ttl_minutes*scale*60_000
+    if source_tf == '15m':
+        expires = min(expires, session_cutoff(s.now,cfg))
     expires = (expires//TF["3m"])*TF["3m"]
     if expires-effective < TF["15m"]:
         return None, "ORDER_LIFETIME_BELOW_REPORT_CADENCE"
@@ -503,7 +517,11 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict) -> tuple[Opti
     return {"id": ident(event,s.now), "order_id": ident(event,s.now), "event_key": event,
             "zone_key": event, "instrument": cfg.instrument, "side": sign, "setup": a.setup_type,
             "setup_type": a.setup_type, "setup_family": core.journal_setup_family(a.setup_type),
-            "canonical_setup_family": core.canonical_setup_family(a.setup_type), "timeframe": "15m+3m",
+            "canonical_setup_family": core.canonical_setup_family(a.setup_type), "timeframe": source_tf,
+            "setup_timeframe": source_tf, "micro_timeframe": scanner.MICRO[source_tf],
+            "entry_policy": "PRETOUCH_LIMIT", "detector_confirmed": True,
+            "max_hold_minutes": cfg.max_hold_minutes*scale, "intraday": source_tf == '15m',
+            "readiness_pct": 100.0,
             "anchor_id": a.id, "anchor_kind": a.kind, "entry": entry, "limit_price": entry,
             "stop": stop, "initial_stop": stop, "tp": tp1, "tp0": entry+sign*.6*risk,
             "tp1": tp1, "tp2": tp2, "tp3": tp3, "partials": partials,
@@ -533,45 +551,84 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         raise ValueError("The complete registry of 24 original detectors is required")
     with market_clock(core,s.now):
         ctx = build_full_context(s,state,cfg)
+        tf_contexts = scanner.build_contexts(s,ctx,state,cfg)
         state["regime_memory"] = copy.deepcopy(ctx.get("regime_memory", {}))
-        fresh, detector_audit = [], []
-        for detector in core.DETECTORS:
-            try:
-                a = detector(ctx)
-                detector_audit.append({"detector": detector.__name__,"status": "DETECTED" if a else "NO_SETUP"})
-                if a is not None:
-                    fresh.append(a)
-            except Exception as exc:
-                detector_audit.append({"detector": detector.__name__,"status": "ERROR","error": type(exc).__name__})
+        fresh, detector_audit, matrix = [], [], []
+        # The registry order is stable; each original setup runs on native
+        # 15m, 1H and 4H bars, not merely on a 15m trend with HTF labels.
+        names = [row['setup'] for row in core_setup_registry(core)]
+        for setup,detector in zip(names,core.DETECTORS):
+            evaluations=[]
+            for tf,native in tf_contexts.items():
+                try:
+                    a = detector(native)
+                    row = scanner.conditions(setup,native,core,a)
+                    if a is not None:
+                        a=copy.deepcopy(a)
+                        a.evidence['setup_timeframe']=tf
+                        a.evidence['micro_timeframe']=scanner.MICRO[tf]
+                        # A detector's shorter TTL also scales with its bars.
+                        a.expires_ts=a.created_ts+(a.expires_ts-a.created_ts)*scanner.MINUTES[tf]//15
+                        fresh.append(a)
+                    row.update(timeframe=tf,reason='ACCEPTED' if a else 'SETUP_CONDITIONS_INCOMPLETE',
+                               score=a.score if a else 0,anchor_id=a.id if a else None)
+                    row['event_key']=anchor_key(a,cfg) if a else None
+                    row.update(scanner.proximity(s.price,row.get('level')))
+                    matrix.append(row)
+                    evaluations.append({'timeframe':tf,'status':'DETECTED' if a else 'NO_SETUP'})
+                except Exception as exc:
+                    row={'setup':setup,'timeframe':tf,'status':'ERROR','reason':'DETECTOR_ERROR',
+                         'error':type(exc).__name__,'readiness_pct':None,'score':0,
+                         'missing_conditions':['Помилка аналізу сетапу'],'level':None,'side':0}
+                    matrix.append(row)
+                    evaluations.append({'timeframe':tf,'status':'ERROR','error':type(exc).__name__})
+            status='ERROR' if any(e['status']=='ERROR' for e in evaluations) else 'DETECTED' if any(e['status']=='DETECTED' for e in evaluations) else 'NO_SETUP'
+            detector_audit.append({'detector':detector.__name__,'setup':setup,'status':status,
+                                   'timeframes':evaluations})
         anchors = merge_full_anchors(fresh,state,s,cfg)
         stats = setup_statistics(state,cfg)
         plans, watch, refused = [], [], {}
         for a in anchors:
+            tf=a.evidence.get('setup_timeframe','15m')
+            native=tf_contexts[tf]
             key = anchor_key(a,cfg)
             level_key = ident(a.side,round(a.level/cfg.tick))
             if key in state.get("used_events",{}) or state.get("level_cooldown",{}).get(level_key,0)>s.now:
                 p, reason = None, "LEVEL_OR_EVENT_COOLDOWN"
             else:
-                p, reason = full_plan(a,ctx,s,cfg,stats)
+                p, reason = full_plan(a,native,s,cfg,stats)
+            row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None)
+            if row is not None and (row['status'] not in ('DETECTED','LIMIT_READY') or row.get('event_key')==key):
+                row.update(level=a.level,side=core.side_sign(a.side),anchor_id=a.id,
+                           reason=reason,score=p['score'] if p else a.score,
+                           status='LIMIT_READY' if p else 'BLOCKED',readiness_pct=100.,
+                           signal_id=p['id'] if p else None,event_key=key)
+                row.update(scanner.proximity(s.price,a.level))
             if p:
                 p["level_key"] = level_key
                 plans.append(p)
             else:
                 refused[reason] = refused.get(reason,0)+1
-                watch.append({"setup": a.setup_type,"anchor_id": a.id,"side": core.side_sign(a.side),
+                watch.append({"setup": a.setup_type,"timeframe":tf,"readiness_pct":100.,
+                              "anchor_id": a.id,"side": core.side_sign(a.side),
                               "level": a.level,"reason": reason,"score": a.score})
     if set(quality.CONTRACTS)!=set(core.DETECTED_SETUP_TYPES):
         raise ValueError('Quality contracts must cover all 24 original setups')
     ledger = quality.ensure(state,cfg)
     # Evaluate every scenario BEFORE combining nearby levels. A high-score
     # unconfirmed continuation must not suppress a valid reversal at that price.
-    assessments = {p['id']:quality.assess(p,s,ctx,cfg,sys.modules[__name__],ledger['observations']) for p in plans}
+    assessments = {p['id']:quality.assess(p,s,tf_contexts[scanner.timeframe(p)],cfg,
+                        sys.modules[__name__],ledger['observations']) for p in plans}
     for p in plans:
         q = assessments[p['id']]
         p['quality'] = q
         p['probability'] = q['statistics']['estimate'] if q['statistics']['observations']>=quality.Settings().minimum_observations else None
         p['probability_status'] = q['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
+        row=next((r for r in matrix if r.get('signal_id')==p['id']),None)
+        if row is not None:
+            row.update(reason=q['reason'],status='LIMIT_READY' if q['accepted'] else 'BLOCKED',
+                       statistics=q['statistics'])
     def priority(p):
         q=p['quality'];stat=q['statistics']
         supported=stat['observations']>=quality.Settings().minimum_observations
@@ -608,11 +665,39 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             watch.append({'setup':p['setup'],'side':p['side'],'level':p['entry'],'reason':q['reason'],'score':p['score']})
     contexts = {tf:{**bias(s.candles[tf]), "side": core.side_sign(core.structure_snapshot(s.candles[tf],60,2)["direction"])}
                 for tf in ("15m","1H","4H")}
+    # Show useful forming setups even when NO detector has produced a plan.
+    # Keep all 72 evaluations in state for the dashboard and diagnostics.
+    for row in matrix:
+        if row.get('side') and 'statistics' not in row:
+            family,kind=quality.CONTRACTS[row['setup']]
+            native=tf_contexts[row['timeframe']]
+            side=row['side'];agree=sum(contexts[t]['side']==side for t in ('1H','4H'))
+            opposed=sum(contexts[t]['side']==-side for t in ('1H','4H'))
+            alignment='mixed' if agree and opposed else 'aligned' if agree else 'against' if opposed else 'neutral'
+            query={'setup':row['setup'],'family':family,'kind':kind,'side':side,
+                   'regime':native.get('regime','UNKNOWN'),'alignment':alignment,
+                   'setup_timeframe':row['timeframe']}
+            row['statistics']=quality.empirical(query,ledger['observations'],s.now)
+    actionable=[r for r in matrix if r.get('level') and r.get('readiness_pct',0) is not None
+                and r['readiness_pct']>=50 and r.get('reason') not in
+                ('LEVEL_OR_EVENT_COOLDOWN','ANCHOR_INVALIDATED','LEVEL_ALREADY_VISITED_AFTER_OBSERVATION')]
+    actionable.sort(key=lambda r:(r['status']=='LIMIT_READY',r['readiness_pct'],
+                       -(r.get('distance_pct') or 0),r.get('score',0)),reverse=True)
+    watch=actionable[:24]
     return {"health": [],"plans": accepted,"candidate_plans":clusters,"quality_assessments":assessments,
-            "watch": sorted(watch,key=lambda w:-w["score"])[:24],
+            "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
-            "raw_plans": len(plans),"registered_setups": len(core.DETECTORS)}
+            "raw_plans": len(plans),"registered_setups": len(core.DETECTORS),
+            "timeframe_evaluations":len(matrix)}
+
+
+def core_setup_registry(core):
+    # Detector names are not derived from enum names (DIRECTION_FLIP differs).
+    from setup_scanner import SETUP_NAMES
+    if set(SETUP_NAMES)!=set(core.DETECTED_SETUP_TYPES):
+        raise ValueError('Scanner conditions must cover all 24 original setups')
+    return [{'setup':name} for name in SETUP_NAMES]
 
 
 
@@ -693,7 +778,10 @@ def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
         # Unknown fill can occur anywhere before expiry. Retain its slot until
         # even the latest possible fill has reached the intraday age boundary.
         expiry = order.get('expires_ts',r['ts'])
-        release_ts = max(r['ts'], min(expiry+cfg.max_hold_minutes*60_000, session_cutoff(expiry,cfg)))
+        release_ts = expiry+order.get('max_hold_minutes',cfg.max_hold_minutes)*60_000
+        if order.get('intraday',True):
+            release_ts=min(release_ts,session_cutoff(expiry,cfg))
+        release_ts=max(r['ts'],release_ts)
         if now < release_ts:
             r['release_ts'] = release_ts
             continue
@@ -902,10 +990,13 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             p = copy.deepcopy(p)
             p.update(status="OPEN", filled_ts=c.ts, opened_at=iso(c.ts), last_bar=-1,
                      mfe_r=0.0, mae_r=0.0, strong_closes=0,remaining=1.0,
-                     realized_gross_r=0.0,realized_exit_fees_r=0.0,realized_legs=[],entry_version=VERSION)
+                     realized_gross_r=0.0,realized_exit_fees_r=0.0,realized_legs=[],
+                     entry_version=p.get('entry_version',p.get('version',VERSION)))
             # Fill time is interval-censored. Bar OPEN is a conservative age clock.
             p["fill_time_status"] = "WITHIN_3M_BAR"
-            p["exit_deadline"] = min(c.ts+cfg.max_hold_minutes*60_000, session_cutoff(c.ts, cfg))
+            p["exit_deadline"] = c.ts+p.get('max_hold_minutes',cfg.max_hold_minutes)*60_000
+            if p.get('intraday',True):
+                p['exit_deadline'] = min(p['exit_deadline'], session_cutoff(c.ts, cfg))
             state["active"] = p
             manage_bar(state, c, cfg, fill_bar=True)
         else:
@@ -959,7 +1050,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     if state.get("config_hash") != config_hash and open_plans(state):
         # One-time release migration: keep EXISTING stop/TP/TTL unchanged.
         # Later operator configuration changes still require closed slots.
-        if state.get('version') not in ('full-ict-v12.2.0-confirmed-ict-quality',):
+        if state.get('version') not in ('full-ict-v12.2.0-confirmed-ict-quality',
+                                       'full-ict-v12.3.0-causal-geometry-reports'):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -983,7 +1075,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
     if analysis.get('full_context'):
-        quality.refresh_confirmations(state,s,analysis['full_context'],cfg,sys.modules[__name__])
+        quality.refresh_confirmations(state,s,analysis['full_context'],cfg,sys.modules[__name__],
+                                      analysis.get('timeframe_contexts'))
     ctx = analysis.get("contexts", {})
     for number,view in slot_views(state):
         pending = view.get("pending")
@@ -1015,7 +1108,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if not busy:
             action = 'DATA_HOLD'
         can_place = False
-    elif can_place and s.now >= session_cutoff(s.now,cfg)-TF['15m']:
+    elif can_place and s.now >= session_cutoff(s.now,cfg)-TF['15m'] and not any(
+            scanner.timeframe(p) != '15m' for p in analysis.get('plans',[])):
         if not busy:
             action = 'SESSION_CLOSED'
         can_place = False
@@ -1062,6 +1156,27 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                      stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
                 action = 'PLACE_LIMIT'
                 break
+    # Convert the market-ready state into the ACTUAL portfolio decision, so a
+    # suppressed duplicate or a full book is never described as unexplained.
+    tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
+    live=open_plans(state)
+    for row in analysis.get('setup_matrix',[]):
+        if row.get('status')!='LIMIT_READY':
+            continue
+        exact=next((p for p in live if row.get('event_key')==p.get('event_key')),None)
+        duplicate=next((p for p in live if row.get('side')==p['side'] and row.get('level')
+                        and abs(row['level']-p['entry'])<=tolerance),None)
+        if exact or duplicate:
+            row.update(status='FOLLOWED',reason='LEVEL_ALREADY_FOLLOWED',
+                       followed_id=(exact or duplicate)['id'])
+        elif occupied_slots(state)>=2:
+            row.update(status='WAIT_CAPACITY',reason='SLOTS_FULL')
+        elif live and row.get('side') not in {p['side'] for p in live}:
+            row.update(status='BLOCKED',reason='EXISTING_OPPOSITE_PLAN')
+        elif action in ('DIRECTION_CONFLICT','DAILY_PAUSE','SESSION_CLOSED','DATA_HOLD'):
+            row.update(status='BLOCKED',reason=action)
+    if analysis.get('setup_matrix'):
+        analysis['watch']=[w for w in analysis.get('watch',[]) if w.get('status')!='FOLLOWED']
     state['last_run_ts'] = s.now
     state['config_hash'] = config_hash
     state['version'] = VERSION
@@ -1077,10 +1192,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'occupied_slots':occupied_slots(state),'max_slots':2,
                'rejections':analysis.get('rejections',{}),'health':analysis['health'],'daily':daily,
                'detectors':analysis.get('detectors',[]),'raw_plans':analysis.get('raw_plans',0),
-               'registered_setups':analysis.get('registered_setups',24)}
+               'registered_setups':analysis.get('registered_setups',24),
+               'timeframe_evaluations':analysis.get('timeframe_evaluations',0)}
     state['signals'].append(summary)
     state['signals'] = state['signals'][-1000:]
     state['watch'] = analysis.get('watch',[])
+    state['setup_matrix'] = analysis.get('setup_matrix',[])
     events = sorted(state['events'][start:],key=lambda e:e['ts'])
     return {'action':action,'events':events,'analysis':analysis,'selected':selected[0] if selected else None,
             'selected_plans':selected,'daily':daily,'occupied_slots':occupied_slots(state)}
@@ -1160,6 +1277,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
     kind = event['kind']
     label = display_order(state,event.get('order_id',''))
     at = local_time(event['ts'],cfg)
+    if kind=='PLACED':
+        return f"🆕 {at} {label} Лімітний сигнал активовано: вхід {event['entry']:.6g}"
     if kind=='CLOSED':
         trade = next((t for t in reversed(state['trades']) if t['id']==event['order_id']),{})
         reason = event.get('reason')
@@ -1173,7 +1292,7 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         emoji='✅' if value>0 else '🔴' if value<0 else '⚪'
         return f"{emoji} {at} {label} ЗАКРИТО: {value:+.2f}R — {outcome}\n   {details}{text}{uncertainty}"
     if kind=='FILLED':
-        return f"🟢 {at} {label} ЛІМІТ СПРАЦЮВАВ — позиція відкрита, супровід розпочато"
+        return f"🟢 {at} {label} ЦІНА ПРОЙШЛА ЛІМІТ — супровід сигналу розпочато"
     if kind in ('TP1','TP2','TP3'):
         return f"🎯 {at} {label} {kind} досягнуто — зафіксовано {event['fraction']*100:.0f}% позиції"
     if kind=='PAPER_STOP_AMENDED':
@@ -1193,70 +1312,169 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
     return None
 
 
+REASON_UA = {
+    'SLOTS_FULL':'обидва місця зайняті; потрібне закриття одного ордера',
+    'EXISTING_OPPOSITE_PLAN':'вже супроводжуємо протилежний напрямок',
+    'DIRECTION_CONFLICT':'протилежні сценарії мають близьку оцінку',
+    'DAILY_PAUSE':'денний ліміт ризику або кількості входів',
+    'SESSION_CLOSED':'наступна торгова сесія для 15m входу',
+    'DATA_HOLD':'відновлення повних актуальних даних',
+    'LIMIT_WOULD_CROSS_SPREAD':'чекаємо, щоб ціна пройшла рівень; зараз ліміт виконався б одразу',
+    'LIMIT_UNREACHABLE':'рівень далі допустимої відстані у ATR',
+    'INVALID_STRUCTURAL_FALSIFIER':'немає коректного рівня скасування сетапу',
+    'ANCHOR_INVALIDATED':'структура сетапу порушена',
+    'LEVEL_ALREADY_VISITED_AFTER_OBSERVATION':'рівень уже відвідано після виявлення',
+    'STRUCTURAL_STOP_TOO_WIDE':'структурний стоп перевищує допустимий ризик',
+    'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS':'до найближчої цілі замало простору після комісій',
+    'NO_STRUCTURAL_TARGET':'немає підтвердженої цілі на графіку',
+    'COMBINED_CONTEXT_SCORE_LOW':'оцінка контексту нижча порогу',
+    'COSTS_CONSUME_EDGE':'витрати надто великі відносно потенційного прибутку',
+    'BOTH_HTF_AGAINST_WITHOUT_CONFIRMED_REVERSAL':'1h і 4h проти входу, розворот не підтверджено',
+    'HTF_REVERSAL_NOT_CONFIRMED':'розворот проти 1h і 4h не підтверджено',
+    'NO_CONFIRMED_3M_CONTROL':'немає контролю на молодшому графіку',
+    'NO_CONFIRMED_DEPARTURE':'немає підтвердженого відходу від рівня',
+    'NO_15M_ACCEPTANCE':'пробій на основному графіку не підтверджено',
+    'REVERSAL_NOT_CONFIRMED':'зміна структури ще не підтверджена',
+    'CONTINUATION_AGAINST_HTF':'продовження тренду суперечить старшим графікам',
+    'RANGE_ENTRY_NOT_AT_EDGE':'точка входу посередині діапазону',
+    'SHOCK_STILL_ACTIVE':'чекаємо завершення різкого стрибка волатильності',
+    'RETURN_PATH_TOO_LONG':'ціна надто далеко від рівня',
+    'EMPIRICAL_WIN_RATE_BELOW_TARGET':'історична оцінка win rate нижча порогу',
+    'EMPIRICAL_CONFIDENCE_TOO_LOW':'історична вибірка недостатньо переконлива',
+    'EXPECTANCY_TOO_LOW_AFTER_COSTS':'історичний результат після витрат надто низький',
+    'ANCHOR_TOO_OLD_TO_PLACE':'сетап утратив актуальність',
+    'ORDER_LIFETIME_BELOW_REPORT_CADENCE':'до завершення сесії замало часу',
+    'LEVEL_OR_EVENT_COOLDOWN':'цей рівень уже використаний; чекаємо новий сетап',
+    'ANCHOR_COOLDOWN':'рівень ще на паузі',
+    'STOP_INSIDE_NOISE':'стоп усередині цінового шуму',
+    'DETECTOR_ERROR':'помилка аналізу цього сетапу',
+}
+
+
+def expected_line(stat: dict) -> str:
+    n=stat.get('observations',0)
+    if n<quality.Settings().minimum_observations or stat.get('estimate') is None:
+        return f"Очікуваний win rate: н/д • вибірка {n}/{quality.Settings().minimum_observations}"
+    scope='сетап' if stat.get('scope')=='setup' else 'сім’я сетапів'
+    return (f"Оцінка win rate: {stat['estimate']*100:.1f}% • {scope}, n={n}"
+            +f" • нижня межа 95%: {stat['lower_95']*100:.1f}%")
+
+
+def report_deadline(ts: int, now: int, cfg: Config) -> str:
+    moment=datetime.fromtimestamp(ts/1000,ZoneInfo(cfg.timezone))
+    current=datetime.fromtimestamp(now/1000,ZoneInfo(cfg.timezone))
+    return moment.strftime('%H:%M' if moment.date()==current.date() else '%d.%m %H:%M')
+
+
 def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
     local = datetime.fromtimestamp(s.now/1000,ZoneInfo(cfg.timezone))
-    lines = [f"📊 BZU • {local:%d.%m %H:%M} (Київ)",
-             f"🧪 Сигнали PAPER, не біржові ордери • Зайнято місць: {occupied_slots(state)}/2"]
+    symbol=cfg.instrument.removesuffix('-SWAP')
+    price_ok=s.trusted and s.price>0 and 0<=s.now-s.ticker_ts<=120_000
+    current_price=f'{s.price:.6g}' if price_ok else 'недоступна'
+    lines = [f"📊 {symbol} • {local:%d.%m %H:%M} (Київ)",
+             f"Ціна зараз: {current_price} • Зайнято місць: {occupied_slots(state)}/2"]
     new_ids = {p['id'] for p in result.get('selected_plans',[])}
     if result.get('selected'):
         new_ids.add(result['selected']['id'])
+    live_keys=set()
     for number,view in slot_views(state):
         p = view.get('active') or view.get('pending')
         if p:
+            live_keys.add((p.get('setup'),scanner.timeframe(p)))
             label = display_order(state,p['id'])
             side = 'LONG' if p['side']==1 else 'SHORT'
-            status = '🟢 ВІДКРИТО' if view.get('active') else '🆕 НОВИЙ ЛІМІТ' if p['id'] in new_ids else '⏳ ЧЕКАЄМО ЦІНУ'
-            direction = '📈 Купівля LONG' if p['side']==1 else '📉 Продаж SHORT'
-            lines += ['',f"{label} {side} • {direction} • {status}",
-                      f"🎯 Вхід: {p['entry']:.6g}   🛑 SL: {p['stop']:.6g} ({p.get('stop_distance_pct',p['risk']/p['entry']*100):.2f}%)",
-                      '🏁 '+target_line(p)]
+            # A price-signal book cannot certify exchange fills. Avoid the old
+            # banners and label the concrete lifecycle as a SIGNAL once.
+            status = 'СУПРОВІД СИГНАЛУ' if view.get('active') else 'НОВИЙ ЛІМІТНИЙ СИГНАЛ' if p['id'] in new_ids else 'ЛІМІТНИЙ СИГНАЛ — ЧЕКАЄМО'
+            lines += ['',f"{label} {side} • {status}",
+                      f"{p.get('setup','Сетап')} • {scanner.timeframe(p).lower()}",
+                      f"Вхід: {p['entry']:.6g} • SL: {p['stop']:.6g} ({p.get('stop_distance_pct',p['risk']/p['entry']*100):.2f}%)",
+                      target_line(p)]
             if view.get('pending'):
-                effective = p.get('effective_ts',p['placed_ts'])
-                lines.append(f"⏰ Початок перевірки: {local_time(effective,cfg)} • Чекаємо до {local_time(p['expires_ts'],cfg)}")
-                splits = p.get('partials',{})
-                if len([v for v in splits.values() if v>0])>1:
-                    lines.append('Частки на тейках: '+' / '.join(f"{name} {size*100:.0f}%" for name,size in splits.items() if size>0))
+                distance=scanner.proximity(s.price if price_ok else 0,p['entry'],p.get('placement_price'))
+                approach=f" • наближення {distance['approach_pct']:.0f}%" if distance['approach_pct'] is not None else ''
+                move='зниження' if s.price>p['entry'] else 'зростання' if s.price<p['entry'] else 'дотику'
+                distance_line=f"До входу: {distance['distance_pct']:.2f}%{approach}" if price_ok else 'До входу: н/д — немає свіжої ціни'
+                lines += [distance_line,
+                          f"Умови на момент сигналу: 100% • чекаємо {move} до {p['entry']:.6g}",
+                          f"Ліміт діє до {report_deadline(p['expires_ts'],s.now,cfg)}"]
                 if p.get('cancel_requested_ts'):
-                    lines.append('СКАСУВАТИ невиконаний ліміт; перевірити виконання')
+                    lines.append('Скасування: '+REASON_UA.get(p.get('cancel_reason'),'сетап утратив чинність'))
             else:
                 remaining = p.get('remaining',1)
                 gross = p.get('realized_gross_r',0)+remaining*p['side']*(s.price-p['entry'])/p['risk']
                 fees = p['entry']*p.get('entry_fee_rate',cfg.maker_fee)/p['risk']+p.get('realized_exit_fees_r',0)+remaining*s.price*cfg.taker_fee/p['risk']
                 slip = remaining*s.price*cfg.slippage_bps/10_000/p['risk']
-                lines.append(f"📦 Залишилось {remaining*100:.0f}% • Поточний оцінний результат: {gross-fees-slip:+.2f}R")
+                estimate=f'{gross-fees-slip:+.2f}R' if price_ok else 'н/д — немає свіжої ціни'
+                lines.append(f"Залишилось {remaining*100:.0f}% • оцінний результат: {estimate}")
                 if p.get('pending_stop'):
                     amend = p['pending_stop']
                     lines.append(f"Новий SL {amend['price']:.6g} з {local_time(amend['effective_ts'],cfg)}")
-                lines.append(f"Завершити до {local_time(p['exit_deadline'],cfg)}")
+                lines.append(f"Завершити до {report_deadline(p['exit_deadline'],s.now,cfg)}")
+            lines.append(expected_line(p.get('quality',{}).get('statistics',{})))
         if view.get('reconciliation'):
             r = view['reconciliation']
-            lines += ['',f"{display_order(state,r['order_id'])} — ВИКОНАННЯ НЕ ПІДТВЕРДЖЕНЕ",'Перевірте фактичний ордер на біржі. Результат не включено у win rate.']
+            lines += ['',f"{display_order(state,r['order_id'])} — РЕЗУЛЬТАТ НЕВИЗНАЧЕНИЙ",
+                      'За свічками не можна встановити порядок виконання.']
             if r.get('release_ts'):
-                end = datetime.fromtimestamp(r['release_ts']/1000,ZoneInfo(cfg.timezone))
-                lines.append(f"Місце зарезервовано до {end:%d.%m %H:%M}")
+                lines.append(f"Місце зарезервовано до {report_deadline(r['release_ts'],s.now,cfg)}")
     events = [message_event(state,e,cfg) for e in result.get('events',[])]
     events = [e for e in events if e]
-    # After upgrading a stale state, never hide the last completed result.
-    if not events and not open_plans(state) and state.get('trades'):
-        t = max(state['trades'],key=lambda row:row['closed_ts'])
-        events = ['Остання завершена угода: '+display_order(state,t['id'])+f" • {t['net_r']:+.2f}R"]
     if events:
-        lines += ['','📣 Що змінилося за останні 15 хв:']+events
-    action = result['action']
-    reasons = {'WATCH':'Нових входів немає.', 'DIRECTION_CONFLICT':'Нових входів немає: конфлікт напрямків.',
-               'DAILY_PAUSE':'Нові входи призупинені: денний ліміт ризику або угод.',
-               'SESSION_CLOSED':'Нові входи призупинені до наступної торгової сесії.',
-               'DATA_HOLD':'Нові рішення призупинені: дані неповні або застарілі.',
+        lines += ['','Зміни:']+events[-8:]
+    analysis=result.get('analysis',{})
+    watches=analysis.get('watch',state.get('watch',[])) if price_ok and not analysis.get('health') else []
+    selected=[]
+    # One best observable scenario per timeframe; max three readable cards.
+    for tf in scanner.PRIMARY:
+        row=next((w for w in watches if w.get('timeframe','15m')==tf
+                  and (w.get('setup'),tf) not in live_keys),None)
+        if row: selected.append(row)
+    if selected:
+        lines += ['','Найближчі сетапи:']
+        for w in selected:
+            side='LONG' if w.get('side')==1 else 'SHORT'
+            ready=w.get('readiness_pct',0)
+            distance=scanner.proximity(s.price,w.get('level'))['distance_pct']
+            delta=f" • до рівня {distance:.2f}%" if distance is not None else ''
+            lines.append(f"{w['setup']} • {w.get('timeframe','15m').lower()} • {side}")
+            count=f" ({w['met_conditions']}/{w['total_conditions']})" if ready<100 and 'met_conditions' in w else ''
+            lines.append(f"Умови: {ready:.0f}%{count}{delta}")
+            if w.get('level'):
+                lines.append(f"Рівень входу: {w['level']:.6g}")
+            reason=w.get('reason')
+            if reason in ('CONFIRMED','ACCEPTED'):
+                wait='ліміт готовий; чекаємо вільне місце' if occupied_slots(state)>=2 else 'ліміт готовий; перевіряємо допуск до входу'
+            elif reason=='SETUP_CONDITIONS_INCOMPLETE':
+                wait='; '.join(w.get('missing_conditions',[])[:2]) or 'підтвердження умов сетапу'
+            else:
+                wait=REASON_UA.get(reason,'перевірка допустимості входу')
+            lines.append('Чекаємо: '+wait)
+            lines.append(expected_line(w.get('statistics',{})))
+    elif not open_plans(state) and analysis.get('setup_matrix'):
+        matrix=analysis['setup_matrix']
+        missing=sorted(matrix,key=lambda r:-(r.get('readiness_pct') or 0))[:2]
+        lines += ['','Сетапи ще формуються:']
+        for w in missing:
+            lines.append(f"{w['setup']} • {w['timeframe'].lower()} • умови {w.get('readiness_pct') or 0:.0f}%")
+            lines.append('Чекаємо: '+('; '.join(w.get('missing_conditions',[])[:2]) or REASON_UA.get(w.get('reason'),'опорний рівень')))
+    reasons = {'DIRECTION_CONFLICT':'Вхід відкладено: однаково сильні протилежні сценарії.',
+               'DAILY_PAUSE':'Нові входи на паузі: денний ліміт ризику або угод.',
+               'SESSION_CLOSED':'Нові 15m входи — з наступної сесії.',
+               'DATA_HOLD':'Аналіз призупинено: ринкові дані неповні або застарілі.',
                'DUPLICATE_OR_OUT_OF_ORDER':'Цей звіт уже оброблено.'}
-    if action in reasons:
-        lines += ['',reasons[action]]
+    if result['action'] in reasons:
+        lines += ['',reasons[result['action']]]
+    if result['action']=='DATA_HOLD':
+        lines.append('Причина: '+', '.join(analysis.get('health',[])))
     if occupied_slots(state)==2:
         lines.append('Новий ордер — після звільнення одного місця.')
-    if state.get('trades'):
-        stats = statistics(state['trades'])
-        lines.append(f"📈 Історія: {stats['trades']} закритих • виграшів {stats['win_rate']*100:.1f}% • сума {stats['net_r']:+.2f}R")
-    lines.append('ℹ️ PAPER = модель за свічками, не підтвердження виконання на OKX.')
-    return '\n'.join(lines)
+    # A fixed Telegram limit. Drop whole optional scenario cards first; all
+    # lifecycle events remain durably available in the journal/dashboard.
+    message='\n'.join(lines)
+    if len(message)>4000:
+        message=message[:3950].rsplit('\n',1)[0]+'\nПовні деталі — у журналі.'
+    return message
 
 
 def read_json(path: Path) -> dict:
@@ -1346,6 +1564,7 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "second_slot": state.get('second_slot'), "open_plans": open_plans(state),
                       "occupied_slots": occupied_slots(state), "max_slots": 2,
                       "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
+                      "setup_matrix": state.get("setup_matrix",[]), "watch":state.get("watch",[]),
                       "reconciliation_history": state.get('reconciliation_history',[]),
                       "quality_summary": {"strategy":quality.STRATEGY,
                                           "observed_outcomes":len(state.get('quality',{}).get('observations',[])),

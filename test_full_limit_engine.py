@@ -334,7 +334,8 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("депозит", msg)
         self.assertNotIn("розмір позиції", msg)
         self.assertIn("SL:", msg)
-        self.assertIn("PAPER", msg)
+        self.assertIn("ЛІМІТНИЙ СИГНАЛ", msg)
+        self.assertNotIn("не біржові ордери",msg)
 
 
 class PersistenceTests(unittest.TestCase):
@@ -540,7 +541,8 @@ class FullSetupTests(unittest.TestCase):
             wrapped.append(invoke)
         with patch.object(core,"DETECTORS",wrapped):
             out = b.run_cycle(b.new_state(cfg),s,cfg)
-        self.assertEqual(calls,[d.__name__ for d in core.DETECTORS])
+        self.assertEqual(calls,[d.__name__ for d in core.DETECTORS for _ in range(3)])
+        self.assertEqual(out["analysis"]["timeframe_evaluations"],72)
         self.assertEqual(out["analysis"]["registered_setups"],24)
         self.assertFalse([d for d in out["analysis"]["detectors"] if d["status"]=="ERROR"])
         self.assertEqual(out["action"],"WATCH")

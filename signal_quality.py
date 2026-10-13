@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'confirmed-ict-quality-v1'
+STRATEGY = 'native-mtf-pretouch-limit-v2'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -95,7 +95,10 @@ def shifted(rows, side: int, engine) -> bool:
 
 
 def features(plan: dict, snapshot, context: dict, cfg, engine) -> dict:
-    side=plan['side'];c3=closed_rows(snapshot,'3m');c15=closed_rows(snapshot,'15m')
+    import setup_scanner as scanner
+    source_tf=scanner.timeframe(plan)
+    micro_tf=scanner.MICRO[source_tf]
+    side=plan['side'];c3=closed_rows(snapshot,micro_tf);c15=closed_rows(snapshot,source_tf)
     a3=max(engine.atr(c3),cfg.tick);a15=max(engine.atr(c15),cfg.tick)
     side3=direction(context.get('structure3m',{}).get('direction'))
     side15=direction(context.get('structure15',{}).get('direction'))
@@ -120,10 +123,16 @@ def features(plan: dict, snapshot, context: dict, cfg, engine) -> dict:
     side1,side4=plan.get('htf_1h',0),plan.get('htf_4h',0)
     agreement=int(side1==side)+int(side4==side)
     opposition=int(side1==-side)+int(side4==-side)
-    shock=max(((c.high-c.low)/a3 for c in c3[-2:]),default=0)>3.5
+    execution_rows=closed_rows(snapshot,'3m')
+    execution_atr=max(engine.atr(execution_rows),cfg.tick)
+    shock=max(((c.high-c.low)/execution_atr for c in execution_rows[-2:]),default=0)>3.5
     family,kind=CONTRACTS[plan['setup']]
     align='aligned' if agreement and not opposition else 'mixed' if agreement and opposition else 'against' if opposition else 'neutral'
     return {'setup':plan['setup'],'family':family,'kind':kind,'side':side,
+            'setup_timeframe':source_tf,'micro_timeframe':micro_tf,
+            'entry_policy':plan.get('entry_policy','LEGACY_CONFIRMED'),
+            'detector_confirmed':plan.get('detector_confirmed',False),
+            'htf_opposition':opposition,'maximum_return_atr':cfg.max_entry_distance_atr,
             'regime':str(context.get('regime','UNKNOWN')),'alignment':align,
             'side3':side3,'side15':side15,'shift3':shift3,'shift15':shift15,
             'impulse':impulse,'acceptance':accept,'range_position':round(location,4),
@@ -137,8 +146,17 @@ def structural_reason(f: dict, settings: Settings=Settings()) -> str:
         return 'SHOCK_STILL_ACTIVE'
     if f['cost_fraction']>settings.maximum_cost_fraction:
         return 'COSTS_CONSUME_EDGE'
-    if f['distance_atr']>2.5:
+    if f['distance_atr']>f.get('maximum_return_atr',2.5):
         return 'RETURN_PATH_TOO_LONG'
+    if f.get('entry_policy')=='PRETOUCH_LIMIT':
+        # The native detector already checks its own rejection, displacement,
+        # range, reclaim or breakout conditions. A resting pullback limit must
+        # not wait for a second reaction AFTER its level has been visited.
+        if not f.get('detector_confirmed'):
+            return 'SETUP_CONDITIONS_INCOMPLETE'
+        if f['htf_opposition']==2 and not (f['shift15'] and f['shift3']):
+            return 'HTF_REVERSAL_NOT_CONFIRMED'
+        return 'CONFIRMED'
     if not (f['side3']==f['side'] or f['shift3']):
         return 'NO_CONFIRMED_3M_CONTROL'
     if not (f['impulse'] or f['acceptance']):
@@ -180,7 +198,7 @@ def empirical(f: dict, rows: list[dict], now: int, settings: Settings=Settings()
     # Both label availability and the original structural contract are checked.
     past=[r for r in rows if r.get('strategy')==STRATEGY and now-90*86_400_000<=r['closed_ts']<now
           and r['decision_ts']<r['closed_ts'] and r.get('qualified') and math.isfinite(r['net_r'])]
-    base=lambda r:r['features']['alignment']==f['alignment'] and r['features']['regime']==f['regime'] and r['features']['side']==f['side']
+    base=lambda r:r['features']['alignment']==f['alignment'] and r['features']['regime']==f['regime'] and r['features']['side']==f['side'] and r['features'].get('setup_timeframe','15m')==f.get('setup_timeframe','15m')
     exact=independent([r for r in past if base(r) and r['features']['setup']==f['setup']])
     group=independent([r for r in past if base(r) and r['features']['family']==f['family']])
     selected=exact if len(exact)>=settings.minimum_observations else group
@@ -213,12 +231,21 @@ PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
-             'zone_created_ts','last_bar','execution','status','target_cancel_armed','version')
+             'zone_created_ts','last_bar','execution','status','target_cancel_armed','version',
+             'setup_timeframe','micro_timeframe','entry_policy','detector_confirmed',
+             'max_hold_minutes','intraday')
 
 
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
+    if q.get('schema')==SCHEMA and q.get('strategy')=='confirmed-ict-quality-v1':
+        # Keep all v12.3 evidence, but do not infer win rates for a new entry
+        # policy from the old late-confirmation policy.
+        state.setdefault('quality_archives',[]).append(copy.deepcopy(q))
+        q={'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
+           'pending':[],'observations':[],'seen':{},'last_run_ts':0}
+        state['quality']=q
     if q.get('schema')!=SCHEMA or q.get('strategy')!=STRATEGY:
         raise ValueError('Unknown quality ledger; preserve it instead of resetting')
     if q.get('signature')!=signature(cfg):
@@ -284,7 +311,7 @@ def watch_candidates(state: dict, candidates: list[dict], assessments: dict, cfg
     q['seen']={key:ts for key,ts in q['seen'].items() if ts>=cutoff}
 
 
-def refresh_confirmations(state: dict, snapshot, context: dict, cfg, engine) -> None:
+def refresh_confirmations(state: dict, snapshot, context: dict, cfg, engine, contexts=None) -> None:
     """Record a later *pre-fill* confirmation, effective only for future bars.
 
     The original decision stays in the audit trail. A confirmation after the
@@ -297,7 +324,9 @@ def refresh_confirmations(state: dict, snapshot, context: dict, cfg, engine) -> 
             continue
         if snapshot.now >= plan['expires_ts']:
             continue
-        f=features(plan,snapshot,context,cfg,engine)
+        import setup_scanner as scanner
+        native=(contexts or {}).get(scanner.timeframe(plan),context)
+        f=features(plan,snapshot,native,cfg,engine)
         if structural_reason(f)!='CONFIRMED':
             continue
         # Start an independent future-only PAPER episode; no retrospective fill.
