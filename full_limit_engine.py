@@ -28,9 +28,11 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.4.1-single-scenario-no-commission"
+VERSION = "full-ict-v12.4.2-quote-gates-price-forecast"
+REPORT_RELEASE = 'v12.4.2'
 import signal_quality as quality
 import setup_scanner as scanner
+import price_forecast
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -406,6 +408,35 @@ def full_targets(ctx: dict, s: Snapshot, side: str, entry: float, cfg: Config) -
                   key=lambda t:t["distance"])
 
 
+def preview_geometry(a, ctx, s, cfg):
+    """Hypothetical entry geometry for a blocked quote; never grants admission.
+
+    All levels come from the same structural stop and actual target rules as
+    full_plan. This lets the price forecast explain a forming/blocked entry.
+    """
+    sign=cfg.core.side_sign(a.side)
+    if not sign or min(ctx['atr3'],ctx['atr15'])<=0:
+        return {}
+    entry=round_tick(a.level,cfg.tick,up=sign==-1)
+    if sign*(entry-a.invalidation)<=0:
+        return {}
+    buffer=max(.15*ctx['atr3'],2*cfg.tick)
+    structural=round_tick(a.invalidation-sign*buffer,cfg.tick,up=sign==-1)
+    floor=max(cfg.min_stop_pct*entry,cfg.min_stop_atr3*ctx['atr3'],4*cfg.tick)
+    stop=round_tick(entry-sign*max(sign*(entry-structural),floor),cfg.tick,up=sign==-1)
+    risk=sign*(entry-stop)
+    targets=full_targets(ctx,s,a.side,entry,cfg)
+    if not targets:
+        return {'entry':entry,'stop':stop,'risk':risk,'geometry_preview':True}
+    nearest=targets[0]
+    target=round_tick(entry+sign*min(nearest['distance']-buffer,cfg.max_target_r*risk),cfg.tick,up=sign==-1)
+    tf=a.evidence.get('setup_timeframe','15m')
+    return {'entry':entry,'stop':stop,'initial_stop':stop,'risk':risk,'tp1':target,'tp':target,
+            'gross_rr':sign*(target-entry)/risk,'required_rr':cfg.min_net_rr,
+            'target_source':nearest['kind'],'geometry_preview':True,
+            'max_hold_minutes':cfg.max_hold_minutes*scanner.MINUTES[tf]//15,'intraday':tf=='15m'}
+
+
 def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=None) -> tuple[Optional[dict], str]:
     core = cfg.core
     diag=diagnostics if diagnostics is not None else {}
@@ -423,11 +454,13 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
         return None, "ANCHOR_COOLDOWN"
     entry = round_tick(a.level, cfg.tick, up=sign == -1)
     diag.update(entry=entry,level=entry)
-    mark('PASSIVE_LIMIT',(sign==1 and entry<s.bid) or (sign==-1 and entry>s.ask))
-    if (sign == 1 and entry >= s.bid) or (sign == -1 and entry <= s.ask):
+    quote_gate=scanner.passive_gate(entry,sign,s.bid,s.ask,cfg.tick)
+    diag['quote_gate']=quote_gate
+    mark('PASSIVE_LIMIT',quote_gate['passive'])
+    if not quote_gate['passive']:
         return None, "LIMIT_WOULD_CROSS_SPREAD"
-    distance = sign*(s.price-entry)/a15
-    if not 0 < distance <= cfg.max_entry_distance_atr:
+    distance = abs(s.price-entry)/a15
+    if not 0 <= distance <= cfg.max_entry_distance_atr:
         return None, "LIMIT_UNREACHABLE"
     if sign*(entry-a.invalidation) <= 0:
         return None, "INVALID_STRUCTURAL_FALSIFIER"
@@ -633,6 +666,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 p, reason = None, "LEVEL_OR_EVENT_COOLDOWN"
             else:
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
+                if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
+                    diagnostics.update(preview_geometry(a,native,s,cfg))
             row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None)
             if row is not None and (row['status'] not in ('DETECTED','LIMIT_READY') or row.get('event_key')==key):
                 row.update(level=a.level,side=core.side_sign(a.side),anchor_id=a.id,
@@ -1238,10 +1273,19 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     selected_row=next((row for row in analysis.get('setup_matrix',[]) if selected
                        and row.get('signal_id')==selected[0]['id']),None)
     analysis['best_scenario']=selected_row or scanner.best_scenario(analysis.get('watch',[]),s.price,sides)
+    if analysis['best_scenario']:
+        best=analysis['best_scenario']
+        best['price_forecast']=price_forecast.forecast(best,s,cfg)
+    for number,view in slot_views(state):
+        if view.get('pending'):
+            plan=view['pending']
+            plan['price_forecast']=price_forecast.forecast(plan,s,cfg)
+            store_slot(state,number,view)
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
     state['last_run_ts'] = s.now
     state['config_hash'] = config_hash
     state['include_commission']=cfg.include_commission
+    state['price_tick']=cfg.tick
     state['version'] = VERSION
     state['ledger_revision'] = 2
     cutoff = s.now-2*86_400_000
@@ -1382,7 +1426,7 @@ REASON_UA = {
     'DAILY_PAUSE':'денний ліміт ризику або кількості входів',
     'SESSION_CLOSED':'наступна торгова сесія для 15m входу',
     'DATA_HOLD':'відновлення повних актуальних даних',
-    'LIMIT_WOULD_CROSS_SPREAD':'чекаємо, щоб ціна пройшла рівень; зараз ліміт виконався б одразу',
+    'LIMIT_WOULD_CROSS_SPREAD':'поточні ASK/BID не дозволяють пасивний ліміт',
     'LIMIT_UNREACHABLE':'рівень далі допустимої відстані у ATR',
     'INVALID_STRUCTURAL_FALSIFIER':'немає коректного рівня скасування сетапу',
     'ANCHOR_INVALIDATED':'структура сетапу порушена',
@@ -1415,13 +1459,26 @@ REASON_UA = {
 }
 
 
-def expected_line(stat: dict) -> str:
+def expected_line(stat: dict, forecast=None) -> str:
     n=stat.get('observations',0)
-    if n<quality.Settings().minimum_observations or stat.get('estimate') is None:
-        return f"Очікуваний win rate: н/д • вибірка {n}/{quality.Settings().minimum_observations}"
-    scope='сетап' if stat.get('scope')=='setup' else 'сім’я сетапів'
-    return (f"Оцінка win rate: {stat['estimate']*100:.1f}% • {scope}, n={n}"
-            +f" • нижня межа 95%: {stat['lower_95']*100:.1f}%")
+    if n>=quality.Settings().minimum_observations and stat.get('estimate') is not None:
+        scope='сетап' if stat.get('scope')=='setup' else 'сім’я сетапів'
+        return (f"📈 Оцінка win rate: {stat['estimate']*100:.1f}% • {scope}, n={n}"
+                +f" • нижня межа 95%: {stat['lower_95']*100:.1f}%")
+    model=forecast or {}
+    if model.get('status')=='MODEL_ONLY':
+        minutes=model['horizon_minutes']
+        period=f"{minutes//60} год {minutes%60} хв" if minutes>=60 and minutes%60 else f"{minutes//60} год" if minutes>=60 else f"{minutes} хв"
+        return (f"🔮 TP1 до SL: ≈{model['tp1_before_sl']*100:.1f}% • цінова модель після входу"
+                +f"\n📊 Основа: {model['closed_bars']} закритих {model['source_timeframe'].lower()} свічок • горизонт {period}"
+                +f"\n📈 Історія: {n} завершених сценаріїв • модель ще не перевірена")
+    need={'NEEDS_SL_TP':'Для прогнозу потрібні структурні SL і TP',
+          'INVALID_BARRIERS':'Рівні SL/TP ще не дають коректного прогнозу',
+          'NEEDS_CLOSED_HISTORY':f"Для прогнозу потрібно {price_forecast.MINIMUM_BARS} закритих свічок",
+          'INVALID_HORIZON':'Для прогнозу потрібен допустимий строк супроводу'}
+    if model:
+        return '🧮 '+need.get(model.get('status'),'Прогноз ще готується')+f" • історія {n} завершених"
+    return f"📈 Історія: {n} завершених сценаріїв • win rate ще не перевірений"
 
 
 def report_deadline(ts: int, now: int, cfg: Config) -> str:
@@ -1435,7 +1492,7 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
     symbol=cfg.instrument.removesuffix('-SWAP')
     price_ok=s.trusted and s.price>0 and 0<=s.now-s.ticker_ts<=120_000
     current_price=f'{s.price:.6g}' if price_ok else 'недоступна'
-    lines = [f"📊 {symbol} • {local:%d.%m %H:%M} (Київ)",
+    lines = [f"📊 {symbol} • {local:%d.%m %H:%M} (Київ) • {REPORT_RELEASE}",
              f"Ціна зараз: {current_price} • Зайнято місць: {occupied_slots(state)}/2"]
     new_ids = {p['id'] for p in result.get('selected_plans',[])}
     if result.get('selected'):
@@ -1456,12 +1513,17 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
                       target_line(p)]
             if view.get('pending'):
                 distance=scanner.proximity(s.price if price_ok else 0,p['entry'],p.get('placement_price'))
-                approach=f" • наближення {distance['approach_pct']:.0f}%" if distance['approach_pct'] is not None else ''
-                move='зниження' if s.price>p['entry'] else 'зростання' if s.price<p['entry'] else 'дотику'
-                distance_line=f"До входу: {distance['distance_pct']:.3f}%{approach}" if price_ok else 'До входу: н/д — немає свіжої ціни'
-                lines += [distance_line,
-                          f"Умови на момент сигналу: 100% • чекаємо {move} до {p['entry']:.6g}",
-                          f"Ліміт діє до {report_deadline(p['expires_ts'],s.now,cfg)}"]
+                detail=scanner.distance_text(s.price,p['entry'],cfg.tick) if price_ok else '📏 До входу: немає свіжої ціни'
+                if distance['approach_pct'] is not None and s.price!=p['entry']:
+                    detail+=f" • наближення {distance['approach_pct']:.0f}%"
+                lines.append(detail)
+                if price_ok and s.price==p['entry']:
+                    lines.append('⏳ Ліміт активний; підтвердження проходу ціни перевіряється на наступних свічках')
+                elif price_ok:
+                    move='зниження' if s.price>p['entry'] else 'зростання'
+                    lines.append(f"🚦 Чекаємо {move} до ціни входу {p['entry']:.8g}")
+                lines += ["🧩 Умови на момент сигналу: 100%",
+                          f"⏱ Ліміт діє до {report_deadline(p['expires_ts'],s.now,cfg)}"]
                 if p.get('cancel_requested_ts'):
                     lines.append('Скасування: '+REASON_UA.get(p.get('cancel_reason'),'сетап утратив чинність'))
             else:
@@ -1475,7 +1537,7 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
                     amend = p['pending_stop']
                     lines.append(f"Новий SL {amend['price']:.6g} з {local_time(amend['effective_ts'],cfg)}")
                 lines.append(f"Завершити до {report_deadline(p['exit_deadline'],s.now,cfg)}")
-            lines.append(expected_line(p.get('quality',{}).get('statistics',{})))
+            lines.append(expected_line(p.get('quality',{}).get('statistics',{}),p.get('price_forecast') if view.get('pending') and price_ok and not result.get('analysis',{}).get('health') else None))
         if view.get('reconciliation'):
             r = view['reconciliation']
             lines += ['',f"{display_order(state,r['order_id'])} — РЕЗУЛЬТАТ НЕВИЗНАЧЕНИЙ",
@@ -1505,15 +1567,18 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
             label='Якість контексту' if w.get('score_status')=='CONTEXT' else 'Оцінка патерну' if w.get('score_status')=='PATTERN' else 'Оцінка'
             lines.append(f"{label}: {w['score']:.1f}/100")
         if w.get('level'):
-            delta=scanner.proximity(s.price,w['level'])['distance_pct']
-            move='зростання' if w['level']>s.price else 'зниження' if w['level']<s.price else 'дотик'
-            lines.append(f"Вхід: {w['level']:.6g} • до входу {delta:.3f}% • {move} на {abs(s.price-w['level']):.6g}")
+            lines.append(f"🎯 Вхід: {w['level']:.8g}")
+            lines.append(scanner.distance_text(s.price,w['level'],cfg.tick))
         if w.get('stop') and w.get('tp1'):
             lines.append(f"SL: {w['stop']:.6g} • TP1: {w['tp1']:.6g}")
         reason=w.get('reason')
-        if reason in ('TARGET_RR_TOO_LOW','NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'):
+        if reason=='LIMIT_WOULD_CROSS_SPREAD' and w.get('level'):
+            lines.append(scanner.wait_text(w['level'],w['side'],s.bid,s.ask,cfg.tick))
+        elif reason in ('TARGET_RR_TOO_LOW','NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'):
             if w.get('gross_rr') is not None:
                 lines.append(f"Вхід заблоковано: TP дає {w['gross_rr']:.2f}R; мінімум {w.get('required_rr',cfg.min_net_rr):.2f}R")
+                if w.get('required_tp') and w['required_tp']>0:
+                    lines.append(f"🎯 При цьому SL потрібен структурний TP {'≥' if w['side']==1 else '≤'} {w['required_tp']:.8g}")
             else:
                 lines.append('Вхід заблоковано: потенціал TP відносно SL нижчий за мінімум')
         elif reason in ('CONFIRMED','ACCEPTED'):
@@ -1523,7 +1588,7 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
             lines.append('Чекаємо: '+('; '.join(pattern[:2]) or '; '.join(w.get('missing_conditions',[])[:2]) or 'підтвердження патерну'))
         else:
             lines.append('Чекаємо: '+REASON_UA.get(reason,'підтвердження допустимості входу'))
-        lines.append(expected_line(w.get('statistics',{})))
+        lines.append(expected_line(w.get('statistics',{}),w.get('price_forecast')))
     reasons = {'DIRECTION_CONFLICT':'Вхід відкладено: однаково сильні протилежні сценарії.',
                'DAILY_PAUSE':'Нові входи на паузі: денний ліміт ризику або угод.',
                'SESSION_CLOSED':'Нові 15m входи — з наступної сесії.',
@@ -1537,10 +1602,37 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
         lines.append('Новий ордер — після звільнення одного місця.')
     # A fixed Telegram limit. Drop whole optional scenario cards first; all
     # lifecycle events remain durably available in the journal/dashboard.
-    message='\n'.join(lines)
+    message=decorate_message('\n'.join(lines))
     if len(message)>4000:
-        message=message[:3950].rsplit('\n',1)[0]+'\nПовні деталі — у журналі.'
+        message=message[:3950].rsplit('\n',1)[0]+'\n🔎 Повні деталі — у журналі.'
     return message
+
+
+def decorate_message(message):
+    icons=[('Найкращий','🏆'),('Готовність','🧩'),('Умови','🧩'),('Ціна','💰'),
+           ('Вхід заблоковано','⛔'),('Вхід:','🎯'),('SL:','🛑'),('TP','🎯'),
+           ('Новий SL','🛡️'),('Чекаємо','🚦'),('Якість','🧠'),('Оцінка','🧠'),
+           ('Залишилось','📦'),('Ліміт діє','⏱'),('Завершити','⏱'),
+           ('Зміни:','📣'),('Новий ордер','⏸️'),('Причина:','🔎')]
+    output=[]
+    for line in message.split('\n'):
+        stripped=line.lstrip()
+        if not stripped or ord(stripped[0])>=0x2300:
+            output.append(line);continue
+        if stripped.startswith('#') and 'ЗАКРИТО' in stripped:
+            icon='🏁'
+        elif stripped.startswith('#') and 'НОВИЙ' in stripped:
+            icon='🆕'
+        elif stripped.startswith('#') and 'СУПРОВІД' in stripped:
+            icon='🟢'
+        elif stripped.startswith('#'):
+            icon='⏳'
+        elif stripped.split()[0] in quality.CONTRACTS:
+            icon='📌'
+        else:
+            icon=next((mark for start,mark in icons if stripped.startswith(start)),'🔹')
+        output.append(icon+' '+stripped)
+    return '\n'.join(output)
 
 
 def read_json(path: Path) -> dict:
@@ -1632,6 +1724,7 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
                       "setup_matrix": state.get("setup_matrix",[]), "watch":state.get("watch",[]),
                       "best_scenario":state.get("best_scenario"), "include_commission":state.get("include_commission",False),
+                      "price_tick":state.get("price_tick"),
                       "reconciliation_history": state.get('reconciliation_history',[]),
                       "quality_summary": {"strategy":quality.STRATEGY,
                                           "observed_outcomes":len(state.get('quality',{}).get('observations',[])),
@@ -1686,9 +1779,13 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
         raise ValueError("Telegram token/chat_id required for --notify")
     while state["notification_queue"]:
         item = state["notification_queue"][0]
+        body=item['text']
+        if not item.get('version') and ('Найближчі сетапи:' in body or 'після комісій' in body):
+            body='🕓 Збережений звіт старого формату з черги\n'+body
+        body=decorate_message(body)
         try:
             data = http_json("https://api.telegram.org/bot"+token+"/sendMessage",
-                             {"chat_id": chat_id, "text": item["text"]})
+                             {"chat_id": chat_id, "text": body})
             if not data.get("ok"):
                 print("Telegram rejected the message; queued for retry", file=sys.stderr)
                 return False
@@ -1927,6 +2024,11 @@ def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
 
 
 def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, ack: bool = False) -> int:
+    if core.BOT_VERSION != VERSION:
+        raise ValueError('Неповне оновлення: оновіть bot_oneshot.py і full_limit_engine.py з одного архіву')
+    expected=os.environ.get('EXPECTED_BOT_VERSION')
+    if expected and expected != VERSION:
+        raise ValueError('Workflow очікує іншу версію коду: оновіть весь ZIP')
     cfg = replace(Config.from_env(),core=core)
     state_path,journal_path = Path(core.STATE_FILE),Path(core.JOURNAL_FILE)
     if state_path.resolve()==journal_path.resolve():
@@ -1976,7 +2078,7 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             export_journal(journal_path,state,core)
             return 0 if not notify or notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path) else 2
         if notify:
-            state['notification_queue'].append({'id':ident(snap.now,message),'text':message})
+            state['notification_queue'].append({'id':ident(snap.now,message),'text':message,'version':VERSION,'ts':snap.now})
         atomic_write(state_path,state)
         export_journal(journal_path,state,core)
         if notify and not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):

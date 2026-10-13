@@ -55,7 +55,7 @@ class PercentageAndWinnerTests(unittest.TestCase):
         self.assertEqual(text.count('Найкращий сценарій:'),1)
         self.assertIn('RANGE_EDGE_REVERSAL • 15m • SHORT',text)
         self.assertIn('Готовність до входу: 66.7% (8/12)',text)
-        self.assertIn('до входу 0.135%',text)
+        self.assertIn('До входу: 0.135%',text)
         self.assertNotIn('OPENING_RANGE_BREAKOUT',text)
         self.assertNotIn('LONG',text)
         self.assertNotIn('комісі',text)

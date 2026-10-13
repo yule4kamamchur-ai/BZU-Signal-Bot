@@ -1365,12 +1365,24 @@ async function fetchLiveMarket(fallbackPrice) {
   return { price: null, change24h: null, source: 'немає live-ціни', fallback: true };
 }
 
-function estimateText(stat) {
+function estimateText(stat, forecast) {
   const n=Number(stat?.observations || 0);
-  if (n<40 || stat?.estimate==null) return `Очікуваний win rate: н/д (${n}/40)`;
-  const scope=stat.scope==='setup'?'сетап':'сім’я';
-  return `Оцінка win rate: ${(100*stat.estimate).toFixed(1)}% (${scope}, n=${n}; нижня 95% межа ${(100*stat.lower_95).toFixed(1)}%)`;
+  if (n>=40 && stat?.estimate!=null) {
+    const scope=stat.scope==='setup'?'сетап':'сім’я';
+    return `📈 Оцінка win rate: ${(100*stat.estimate).toFixed(1)}% (${scope}, n=${n}; нижня 95% межа ${(100*stat.lower_95).toFixed(1)}%)`;
+  }
+  if (forecast?.status==='MODEL_ONLY') return `🔮 TP1 до SL: ≈${(100*forecast.tp1_before_sl).toFixed(1)}% (цінова модель; ${forecast.closed_bars} свічок ${forecast.source_timeframe}; горизонт ${forecast.horizon_minutes} хв). Історія: ${n}; модель ще не перевірена.`;
+  if (forecast?.status==='NEEDS_SL_TP') return '🧮 Для прогнозу потрібні SL і TP';
+  return `📈 Історія: ${n} завершених; win rate ще не перевірений`;
 }
+
+function entryDistanceText(price, entry, tick) {
+  const gap=Math.abs(price-entry);
+  if (gap===0) return '📍 Ціна на рівні входу';
+  const pct=100*gap/price;
+  return `📏 До входу: ${pct<.0005?'<0.001%':pct.toFixed(3)+'%'} · ${gap.toPrecision(3)} USDT${tick>0?' · '+(Number.isInteger(gap/tick)?String(gap/tick):(gap/tick).toFixed(3))+' тиків':''}`;
+}
+
 
 function renderV12Board(state, journal) {
   const full = isObj(journal?.full_v12) ? journal.full_v12 : {};
@@ -1400,15 +1412,15 @@ function renderV12Board(state, journal) {
       `🛑 Чинний SL: <span class="money">${escapeHtml(formatPrice(plan.stop))}</span><br>`+
       `🏁 ${targets || 'Цілей немає'}<br>${expiry}<br>`+
       `📌 ${escapeHtml(plan.setup || '')} · ${escapeHtml(plan.setup_timeframe || plan.timeframe || '15m')}<br>`+
-      `${!kind && num(plan.entry)>0 && num(asArray(state.signals).at(-1)?.price)>0 ? 'До входу: '+(100*Math.abs(asArray(state.signals).at(-1).price-plan.entry)/asArray(state.signals).at(-1).price).toFixed(3)+'%<br>' : ''}`+
-      `${escapeHtml(estimateText(plan?.quality?.statistics))}</div>`;
+      `${!kind && num(plan.entry)>0 && num(asArray(state.signals).at(-1)?.price)>0 ? entryDistanceText(asArray(state.signals).at(-1).price,plan.entry,state.price_tick)+'<br>' : ''}`+
+      `${escapeHtml(estimateText(plan?.quality?.statistics,plan.price_forecast))}</div>`;
   });
   const filled=tradeRows.filter(t => Number(t.net_r)>0).length;
   const losses=tradeRows.filter(t => Number(t.net_r)<=0 && t.net_r != null).length;
   const pct=(filled+losses)?(100*filled/(filled+losses)).toFixed(1)+'%':'ще немає завершень';
   const latest=asArray(state?.signals).at(-1) || asArray(full.signals).at(-1) || {};
   const stamp=state?.last_run_ts || Date.parse(full.updated_at);
-  $('v12Summary').textContent=`Зайнято: ${snapshots.filter(x=>x.pending||x.active||x.reconciliation).length}/2 • Закрито: ${filled+losses} • win rate сигналів: ${pct} • Останній цикл: ${stamp?new Date(stamp).toLocaleString('uk-UA'):'—'}`;
+  $('v12Summary').textContent=`Зайнято: ${snapshots.filter(x=>x.pending||x.active||x.reconciliation).length}/2 • Закрито: ${filled+losses} • win rate сигналів: ${pct} • версія ${escapeHtml(state.version || full.version || '—')} • Останній цикл: ${stamp?new Date(stamp).toLocaleString('uk-UA'):'—'}`;
   $('v12Slots').innerHTML=live.join('');
   const events=asArray(state?.events).length ? state.events : asArray(full.events);
   $('v12Events').innerHTML=events.length ? events.slice(-12).reverse().map(e=>{
@@ -1450,15 +1462,15 @@ function renderV12Board(state, journal) {
   const cell=r=>{
     if (!r) return '<td style="padding:10px">—</td>';
     const price=num(latest.price),entry=num(r.level);
-    const distance=price>0 && entry>0 ? (100*Math.abs(price-entry)/price).toFixed(3)+'%' : '—';
+    const distance=price>0 && entry>0 ? entryDistanceText(price,entry,state.price_tick || full.price_tick) : '—';
     const missing=asArray(r.missing_conditions);
     const reason=(r.reason==='TARGET_RR_TOO_LOW' && r.gross_rr!=null) ? `TP дає ${Number(r.gross_rr).toFixed(2)}R; мінімум ${Number(r.required_rr || 1.2).toFixed(2)}R` : r.reason==='SETUP_CONDITIONS_INCOMPLETE' ? missing.join('; ') : reasons[r.reason] || r.reason || '—';
     const direction=r.side===1?'LONG':r.side===-1?'SHORT':'—';
     return `<td style="padding:10px;vertical-align:top;border-top:1px solid #233040;min-width:220px">`+
       `<b>${escapeHtml(direction)} · готовність ${r.readiness_pct==null?'—':Number(r.readiness_pct).toFixed(1)+'%'}</b><br>`+
-      `${entry>0?'Рівень '+escapeHtml(formatPrice(entry))+' · до входу '+distance+'<br>':''}`+
+      `${entry>0?'Рівень '+escapeHtml(formatPrice(entry))+'<br>'+distance+'<br>':''}`+
       `<span style="color:var(--muted)">${escapeHtml(reason)}</span><br>`+
-      `${escapeHtml(estimateText(r.statistics))}</td>`;
+      `${escapeHtml(estimateText(r.statistics,r.price_forecast))}</td>`;
   };
   $('v12Setups').innerHTML=names.length ? '<table style="width:100%;border-collapse:collapse;text-align:left;font-size:12px"><thead><tr><th>Сетап</th><th>15m</th><th>1h</th><th>4h</th></tr></thead><tbody>'+
     names.map(name=>'<tr><td style="padding:10px;border-top:1px solid #233040">'+escapeHtml(name)+'</td>'+['15m','1H','4H'].map(tf=>cell(matrix.find(r=>r.setup===name && r.timeframe===tf))).join('')+'</tr>').join('')+'</tbody></table>' : 'Очікуємо перший цикл сканера.';

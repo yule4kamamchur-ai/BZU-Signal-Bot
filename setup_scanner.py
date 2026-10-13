@@ -6,10 +6,49 @@ can confirm a setup. It is never a success probability or an execution signal.
 from __future__ import annotations
 
 from statistics import mean
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 PRIMARY = ('15m', '1H', '4H')
 MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
+
+
+def passive_gate(entry, side, bid, ask, tick):
+    """Marketable limits cross the opposite quote, not the last trade price."""
+    e=Decimal(str(entry));t=Decimal(str(tick))
+    quote=ask if side==1 else bid
+    passive=entry<ask if side==1 else entry>bid
+    boundary=((e/t).to_integral_value(rounding=ROUND_FLOOR)+1)*t if side==1 else ((e/t).to_integral_value(rounding=ROUND_CEILING)-1)*t
+    return {'passive':passive,'quote_name':'ASK' if side==1 else 'BID',
+            'current_quote':quote,'required_quote':float(boundary),
+            'operator':'≥' if side==1 else '≤'}
+
+
+def distance_details(price, entry, tick):
+    gap=abs(Decimal(str(price))-Decimal(str(entry)))
+    percentage=float(gap/Decimal(str(price))*100) if price>0 else None
+    ticks=float(gap/Decimal(str(tick))) if tick>0 else None
+    return {'at_level':gap==0,'distance':float(gap),'distance_pct':percentage,'ticks':ticks}
+
+
+def distance_text(price, entry, tick):
+    detail=distance_details(price,entry,tick)
+    if detail['at_level']:
+        return f'📍 Ціна на рівні входу {entry:.8g} • 0 тиків'
+    pct=detail['distance_pct']
+    value=f'{pct:.3f}%' if pct>=.0005 else '<0.001%'
+    ticks=detail['ticks']
+    tick_text=str(round(ticks)) if abs(ticks-round(ticks))<1e-8 else f'{ticks:.6f}'.rstrip('0').rstrip('.')
+    if tick_text=='0' and ticks>0:
+        tick_text='<0.000001'
+    return f"📏 До входу: {value} • {detail['distance']:.8g} USDT • {tick_text} тиків"
+
+
+def wait_text(entry, side, bid, ask, tick):
+    gate=passive_gate(entry,side,bid,ask,tick)
+    return (f"🚦 Ліміт {'LONG' if side==1 else 'SHORT'} {entry:.8g}: чекаємо "
+            +f"{gate['quote_name']} {gate['operator']} {gate['required_quote']:.8g} "
+            +f"(зараз {gate['current_quote']:.8g})")
 
 ENTRY_CHECKS = (
     ('PASSIVE_LIMIT','Ліміт стоїть на правильному боці ціни'),

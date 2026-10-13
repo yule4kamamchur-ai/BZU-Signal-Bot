@@ -84,7 +84,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v12.4.1-single-scenario-no-commission"
+BOT_VERSION = "full-ict-v12.4.2-quote-gates-price-forecast"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -14625,14 +14625,21 @@ def _run_self_test() -> bool:
 # ENTRYPOINT
 # ==========================================================
 
+def _verify_runtime(engine) -> None:
+    if engine.VERSION != BOT_VERSION:
+        raise RuntimeError(f"Неповне оновлення: bot_oneshot={BOT_VERSION}, engine={engine.VERSION}. Оновіть весь ZIP разом.")
+
+
 def main() -> None:
-    from full_limit_engine import main as full_main
-    raise SystemExit(full_main(sys.modules[__name__]))
+    import full_limit_engine as engine
+    _verify_runtime(engine)
+    raise SystemExit(engine.main(sys.modules[__name__]))
 
 
 def run_bot() -> int:
-    from full_limit_engine import run_live
-    return run_live(sys.modules[__name__])
+    import full_limit_engine as engine
+    _verify_runtime(engine)
+    return engine.run_live(sys.modules[__name__])
 
 
 if __name__ == "__main__":

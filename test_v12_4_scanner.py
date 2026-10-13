@@ -224,7 +224,7 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         s.price=0;s.trusted=False
         text=engine.build_message(state,s,{'action':'DATA_HOLD','analysis':{'health':['UNTRUSTED_PRICE']}},cfg)
         self.assertIn('Ціна зараз: недоступна',text)
-        self.assertIn('До входу: н/д',text)
+        self.assertIn('До входу: немає свіжої ціни',text)
         self.assertIn('UNTRUSTED_PRICE',text)
         self.assertNotIn('Ціна зараз: 0',text)
 
@@ -234,14 +234,15 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         state['pending']=p;engine.bind_order_numbers(state)
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
         for text in ('Ціна зараз: 101.25','До входу: 0.543%','наближення 73%',
-                     'SWEEP_RECLAIM • 1h','Умови на момент сигналу: 100%','Очікуваний win rate: н/д','SL:','TP1'):
+                     'SWEEP_RECLAIM • 1h','Умови на момент сигналу: 100%','Історія: 0 завершених сценаріїв','SL:','TP1'):
             self.assertIn(text,message)
         for noise in ('PAPER','не біржові ордери','Нових входів немає','PAPER ='):
             self.assertNotIn(noise,message)
         self.assertIn('ЛІМІТНИЙ СИГНАЛ',message)
 
     def test_signal_with_unknown_history_does_not_present_seventy_percent_probability(self):
-        self.assertIn('н/д',engine.expected_line({'observations':39,'estimate':.95}))
+        self.assertIn('ще не перевірений',engine.expected_line({'observations':39,'estimate':.95}))
+        self.assertNotIn('95.0%',engine.expected_line({'observations':39,'estimate':.95}))
         text=engine.expected_line({'observations':40,'estimate':.80,'scope':'family','lower_95':.65})
         self.assertIn('сім’я сетапів',text)
         self.assertIn('80.0%',text)
