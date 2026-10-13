@@ -92,7 +92,7 @@ class PercentageAndWinnerTests(unittest.TestCase):
         cfg,ctx,a,s=full_fixture();diag={}
         with patch.object(engine,'full_targets',return_value=[{'kind':'test','level':a.level+.2,'distance':.2}]):
             plan,why=engine.full_plan(a,ctx,s,cfg,{},diag)
-        self.assertIsNone(plan);self.assertEqual(why,'TARGET_RR_TOO_LOW')
+        self.assertIsNone(plan);self.assertEqual(why,'TARGET_DISTANCE_TOO_SMALL')
         self.assertLess(diag['gross_rr'],diag['required_rr'])
         row={'setup_conditions':[{'condition':'pattern','met':True}],**diag}
         scanner.update_readiness(row)
@@ -127,7 +127,7 @@ class NoCommissionTests(unittest.TestCase):
         cfg,ctx,a,s=full_fixture();base,why=engine.full_plan(a,ctx,s,cfg,{})
         self.assertIsNotNone(base,why)
         buffer=max(.15*ctx['atr3'],2*cfg.tick)
-        distance=1.25*base['risk']+buffer
+        distance=max(1.6*base['risk'],cfg.min_target_pct*base['entry'])+buffer
         targets=[{'kind':'test','level':a.level+distance,'distance':distance}]
         cfg=replace(cfg,maker_fee=.01,taker_fee=.05)
         with patch.object(engine,'full_targets',return_value=targets):
@@ -144,7 +144,7 @@ class NoCommissionTests(unittest.TestCase):
         with patch.object(engine,'full_targets',return_value=[{'kind':'test','level':a.level+.1,'distance':.1}]):
             p,why=engine.full_plan(a,ctx,s,cfg,{})
         self.assertIsNone(p)
-        self.assertEqual(why,'TARGET_RR_TOO_LOW')
+        self.assertEqual(why,'TARGET_DISTANCE_TOO_SMALL')
 
     def test_result_has_zero_commissions_even_with_legacy_entry_fee_metadata(self):
         cfg=engine.Config();state=engine.new_state(cfg);p=order()

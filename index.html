@@ -1439,6 +1439,7 @@ function renderV12Board(state, journal) {
     LIMIT_WOULD_CROSS_SPREAD:'Потрібен прохід ціни за рівень',
     LIMIT_UNREACHABLE:'Рівень надто далеко',
     NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS:'TP/SL нижче мінімуму',TARGET_RR_TOO_LOW:'TP/SL нижче мінімуму',
+    TARGET_DISTANCE_TOO_SMALL:'Структурна ціль ближча за мінімальний TP1 1.5%',
     STRUCTURAL_STOP_TOO_WIDE:'Стоп надто широкий',
     NO_STRUCTURAL_TARGET:'Немає структурної цілі',
     COMBINED_CONTEXT_SCORE_LOW:'Слабкий контекст',
@@ -1464,7 +1465,7 @@ function renderV12Board(state, journal) {
     const price=num(latest.price),entry=num(r.level);
     const distance=price>0 && entry>0 ? entryDistanceText(price,entry,state.price_tick || full.price_tick) : '—';
     const missing=asArray(r.missing_conditions);
-    const reason=(r.reason==='TARGET_RR_TOO_LOW' && r.gross_rr!=null) ? `TP дає ${Number(r.gross_rr).toFixed(2)}R; мінімум ${Number(r.required_rr || 1.2).toFixed(2)}R` : r.reason==='SETUP_CONDITIONS_INCOMPLETE' ? missing.join('; ') : reasons[r.reason] || r.reason || '—';
+    const reason=(r.reason==='TARGET_DISTANCE_TOO_SMALL' && r.required_tp!=null) ? `До найближчої цілі ${Number(r.tp1_distance_pct).toFixed(2)}%; мінімум ${Number((r.min_target_pct || .015)*100).toFixed(1)}%. TP1 потрібен ${r.side===1?'≥':'≤'} ${formatPrice(r.required_tp)}` : (r.reason==='TARGET_RR_TOO_LOW' && r.gross_rr!=null) ? `TP дає ${Number(r.gross_rr).toFixed(2)}R; мінімум ${Number(r.required_rr || 1.2).toFixed(2)}R` : r.reason==='SETUP_CONDITIONS_INCOMPLETE' ? missing.join('; ') : reasons[r.reason] || r.reason || '—';
     const direction=r.side===1?'LONG':r.side===-1?'SHORT':'—';
     return `<td style="padding:10px;vertical-align:top;border-top:1px solid #233040;min-width:220px">`+
       `<b>${escapeHtml(direction)} · готовність ${r.readiness_pct==null?'—':Number(r.readiness_pct).toFixed(1)+'%'}</b><br>`+

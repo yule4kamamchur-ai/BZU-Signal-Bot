@@ -27,7 +27,7 @@ class GeometryAndTimeTests(unittest.TestCase):
                 p,why=engine.full_plan(a,ctx,s,cfg,{})
                 self.assertIsNotNone(p,why)
                 self.assertGreaterEqual(p['risk']+1e-8,cfg.min_stop_pct*p['entry'])
-                self.assertGreaterEqual(p['stop_distance_pct']+1e-8,.40)
+                self.assertGreaterEqual(p['stop_distance_pct']+1e-8,1.)
                 self.assertGreaterEqual(p['net_rr'],cfg.min_net_rr)
                 self.assertGreater(p['tp1']*p['side']-p['entry']*p['side'],0)
 
@@ -38,7 +38,7 @@ class GeometryAndTimeTests(unittest.TestCase):
         with patch.object(engine,'full_targets',return_value=[{'kind':'TEST','level':a.level+.10,'distance':.10}]):
             p,why=engine.full_plan(a,ctx,s,cfg,{})
         self.assertIsNone(p)
-        self.assertEqual(why,'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS')
+        self.assertEqual(why,'TARGET_DISTANCE_TOO_SMALL')
 
     def test_old_anchor_does_not_shorten_new_limit_ttl(self):
         cfg,ctx,a,s=full_fixture()
@@ -131,7 +131,7 @@ class QualityAndReportingTests(unittest.TestCase):
         p.update(status='PENDING',partials={'TP1':1.0},expires_ts=s.now+3_600_000)
         state['pending']=p
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
-        for label in ('📊','⏳','SL:','TP1','ЛІМІТНИЙ СИГНАЛ','Зайнято місць','Ціна зараз','До входу'):
+        for label in ('💰','🧩','SL:','TP1','ЛІМІТНИЙ СИГНАЛ','Зайнято місць','Ціна зараз','До входу'):
             self.assertIn(label,message)
 
 
@@ -193,4 +193,5 @@ class DeploymentContinuityTests(unittest.TestCase):
             message=saved['notification_queue'][-1]['text']
             self.assertIn('a',message)
             self.assertIn('b',message)
-            self.assertIn('🟢',message)
+            self.assertIn('ЦІНА ПРОЙШЛА ЛІМІТ',message)
+            self.assertNotIn('🟢',message)

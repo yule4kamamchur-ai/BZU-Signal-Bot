@@ -150,16 +150,20 @@ class ForecastTests(unittest.TestCase):
 
 
 class ReleaseAndMessageTests(unittest.TestCase):
-    def test_message_has_icons_on_every_nonempty_line_and_shows_its_release(self):
+    def test_message_has_only_requested_icons_and_shows_its_release(self):
         cfg=replace(engine.Config(),core=core);s=snapshot(price=103.05)
         w={'setup':'ACCEPTANCE_RETEST_CONTINUATION','timeframe':'1H','side':1,'level':103.07,
            'readiness_pct':40.,'reason':'LIMIT_WOULD_CROSS_SPREAD','score':60.}
         text=engine.build_message(engine.new_state(cfg),s,{'action':'WATCH','analysis':{'watch':[w]}},cfg)
-        self.assertIn('v12.4.2',text)
+        self.assertIn(engine.REPORT_RELEASE,text)
         self.assertIn('ASK ≥ 103.071',text)
         self.assertNotIn('комісі',text)
+        self.assertIn('💰 Ціна зараз:',text)
+        self.assertIn('🏆 Найкращий сценарій:',text)
+        self.assertIn('🧩 Готовність до входу:',text)
         for line in text.splitlines():
-            if line.strip(): self.assertGreaterEqual(ord(line[0]),0x2300,line)
+            if line and line[0] not in '💰🏆🧩':
+                self.assertLess(ord(line[0]),0x2300,line)
 
     def test_mixed_launcher_and_engine_fail_before_a_live_cycle(self):
         with self.assertRaisesRegex(RuntimeError,'Неповне оновлення'):

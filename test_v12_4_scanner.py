@@ -234,7 +234,7 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         state['pending']=p;engine.bind_order_numbers(state)
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
         for text in ('Ціна зараз: 101.25','До входу: 0.543%','наближення 73%',
-                     'SWEEP_RECLAIM • 1h','Умови на момент сигналу: 100%','Історія: 0 завершених сценаріїв','SL:','TP1'):
+                     'SWEEP_RECLAIM • 1h','Готовність до входу на момент сигналу: 100%','Історія: 0 завершених сценаріїв','SL:','TP1'):
             self.assertIn(text,message)
         for noise in ('PAPER','не біржові ордери','Нових входів немає','PAPER ='):
             self.assertNotIn(noise,message)

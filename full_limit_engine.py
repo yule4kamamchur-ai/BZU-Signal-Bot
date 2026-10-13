@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.4.2-quote-gates-price-forecast"
-REPORT_RELEASE = 'v12.4.2'
+VERSION = "full-ict-v12.4.3-minimum-sl-tp"
+REPORT_RELEASE = 'v12.4.3'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -66,7 +66,8 @@ class Config:
     max_target_r: float = 2.0
     max_stop_atr: float = 2.0
     min_stop_atr3: float = 0.65
-    min_stop_pct: float = 0.004  # 0.40% of ENTRY, applied to every new limit
+    min_stop_pct: float = 0.01  # 1% of ENTRY for every new limit
+    min_target_pct: float = 0.015  # TP1 at least 1.5% from ENTRY
     max_entry_distance_atr: float = 3.0
     min_score: float = 60.0
     conflict_margin: float = 8.0
@@ -100,8 +101,10 @@ class Config:
             raise ValueError("Invalid intraday boundaries")
         if not 0 <= self.min_score <= 100 or self.max_daily_trades < 1:
             raise ValueError("Invalid ranking / daily trade limit")
-        if not 0.004 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
+        if not 0.01 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
             raise ValueError("Invalid stop bounds")
+        if not 0.015 <= self.min_target_pct < 0.50:
+            raise ValueError("TP1 must be at least 1.5% from entry")
         if self.partial_tp1+self.partial_tp2 >= 1 or self.setup_min_sample < 10:
             raise ValueError("Invalid partial plan / calibration sample")
         ZoneInfo(self.timezone)
@@ -116,6 +119,7 @@ class Config:
             "setup_age_minutes": ("SETUP_AGE_MINUTES", int),
             "max_hold_minutes": ("MAX_HOLD_MINUTES", int),
             "min_stop_pct": ("ABS_MIN_STOP_PCT", float),
+            "min_target_pct": ("MIN_TP1_DISTANCE_PCT", float),
             "day_loss_cap_r": ("DAILY_LOSS_CAP_R", float),
             "max_daily_trades": ("MAX_DAILY_TRADES", int),
             "timezone": ("TRADING_TIMEZONE", str),
@@ -408,6 +412,43 @@ def full_targets(ctx: dict, s: Snapshot, side: str, entry: float, cfg: Config) -
                   key=lambda t:t["distance"])
 
 
+def stop_geometry(a, ctx, cfg):
+    """Shared structural/volatility stop with the user's absolute floor."""
+    sign=cfg.core.side_sign(a.side)
+    entry=round_tick(a.level,cfg.tick,up=sign==-1)
+    buffer=max(.15*ctx['atr3'],2*cfg.tick)
+    structural=round_tick(a.invalidation-sign*buffer,cfg.tick,up=sign==-1)
+    floor=max(cfg.min_stop_pct*entry,cfg.min_stop_atr3*ctx['atr3'],4*cfg.tick)
+    stop=round_tick(entry-sign*max(sign*(entry-structural),floor),cfg.tick,up=sign==-1)
+    return entry,stop,sign*(entry-stop),floor,buffer
+
+
+def target_geometry(entry, stop, risk, buffer, side, targets, cfg):
+    """Never move a target through a known closer structural obstacle.
+
+    Report the required level separately when actual runway is insufficient;
+    no too-close target is presented as TP1 or used for its forecast.
+    """
+    required_distance=max(cfg.min_target_pct*entry,cfg.min_net_rr*risk)
+    required_tp=round_tick(entry+side*required_distance,cfg.tick,up=side==1)
+    geometry={'entry':entry,'stop':stop,'initial_stop':stop,'risk':risk,
+              'required_rr':cfg.min_net_rr,'required_tp':required_tp,
+              'min_target_pct':cfg.min_target_pct,'target_distance_met':False}
+    if not targets:
+        return geometry
+    nearest=targets[0]
+    target=round_tick(entry+side*min(nearest['distance']-buffer,cfg.max_target_r*risk),
+                      cfg.tick,up=side==-1)
+    distance=side*(target-entry)
+    distance_met=distance+1e-9>=cfg.min_target_pct*entry
+    geometry.update(available_tp1=target,gross_rr=distance/risk,
+                    tp1_distance_pct=distance/entry*100,target_distance_met=distance_met,
+                    target_source=nearest['kind'],obstacle_level=nearest['level'])
+    if distance_met:
+        geometry.update(tp1=target,tp=target)
+    return geometry
+
+
 def preview_geometry(a, ctx, s, cfg):
     """Hypothetical entry geometry for a blocked quote; never grants admission.
 
@@ -417,24 +458,15 @@ def preview_geometry(a, ctx, s, cfg):
     sign=cfg.core.side_sign(a.side)
     if not sign or min(ctx['atr3'],ctx['atr15'])<=0:
         return {}
-    entry=round_tick(a.level,cfg.tick,up=sign==-1)
+    entry,stop,risk,floor,buffer=stop_geometry(a,ctx,cfg)
     if sign*(entry-a.invalidation)<=0:
         return {}
-    buffer=max(.15*ctx['atr3'],2*cfg.tick)
-    structural=round_tick(a.invalidation-sign*buffer,cfg.tick,up=sign==-1)
-    floor=max(cfg.min_stop_pct*entry,cfg.min_stop_atr3*ctx['atr3'],4*cfg.tick)
-    stop=round_tick(entry-sign*max(sign*(entry-structural),floor),cfg.tick,up=sign==-1)
-    risk=sign*(entry-stop)
     targets=full_targets(ctx,s,a.side,entry,cfg)
-    if not targets:
-        return {'entry':entry,'stop':stop,'risk':risk,'geometry_preview':True}
-    nearest=targets[0]
-    target=round_tick(entry+sign*min(nearest['distance']-buffer,cfg.max_target_r*risk),cfg.tick,up=sign==-1)
+    geometry=target_geometry(entry,stop,risk,buffer,sign,targets,cfg)
     tf=a.evidence.get('setup_timeframe','15m')
-    return {'entry':entry,'stop':stop,'initial_stop':stop,'risk':risk,'tp1':target,'tp':target,
-            'gross_rr':sign*(target-entry)/risk,'required_rr':cfg.min_net_rr,
-            'target_source':nearest['kind'],'geometry_preview':True,
-            'max_hold_minutes':cfg.max_hold_minutes*scanner.MINUTES[tf]//15,'intraday':tf=='15m'}
+    geometry.update(geometry_preview=True,
+                    max_hold_minutes=cfg.max_hold_minutes*scanner.MINUTES[tf]//15,intraday=tf=='15m')
+    return geometry
 
 
 def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=None) -> tuple[Optional[dict], str]:
@@ -470,15 +502,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     if any(c.low <= entry if sign == 1 else c.high >= entry for c in observed):
         return None, "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION"
     mark('FRESH_LEVEL',s.now<a.expires_ts and s.now-a.created_ts<=cfg.setup_age_minutes*scale*60_000)
-    buffer = max(.15*a3, 2*cfg.tick)
-    structural_stop = round_tick(a.invalidation-sign*buffer, cfg.tick, up=sign == -1)
-    structural_risk = sign*(entry-structural_stop)
-    # One shared stop geometry for all 24 setups: structural invalidation,
-    # >= 0.40% absolute floor, >= short-term volatility noise and tick size.
-    floor = max(cfg.min_stop_pct*entry, cfg.min_stop_atr3*a3, 4*cfg.tick)
-    risk_required = max(structural_risk, floor)
-    stop = round_tick(entry-sign*risk_required, cfg.tick, up=sign == -1)
-    risk = sign*(entry-stop)
+    entry,stop,risk,floor,buffer=stop_geometry(a,ctx,cfg)
     diag.update(stop=stop,risk=risk)
     mark('VALID_STOP',risk+1e-9>=floor and risk<=max(cfg.max_stop_atr*a15,1.25*floor))
     if risk+1e-9 < floor:
@@ -510,17 +534,16 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     continuation = core.canonical_setup_family(a.setup_type) in {"TREND_CONTINUATION", "STRUCTURAL_EXPANSION", "SESSION_EXPANSION"}
     regime_score = 75 if regime == "TREND" and continuation else (65 if regime in {"RANGE", "TRANSITION"} else 50)
     targets = full_targets(ctx, s, side, entry, cfg)
+    diag.update(target_geometry(entry,stop,risk,buffer,sign,targets,cfg))
     if not targets:
         return None, "NO_STRUCTURAL_TARGET"
     nearest = targets[0]
-    tp1 = entry+sign*min(nearest["distance"]-buffer, cfg.max_target_r*risk)
-    tp1 = round_tick(tp1, cfg.tick, up=sign == -1)
+    tp1 = diag['available_tp1']
     rr1 = sign*(tp1-entry)/risk
     costs = (fees_r(entry, tp1, risk, cfg)+tp1*cfg.slippage_bps/10_000/risk) if cfg.include_commission else 0.
     net_rr = rr1-costs
-    diag.update(tp=tp1,tp1=tp1,gross_rr=rr1,net_rr=net_rr,required_rr=cfg.min_net_rr,
-                required_tp=entry+sign*cfg.min_net_rr*risk,target_source=nearest['kind'])
-    mark('TARGET_RR',rr1>0 and net_rr>=cfg.min_net_rr)
+    diag['net_rr']=net_rr
+    mark('TARGET_RR',diag['target_distance_met'] and rr1>0 and net_rr>=cfg.min_net_rr)
     location = max(0, 100-22*distance)+min(15, 5*net_rr)
     score = .35*a.score+.25*min(100,max(0,support))+.20*min(100,location)+.10*regime_score+.05*smt_score+.05*cvd_score
     prior = stats.get(a.setup_type, {})
@@ -532,6 +555,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     score = round(min(100,max(0,score)), 2)
     diag['score']=score
     mark('CONTEXT_SCORE',score>=cfg.min_score)
+    if not diag['target_distance_met']:
+        return None, "TARGET_DISTANCE_TOO_SMALL"
     if rr1 <= 0 or net_rr < cfg.min_net_rr:
         return None, "TARGET_RR_TOO_LOW" if not cfg.include_commission else "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS"
     if cfg.include_commission and costs > .25*rr1:
@@ -593,6 +618,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "risk": risk, "gross_rr": rr1, "net_rr": net_rr, "costs_r": costs,
             "placement_price": s.price, "target_cancel_armed": sign*(s.price-tp1)<0,
             "score": score, "stop_distance_pct": risk/entry*100,
+            "tp1_distance_pct":sign*(tp1-entry)/entry*100,
             "placed_ts": s.now, "effective_ts": effective, "expires_ts": expires, "zone_created_ts": a.created_ts,
             "invalidation": a.invalidation, "target_source": nearest["kind"],
             "evidence": [a.reason]+candidate.confirmations, "candidate": core.candidate_to_dict(candidate),
@@ -1144,7 +1170,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         # Later operator configuration changes still require closed slots.
         if state.get('version') not in ('full-ict-v12.2.0-confirmed-ict-quality',
                                        'full-ict-v12.3.0-causal-geometry-reports',
-                                       'full-ict-v12.4.0-native-mtf-limit-scanner'):
+                                       'full-ict-v12.4.0-native-mtf-limit-scanner',
+                                       'full-ict-v12.4.1-single-scenario-no-commission',
+                                       'full-ict-v12.4.2-quote-gates-price-forecast'):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1376,8 +1404,8 @@ def local_time(ts: int, cfg: Config) -> str:
 
 def target_line(p: dict) -> str:
     names = [name for name in ('TP1','TP2','TP3') if p.get('partials',{'TP1':1}).get(name,0)>0]
-    return ' • '.join(f"{name} {p.get(name.lower(),p['tp']):.6g} "
-                    + ('✅' if p.get(name.lower()+'_hit') else '⏳') for name in names)
+    return ' • '.join(f"{name} {p.get(name.lower(),p['tp']):.6g}"
+                    + (' (досягнуто)' if p.get(name.lower()+'_hit') else '') for name in names)
 
 
 def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
@@ -1434,6 +1462,7 @@ REASON_UA = {
     'STRUCTURAL_STOP_TOO_WIDE':'структурний стоп перевищує допустимий ризик',
     'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS':'потенціал TP відносно SL нижчий за мінімум',
     'TARGET_RR_TOO_LOW':'потенціал TP відносно SL нижчий за мінімум',
+    'TARGET_DISTANCE_TOO_SMALL':'найближча структурна ціль ближча за мінімальний TP1 1.5%',
     'NO_STRUCTURAL_TARGET':'немає підтвердженої цілі на графіку',
     'COMBINED_CONTEXT_SCORE_LOW':'оцінка контексту нижча порогу',
     'COSTS_CONSUME_EDGE':'витрати надто великі відносно потенційного прибутку',
@@ -1522,7 +1551,7 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
                 elif price_ok:
                     move='зниження' if s.price>p['entry'] else 'зростання'
                     lines.append(f"🚦 Чекаємо {move} до ціни входу {p['entry']:.8g}")
-                lines += ["🧩 Умови на момент сигналу: 100%",
+                lines += ["Готовність до входу на момент сигналу: 100%",
                           f"⏱ Ліміт діє до {report_deadline(p['expires_ts'],s.now,cfg)}"]
                 if p.get('cancel_requested_ts'):
                     lines.append('Скасування: '+REASON_UA.get(p.get('cancel_reason'),'сетап утратив чинність'))
@@ -1569,11 +1598,17 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
         if w.get('level'):
             lines.append(f"🎯 Вхід: {w['level']:.8g}")
             lines.append(scanner.distance_text(s.price,w['level'],cfg.tick))
-        if w.get('stop') and w.get('tp1'):
-            lines.append(f"SL: {w['stop']:.6g} • TP1: {w['tp1']:.6g}")
+        if w.get('stop'):
+            distance=abs(w['stop']-w.get('entry',w.get('level',0)))/w.get('entry',w['level'])*100
+            if w.get('tp1'):
+                lines.append(f"SL: {w['stop']:.6g} ({distance:.2f}%) • TP1: {w['tp1']:.6g}")
+            elif w.get('required_tp'):
+                lines.append(f"SL: {w['stop']:.6g} ({distance:.2f}%) • TP1 потрібен {'≥' if w['side']==1 else '≤'} {w['required_tp']:.8g}")
         reason=w.get('reason')
         if reason=='LIMIT_WOULD_CROSS_SPREAD' and w.get('level'):
             lines.append(scanner.wait_text(w['level'],w['side'],s.bid,s.ask,cfg.tick))
+        elif reason=='TARGET_DISTANCE_TOO_SMALL':
+            lines.append(f"Вхід заблоковано: до найближчої цілі {w['available_tp1']:.8g} лише {w['tp1_distance_pct']:.2f}%; мінімум {w.get('min_target_pct',cfg.min_target_pct)*100:.1f}%")
         elif reason in ('TARGET_RR_TOO_LOW','NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'):
             if w.get('gross_rr') is not None:
                 lines.append(f"Вхід заблоковано: TP дає {w['gross_rr']:.2f}R; мінімум {w.get('required_rr',cfg.min_net_rr):.2f}R")
@@ -1604,34 +1639,23 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
     # lifecycle events remain durably available in the journal/dashboard.
     message=decorate_message('\n'.join(lines))
     if len(message)>4000:
-        message=message[:3950].rsplit('\n',1)[0]+'\n🔎 Повні деталі — у журналі.'
+        message=message[:3950].rsplit('\n',1)[0]+'\nПовні деталі — у журналі.'
     return message
 
 
 def decorate_message(message):
-    icons=[('Найкращий','🏆'),('Готовність','🧩'),('Умови','🧩'),('Ціна','💰'),
-           ('Вхід заблоковано','⛔'),('Вхід:','🎯'),('SL:','🛑'),('TP','🎯'),
-           ('Новий SL','🛡️'),('Чекаємо','🚦'),('Якість','🧠'),('Оцінка','🧠'),
-           ('Залишилось','📦'),('Ліміт діє','⏱'),('Завершити','⏱'),
-           ('Зміни:','📣'),('Новий ордер','⏸️'),('Причина:','🔎')]
+    # Also normalizes inline TP marks and queued messages from older releases.
+    # Keep price/math symbols (•, %, ≥, ≤, ≈, +/-) and event text intact.
+    icons=[('Ціна зараз:','💰'),('Найкращий сценарій:','🏆'),('Готовність до входу','🧩')]
+    def is_icon(char):
+        point=ord(char)
+        return (0x1F000<=point<=0x1FAFF or 0x2300<=point<=0x23FF
+                or 0x2600<=point<=0x27BF or point in (0xFE0F,0x200D,0x20E3))
     output=[]
     for line in message.split('\n'):
-        stripped=line.lstrip()
-        if not stripped or ord(stripped[0])>=0x2300:
-            output.append(line);continue
-        if stripped.startswith('#') and 'ЗАКРИТО' in stripped:
-            icon='🏁'
-        elif stripped.startswith('#') and 'НОВИЙ' in stripped:
-            icon='🆕'
-        elif stripped.startswith('#') and 'СУПРОВІД' in stripped:
-            icon='🟢'
-        elif stripped.startswith('#'):
-            icon='⏳'
-        elif stripped.split()[0] in quality.CONTRACTS:
-            icon='📌'
-        else:
-            icon=next((mark for start,mark in icons if stripped.startswith(start)),'🔹')
-        output.append(icon+' '+stripped)
+        stripped=''.join(char for char in line if not is_icon(char)).strip()
+        icon=next((mark for start,mark in icons if stripped.startswith(start)),None)
+        output.append(icon+' '+stripped if icon else stripped)
     return '\n'.join(output)
 
 
