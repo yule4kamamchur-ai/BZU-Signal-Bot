@@ -87,8 +87,8 @@ def update_readiness(row):
 def selection_key(row, price=None):
     """Same deterministic ranking for the book, Telegram and dashboard.
 
-    Completion is first. With equal readiness use observed context quality,
-    then historical evidence when available, then current price distance.
+    Completion is first. With equal readiness use independent historical
+    confidence when available, then context quality and price distance.
     An unvalidated estimate is never used as an invented win probability.
     """
     ready=row.get('readiness_pct',100. if row.get('quality',{}).get('accepted') else 0.) or 0.
@@ -97,7 +97,7 @@ def selection_key(row, price=None):
     level=row.get('level',row.get('entry'))
     distance=proximity(price,level)['distance_pct'] if price else row.get('distance_pct')
     tf=row.get('timeframe',row.get('setup_timeframe','15m'))
-    return (float(ready),float(row.get('score',0) or 0),float(lower or 0),
+    return (float(ready),float(lower or 0),float(row.get('score',0) or 0),
             -float(distance) if distance is not None else float('-inf'),
             MINUTES.get(tf,15),str(row.get('setup','')),str(row.get('id',row.get('event_key','')) or ''))
 

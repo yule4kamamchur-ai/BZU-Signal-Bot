@@ -1,13 +1,17 @@
-# Встановлення v12.4.3
+# Встановлення v12.5.0
 
-Оновіть файли архіву поверх існуючого GitHub-репозиторію. Обов’язково додайте `setup_scanner.py` і новий `price_forecast.py` та `test_v12_4_scanner.py`, `test_v12_4_1_selection.py`, `test_v12_4_2_reports.py`, `test_v12_4_3_geometry.py`. Збережіть актуальні `last_signal_v6_4.json` і `signal_journal_v6_4.json`; не видаляйте їх.
+1. Збережіть актуальні last_signal_v6_4.json і signal_journal_v6_4.json у репозиторії. Під час оновлення не замінюйте їх старими копіями із завантажених архівів.
+2. Оновіть код і тести з архіву, зокрема НОВІ limit_structure.py, market_archive.py, test_v12_5_early_limits.py і папку testdata. bot_oneshot.py, full_limit_engine.py, signal_quality.py, setup_scanner.py та research_validate.py оновлюються разом.
+3. ОБОВ’ЯЗКОВО оновіть .github/workflows/main.yml. Папка .github прихована на Mac. Для зручності копія нового workflow лежить у видимому WORKFLOW_main.yml: вставте весь її текст у файл .github/workflows/main.yml через редактор GitHub. У workflow має бути v12.5.0, два cron: */15 та 5,10,20,25,35,40,50,55. Старий workflow із одним cron залишить лише 15-хвилинне сканування.
+4. Залиште один активний workflow бота. Запустіть Actions → Run workflow. Тести та перевірка сумісності мають пройти.
+5. У заголовку нового Telegram-звіту має бути v12.5.0. market_history_v12.json створиться автоматично і зберігатиметься разом зі станом та журналом. Події тихих 5-хвилинних сканів увійдуть у наступний 15-хвилинний звіт.
 
-Запустіть Actions → Run workflow. Успішно мають завершитися `--self-test`, `--legacy-self-test`, торговий цикл і збереження стану. Dashboard після наступного циклу показує 24 рядки × 3 графіки, Telegram — поточну ціну та конкретний стан ліміту/сетапу.
+Архів оновлення містить код і контрольні приклади. Поточні робочі файли стану/журналу не включені, щоб їх не перезаписати. Оновлюйте файли в наявному репозиторії; не видаляйте весь старий репозиторій чи папку разом із його станом.
 
-Сканування кожні 5 хв, повідомлення кожні 15 хв. Події проміжних запусків потрапляють у наступний звіт. Secrets Telegram та право Actions на запис лишаються потрібними.
+Перевірки локально:
 
-Повна інструкція, значення відсотків і межі перевірки — у `FIXES_AND_INSTALL_UA.md` та `VALIDATION_REPORT_UA.md`. Бот надсилає лімітні сигнали; виконання через приватний API OKX у цій версії не підключене.
-
-У workflow встановлено `INCLUDE_COMMISSION: false`. Повідомлення формує `full_limit_engine.py`, тому оновіть весь комплект, а не лише `bot_oneshot.py`. Новий формат обирає один сценарій і показує відстань до входу з трьома знаками після коми.
-
-Перше повідомлення після оновлення має містити `v12.4.3`. Workflow перевіряє точний реліз через `EXPECTED_BOT_VERSION`. Не запускайте старий workflow із залишеними старими файлами. У новому звіті значки лише біля ціни, найкращого сценарію і готовності. Нові сигнали мають SL ≥ 1% і TP1 ≥ 1.5% за відстанню від входу.
+```bash
+python -m py_compile bot_oneshot.py full_limit_engine.py signal_quality.py setup_scanner.py limit_structure.py market_archive.py price_forecast.py research_validate.py
+python bot_oneshot.py --self-test
+ABS_MIN_STOP_PCT=0.004 python bot_oneshot.py --legacy-self-test
+```

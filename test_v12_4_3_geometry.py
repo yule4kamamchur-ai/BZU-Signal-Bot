@@ -76,7 +76,7 @@ class MinimumDistanceTests(unittest.TestCase):
         with patch.object(engine,'full_targets',return_value=targets):
             p,why=engine.full_plan(a,ctx,s,cfg,{},diag)
             preview=engine.preview_geometry(a,ctx,s,cfg)
-        self.assertIsNone(p);self.assertEqual(why,'TARGET_DISTANCE_TOO_SMALL')
+        self.assertIsNone(p);self.assertEqual(why,'STRONG_OPPOSING_ZONE_BEFORE_TP')
         self.assertNotIn('tp1',preview)
         self.assertEqual(preview['required_tp'],98.5)
         self.assertEqual(price_forecast.forecast({'side':-1,**preview},s,cfg)['status'],'NEEDS_SL_TP')

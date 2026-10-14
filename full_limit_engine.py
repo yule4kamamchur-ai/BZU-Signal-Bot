@@ -28,11 +28,13 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.4.3-minimum-sl-tp"
-REPORT_RELEASE = 'v12.4.3'
+VERSION = "full-ict-v12.5.0-causal-early-limits"
+REPORT_RELEASE = 'v12.5.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
+import limit_structure
+import market_archive
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -366,26 +368,77 @@ def build_full_context(s: Snapshot, state: dict, cfg: Config) -> dict:
     return ctx
 
 
-def anchor_key(a, cfg: Config) -> str:
+def anchor_zone_key(a, cfg: Config) -> str:
     tf = a.evidence.get('setup_timeframe', '15m')
     parts = (a.setup_type, a.side, round(a.level/cfg.tick), round(a.invalidation/cfg.tick), a.kind)
     return ident(*parts) if tf == '15m' else ident(*parts, tf)
 
 
-def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config) -> list:
-    """Immutable first observation; repeated prints cannot renew the same level."""
+def anchor_key(a, cfg: Config) -> str:
+    zone=anchor_zone_key(a,cfg)
+    episode=a.evidence.get('episode_ts')
+    return ident(zone,episode) if episode else zone
+
+
+def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, contexts=None) -> list:
+    """Stable first observation per episode; renewal needs new market evidence."""
     core = cfg.core
     memory = state.setdefault("anchor_memory", {})
+    live_zones=set()
+    for plan in open_plans(state):
+        raw=memory.get(plan.get('event_key'),{})
+        live_zones.add(plan.get('zone_key') or raw.get('evidence',{}).get('zone_identity'))
+        if raw.get('evidence',{}).get('zone_identity'):
+            live_zones.add(raw['evidence']['zone_identity'])
+    by_zone={}
+    for raw in memory.values():
+        previous=core.anchor_from_dict(raw)
+        if previous is not None:
+            zone=raw.get('evidence',{}).get('zone_identity') or anchor_zone_key(previous,cfg)
+            if zone not in by_zone or raw['created_ts']>by_zone[zone]['created_ts']:
+                by_zone[zone]=raw
     for a in fresh:
-        key = anchor_key(a, cfg)
-        previous = memory.get(key)
+        zone=anchor_zone_key(a,cfg)
+        previous=by_zone.get(zone)
+        event=None
+        if previous and zone not in live_zones and contexts:
+            native=contexts.get(a.evidence.get('setup_timeframe','15m'),{})
+            sign=core.side_sign(a.side)
+            visited=any(c.low<=a.level if sign==1 else c.high>=a.level
+                        for c in limit_structure.closed(s,'3m') if c.ts>=previous['created_ts'])
+            epoch=limit_structure.session_epoch(a,native)
+            if previous['created_ts']<epoch<=s.now:
+                event=limit_structure.renewal_event(a,previous,native,s,cfg)
+            elif s.now>=previous['expires_ts']:
+                event=limit_structure.renewal_event(a,previous,native,s,cfg)
+            elif visited or previous.get('state') in ('INVALIDATED','REJECTED','TRIGGERED'):
+                event=limit_structure.renewal_event(a,previous,native,s,cfg,after=previous['created_ts'])
         if previous:
-            a.id = previous["id"]
-            a.created_ts = previous["created_ts"]
-            a.expires_ts = previous["expires_ts"]
-            a.cooldown_until_ts = previous.get("cooldown_until_ts", 0)
+            if event:
+                a.evidence.update(episode_ts=event['known_ts'],episode_kind=event['kind'])
+                a.id=ident(zone,event['known_ts'])
+                a.state='ARMED';a.touched=False;a.touched_ts=0
+                a.created_ts=s.now
+                state.setdefault('setup_renewals',[]).append({'setup':a.setup_type,
+                    'timeframe':a.evidence.get('setup_timeframe','15m'),'level':a.level,
+                    'decision_ts':s.now,'known_ts':event['known_ts'],'kind':event['kind']})
+                state['setup_renewals']=state['setup_renewals'][-200:]
+            else:
+                a.id = previous["id"]
+                a.created_ts = previous["created_ts"]
+                a.expires_ts = previous["expires_ts"]
+                a.cooldown_until_ts = previous.get("cooldown_until_ts", 0)
+                for name in ('state','touched','touched_ts','last_checked_ts','reject_reason'):
+                    if name in previous:
+                        setattr(a,name,previous[name])
+                for name in ('episode_ts','episode_kind'):
+                    if name in previous.get('evidence',{}):
+                        a.evidence[name]=previous['evidence'][name]
+        a.evidence['zone_identity']=zone
+        key=anchor_key(a,cfg)
         a.expires_ts = min(a.expires_ts, a.created_ts+cfg.setup_age_minutes*scanner.MINUTES[a.evidence.get("setup_timeframe","15m")]//15*60_000)
         memory[key] = core.anchor_to_dict(a)
+        by_zone[zone]=memory[key]
     # Retain tombstones beyond setup lifetime to prevent a detector refreshing age.
     memory = {k: v for k, v in memory.items() if s.now-v["created_ts"] <= 7*86_400_000}
     state["anchor_memory"] = memory
@@ -395,21 +448,7 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config) -> li
 
 
 def full_targets(ctx: dict, s: Snapshot, side: str, entry: float, cfg: Config) -> list[dict]:
-    core = cfg.core
-    sign = core.side_sign(side)
-    # Evaluate the SAME entry price; ticker price cannot move a limit's runway.
-    local = dict(ctx, price=entry)
-    targets = core.technical_targets(local, side, entry)
-    for tf in ("1H", "4H"):
-        snap = core.structure_snapshot(s.candles[tf], 60, 2)
-        key = "swing_highs" if sign == 1 else "swing_lows"
-        for level in snap.get(key, []):
-            if sign*(level-entry) > 0:
-                targets.append({"kind": tf+"_LIQUIDITY", "level": level})
-    for t in targets:
-        t["distance"] = sign*(t["level"]-entry)
-    return sorted({round(t["level"]/cfg.tick): t for t in targets if t["distance"] > 2*cfg.tick}.values(),
-                  key=lambda t:t["distance"])
+    return limit_structure.structural_targets(ctx,s,side,entry,cfg,sys.modules[__name__])
 
 
 def stop_geometry(a, ctx, cfg):
@@ -424,11 +463,7 @@ def stop_geometry(a, ctx, cfg):
 
 
 def target_geometry(entry, stop, risk, buffer, side, targets, cfg):
-    """Never move a target through a known closer structural obstacle.
-
-    Report the required level separately when actual runway is insufficient;
-    no too-close target is presented as TP1 or used for its forecast.
-    """
+    """Choose a fresh destination; respect strong unmitigated path barriers."""
     required_distance=max(cfg.min_target_pct*entry,cfg.min_net_rr*risk)
     required_tp=round_tick(entry+side*required_distance,cfg.tick,up=side==1)
     geometry={'entry':entry,'stop':stop,'initial_stop':stop,'risk':risk,
@@ -436,15 +471,18 @@ def target_geometry(entry, stop, risk, buffer, side, targets, cfg):
               'min_target_pct':cfg.min_target_pct,'target_distance_met':False}
     if not targets:
         return geometry
-    nearest=targets[0]
+    chosen,intermediate,barrier=limit_structure.choose_target(targets,entry,risk,buffer,side,cfg)
+    nearest=barrier or chosen
     target=round_tick(entry+side*min(nearest['distance']-buffer,cfg.max_target_r*risk),
                       cfg.tick,up=side==-1)
     distance=side*(target-entry)
     distance_met=distance+1e-9>=cfg.min_target_pct*entry
     geometry.update(available_tp1=target,gross_rr=distance/risk,
                     tp1_distance_pct=distance/entry*100,target_distance_met=distance_met,
-                    target_source=nearest['kind'],obstacle_level=nearest['level'])
-    if distance_met:
+                    target_source=nearest['kind'],obstacle_level=nearest['level'],
+                    chosen_target=chosen,intermediate_levels=intermediate,
+                    path_barrier=barrier,path_clear=barrier is None)
+    if distance_met and barrier is None:
         geometry.update(tp1=target,tp=target)
     return geometry
 
@@ -537,15 +575,16 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     diag.update(target_geometry(entry,stop,risk,buffer,sign,targets,cfg))
     if not targets:
         return None, "NO_STRUCTURAL_TARGET"
-    nearest = targets[0]
+    nearest = diag['path_barrier'] or diag['chosen_target']
     tp1 = diag['available_tp1']
     rr1 = sign*(tp1-entry)/risk
     costs = (fees_r(entry, tp1, risk, cfg)+tp1*cfg.slippage_bps/10_000/risk) if cfg.include_commission else 0.
     net_rr = rr1-costs
     diag['net_rr']=net_rr
-    mark('TARGET_RR',diag['target_distance_met'] and rr1>0 and net_rr>=cfg.min_net_rr)
+    mark('TARGET_RR',diag['path_clear'] and diag['target_distance_met'] and rr1>0 and net_rr>=cfg.min_net_rr)
     location = max(0, 100-22*distance)+min(15, 5*net_rr)
     score = .35*a.score+.25*min(100,max(0,support))+.20*min(100,location)+.10*regime_score+.05*smt_score+.05*cvd_score
+    score-=min(8,2*len(diag.get('intermediate_levels',[])))
     prior = stats.get(a.setup_type, {})
     prior = prior.get('timeframes',{}).get(source_tf,prior)
     if prior.get("status") == "NEGATIVE_EXPECTANCY":
@@ -555,6 +594,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     score = round(min(100,max(0,score)), 2)
     diag['score']=score
     mark('CONTEXT_SCORE',score>=cfg.min_score)
+    if not diag['path_clear']:
+        return None, "STRONG_OPPOSING_ZONE_BEFORE_TP"
     if not diag['target_distance_met']:
         return None, "TARGET_DISTANCE_TOO_SMALL"
     if rr1 <= 0 or net_rr < cfg.min_net_rr:
@@ -602,7 +643,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
                                                "smt": smt_score, "cvd_candle_proxy": cvd_score, "statistic": prior}
     event = anchor_key(a,cfg)
     return {"id": ident(event,s.now), "order_id": ident(event,s.now), "event_key": event,
-            "zone_key": event, "instrument": cfg.instrument, "side": sign, "setup": a.setup_type,
+            "zone_key": anchor_zone_key(a,cfg), "instrument": cfg.instrument, "side": sign, "setup": a.setup_type,
             "setup_type": a.setup_type, "setup_family": core.journal_setup_family(a.setup_type),
             "canonical_setup_family": core.canonical_setup_family(a.setup_type), "timeframe": source_tf,
             "setup_timeframe": source_tf, "micro_timeframe": scanner.MICRO[source_tf],
@@ -621,6 +662,9 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "tp1_distance_pct":sign*(tp1-entry)/entry*100,
             "placed_ts": s.now, "effective_ts": effective, "expires_ts": expires, "zone_created_ts": a.created_ts,
             "invalidation": a.invalidation, "target_source": nearest["kind"],
+            "target_timeframe":nearest.get('timeframe',source_tf),
+            "intermediate_levels":copy.deepcopy(diag.get('intermediate_levels',[])),
+            "episode_ts":a.evidence.get('episode_ts'),
             "evidence": [a.reason]+candidate.confirmations, "candidate": core.candidate_to_dict(candidate),
             "htf_1h": core.side_sign(b1), "htf_4h": core.side_sign(b4),
             "forecast": f"Return to {entry}; defend {a.invalidation}; seek {tp1}, {tp2}, {tp3}",
@@ -679,9 +723,22 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             status='ERROR' if any(e['status']=='ERROR' for e in evaluations) else 'DETECTED' if any(e['status']=='DETECTED' for e in evaluations) else 'NO_SETUP'
             detector_audit.append({'detector':detector.__name__,'setup':setup,'status':status,
                                    'timeframes':evaluations})
-        anchors = merge_full_anchors(fresh,state,s,cfg)
+        anchors = merge_full_anchors(fresh,state,s,cfg,tf_contexts)
         stats = setup_statistics(state,cfg)
         plans, watch, refused = [], [], {}
+        active_keys={anchor_key(a,cfg) for a in anchors}
+        for a in fresh:
+            row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==a.evidence.get('setup_timeframe','15m')),None)
+            if row is None:
+                continue
+            row['event_key']=anchor_key(a,cfg)
+            if row['event_key'] not in active_keys:
+                reason='ANCHOR_EXPIRED_AWAITING_NEW_EVENT' if s.now>=a.expires_ts else 'ANCHOR_INVALIDATED'
+                row.update(status='BLOCKED',reason=reason,
+                           expired_ts=a.expires_ts,entry_checks=scanner.entry_checks())
+                next(c for c in row['entry_checks'] if c['key']=='FRESH_LEVEL')['met']=False
+                scanner.update_readiness(row)
+                refused[reason]=refused.get(reason,0)+1
         for a in anchors:
             tf=a.evidence.get('setup_timeframe','15m')
             native=tf_contexts[tf]
@@ -799,7 +856,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             row['statistics']=quality.empirical(query,ledger['observations'],s.now)
     actionable=[r for r in matrix if r.get('level') and r.get('readiness_pct',0) is not None
                 and r.get('setup_readiness_pct',0)>=50 and r.get('reason') not in
-                ('LEVEL_OR_EVENT_COOLDOWN','ANCHOR_INVALIDATED','LEVEL_ALREADY_VISITED_AFTER_OBSERVATION')]
+                ('LEVEL_OR_EVENT_COOLDOWN','ANCHOR_INVALIDATED','LEVEL_ALREADY_VISITED_AFTER_OBSERVATION',
+                 'ANCHOR_EXPIRED_AWAITING_NEW_EVENT')]
     actionable.sort(key=lambda r:scanner.selection_key(r,s.price),reverse=True)
     watch=actionable[:24]
     return {"health": [],"plans": accepted,"candidate_plans":clusters,"quality_assessments":assessments,
@@ -807,7 +865,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
             "raw_plans": len(plans),"registered_setups": len(core.DETECTORS),
-            "timeframe_evaluations":len(matrix)}
+            "timeframe_evaluations":len(matrix),
+            "funnel":{"evaluated":len(matrix),"detected":len(fresh),"live_anchors":len(anchors),
+                      "geometry_passed":len(plans),"quality_passed":len(accepted)}}
 
 
 def core_setup_registry(core):
@@ -1172,7 +1232,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.3.0-causal-geometry-reports',
                                        'full-ict-v12.4.0-native-mtf-limit-scanner',
                                        'full-ict-v12.4.1-single-scenario-no-commission',
-                                       'full-ict-v12.4.2-quote-gates-price-forecast'):
+                                       'full-ict-v12.4.2-quote-gates-price-forecast',
+                                       'full-ict-v12.4.3-minimum-sl-tp'):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1320,7 +1381,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     state['used_events'] = {k:v for k,v in state['used_events'].items() if v>=cutoff}
     state['level_cooldown'] = {k:v for k,v in state.get('level_cooldown',{}).items() if v>s.now}
     # Keep IDs for every followed plan, not only the newly selected candidate.
-    summary = {'ts':s.now,'time':iso(s.now),'action':action,'price':s.price,
+    summary = {'ts':s.now,'time':iso(s.now),'version':VERSION,'action':action,'price':s.price,
                'plan_id':selected[0]['id'] if selected else None,
                'placed_ids':[p['id'] for p in selected],
                'followed_ids':[p['id'] for p in open_plans(state)],
@@ -1328,7 +1389,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'rejections':analysis.get('rejections',{}),'health':analysis['health'],'daily':daily,
                'detectors':analysis.get('detectors',[]),'raw_plans':analysis.get('raw_plans',0),
                'registered_setups':analysis.get('registered_setups',24),
-               'timeframe_evaluations':analysis.get('timeframe_evaluations',0)}
+               'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
+               'funnel':{**analysis.get('funnel',{}),'placed':len(selected)}}
     state['signals'].append(summary)
     state['signals'] = state['signals'][-1000:]
     state['watch'] = analysis.get('watch',[])
@@ -1463,6 +1525,8 @@ REASON_UA = {
     'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS':'потенціал TP відносно SL нижчий за мінімум',
     'TARGET_RR_TOO_LOW':'потенціал TP відносно SL нижчий за мінімум',
     'TARGET_DISTANCE_TOO_SMALL':'найближча структурна ціль ближча за мінімальний TP1 1.5%',
+    'STRONG_OPPOSING_ZONE_BEFORE_TP':'сильна протилежна зона перекриває шлях до TP1',
+    'ANCHOR_EXPIRED_AWAITING_NEW_EVENT':'строк рівня минув; потрібна нова підтверджена реакція або нова сесія',
     'NO_STRUCTURAL_TARGET':'немає підтвердженої цілі на графіку',
     'COMBINED_CONTEXT_SCORE_LOW':'оцінка контексту нижча порогу',
     'COSTS_CONSUME_EDGE':'витрати надто великі відносно потенційного прибутку',
@@ -1608,7 +1672,10 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
         if reason=='LIMIT_WOULD_CROSS_SPREAD' and w.get('level'):
             lines.append(scanner.wait_text(w['level'],w['side'],s.bid,s.ask,cfg.tick))
         elif reason=='TARGET_DISTANCE_TOO_SMALL':
-            lines.append(f"Вхід заблоковано: до найближчої цілі {w['available_tp1']:.8g} лише {w['tp1_distance_pct']:.2f}%; мінімум {w.get('min_target_pct',cfg.min_target_pct)*100:.1f}%")
+            lines.append(f"Вхід заблоковано: доступна ціль {w['available_tp1']:.8g} дає {w['tp1_distance_pct']:.2f}%; мінімум {w.get('min_target_pct',cfg.min_target_pct)*100:.1f}%")
+        elif reason=='STRONG_OPPOSING_ZONE_BEFORE_TP':
+            barrier=w.get('path_barrier',{})
+            lines.append(f"Вхід заблоковано: {barrier.get('kind','протилежна зона')} {barrier.get('timeframe','')} на {barrier.get('level',w.get('obstacle_level',0)):.8g} перед TP1")
         elif reason in ('TARGET_RR_TOO_LOW','NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'):
             if w.get('gross_rr') is not None:
                 lines.append(f"Вхід заблоковано: TP дає {w['gross_rr']:.2f}R; мінімум {w.get('required_rr',cfg.min_net_rr):.2f}R")
@@ -2090,6 +2157,12 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         # changes in the NEXT 15-minute report, never send a Telegram every 5m.
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
+        archive_path=Path(os.environ.get('MARKET_HISTORY_FILE',str(state_path.with_name('market_history_v12.json'))))
+        try:
+            state['market_history_status']=market_archive.record(archive_path,snap,cfg,sys.modules[__name__])
+        except (ValueError,OSError) as exc:
+            state['market_history_status']={'status':'FAILED','error':str(exc)}
+            print('Market evidence recording failed: '+str(exc),file=sys.stderr)
         if notify:
             result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
         message = build_message(state,snap,result,cfg) if notify else ''
@@ -2123,9 +2196,11 @@ def main(core) -> int:
     parser.add_argument('--notify',action='store_true')
     parser.add_argument('--ack-unresolved',action='store_true')
     args = parser.parse_args()
-    cfg = replace(Config.from_env(),core=core)
     if args.legacy_self_test:
+        # This is the frozen original harness, not a production configuration.
+        # New stop floors are enforced for every production/replay code path.
         return 0 if core._run_self_test() else 1
+    cfg = replace(Config.from_env(),core=core)
     if args.self_test:
         import unittest
         suite = unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')

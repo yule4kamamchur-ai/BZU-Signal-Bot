@@ -100,10 +100,11 @@ def download(instrument: str, days: int, end: int, fetch=request_json) -> dict:
         except (RuntimeError,ValueError):
             smt=[]
     return {'instrument':instrument,'tick':tick,'start_ts':start,'end_ts':end,
-            'spread_bps':2.,'report_delay_ms':180_000,'candles':candles,'smt_candles_15m':smt,
+            'spread_bps':2.,'report_delay_ms':180_000,'scan_interval_ms':300_000,
+            'candles':candles,'smt_candles_15m':smt,
             'source':'OKX_PUBLIC_CONFIRMED_HISTORY','downloaded_at':engine.iso(int(time.time()*1000)),
             'limitations':['Uniform current tick and estimated historical spread',
-                           'Reports every 15 minutes with an assumed 3-minute scheduler delay',
+                           'Scans every 5 minutes with an assumed 3-minute scheduler delay',
                            'No funding, queue position or market impact data']}
 
 
@@ -125,6 +126,32 @@ def audit_data(data: dict) -> dict:
     return result
 
 
+def archive_dataset(archive: dict) -> dict:
+    """Actual observed quotes and closed OHLC; never reconstruct missed scans."""
+    import market_archive
+    if archive.get('schema')!=market_archive.SCHEMA:
+        raise ValueError('Expected a v12 market archive')
+    quotes=sorted(archive.get('quotes',[]),key=lambda q:q['now'])
+    if len(quotes)<2:
+        raise ValueError('Not enough archived scans for research')
+    warmup=[]
+    for tf,count in engine.MIN_BARS.items():
+        rows=sorted((engine.Candle.parse(r) for r in archive.get('candles',{}).get(tf,[])),key=lambda c:c.ts)
+        if len(rows)<=count:
+            raise ValueError(f'Archive needs more closed {tf} history')
+        warmup.append(rows[count-1].ts+engine.TF[tf])
+    start=max(quotes[0]['now'],*warmup);end=quotes[-1]['now']
+    if start>=end:
+        raise ValueError('No archived evaluation interval after warmup')
+    ticks={engine.finite(q['tick']) for q in quotes if start<=q['now']<=end}
+    if len(ticks)!=1 or min(ticks)<=0:
+        raise ValueError('Variable/invalid historical tick needs separate research periods')
+    return {'instrument':archive['instrument'],'tick':ticks.pop(),'start_ts':start,'end_ts':end,
+            'candles':archive['candles'],'quotes':quotes,'source':'OBSERVED_PUBLIC_MARKET_ARCHIVE',
+            'limitations':['Only observed scan times and quotes; missed scheduler runs are not invented',
+                           'First-observed confirmed candles; later provider corrections are not substituted']}
+
+
 def snapshots(data: dict):
     raw={tf:sorted({c.ts:c for row in data['candles'].get(tf,[]) for c in [engine.Candle.parse(row)] if c.confirmed}.values(),
                    key=lambda c:c.ts) for tf in engine.TF}
@@ -136,7 +163,11 @@ def snapshots(data: dict):
     delay=int(data.get('report_delay_ms',180_000))
     if not 0<=delay<engine.TF['15m']:
         raise ValueError('Report delay must be 0..<15 minutes')
-    times=sorted({((c.ts+engine.TF['3m']+engine.TF['15m']-1)//engine.TF['15m'])*engine.TF['15m']+delay for c in raw['3m']})
+    interval=int(data.get('scan_interval_ms',engine.TF['15m']))
+    if interval not in (300_000,engine.TF['15m']):
+        raise ValueError('Research scan interval must be 5 or 15 minutes')
+    quotes={int(q['now']):q for q in data.get('quotes',[])}
+    times=sorted(quotes) if quotes else sorted({((c.ts+engine.TF['3m']+interval-1)//interval)*interval+delay for c in raw['3m']})
     start=int(data['start_ts']);end=int(data['end_ts']);tick=engine.finite(data.get('tick',.001))
     for now in times:
         if not start<=now<=end:
@@ -149,7 +180,13 @@ def snapshots(data: dict):
             continue
         price=current['3m'][-1].close
         spread=max(tick,price*engine.finite(data.get('spread_bps',2))/10_000)
-        snap=engine.Snapshot(now,price,current,price-spread/2,price+spread/2,True,now,data['instrument'])
+        if quotes:
+            quote=quotes[now]
+            snap=engine.Snapshot(now,engine.finite(quote['price']),current,engine.finite(quote['bid']),
+                                engine.finite(quote['ask']),quote['trusted'] is True,
+                                int(quote['ticker_ts']),data['instrument'])
+        else:
+            snap=engine.Snapshot(now,price,current,price-spread/2,price+spread/2,True,now,data['instrument'])
         index=bisect_right(peer_closed,now);snap.smt_candles=peer[max(0,index-300):index]
         yield snap
 
@@ -262,16 +299,19 @@ def markdown(report: dict) -> str:
 def main() -> int:
     parser=argparse.ArgumentParser(description='Causal 70%+ research; no live orders or messages')
     parser.add_argument('--data',type=Path);parser.add_argument('--download',action='store_true')
+    parser.add_argument('--archive',type=Path,help='Replay actual recorded quotes and closed candles')
     parser.add_argument('--days',type=int,default=90);parser.add_argument('--instrument',default=core.OKX_INST_ID)
     parser.add_argument('--output',type=Path,default=Path('research_output'))
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     if args.download:
         data=download(args.instrument,args.days,int(time.time()*1000))
         engine.atomic_write(args.output/'candles.json',data)
+    elif args.archive:
+        data=archive_dataset(engine.read_json(args.archive))
     elif args.data:
         data=engine.read_json(args.data)
     else:
-        parser.error('Provide --download or --data candles.json')
+        parser.error('Provide --download, --data candles.json or --archive market_history_v12.json')
     report=validate(data)
     model=report.pop('model')
     engine.atomic_write(args.output/'validation.json',report)
