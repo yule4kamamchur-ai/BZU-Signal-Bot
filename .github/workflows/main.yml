@@ -1,8 +1,9 @@
-name: BZU Auto Bot — Full ICT v12
+name: BZU Auto Bot — ICT v12.5.0 — Exact levels and forecast
 
 on:
   schedule:
     - cron: '*/15 * * * *'
+    - cron: '5,10,20,25,35,40,50,55 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -22,8 +23,13 @@ jobs:
       JOURNAL_PERSISTENCE_CONFIRMED: 'true'
       SIGNAL_MEMORY_FILE: last_signal_v6_4.json
       SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
+      MARKET_HISTORY_FILE: market_history_v12.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
+      EXPECTED_BOT_VERSION: 'full-ict-v12.5.0-causal-early-limits'
+      INCLUDE_COMMISSION: 'false'
+      ABS_MIN_STOP_PCT: '0.01'
+      MIN_TP1_DISTANCE_PCT: '0.015'
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
       TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
       PYTHONUNBUFFERED: '1'
@@ -46,24 +52,31 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import os
           required = ['bot_oneshot.py', 'full_limit_engine.py',
-                      'test_full_limit_engine.py', 'setup_preservation_manifest.json']
+                      'signal_quality.py', 'setup_scanner.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
+                      'test_v12_4_scanner.py', 'test_v12_4_1_selection.py', 'test_v12_4_2_reports.py', 'test_v12_4_3_geometry.py', 'test_v12_5_early_limits.py', 'testdata/reported_20261014.json', 'setup_preservation_manifest.json']
           missing = [name for name in required if not Path(name).is_file()]
           if missing:
               raise SystemExit('Upload the complete v12 package. Missing: ' + ', '.join(missing))
           import bot_oneshot as core
           import full_limit_engine as engine
-          if core.BOT_VERSION != engine.VERSION or len(core.DETECTORS) != 24:
+          expected=os.environ['EXPECTED_BOT_VERSION']
+          if core.BOT_VERSION != expected or engine.VERSION != expected or len(core.DETECTORS) != 24:
               raise SystemExit('Incompatible bot files: all 24 detectors and matching v12 versions are required')
           PY
 
       - name: Validate full v12 bot offline
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
         run: |
-          python -m py_compile bot_oneshot.py full_limit_engine.py test_full_limit_engine.py
+          python -m py_compile bot_oneshot.py full_limit_engine.py signal_quality.py setup_scanner.py price_forecast.py limit_structure.py market_archive.py test_v12_4_2_reports.py test_v12_4_3_geometry.py
           python bot_oneshot.py --self-test
-          python bot_oneshot.py --legacy-self-test
+          # Original compatibility fixtures assume their original 0.4% floor.
+          # Production and the full new test suite retain the 1% floor above.
+          ABS_MIN_STOP_PCT=0.004 python bot_oneshot.py --legacy-self-test
 
       - name: Verify Telegram settings
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -75,6 +88,7 @@ jobs:
           PY
 
       - name: Run full v12 signal cycle
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
         id: bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -82,16 +96,21 @@ jobs:
           TELEGRAM_NOTIFY_EVERY_RUN: 'true'
         run: python bot_oneshot.py --notify
 
+      - name: Scan and supervise between 15-minute reports
+        if: ${{ github.event.schedule == '5,10,20,25,35,40,50,55 * * * *' }}
+        id: silent_scan
+        run: python bot_oneshot.py
+
       - name: Save signal memory and journal
         id: persist
-        if: ${{ always() && steps.bot.outcome != 'skipped' && steps.bot.outcome != '' }}
+        if: ${{ always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure' || steps.silent_scan.outcome == 'success' || steps.silent_scan.outcome == 'failure') }}
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           # Commit only runtime files, never remove unrelated or legacy files.
-          for file in last_signal_v6_4.json signal_journal_v6_4.json; do
+          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json; do
             if [ -f "$file" ]; then
               git add -f -- "$file"
             fi
@@ -120,7 +139,7 @@ jobs:
 
             # A different writer changed the same ledger: preserve both copies.
             if ! git diff --quiet "$base_revision" "$remote_revision" -- \
-                last_signal_v6_4.json signal_journal_v6_4.json; then
+                last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json; then
               echo '::error::Remote state changed during this run. Refusing to overwrite it; recover this run from its state artifact.'
               exit 1
             fi
@@ -144,5 +163,6 @@ jobs:
           path: |
             last_signal_v6_4.json
             signal_journal_v6_4.json
+            market_history_v12.json
           if-no-files-found: warn
           retention-days: 7
