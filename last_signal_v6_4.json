@@ -372,7 +372,7 @@
     "execution_source": "LIMIT_ARMED_AT_LEVEL",
     "execution": "PAPER_SIGNAL",
     "status": "PENDING",
-    "last_bar": 1792195920000,
+    "last_bar": 1792196100000,
     "parent_keys": [],
     "version": "full-ict-v12.5.0-causal-early-limits",
     "level_key": "3c9d5a789c27937f62",
@@ -263337,9 +263337,506 @@
         "quality_passed": 0,
         "placed": 0
       }
+    },
+    {
+      "ts": 1792196352356,
+      "time": "2026-10-17T00:19:12.356000+00:00",
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "action": "CANCEL_LIMIT",
+      "price": 108.41,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [
+        "18f78523d1dff415ee",
+        "e41bbd145eebd5c30f"
+      ],
+      "occupied_slots": 2,
+      "max_slots": 2,
+      "rejections": {
+        "LIMIT_WOULD_CROSS_SPREAD": 42,
+        "LEVEL_OR_EVENT_COOLDOWN": 31,
+        "LIMIT_UNREACHABLE": 129,
+        "COMBINED_CONTEXT_SCORE_LOW": 4,
+        "SHOCK_STILL_ACTIVE": 2
+      },
+      "health": [],
+      "daily": {
+        "net_r": 0,
+        "losses_r": 0,
+        "entries": 0
+      },
+      "detectors": [
+        {
+          "detector": "detect_sweep_reclaim",
+          "setup": "SWEEP_RECLAIM",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_capitulation_recovery",
+          "setup": "CAPITULATION_RECOVERY",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_range_edge_reversal",
+          "setup": "RANGE_EDGE_REVERSAL",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_failed_auction_rejection",
+          "setup": "FAILED_AUCTION_REJECTION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_liquidity_sweep_reversal_short",
+          "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_buyer_exhaustion_short",
+          "setup": "BUYER_EXHAUSTION_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_pullback_continuation",
+          "setup": "PULLBACK_CONTINUATION",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_fresh_base_continuation",
+          "setup": "FRESH_BASE_CONTINUATION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_acceptance_retest_continuation",
+          "setup": "ACCEPTANCE_RETEST_CONTINUATION",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_momentum_no_pullback_continuation",
+          "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_acceleration_pullback_reentry",
+          "setup": "ACCELERATION_PULLBACK_REENTRY",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_direction_flip_15m",
+          "setup": "DIRECTION_FLIP_15M",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_trend_ignition",
+          "setup": "TREND_IGNITION",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_breakout_retest",
+          "setup": "BREAKOUT_RETEST",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_range_compression_breakout",
+          "setup": "RANGE_COMPRESSION_BREAKOUT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_opening_range_breakout",
+          "setup": "OPENING_RANGE_BREAKOUT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_liquidity_ladder",
+          "setup": "LIQUIDITY_LADDER",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_failed_opening_range_breakout",
+          "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_failed_breakout_short",
+          "setup": "FAILED_BREAKOUT_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_mss_reversal_short",
+          "setup": "MSS_REVERSAL_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_or_failure_2_short",
+          "setup": "OR_FAILURE_2_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_session_mean_reclaim",
+          "setup": "SESSION_MEAN_RECLAIM",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_daily_weekly_open_reclaim",
+          "setup": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_time_of_day_adaptive",
+          "setup": "TIME_OF_DAY_ADAPTIVE",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        }
+      ],
+      "raw_plans": 2,
+      "registered_setups": 24,
+      "timeframe_evaluations": 72,
+      "funnel": {
+        "evaluated": 72,
+        "detected": 15,
+        "live_anchors": 208,
+        "geometry_passed": 2,
+        "quality_passed": 0,
+        "placed": 0
+      }
     }
   ],
-  "last_run_ts": 1792196191623,
+  "last_run_ts": 1792196352356,
   "notification_queue": [],
   "reconciliation": null,
   "anchor_memory": {
@@ -335948,7 +336445,7 @@
       "evidence": {
         "broken_level_key": "prev_day_high",
         "broken_level": 107.03,
-        "distance_atr": 3.07,
+        "distance_atr": 3.162,
         "setup_timeframe": "15m",
         "micro_timeframe": "3m",
         "setup_conditions": [
@@ -336241,6 +336738,55 @@
       "cooldown_until_ts": 0,
       "reject_reason": "",
       "schema_version": "organic_v10.0.0"
+    },
+    "f9b0a9837c413df14c": {
+      "id": "anc-20261017001912-eda7ca34",
+      "setup_type": "CAPITULATION_RECOVERY",
+      "setup_family": "LIQUIDITY_REVERSAL",
+      "side": "LONG",
+      "level": 106.99,
+      "kind": "DEMAND_ZONE",
+      "invalidation": 106.719,
+      "created_ts": 1792196352356,
+      "expires_ts": 1792207152356,
+      "reason": "Капітуляція на обсягах сформувала низ 106.9900",
+      "score": 62.0,
+      "htf_state": "MIXED",
+      "regime": "TREND",
+      "state": "ARMED",
+      "evidence": {
+        "cluster_bars": 2,
+        "capitulation_low": 106.99,
+        "volume_multiple": 11.46,
+        "setup_timeframe": "15m",
+        "micro_timeframe": "3m",
+        "setup_conditions": [
+          {
+            "condition": "Є 20 закритих молодших свічок",
+            "met": true
+          },
+          {
+            "condition": "Є обсяги у 8 свічках",
+            "met": true
+          },
+          {
+            "condition": "Є дві свічки капітуляції",
+            "met": true
+          },
+          {
+            "condition": "Останнє закриття вище низу",
+            "met": true
+          }
+        ],
+        "zone_identity": "f9b0a9837c413df14c"
+      },
+      "target_levels": [],
+      "touched": false,
+      "touched_ts": 0,
+      "last_checked_ts": 0,
+      "cooldown_until_ts": 0,
+      "reject_reason": "",
+      "schema_version": "organic_v10.0.0"
     }
   },
   "level_cooldown": {
@@ -336248,64 +336794,7 @@
     "ece02fc6bb70005022": 1792200060000
   },
   "setup_statistics": {
-    "FAILED_OPENING_RANGE_BREAKOUT": {
-      "trades": 1,
-      "wins": 0,
-      "losses": 1,
-      "breakeven": 0,
-      "win_rate": 0.0,
-      "wilson_lower_95": 0.0,
-      "net_r": -1.019676923076927,
-      "expectancy_r": -1.019676923076927,
-      "profit_factor": 0.0,
-      "max_drawdown_r": 1.019676923076927,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 1,
-          "wins": 0,
-          "losses": 1,
-          "breakeven": 0,
-          "win_rate": 0.0,
-          "wilson_lower_95": 0.0,
-          "net_r": -1.019676923076927,
-          "expectancy_r": -1.019676923076927,
-          "profit_factor": 0.0,
-          "max_drawdown_r": 1.019676923076927,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "OPENING_RANGE_BREAKOUT": {
+    "PULLBACK_CONTINUATION": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -336419,291 +336908,6 @@
         }
       }
     },
-    "FAILED_BREAKOUT_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "ACCEPTANCE_RETEST_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "RANGE_EDGE_REVERSAL": {
-      "trades": 1,
-      "wins": 0,
-      "losses": 1,
-      "breakeven": 0,
-      "win_rate": 0.0,
-      "wilson_lower_95": 0.0,
-      "net_r": -0.09467476635513125,
-      "expectancy_r": -0.09467476635513125,
-      "profit_factor": 0.0,
-      "max_drawdown_r": 0.09467476635513125,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 1,
-          "wins": 0,
-          "losses": 1,
-          "breakeven": 0,
-          "win_rate": 0.0,
-          "wilson_lower_95": 0.0,
-          "net_r": -0.09467476635513125,
-          "expectancy_r": -0.09467476635513125,
-          "profit_factor": 0.0,
-          "max_drawdown_r": 0.09467476635513125,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
-      "trades": 1,
-      "wins": 1,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": 1.0,
-      "wilson_lower_95": 0.20654329147389294,
-      "net_r": 0.5612399999999973,
-      "expectancy_r": 0.5612399999999973,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 1,
-          "wins": 1,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": 1.0,
-          "wilson_lower_95": 0.20654329147389294,
-          "net_r": 0.5612399999999973,
-          "expectancy_r": 0.5612399999999973,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "PULLBACK_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
     "MOMENTUM_NO_PULLBACK_CONTINUATION": {
       "trades": 0,
       "wins": 0,
@@ -336761,7 +336965,7 @@
         }
       }
     },
-    "MSS_REVERSAL_SHORT": {
+    "DIRECTION_FLIP_15M": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -336818,64 +337022,7 @@
         }
       }
     },
-    "SWEEP_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "RANGE_COMPRESSION_BREAKOUT": {
+    "FRESH_BASE_CONTINUATION": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -337046,7 +337193,7 @@
         }
       }
     },
-    "FAILED_AUCTION_REJECTION": {
+    "OR_FAILURE_2_SHORT": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -337103,7 +337250,64 @@
         }
       }
     },
-    "DIRECTION_FLIP_15M": {
+    "ACCEPTANCE_RETEST_CONTINUATION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "SWEEP_RECLAIM": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -337217,7 +337421,7 @@
         }
       }
     },
-    "BUYER_EXHAUSTION_SHORT": {
+    "TIME_OF_DAY_ADAPTIVE": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -337274,7 +337478,577 @@
         }
       }
     },
-    "OR_FAILURE_2_SHORT": {
+    "RANGE_EDGE_REVERSAL": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "breakeven": 0,
+      "win_rate": 0.0,
+      "wilson_lower_95": 0.0,
+      "net_r": -0.09467476635513125,
+      "expectancy_r": -0.09467476635513125,
+      "profit_factor": 0.0,
+      "max_drawdown_r": 0.09467476635513125,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 1,
+          "wins": 0,
+          "losses": 1,
+          "breakeven": 0,
+          "win_rate": 0.0,
+          "wilson_lower_95": 0.0,
+          "net_r": -0.09467476635513125,
+          "expectancy_r": -0.09467476635513125,
+          "profit_factor": 0.0,
+          "max_drawdown_r": 0.09467476635513125,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "TREND_IGNITION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "RANGE_COMPRESSION_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "FAILED_OPENING_RANGE_BREAKOUT": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "breakeven": 0,
+      "win_rate": 0.0,
+      "wilson_lower_95": 0.0,
+      "net_r": -1.019676923076927,
+      "expectancy_r": -1.019676923076927,
+      "profit_factor": 0.0,
+      "max_drawdown_r": 1.019676923076927,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 1,
+          "wins": 0,
+          "losses": 1,
+          "breakeven": 0,
+          "win_rate": 0.0,
+          "wilson_lower_95": 0.0,
+          "net_r": -1.019676923076927,
+          "expectancy_r": -1.019676923076927,
+          "profit_factor": 0.0,
+          "max_drawdown_r": 1.019676923076927,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "ACCELERATION_PULLBACK_REENTRY": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "OPENING_RANGE_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": 1.0,
+      "wilson_lower_95": 0.20654329147389294,
+      "net_r": 0.5612399999999973,
+      "expectancy_r": 0.5612399999999973,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 1,
+          "wins": 1,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": 1.0,
+          "wilson_lower_95": 0.20654329147389294,
+          "net_r": 0.5612399999999973,
+          "expectancy_r": 0.5612399999999973,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "MSS_REVERSAL_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "FAILED_AUCTION_REJECTION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "FAILED_BREAKOUT_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "BUYER_EXHAUSTION_SHORT": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -337387,240 +338161,12 @@
           "status": "INSUFFICIENT_SAMPLE"
         }
       }
-    },
-    "FRESH_BASE_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "TREND_IGNITION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "ACCELERATION_PULLBACK_REENTRY": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "TIME_OF_DAY_ADAPTIVE": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
     }
   },
   "regime_memory": {
     "last_regime": "TREND",
     "last_bias": "SHORT",
-    "updated_at": "2026-10-17T00:16:31.623000+00:00"
+    "updated_at": "2026-10-17T00:19:12.356000+00:00"
   },
   "watch": [
     {
@@ -337715,31 +338261,31 @@
       ],
       "timeframe": "15m",
       "reason": "SHOCK_STILL_ACTIVE",
-      "score": 60.89,
+      "score": 61.26,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-0a54c954",
       "event_key": "9a25de35c3a92844ea",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
-      "signal_id": "70bac20922b505e3af",
+      "signal_id": "09656a33262aa20d24",
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
-      "stop": 109.97,
-      "risk": 1.1299999999999955,
-      "initial_stop": 109.97,
+      "stop": 109.99,
+      "risk": 1.1499999999999915,
+      "initial_stop": 109.99,
       "required_rr": 1.2,
       "required_tp": 107.2,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 106.77,
-      "gross_rr": 1.83185840707966,
-      "tp1_distance_pct": 1.9018743109151117,
+      "available_tp1": 106.78,
+      "gross_rr": 1.7913043478261022,
+      "tp1_distance_pct": 1.892686512311652,
       "target_source": "DEMAND_OB",
       "obstacle_level": 106.71,
       "chosen_target": {
@@ -337755,9 +338301,9 @@
       "intermediate_levels": [],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 106.77,
-      "tp": 106.77,
-      "net_rr": 1.83185840707966,
+      "tp1": 106.78,
+      "tp": 106.78,
+      "net_rr": 1.7913043478261022,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -337853,18 +338399,18 @@
       ],
       "timeframe": "4H",
       "reason": "SHOCK_STILL_ACTIVE",
-      "score": 63.19,
+      "score": 63.05,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-d697f4c9",
       "event_key": "ac3e37513ce03e3582",
-      "distance_pct": 1.6056104087847274,
+      "distance_pct": 1.6419149524951584,
       "approach_pct": null,
-      "signal_id": "6d8e049f8b0d9191ee",
+      "signal_id": "f75c8ec0143b114b09",
       "entry": 106.63,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.64,
         "operator": "≥"
       },
@@ -337923,7 +338469,7 @@
         "closed_bars": 80,
         "status": "MODEL_ONLY",
         "fingerprint": "d2d2c637f91c05041e319f87372eb360704ed7dc3b31508ecbb96dfb009474b4",
-        "as_of_ts": 1792196191623,
+        "as_of_ts": 1792196352356,
         "last_closed_ts": 1792195200000,
         "entry": 106.63,
         "stop": 105.43,
@@ -338035,14 +338581,14 @@
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-8623ecf9",
       "event_key": "d654aa0f5edc9025fb",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
       "signal_id": null,
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
@@ -338169,18 +338715,18 @@
       ],
       "timeframe": "1H",
       "reason": "COMBINED_CONTEXT_SCORE_LOW",
-      "score": 59.12,
+      "score": 58.89,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-641106ff",
       "event_key": "543ecad6314253d75d",
-      "distance_pct": 1.6056104087847274,
+      "distance_pct": 1.6419149524951584,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.63,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.64,
         "operator": "≥"
       },
@@ -338317,18 +338863,18 @@
       ],
       "timeframe": "1H",
       "reason": "COMBINED_CONTEXT_SCORE_LOW",
-      "score": 58.13,
+      "score": 58.36,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-01c0c084",
       "event_key": "e294627c40ef31d989",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
       "signal_id": null,
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
@@ -338455,31 +339001,31 @@
       ],
       "timeframe": "15m",
       "reason": "COMBINED_CONTEXT_SCORE_LOW",
-      "score": 57.34,
+      "score": 57.71,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-499ba283",
       "event_key": "f6702a5ef15d998836",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
       "signal_id": null,
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
-      "stop": 109.97,
-      "risk": 1.1299999999999955,
-      "initial_stop": 109.97,
+      "stop": 109.99,
+      "risk": 1.1499999999999915,
+      "initial_stop": 109.99,
       "required_rr": 1.2,
       "required_tp": 107.2,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 106.77,
-      "gross_rr": 1.83185840707966,
-      "tp1_distance_pct": 1.9018743109151117,
+      "available_tp1": 106.78,
+      "gross_rr": 1.7913043478261022,
+      "tp1_distance_pct": 1.892686512311652,
       "target_source": "DEMAND_OB",
       "obstacle_level": 106.71,
       "chosen_target": {
@@ -338495,9 +339041,9 @@
       "intermediate_levels": [],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 106.77,
-      "tp": 106.77,
-      "net_rr": 1.83185840707966,
+      "tp1": 106.78,
+      "tp": 106.78,
+      "net_rr": 1.7913043478261022,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -338619,14 +339165,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016234916-554c12e2",
       "event_key": "774d5ed7b55c556641",
-      "distance_pct": 2.122358586324639,
+      "distance_pct": 2.1584724656397043,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.07,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.08,
         "operator": "≥"
       },
@@ -338781,14 +339327,14 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-cf3c07a7",
       "event_key": "69e0e2e449bfcb66ed",
-      "distance_pct": 6.164067546368927,
+      "distance_pct": 6.198690157734526,
       "approach_pct": null,
       "signal_id": null,
       "entry": 101.69,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 101.7,
         "operator": "≥"
       },
@@ -338934,27 +339480,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-81a1e0f5",
       "event_key": "2eb38c9abae806b93b",
-      "distance_pct": 1.5041063024822456,
+      "distance_pct": 1.5404482981274807,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.74,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.75,
         "operator": "≥"
       },
-      "stop": 105.6,
-      "initial_stop": 105.6,
-      "risk": 1.1400000000000006,
+      "stop": 105.58,
+      "initial_stop": 105.58,
+      "risk": 1.1599999999999966,
       "required_rr": 1.2,
       "required_tp": 108.35,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.02,
-      "gross_rr": 2.0,
-      "tp1_distance_pct": 2.1360314783586296,
+      "available_tp1": 109.05,
+      "gross_rr": 1.9913793103448354,
+      "tp1_distance_pct": 2.164137155705455,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -338978,164 +339524,11 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.02,
-      "tp": 109.02,
+      "tp1": 109.05,
+      "tp": 109.05,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
-      "statistics": {
-        "observations": 0,
-        "wins": 0,
-        "win_rate": null,
-        "estimate": null,
-        "lower_95": null,
-        "expectancy_r": null,
-        "scope": "family",
-        "latest_label_ts": 0
-      }
-    },
-    {
-      "conditions": [
-        {
-          "condition": "Є напрямок тренду",
-          "met": true
-        },
-        {
-          "condition": "Є 20 закритих свічок",
-          "met": true
-        },
-        {
-          "condition": "Є імпульс 1.25 ATR",
-          "met": false
-        },
-        {
-          "condition": "Рух за 6 свічок не менше 2 ATR",
-          "met": false
-        }
-      ],
-      "side": 1,
-      "level": 101.37,
-      "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
-      "readiness_pct": 41.7,
-      "status": "BLOCKED",
-      "met_conditions": 5,
-      "total_conditions": 12,
-      "missing_conditions": [
-        "Рівень актуальний і ще не відвіданий",
-        "Структурний SL відповідає межам ризику",
-        "Старші графіки допускають цей напрямок",
-        "Потенціал TP достатній відносно SL",
-        "Якість контексту проходить поріг",
-        "Структурні умови входу підтверджені",
-        "Історичні дані не блокують вхід"
-      ],
-      "setup_conditions": [
-        {
-          "condition": "Є напрямок тренду",
-          "met": true
-        },
-        {
-          "condition": "Є 20 закритих свічок",
-          "met": true
-        },
-        {
-          "condition": "Є імпульс 1.25 ATR",
-          "met": true
-        },
-        {
-          "condition": "Рух за 6 свічок не менше 2 ATR",
-          "met": true
-        }
-      ],
-      "setup_readiness_pct": 100.0,
-      "entry_checks": [
-        {
-          "key": "PASSIVE_LIMIT",
-          "condition": "Ліміт стоїть на правильному боці ціни",
-          "met": true
-        },
-        {
-          "key": "FRESH_LEVEL",
-          "condition": "Рівень актуальний і ще не відвіданий",
-          "met": null
-        },
-        {
-          "key": "VALID_STOP",
-          "condition": "Структурний SL відповідає межам ризику",
-          "met": null
-        },
-        {
-          "key": "HTF_ALIGNMENT",
-          "condition": "Старші графіки допускають цей напрямок",
-          "met": null
-        },
-        {
-          "key": "TARGET_RR",
-          "condition": "Потенціал TP достатній відносно SL",
-          "met": null
-        },
-        {
-          "key": "CONTEXT_SCORE",
-          "condition": "Якість контексту проходить поріг",
-          "met": null
-        },
-        {
-          "key": "STRUCTURAL_CONFIRMATION",
-          "condition": "Структурні умови входу підтверджені",
-          "met": null
-        },
-        {
-          "key": "STATISTICAL_FILTER",
-          "condition": "Історичні дані не блокують вхід",
-          "met": null
-        }
-      ],
-      "timeframe": "1H",
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 62.23,
-      "score_status": "UNAVAILABLE",
-      "anchor_id": "anc-20261016181842-50e8bba6",
-      "event_key": "79d255de00c255a171",
-      "distance_pct": 6.45935221924887,
-      "approach_pct": null,
-      "signal_id": null,
-      "entry": 101.37,
-      "quote_gate": {
-        "passive": true,
-        "quote_name": "ASK",
-        "current_quote": 108.4,
-        "required_quote": 101.38,
-        "operator": "≥"
-      },
-      "stop": 100.23,
-      "initial_stop": 100.23,
-      "risk": 1.1400000000000006,
-      "required_rr": 1.2,
-      "required_tp": 102.9,
-      "min_target_pct": 0.015,
-      "target_distance_met": true,
-      "available_tp1": 103.65,
-      "gross_rr": 2.0,
-      "tp1_distance_pct": 2.2491861497484473,
-      "target_source": "1H_LIQUIDITY",
-      "obstacle_level": 107.03,
-      "chosen_target": {
-        "kind": "1H_LIQUIDITY",
-        "level": 107.03,
-        "timeframe": "1H",
-        "known_ts": 1792184400000,
-        "hard_barrier": false,
-        "freshness": "UNSWEPT",
-        "distance": 5.659999999999997
-      },
-      "intermediate_levels": [],
-      "path_barrier": null,
-      "path_clear": true,
-      "tp1": 103.65,
-      "tp": 103.65,
-      "geometry_preview": true,
-      "max_hold_minutes": 1440,
-      "intraday": false,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -339159,7 +339552,7 @@
         },
         {
           "condition": "Є дві свічки капітуляції",
-          "met": false
+          "met": true
         },
         {
           "condition": "Останнє закриття вище низу",
@@ -339167,7 +339560,7 @@
         }
       ],
       "side": 1,
-      "level": 106.35,
+      "level": 106.99,
       "setup": "CAPITULATION_RECOVERY",
       "readiness_pct": 41.7,
       "status": "BLOCKED",
@@ -339246,30 +339639,30 @@
       "timeframe": "15m",
       "reason": "LIMIT_UNREACHABLE",
       "score": 62.0,
-      "score_status": "UNAVAILABLE",
-      "anchor_id": "anc-20261016233404-4df46161",
-      "event_key": "4bce5aea0544178ecd",
-      "distance_pct": 1.863984497554683,
+      "score_status": "PATTERN",
+      "anchor_id": "anc-20261017001912-eda7ca34",
+      "event_key": "f9b0a9837c413df14c",
+      "distance_pct": 1.3098422654736663,
       "approach_pct": null,
       "signal_id": null,
-      "entry": 106.35,
+      "entry": 106.99,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
-        "required_quote": 106.36,
+        "current_quote": 108.42,
+        "required_quote": 107.0,
         "operator": "≥"
       },
-      "stop": 105.28,
-      "initial_stop": 105.28,
+      "stop": 105.92,
+      "initial_stop": 105.92,
       "risk": 1.0699999999999932,
       "required_rr": 1.2,
-      "required_tp": 107.95,
+      "required_tp": 108.6,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 108.48,
+      "available_tp1": 109.12,
       "gross_rr": 1.9906542056074983,
-      "tp1_distance_pct": 2.0028208744710954,
+      "tp1_distance_pct": 1.9908402654453778,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -339278,7 +339671,7 @@
         "timeframe": "15m",
         "hard_barrier": false,
         "freshness": "SESSION_REFERENCE",
-        "distance": 3.990000000000009
+        "distance": 3.3500000000000085
       },
       "intermediate_levels": [
         {
@@ -339288,13 +339681,13 @@
           "known_ts": 1792184400000,
           "hard_barrier": false,
           "freshness": "UNSWEPT",
-          "distance": 0.6800000000000068
+          "distance": 0.04000000000000625
         }
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 108.48,
-      "tp": 108.48,
+      "tp1": 109.12,
+      "tp": 109.12,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -339411,14 +339804,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016223404-bbca6efc",
       "event_key": "17e8143f059d185ff9",
-      "distance_pct": 2.260773276737107,
+      "distance_pct": 2.296836085231985,
       "approach_pct": null,
       "signal_id": null,
       "entry": 105.92,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 105.93,
         "operator": "≥"
       },
@@ -339573,14 +339966,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016170418-c903d41b",
       "event_key": "34131485447bb68656",
-      "distance_pct": 4.853741810464155,
+      "distance_pct": 4.88884789226086,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.11,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.12,
         "operator": "≥"
       },
@@ -339725,14 +340118,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016160429-a74552f9",
       "event_key": "c9c173ff3b3564ca58",
-      "distance_pct": 5.195164713481599,
+      "distance_pct": 5.230144820588509,
       "approach_pct": null,
       "signal_id": null,
       "entry": 102.74,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 102.75,
         "operator": "≥"
       },
@@ -339887,14 +340280,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016144859-57159c05",
       "event_key": "10fb417f60032a363a",
-      "distance_pct": 5.022607732767368,
+      "distance_pct": 5.0576515081634446,
       "approach_pct": null,
       "signal_id": null,
       "entry": 102.93,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 102.92,
         "operator": "≤"
       },
@@ -340088,27 +340481,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-4e853b85",
       "event_key": "3314ba4560d7d83abd",
-      "distance_pct": 1.4579680723447432,
+      "distance_pct": 1.4943270915967073,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.79,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.8,
         "operator": "≥"
       },
-      "stop": 105.65,
-      "initial_stop": 105.65,
-      "risk": 1.1400000000000006,
+      "stop": 105.63,
+      "initial_stop": 105.63,
+      "risk": 1.1600000000000108,
       "required_rr": 1.2,
       "required_tp": 108.4,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.07,
-      "gross_rr": 1.9999999999999876,
-      "tp1_distance_pct": 2.13503136997845,
+      "available_tp1": 109.11,
+      "gross_rr": 1.9999999999999756,
+      "tp1_distance_pct": 2.1724880606798327,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -340132,8 +340525,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.07,
-      "tp": 109.07,
+      "tp1": 109.11,
+      "tp": 109.11,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -340242,14 +340635,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016183149-95429e04",
       "event_key": "570f5f572d5acd8b57",
-      "distance_pct": 4.253944818676755,
+      "distance_pct": 4.289272207360937,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.76,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.77,
         "operator": "≥"
       },
@@ -340387,27 +340780,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-8f57ddee",
       "event_key": "a979bb6e5843783c36",
-      "distance_pct": 1.4579680723447432,
+      "distance_pct": 1.4943270915967073,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.79,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.8,
         "operator": "≥"
       },
-      "stop": 105.65,
-      "initial_stop": 105.65,
-      "risk": 1.1400000000000006,
+      "stop": 105.63,
+      "initial_stop": 105.63,
+      "risk": 1.1600000000000108,
       "required_rr": 1.2,
       "required_tp": 108.4,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.07,
-      "gross_rr": 1.9999999999999876,
-      "tp1_distance_pct": 2.13503136997845,
+      "available_tp1": 109.11,
+      "gross_rr": 1.9999999999999756,
+      "tp1_distance_pct": 2.1724880606798327,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -340431,8 +340824,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.07,
-      "tp": 109.07,
+      "tp1": 109.11,
+      "tp": 109.11,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -340541,14 +340934,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016183149-2dd30c3d",
       "event_key": "734c7308495519fef0",
-      "distance_pct": 4.253944818676755,
+      "distance_pct": 4.289272207360937,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.76,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.77,
         "operator": "≥"
       },
@@ -340686,14 +341079,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "9a5c4de0b98c89ae96",
       "event_key": "9a5c4de0b98c89ae96",
-      "distance_pct": 6.1363846082864315,
+      "distance_pct": 6.171017433816067,
       "approach_pct": null,
       "signal_id": null,
       "entry": 101.72,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 101.73,
         "operator": "≥"
       },
@@ -340830,27 +341223,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-09b7904e",
       "event_key": "667fda58941b464541",
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "signal_id": null,
       "entry": 107.03,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 107.04,
         "operator": "≥"
       },
-      "stop": 105.89,
-      "initial_stop": 105.89,
-      "risk": 1.1400000000000006,
+      "stop": 105.87,
+      "initial_stop": 105.87,
+      "risk": 1.1599999999999966,
       "required_rr": 1.2,
       "required_tp": 108.64,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.31,
+      "available_tp1": 109.35,
       "gross_rr": 2.0,
-      "tp1_distance_pct": 2.130243856862563,
+      "tp1_distance_pct": 2.167616556105758,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -340864,8 +341257,8 @@
       "intermediate_levels": [],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.31,
-      "tp": 109.31,
+      "tp1": 109.35,
+      "tp": 109.35,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -340974,27 +341367,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-b3fee7d3",
       "event_key": "da0597df91a4622737",
-      "distance_pct": 1.6056104087847274,
+      "distance_pct": 1.6419149524951584,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.63,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.64,
         "operator": "≥"
       },
-      "stop": 105.49,
-      "initial_stop": 105.49,
-      "risk": 1.1400000000000006,
+      "stop": 105.47,
+      "initial_stop": 105.47,
+      "risk": 1.1599999999999966,
       "required_rr": 1.2,
       "required_tp": 108.23,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 108.91,
-      "gross_rr": 2.0,
-      "tp1_distance_pct": 2.1382350182875376,
+      "available_tp1": 108.94,
+      "gross_rr": 1.9913793103448354,
+      "tp1_distance_pct": 2.1663696895807956,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -341018,8 +341411,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 108.91,
-      "tp": 108.91,
+      "tp1": 108.94,
+      "tp": 108.94,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -341128,14 +341521,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261015161849-46697545",
       "event_key": "3925de2615b7f71b1e",
-      "distance_pct": 4.743010058134169,
+      "distance_pct": 4.7781569965870245,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.23,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.24,
         "operator": "≥"
       },
@@ -341272,14 +341665,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "2962a54873a73b8e43",
       "event_key": "2962a54873a73b8e43",
-      "distance_pct": 4.946018270739134,
+      "distance_pct": 4.981090305322379,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.01,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.02,
         "operator": "≥"
       },
@@ -341312,6 +341705,212 @@
       "geometry_preview": true,
       "max_hold_minutes": 1440,
       "intraday": false,
+      "statistics": {
+        "observations": 0,
+        "wins": 0,
+        "win_rate": null,
+        "estimate": null,
+        "lower_95": null,
+        "expectancy_r": null,
+        "scope": "family",
+        "latest_label_ts": 0
+      }
+    },
+    {
+      "conditions": [
+        {
+          "condition": "Є 30 закритих свічок",
+          "met": true
+        },
+        {
+          "condition": "MSS спрямований вниз",
+          "met": false
+        },
+        {
+          "condition": "Ціна нижче початку попередньої ноги",
+          "met": false
+        },
+        {
+          "condition": "Є рівень ретесту",
+          "met": true
+        }
+      ],
+      "side": -1,
+      "level": 106.45,
+      "setup": "MSS_REVERSAL_SHORT",
+      "readiness_pct": 33.3,
+      "status": "BLOCKED",
+      "met_conditions": 4,
+      "total_conditions": 12,
+      "missing_conditions": [
+        "Ліміт стоїть на правильному боці ціни",
+        "Рівень актуальний і ще не відвіданий",
+        "Структурний SL відповідає межам ризику",
+        "Старші графіки допускають цей напрямок",
+        "Потенціал TP достатній відносно SL",
+        "Якість контексту проходить поріг",
+        "Структурні умови входу підтверджені",
+        "Історичні дані не блокують вхід"
+      ],
+      "setup_conditions": [
+        {
+          "condition": "Є 30 закритих свічок",
+          "met": true
+        },
+        {
+          "condition": "MSS спрямований вниз",
+          "met": true
+        },
+        {
+          "condition": "Ціна нижче початку попередньої ноги",
+          "met": true
+        },
+        {
+          "condition": "Є рівень ретесту",
+          "met": true
+        }
+      ],
+      "setup_readiness_pct": 100.0,
+      "entry_checks": [
+        {
+          "key": "PASSIVE_LIMIT",
+          "condition": "Ліміт стоїть на правильному боці ціни",
+          "met": false
+        },
+        {
+          "key": "FRESH_LEVEL",
+          "condition": "Рівень актуальний і ще не відвіданий",
+          "met": null
+        },
+        {
+          "key": "VALID_STOP",
+          "condition": "Структурний SL відповідає межам ризику",
+          "met": null
+        },
+        {
+          "key": "HTF_ALIGNMENT",
+          "condition": "Старші графіки допускають цей напрямок",
+          "met": null
+        },
+        {
+          "key": "TARGET_RR",
+          "condition": "Потенціал TP достатній відносно SL",
+          "met": null
+        },
+        {
+          "key": "CONTEXT_SCORE",
+          "condition": "Якість контексту проходить поріг",
+          "met": null
+        },
+        {
+          "key": "STRUCTURAL_CONFIRMATION",
+          "condition": "Структурні умови входу підтверджені",
+          "met": null
+        },
+        {
+          "key": "STATISTICAL_FILTER",
+          "condition": "Історичні дані не блокують вхід",
+          "met": null
+        }
+      ],
+      "timeframe": "15m",
+      "reason": "LIMIT_WOULD_CROSS_SPREAD",
+      "score": 55.0,
+      "score_status": "UNAVAILABLE",
+      "anchor_id": "anc-20261016231817-2f126d99",
+      "event_key": "b2ca9ce9caca065021",
+      "distance_pct": 1.8079512960058979,
+      "approach_pct": null,
+      "signal_id": null,
+      "entry": 106.45,
+      "quote_gate": {
+        "passive": false,
+        "quote_name": "BID",
+        "current_quote": 108.41,
+        "required_quote": 106.44,
+        "operator": "≤"
+      },
+      "stop": 107.52,
+      "initial_stop": 107.52,
+      "risk": 1.0699999999999932,
+      "required_rr": 1.2,
+      "required_tp": 104.85,
+      "min_target_pct": 0.015,
+      "target_distance_met": true,
+      "available_tp1": 104.33,
+      "gross_rr": 1.9813084112149701,
+      "tp1_distance_pct": 1.9915453264443443,
+      "target_source": "FVG_BULL",
+      "obstacle_level": 104.26,
+      "chosen_target": {
+        "kind": "FVG_BULL",
+        "level": 104.26,
+        "timeframe": "4H",
+        "known_ts": 1792180800000,
+        "strength": 0.418,
+        "hard_barrier": false,
+        "freshness": "UNMITIGATED",
+        "distance": 2.1899999999999977
+      },
+      "intermediate_levels": [
+        {
+          "kind": "FVG_BULL",
+          "level": 106.29,
+          "timeframe": "15m",
+          "known_ts": 1792193400000,
+          "strength": 0.252,
+          "hard_barrier": false,
+          "freshness": "UNMITIGATED",
+          "distance": 0.1599999999999966
+        },
+        {
+          "kind": "FVG_BULL",
+          "level": 106.07,
+          "timeframe": "4H",
+          "known_ts": 1792195200000,
+          "strength": 1.362,
+          "hard_barrier": false,
+          "freshness": "UNMITIGATED",
+          "distance": 0.38000000000000966
+        },
+        {
+          "kind": "FVG_BULL",
+          "level": 105.75,
+          "timeframe": "15m",
+          "known_ts": 1792170000000,
+          "strength": 0.596,
+          "hard_barrier": false,
+          "freshness": "UNMITIGATED",
+          "distance": 0.7000000000000028
+        },
+        {
+          "kind": "FVG_BULL",
+          "level": 105.73,
+          "timeframe": "1H",
+          "known_ts": 1792173600000,
+          "strength": 1.722,
+          "hard_barrier": false,
+          "freshness": "UNMITIGATED",
+          "distance": 0.7199999999999989
+        },
+        {
+          "kind": "FVG_BULL",
+          "level": 105.44,
+          "timeframe": "15m",
+          "known_ts": 1792169100000,
+          "strength": 1.489,
+          "hard_barrier": false,
+          "freshness": "UNMITIGATED",
+          "distance": 1.0100000000000051
+        }
+      ],
+      "path_barrier": null,
+      "path_clear": true,
+      "tp1": 104.33,
+      "tp": 104.33,
+      "geometry_preview": true,
+      "max_hold_minutes": 360,
+      "intraday": true,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -341689,7 +342288,7 @@
       "execution_source": "LIMIT_ARMED_AT_LEVEL",
       "execution": "PAPER_SIGNAL",
       "status": "PENDING",
-      "last_bar": 1792195920000,
+      "last_bar": 1792196100000,
       "parent_keys": [
         "bf144ee4b545dff9ca"
       ],
@@ -341853,7 +342452,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792181034468,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -341939,7 +342538,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792178291540,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342025,7 +342624,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792176315580,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342111,7 +342710,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792181925630,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342197,7 +342796,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792179245053,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342283,7 +342882,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792177457913,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342369,7 +342968,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792183694696,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342455,7 +343054,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792184663079,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342541,7 +343140,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792185537621,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342627,7 +343226,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792188275073,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342713,7 +343312,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792189128526,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342799,7 +343398,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792170258026,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": false,
@@ -342882,7 +343481,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792190044360,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -342968,7 +343567,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792187336107,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -343054,7 +343653,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792186424834,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -343140,7 +343739,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792191825911,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -343226,7 +343825,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792192697939,
-          "last_bar": 1792195920000,
+          "last_bar": 1792196100000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -345569,7 +346168,7 @@
       "61b07d9f2d42c4c2326cb6550d3a261267b328d6ce71d400cc7ac7d592c2967d": 1792196191623,
       "7fee187e467c9667e18faf16a58248b371f785a837e56918004500222ee7d8ab": 1792196191623
     },
-    "last_run_ts": 1792196191623
+    "last_run_ts": 1792196352356
   },
   "quality_archives": [
     {
@@ -346475,7 +347074,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 2.122358586324639,
+      "distance_pct": 2.1584724656397043,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -346592,7 +347191,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 5.619636430746519,
+      "distance_pct": 5.6544599206715205,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -346709,7 +347308,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 6.5608563255513515,
+      "distance_pct": 6.595332533899079,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -346734,7 +347333,7 @@
         },
         {
           "condition": "Є дві свічки капітуляції",
-          "met": false
+          "met": true
         },
         {
           "condition": "Останнє закриття вище низу",
@@ -346742,7 +347341,7 @@
         }
       ],
       "side": 1,
-      "level": 106.35,
+      "level": 106.99,
       "setup": "CAPITULATION_RECOVERY",
       "readiness_pct": 41.7,
       "status": "BLOCKED",
@@ -346821,30 +347420,30 @@
       "timeframe": "15m",
       "reason": "LIMIT_UNREACHABLE",
       "score": 62.0,
-      "score_status": "UNAVAILABLE",
-      "anchor_id": "anc-20261016233404-4df46161",
-      "event_key": "4bce5aea0544178ecd",
-      "distance_pct": 1.863984497554683,
+      "score_status": "PATTERN",
+      "anchor_id": "anc-20261017001912-eda7ca34",
+      "event_key": "f9b0a9837c413df14c",
+      "distance_pct": 1.3098422654736663,
       "approach_pct": null,
       "signal_id": null,
-      "entry": 106.35,
+      "entry": 106.99,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
-        "required_quote": 106.36,
+        "current_quote": 108.42,
+        "required_quote": 107.0,
         "operator": "≥"
       },
-      "stop": 105.28,
-      "initial_stop": 105.28,
+      "stop": 105.92,
+      "initial_stop": 105.92,
       "risk": 1.0699999999999932,
       "required_rr": 1.2,
-      "required_tp": 107.95,
+      "required_tp": 108.6,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 108.48,
+      "available_tp1": 109.12,
       "gross_rr": 1.9906542056074983,
-      "tp1_distance_pct": 2.0028208744710954,
+      "tp1_distance_pct": 1.9908402654453778,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -346853,7 +347452,7 @@
         "timeframe": "15m",
         "hard_barrier": false,
         "freshness": "SESSION_REFERENCE",
-        "distance": 3.990000000000009
+        "distance": 3.3500000000000085
       },
       "intermediate_levels": [
         {
@@ -346863,13 +347462,13 @@
           "known_ts": 1792184400000,
           "hard_barrier": false,
           "freshness": "UNSWEPT",
-          "distance": 0.6800000000000068
+          "distance": 0.04000000000000625
         }
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 108.48,
-      "tp": 108.48,
+      "tp1": 109.12,
+      "tp": 109.12,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -346986,14 +347585,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016223404-bbca6efc",
       "event_key": "17e8143f059d185ff9",
-      "distance_pct": 2.260773276737107,
+      "distance_pct": 2.296836085231985,
       "approach_pct": null,
       "signal_id": null,
       "entry": 105.92,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 105.93,
         "operator": "≥"
       },
@@ -347148,14 +347747,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016170418-c903d41b",
       "event_key": "34131485447bb68656",
-      "distance_pct": 4.853741810464155,
+      "distance_pct": 4.88884789226086,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.11,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.12,
         "operator": "≥"
       },
@@ -347301,14 +347900,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261017000414-17b3be33",
       "event_key": "89b1eb9a69f21bf470",
-      "distance_pct": 1.5041063024822456,
+      "distance_pct": 1.5404482981274807,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.74,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 106.73,
         "operator": "≤"
       },
@@ -347319,9 +347918,9 @@
       "required_tp": 105.13,
       "min_target_pct": 0.015,
       "target_distance_met": false,
-      "available_tp1": 106.77,
-      "gross_rr": -0.028037383177570964,
-      "tp1_distance_pct": -0.028105677346825127,
+      "available_tp1": 106.78,
+      "gross_rr": -0.03738317757009904,
+      "tp1_distance_pct": -0.037474236462437936,
       "target_source": "DEMAND_OB",
       "obstacle_level": 106.71,
       "chosen_target": {
@@ -347534,14 +348133,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016160429-7b85ddb4",
       "event_key": "bcb80e3950dc52af92",
-      "distance_pct": 3.6264648888068716,
+      "distance_pct": 3.662023798542569,
       "approach_pct": null,
       "signal_id": null,
       "entry": 104.44,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 104.43,
         "operator": "≤"
       },
@@ -347699,14 +348298,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016200354-07337826",
       "event_key": "9ddc9bcc010086a9a6",
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "signal_id": null,
       "entry": 107.03,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 107.02,
         "operator": "≤"
       },
@@ -347892,7 +348491,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 0.4275472916858831,
+      "distance_pct": 0.3904925744857481,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -348016,14 +348615,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016144859-57159c05",
       "event_key": "10fb417f60032a363a",
-      "distance_pct": 5.022607732767368,
+      "distance_pct": 5.0576515081634446,
       "approach_pct": null,
       "signal_id": null,
       "entry": 102.93,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 102.92,
         "operator": "≤"
       },
@@ -348235,7 +348834,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 5.619636430746519,
+      "distance_pct": 5.6544599206715205,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -348684,7 +349283,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 2.122358586324639,
+      "distance_pct": 2.1584724656397043,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -348801,7 +349400,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 5.1582541293716,
+      "distance_pct": 5.193247855363892,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -348920,7 +349519,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 5.619636430746519,
+      "distance_pct": 5.6544599206715205,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -349025,31 +349624,31 @@
       ],
       "timeframe": "15m",
       "reason": "SHOCK_STILL_ACTIVE",
-      "score": 60.89,
+      "score": 61.26,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-0a54c954",
       "event_key": "9a25de35c3a92844ea",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
-      "signal_id": "70bac20922b505e3af",
+      "signal_id": "09656a33262aa20d24",
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
-      "stop": 109.97,
-      "risk": 1.1299999999999955,
-      "initial_stop": 109.97,
+      "stop": 109.99,
+      "risk": 1.1499999999999915,
+      "initial_stop": 109.99,
       "required_rr": 1.2,
       "required_tp": 107.2,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 106.77,
-      "gross_rr": 1.83185840707966,
-      "tp1_distance_pct": 1.9018743109151117,
+      "available_tp1": 106.78,
+      "gross_rr": 1.7913043478261022,
+      "tp1_distance_pct": 1.892686512311652,
       "target_source": "DEMAND_OB",
       "obstacle_level": 106.71,
       "chosen_target": {
@@ -349065,9 +349664,9 @@
       "intermediate_levels": [],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 106.77,
-      "tp": 106.77,
-      "net_rr": 1.83185840707966,
+      "tp1": 106.78,
+      "tp": 106.78,
+      "net_rr": 1.7913043478261022,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -349181,14 +349780,14 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-cf3c07a7",
       "event_key": "69e0e2e449bfcb66ed",
-      "distance_pct": 6.164067546368927,
+      "distance_pct": 6.198690157734526,
       "approach_pct": null,
       "signal_id": null,
       "entry": 101.69,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 101.7,
         "operator": "≥"
       },
@@ -349336,7 +349935,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 4.3238572122297985,
+      "distance_pct": 4.359158805362444,
       "approach_pct": null
     },
     {
@@ -349444,7 +350043,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.8178462674171807,
+      "distance_pct": 1.780278572087452,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -349562,7 +350161,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 5.1582541293716,
+      "distance_pct": 5.193247855363892,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -349681,7 +350280,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null
     },
     {
@@ -349778,27 +350377,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-8f57ddee",
       "event_key": "a979bb6e5843783c36",
-      "distance_pct": 1.4579680723447432,
+      "distance_pct": 1.4943270915967073,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.79,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.8,
         "operator": "≥"
       },
-      "stop": 105.65,
-      "initial_stop": 105.65,
-      "risk": 1.1400000000000006,
+      "stop": 105.63,
+      "initial_stop": 105.63,
+      "risk": 1.1600000000000108,
       "required_rr": 1.2,
       "required_tp": 108.4,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.07,
-      "gross_rr": 1.9999999999999876,
-      "tp1_distance_pct": 2.13503136997845,
+      "available_tp1": 109.11,
+      "gross_rr": 1.9999999999999756,
+      "tp1_distance_pct": 2.1724880606798327,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -349822,8 +350421,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.07,
-      "tp": 109.07,
+      "tp1": 109.11,
+      "tp": 109.11,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -349932,14 +350531,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016183149-2dd30c3d",
       "event_key": "734c7308495519fef0",
-      "distance_pct": 4.253944818676755,
+      "distance_pct": 4.289272207360937,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.76,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.77,
         "operator": "≥"
       },
@@ -350078,7 +350677,7 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-856f6106",
       "event_key": "34811f72a69109b90a",
-      "distance_pct": 4.263172464704258,
+      "distance_pct": 4.298496448667094,
       "approach_pct": null,
       "signal_id": null,
       "statistics": {
@@ -350232,11 +350831,14 @@
       "side": 1,
       "level": 101.37,
       "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
-      "readiness_pct": 41.7,
-      "status": "BLOCKED",
-      "met_conditions": 5,
+      "readiness_pct": 16.7,
+      "status": "FORMING",
+      "met_conditions": 2,
       "total_conditions": 12,
       "missing_conditions": [
+        "Є імпульс 1.25 ATR",
+        "Рух за 6 свічок не менше 2 ATR",
+        "Ліміт стоїть на правильному боці ціни",
         "Рівень актуальний і ще не відвіданий",
         "Структурний SL відповідає межам ризику",
         "Старші графіки допускають цей напрямок",
@@ -350256,19 +350858,19 @@
         },
         {
           "condition": "Є імпульс 1.25 ATR",
-          "met": true
+          "met": false
         },
         {
           "condition": "Рух за 6 свічок не менше 2 ATR",
-          "met": true
+          "met": false
         }
       ],
-      "setup_readiness_pct": 100.0,
+      "setup_readiness_pct": 50.0,
       "entry_checks": [
         {
           "key": "PASSIVE_LIMIT",
           "condition": "Ліміт стоїть на правильному боці ціни",
-          "met": true
+          "met": null
         },
         {
           "key": "FRESH_LEVEL",
@@ -350307,51 +350909,13 @@
         }
       ],
       "timeframe": "1H",
-      "reason": "LIMIT_UNREACHABLE",
-      "score": 62.23,
+      "reason": "SETUP_CONDITIONS_INCOMPLETE",
+      "score": 0,
       "score_status": "UNAVAILABLE",
-      "anchor_id": "anc-20261016181842-50e8bba6",
-      "event_key": "79d255de00c255a171",
-      "distance_pct": 6.45935221924887,
+      "anchor_id": null,
+      "event_key": null,
+      "distance_pct": 6.493865879531401,
       "approach_pct": null,
-      "signal_id": null,
-      "entry": 101.37,
-      "quote_gate": {
-        "passive": true,
-        "quote_name": "ASK",
-        "current_quote": 108.4,
-        "required_quote": 101.38,
-        "operator": "≥"
-      },
-      "stop": 100.23,
-      "initial_stop": 100.23,
-      "risk": 1.1400000000000006,
-      "required_rr": 1.2,
-      "required_tp": 102.9,
-      "min_target_pct": 0.015,
-      "target_distance_met": true,
-      "available_tp1": 103.65,
-      "gross_rr": 2.0,
-      "tp1_distance_pct": 2.2491861497484473,
-      "target_source": "1H_LIQUIDITY",
-      "obstacle_level": 107.03,
-      "chosen_target": {
-        "kind": "1H_LIQUIDITY",
-        "level": 107.03,
-        "timeframe": "1H",
-        "known_ts": 1792184400000,
-        "hard_barrier": false,
-        "freshness": "UNSWEPT",
-        "distance": 5.659999999999997
-      },
-      "intermediate_levels": [],
-      "path_barrier": null,
-      "path_clear": true,
-      "tp1": 103.65,
-      "tp": 103.65,
-      "geometry_preview": true,
-      "max_hold_minutes": 1440,
-      "intraday": false,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -350709,14 +351273,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016234916-554c12e2",
       "event_key": "774d5ed7b55c556641",
-      "distance_pct": 2.122358586324639,
+      "distance_pct": 2.1584724656397043,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.07,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.08,
         "operator": "≥"
       },
@@ -350981,27 +351545,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-4e853b85",
       "event_key": "3314ba4560d7d83abd",
-      "distance_pct": 1.4579680723447432,
+      "distance_pct": 1.4943270915967073,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.79,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.8,
         "operator": "≥"
       },
-      "stop": 105.65,
-      "initial_stop": 105.65,
-      "risk": 1.1400000000000006,
+      "stop": 105.63,
+      "initial_stop": 105.63,
+      "risk": 1.1600000000000108,
       "required_rr": 1.2,
       "required_tp": 108.4,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.07,
-      "gross_rr": 1.9999999999999876,
-      "tp1_distance_pct": 2.13503136997845,
+      "available_tp1": 109.11,
+      "gross_rr": 1.9999999999999756,
+      "tp1_distance_pct": 2.1724880606798327,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -351025,8 +351589,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.07,
-      "tp": 109.07,
+      "tp1": 109.11,
+      "tp": 109.11,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -351135,14 +351699,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016183149-95429e04",
       "event_key": "570f5f572d5acd8b57",
-      "distance_pct": 4.253944818676755,
+      "distance_pct": 4.289272207360937,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.76,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.77,
         "operator": "≥"
       },
@@ -351281,7 +351845,7 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261016200354-adce3643",
       "event_key": "45d3bb07e527461505",
-      "distance_pct": 4.263172464704258,
+      "distance_pct": 4.298496448667094,
       "approach_pct": null,
       "signal_id": null,
       "statistics": {
@@ -351397,27 +351961,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-81a1e0f5",
       "event_key": "2eb38c9abae806b93b",
-      "distance_pct": 1.5041063024822456,
+      "distance_pct": 1.5404482981274807,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.74,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.75,
         "operator": "≥"
       },
-      "stop": 105.6,
-      "initial_stop": 105.6,
-      "risk": 1.1400000000000006,
+      "stop": 105.58,
+      "initial_stop": 105.58,
+      "risk": 1.1599999999999966,
       "required_rr": 1.2,
       "required_tp": 108.35,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.02,
-      "gross_rr": 2.0,
-      "tp1_distance_pct": 2.1360314783586296,
+      "available_tp1": 109.05,
+      "gross_rr": 1.9913793103448354,
+      "tp1_distance_pct": 2.164137155705455,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -351441,8 +352005,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.02,
-      "tp": 109.02,
+      "tp1": 109.05,
+      "tp": 109.05,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -351563,7 +352127,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -351682,7 +352246,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -351789,27 +352353,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-09b7904e",
       "event_key": "667fda58941b464541",
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "signal_id": null,
       "entry": 107.03,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 107.04,
         "operator": "≥"
       },
-      "stop": 105.89,
-      "initial_stop": 105.89,
-      "risk": 1.1400000000000006,
+      "stop": 105.87,
+      "initial_stop": 105.87,
+      "risk": 1.1599999999999966,
       "required_rr": 1.2,
       "required_tp": 108.64,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 109.31,
+      "available_tp1": 109.35,
       "gross_rr": 2.0,
-      "tp1_distance_pct": 2.130243856862563,
+      "tp1_distance_pct": 2.167616556105758,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -351823,8 +352387,8 @@
       "intermediate_levels": [],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 109.31,
-      "tp": 109.31,
+      "tp1": 109.35,
+      "tp": 109.35,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -351934,7 +352498,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016181842-4df06154",
       "event_key": "d3de7d5dd59b655a8f",
-      "distance_pct": 4.263172464704258,
+      "distance_pct": 4.298496448667094,
       "approach_pct": null,
       "signal_id": null,
       "statistics": {
@@ -352043,14 +352607,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016181842-96672055",
       "event_key": "67df685c1f91828186",
-      "distance_pct": 4.263172464704258,
+      "distance_pct": 4.298496448667094,
       "approach_pct": null,
       "signal_id": null,
       "entry": 102.71,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 102.7,
         "operator": "≤"
       },
@@ -352248,7 +352812,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 2.122358586324639,
+      "distance_pct": 2.1584724656397043,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -352358,7 +352922,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 5.1582541293716,
+      "distance_pct": 5.193247855363892,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -352468,7 +353032,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 6.5608563255513515,
+      "distance_pct": 6.595332533899079,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -352577,7 +353141,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.6332933468672235,
+      "distance_pct": 1.669587676413617,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -352684,14 +353248,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "2962a54873a73b8e43",
       "event_key": "2962a54873a73b8e43",
-      "distance_pct": 4.946018270739134,
+      "distance_pct": 4.981090305322379,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.01,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.02,
         "operator": "≥"
       },
@@ -352829,14 +353393,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261015161849-46697545",
       "event_key": "3925de2615b7f71b1e",
-      "distance_pct": 4.743010058134169,
+      "distance_pct": 4.7781569965870245,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.23,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 103.24,
         "operator": "≥"
       },
@@ -353084,14 +353648,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016143307-897ad988",
       "event_key": "3866c9feed19c31101",
-      "distance_pct": 4.258558641690513,
+      "distance_pct": 4.293884328014022,
       "approach_pct": null,
       "signal_id": null,
       "entry": 103.76,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 103.75,
         "operator": "≤"
       },
@@ -353276,14 +353840,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "9a5c4de0b98c89ae96",
       "event_key": "9a5c4de0b98c89ae96",
-      "distance_pct": 6.1363846082864315,
+      "distance_pct": 6.171017433816067,
       "approach_pct": null,
       "signal_id": null,
       "entry": 101.72,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 101.73,
         "operator": "≥"
       },
@@ -353431,7 +353995,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.6332933468672235,
+      "distance_pct": 1.669587676413617,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -353546,14 +354110,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016160429-a74552f9",
       "event_key": "c9c173ff3b3564ca58",
-      "distance_pct": 5.195164713481599,
+      "distance_pct": 5.230144820588509,
       "approach_pct": null,
       "signal_id": null,
       "entry": 102.74,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 102.75,
         "operator": "≥"
       },
@@ -353702,7 +354266,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.6332933468672235,
+      "distance_pct": 1.669587676413617,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -353820,7 +354384,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.4579680723447432,
+      "distance_pct": 1.4943270915967073,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -353938,7 +354502,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354056,7 +354620,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354172,14 +354736,14 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": "anc-20261016231817-2f126d99",
       "event_key": "b2ca9ce9caca065021",
-      "distance_pct": 1.7717080372796914,
+      "distance_pct": 1.8079512960058979,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.45,
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 106.44,
         "operator": "≤"
       },
@@ -354190,9 +354754,9 @@
       "required_tp": 104.85,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 104.32,
-      "gross_rr": 1.9906542056074983,
-      "tp1_distance_pct": 2.00093940817286,
+      "available_tp1": 104.33,
+      "gross_rr": 1.9813084112149701,
+      "tp1_distance_pct": 1.9915453264443443,
       "target_source": "FVG_BULL",
       "obstacle_level": 104.26,
       "chosen_target": {
@@ -354259,8 +354823,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 104.32,
-      "tp": 104.32,
+      "tp1": 104.33,
+      "tp": 104.33,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -354380,7 +354944,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.2365045676847868,
+      "distance_pct": 1.2729453002490503,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354498,7 +355062,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 4.263172464704258,
+      "distance_pct": 4.298496448667094,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354617,7 +355181,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.8178462674171807,
+      "distance_pct": 1.780278572087452,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354736,7 +355300,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.8178462674171807,
+      "distance_pct": 1.780278572087452,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354855,7 +355419,7 @@
       "score_status": "UNAVAILABLE",
       "anchor_id": null,
       "event_key": null,
-      "distance_pct": 1.8178462674171807,
+      "distance_pct": 1.780278572087452,
       "approach_pct": null,
       "statistics": {
         "observations": 0,
@@ -354954,31 +355518,31 @@
       ],
       "timeframe": "15m",
       "reason": "COMBINED_CONTEXT_SCORE_LOW",
-      "score": 57.34,
+      "score": 57.71,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-499ba283",
       "event_key": "f6702a5ef15d998836",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
       "signal_id": null,
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
-      "stop": 109.97,
-      "risk": 1.1299999999999955,
-      "initial_stop": 109.97,
+      "stop": 109.99,
+      "risk": 1.1499999999999915,
+      "initial_stop": 109.99,
       "required_rr": 1.2,
       "required_tp": 107.2,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 106.77,
-      "gross_rr": 1.83185840707966,
-      "tp1_distance_pct": 1.9018743109151117,
+      "available_tp1": 106.78,
+      "gross_rr": 1.7913043478261022,
+      "tp1_distance_pct": 1.892686512311652,
       "target_source": "DEMAND_OB",
       "obstacle_level": 106.71,
       "chosen_target": {
@@ -354994,9 +355558,9 @@
       "intermediate_levels": [],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 106.77,
-      "tp": 106.77,
-      "net_rr": 1.83185840707966,
+      "tp1": 106.78,
+      "tp": 106.78,
+      "net_rr": 1.7913043478261022,
       "statistics": {
         "observations": 0,
         "wins": 0,
@@ -355094,18 +355658,18 @@
       ],
       "timeframe": "1H",
       "reason": "COMBINED_CONTEXT_SCORE_LOW",
-      "score": 58.13,
+      "score": 58.36,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-01c0c084",
       "event_key": "e294627c40ef31d989",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
       "signal_id": null,
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
@@ -355236,14 +355800,14 @@
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-8623ecf9",
       "event_key": "d654aa0f5edc9025fb",
-      "distance_pct": 0.42724001107316956,
+      "distance_pct": 0.39018540725025536,
       "approach_pct": null,
       "signal_id": null,
       "entry": 108.84,
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 108.39,
+        "current_quote": 108.41,
         "required_quote": 108.83,
         "operator": "≤"
       },
@@ -355378,27 +355942,27 @@
       "score_status": "PATTERN",
       "anchor_id": "anc-20261017001631-b3fee7d3",
       "event_key": "da0597df91a4622737",
-      "distance_pct": 1.6056104087847274,
+      "distance_pct": 1.6419149524951584,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.63,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.64,
         "operator": "≥"
       },
-      "stop": 105.49,
-      "initial_stop": 105.49,
-      "risk": 1.1400000000000006,
+      "stop": 105.47,
+      "initial_stop": 105.47,
+      "risk": 1.1599999999999966,
       "required_rr": 1.2,
       "required_tp": 108.23,
       "min_target_pct": 0.015,
       "target_distance_met": true,
-      "available_tp1": 108.91,
-      "gross_rr": 2.0,
-      "tp1_distance_pct": 2.1382350182875376,
+      "available_tp1": 108.94,
+      "gross_rr": 1.9913793103448354,
+      "tp1_distance_pct": 2.1663696895807956,
       "target_source": "DAY_HIGH",
       "obstacle_level": 110.34,
       "chosen_target": {
@@ -355422,8 +355986,8 @@
       ],
       "path_barrier": null,
       "path_clear": true,
-      "tp1": 108.91,
-      "tp": 108.91,
+      "tp1": 108.94,
+      "tp": 108.94,
       "geometry_preview": true,
       "max_hold_minutes": 360,
       "intraday": true,
@@ -355524,18 +356088,18 @@
       ],
       "timeframe": "1H",
       "reason": "COMBINED_CONTEXT_SCORE_LOW",
-      "score": 59.12,
+      "score": 58.89,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-641106ff",
       "event_key": "543ecad6314253d75d",
-      "distance_pct": 1.6056104087847274,
+      "distance_pct": 1.6419149524951584,
       "approach_pct": null,
       "signal_id": null,
       "entry": 106.63,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.64,
         "operator": "≥"
       },
@@ -355670,18 +356234,18 @@
       ],
       "timeframe": "4H",
       "reason": "SHOCK_STILL_ACTIVE",
-      "score": 63.19,
+      "score": 63.05,
       "score_status": "CONTEXT",
       "anchor_id": "anc-20261017001631-d697f4c9",
       "event_key": "ac3e37513ce03e3582",
-      "distance_pct": 1.6056104087847274,
+      "distance_pct": 1.6419149524951584,
       "approach_pct": null,
-      "signal_id": "6d8e049f8b0d9191ee",
+      "signal_id": "f75c8ec0143b114b09",
       "entry": 106.63,
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 108.4,
+        "current_quote": 108.42,
         "required_quote": 106.64,
         "operator": "≥"
       },
@@ -355740,7 +356304,7 @@
         "closed_bars": 80,
         "status": "MODEL_ONLY",
         "fingerprint": "d2d2c637f91c05041e319f87372eb360704ed7dc3b31508ecbb96dfb009474b4",
-        "as_of_ts": 1792196191623,
+        "as_of_ts": 1792196352356,
         "last_closed_ts": 1792195200000,
         "entry": 106.63,
         "stop": 105.43,
@@ -356207,18 +356771,18 @@
     ],
     "timeframe": "4H",
     "reason": "SHOCK_STILL_ACTIVE",
-    "score": 63.19,
+    "score": 63.05,
     "score_status": "CONTEXT",
     "anchor_id": "anc-20261017001631-d697f4c9",
     "event_key": "ac3e37513ce03e3582",
-    "distance_pct": 1.6056104087847274,
+    "distance_pct": 1.6419149524951584,
     "approach_pct": null,
-    "signal_id": "6d8e049f8b0d9191ee",
+    "signal_id": "f75c8ec0143b114b09",
     "entry": 106.63,
     "quote_gate": {
       "passive": true,
       "quote_name": "ASK",
-      "current_quote": 108.4,
+      "current_quote": 108.42,
       "required_quote": 106.64,
       "operator": "≥"
     },
@@ -356277,7 +356841,7 @@
       "closed_bars": 80,
       "status": "MODEL_ONLY",
       "fingerprint": "d2d2c637f91c05041e319f87372eb360704ed7dc3b31508ecbb96dfb009474b4",
-      "as_of_ts": 1792196191623,
+      "as_of_ts": 1792196352356,
       "last_closed_ts": 1792195200000,
       "entry": 106.63,
       "stop": 105.43,
@@ -356303,9 +356867,9 @@
   "price_tick": 0.01,
   "market_history_status": {
     "status": "RECORDED",
-    "quotes": 256,
+    "quotes": 257,
     "closed_bars": {
-      "3m": 1428,
+      "3m": 1429,
       "15m": 624,
       "1H": 411,
       "4H": 179
