@@ -467,7 +467,7 @@
     "execution_source": "LIMIT_ARMED_AT_LEVEL",
     "execution": "PAPER_SIGNAL",
     "status": "PENDING",
-    "last_bar": 1792359900000,
+    "last_bar": 1792360440000,
     "parent_keys": [],
     "version": "full-ict-v12.5.0-causal-early-limits",
     "level_key": "fbec655f90dba71649",
@@ -628,7 +628,7 @@
       "exit_policy": "SINGLE_FULL_EXIT",
       "eligibility_assumption": "FREE_POSITION_CAPACITY_AND_ENTRY_PRIORITY",
       "empirical_win_rate": null,
-      "as_of_ts": 1792360098659,
+      "as_of_ts": 1792360698400,
       "closed_bars": 239,
       "source_timeframe": "3m",
       "fee_assumption": {
@@ -639,8 +639,8 @@
         "actual_funding_known": false
       },
       "status": "MODEL_ONLY",
-      "fingerprint": "0a8070f32520e4bd41933d235c8a2b7b5a8f6193453d3c05519f09474b492c77",
-      "scenario_seed": "7784d6da5254e22c4a07b05ec7b13fe92a00bb0a58a6df49c580065d1f36d7ef",
+      "fingerprint": "afe7d5d7e8e35c0bc83ba4d8d13608cb6ac11ac900cedcc874ad1589efe9ccd9",
+      "scenario_seed": "a4bd68e1d290ceb96c9ee2cf921c5ce11a43bbe637e011d83390fde32a2fb5de",
       "paths": 96,
       "completed_paths": 96,
       "censored_paths": 0,
@@ -650,7 +650,7 @@
       "net_win_probability_per_placed": 0.0,
       "expectancy_r_per_placed": 0.0,
       "expectancy_r_given_fill": null,
-      "expected_occupied_minutes": 1401.4390166666667,
+      "expected_occupied_minutes": 1375.9433333333334,
       "stress_expectancy_r_per_placed": 0.0,
       "downside_r_given_fill": null,
       "tp1_probability_given_fill": null,
@@ -28440,130 +28440,6 @@
     }
   ],
   "signals": [
-    {
-      "ts": 1791534831074,
-      "time": "2026-10-09T08:33:51.074000+00:00",
-      "action": "WATCH",
-      "price": 101.7,
-      "plan_id": null,
-      "placed_ids": [],
-      "followed_ids": [],
-      "occupied_slots": 0,
-      "max_slots": 2,
-      "rejections": {
-        "ANCHOR_INVALIDATED": 3,
-        "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION": 6,
-        "LIMIT_WOULD_CROSS_SPREAD": 8,
-        "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS": 8,
-        "COSTS_CONSUME_EDGE": 1
-      },
-      "health": [],
-      "daily": {
-        "net_r": 0,
-        "losses_r": 0,
-        "entries": 0
-      },
-      "detectors": [
-        {
-          "detector": "detect_sweep_reclaim",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_capitulation_recovery",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_range_edge_reversal",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_auction_rejection",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_liquidity_sweep_reversal_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_buyer_exhaustion_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_pullback_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_fresh_base_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_acceptance_retest_continuation",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_momentum_no_pullback_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_acceleration_pullback_reentry",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_direction_flip_15m",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_trend_ignition",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_breakout_retest",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_range_compression_breakout",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_opening_range_breakout",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_liquidity_ladder",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_failed_opening_range_breakout",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_breakout_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_mss_reversal_short",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_or_failure_2_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_session_mean_reclaim",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_daily_weekly_open_reclaim",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_time_of_day_adaptive",
-          "status": "NO_SETUP"
-        }
-      ],
-      "raw_plans": 2,
-      "registered_setups": 24
-    },
     {
       "ts": 1791535740835,
       "time": "2026-10-09T08:49:00.835000+00:00",
@@ -333809,39 +333685,513 @@
         "quality_passed": 0,
         "placed": 0
       }
+    },
+    {
+      "ts": 1792360698400,
+      "time": "2026-10-18T21:58:18.400000+00:00",
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "action": "WAIT_LIMIT",
+      "price": 107.3,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [
+        "0cef9cfe780bbb5f40",
+        "f9a8b160b8656d7b3b"
+      ],
+      "occupied_slots": 0,
+      "max_slots": 2,
+      "rejections": {
+        "ANCHOR_EXPIRED_AWAITING_NEW_EVENT": 2,
+        "LIMIT_UNREACHABLE": 29,
+        "COMBINED_CONTEXT_SCORE_LOW": 2,
+        "STRONG_OPPOSING_ZONE_BEFORE_TP": 88,
+        "LIMIT_WOULD_CROSS_SPREAD": 16,
+        "STRUCTURAL_STOP_TOO_WIDE": 12,
+        "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION": 14,
+        "ANCHOR_INVALIDATED": 2,
+        "ENTRY_INSIDE_STRONG_OPPOSING_ZONE": 1
+      },
+      "health": [],
+      "daily": {
+        "net_r": 0,
+        "losses_r": 0,
+        "entries": 0
+      },
+      "detectors": [
+        {
+          "detector": "detect_sweep_reclaim",
+          "setup": "SWEEP_RECLAIM",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_capitulation_recovery",
+          "setup": "CAPITULATION_RECOVERY",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_range_edge_reversal",
+          "setup": "RANGE_EDGE_REVERSAL",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_failed_auction_rejection",
+          "setup": "FAILED_AUCTION_REJECTION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_liquidity_sweep_reversal_short",
+          "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_buyer_exhaustion_short",
+          "setup": "BUYER_EXHAUSTION_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_pullback_continuation",
+          "setup": "PULLBACK_CONTINUATION",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_fresh_base_continuation",
+          "setup": "FRESH_BASE_CONTINUATION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_acceptance_retest_continuation",
+          "setup": "ACCEPTANCE_RETEST_CONTINUATION",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_momentum_no_pullback_continuation",
+          "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_acceleration_pullback_reentry",
+          "setup": "ACCELERATION_PULLBACK_REENTRY",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "DETECTED"
+            }
+          ]
+        },
+        {
+          "detector": "detect_direction_flip_15m",
+          "setup": "DIRECTION_FLIP_15M",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_trend_ignition",
+          "setup": "TREND_IGNITION",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_breakout_retest",
+          "setup": "BREAKOUT_RETEST",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_range_compression_breakout",
+          "setup": "RANGE_COMPRESSION_BREAKOUT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_opening_range_breakout",
+          "setup": "OPENING_RANGE_BREAKOUT",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_liquidity_ladder",
+          "setup": "LIQUIDITY_LADDER",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_failed_opening_range_breakout",
+          "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_failed_breakout_short",
+          "setup": "FAILED_BREAKOUT_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_mss_reversal_short",
+          "setup": "MSS_REVERSAL_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_or_failure_2_short",
+          "setup": "OR_FAILURE_2_SHORT",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_session_mean_reclaim",
+          "setup": "SESSION_MEAN_RECLAIM",
+          "status": "DETECTED",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "1H",
+              "status": "DETECTED"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_daily_weekly_open_reclaim",
+          "setup": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        },
+        {
+          "detector": "detect_time_of_day_adaptive",
+          "setup": "TIME_OF_DAY_ADAPTIVE",
+          "status": "NO_SETUP",
+          "timeframes": [
+            {
+              "timeframe": "15m",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "1H",
+              "status": "NO_SETUP"
+            },
+            {
+              "timeframe": "4H",
+              "status": "NO_SETUP"
+            }
+          ]
+        }
+      ],
+      "raw_plans": 0,
+      "registered_setups": 24,
+      "timeframe_evaluations": 72,
+      "funnel": {
+        "evaluated": 72,
+        "detected": 10,
+        "live_anchors": 164,
+        "geometry_passed": 0,
+        "quality_passed": 0,
+        "placed": 0
+      }
     }
   ],
-  "last_run_ts": 1792360098659,
+  "last_run_ts": 1792360698400,
   "notification_queue": [],
   "reconciliation": null,
   "anchor_memory": {
-    "eded82897a23590af6": {
-      "id": "anc-20261011214849-e8681166",
-      "setup_type": "SESSION_MEAN_RECLAIM",
-      "setup_family": "VALUE_RECLAIM",
-      "side": "SHORT",
-      "level": 102.445,
-      "kind": "VALUE_LEVEL",
-      "invalidation": 102.854,
-      "created_ts": 1791755329915,
-      "expires_ts": 1791766129915,
-      "reason": "Повернення до VWAP сесії 102.4447",
-      "score": 55.0,
-      "htf_state": "MIXED",
-      "regime": "RANGE",
-      "state": "ARMED",
-      "evidence": {
-        "vwap": 102.444666,
-        "max_displacement_atr": 1.467
-      },
-      "target_levels": [],
-      "touched": false,
-      "touched_ts": 0,
-      "last_checked_ts": 0,
-      "cooldown_until_ts": 0,
-      "reject_reason": "",
-      "schema_version": "organic_v10.0.0"
-    },
     "99cd2e1cf20d580e34": {
       "id": "anc-20261011221830-380307cf",
       "setup_type": "CAPITULATION_RECOVERY",
@@ -431392,235 +431742,7 @@
   },
   "level_cooldown": {},
   "setup_statistics": {
-    "FRESH_BASE_CONTINUATION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "MSS_REVERSAL_SHORT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "RANGE_EDGE_REVERSAL": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "DAILY_WEEKLY_OPEN_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "ACCELERATION_PULLBACK_REENTRY": {
+    "FAILED_AUCTION_REJECTION": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -431734,7 +431856,7 @@
         }
       }
     },
-    "OR_FAILURE_2_SHORT": {
+    "MSS_REVERSAL_SHORT": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -431791,7 +431913,7 @@
         }
       }
     },
-    "RANGE_COMPRESSION_BREAKOUT": {
+    "BREAKOUT_RETEST": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -431848,7 +431970,64 @@
         }
       }
     },
-    "SWEEP_RECLAIM": {
+    "TIME_OF_DAY_ADAPTIVE": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "RANGE_EDGE_REVERSAL": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -431962,7 +432141,520 @@
         }
       }
     },
+    "DIRECTION_FLIP_15M": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "OR_FAILURE_2_SHORT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "FRESH_BASE_CONTINUATION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "LIQUIDITY_LADDER": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
     "ACCEPTANCE_RETEST_CONTINUATION": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "ACCELERATION_PULLBACK_REENTRY": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "SESSION_MEAN_RECLAIM": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "OPENING_RANGE_BREAKOUT": {
+      "trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": null,
+      "wilson_lower_95": null,
+      "net_r": 0,
+      "expectancy_r": null,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0,
+      "status": "INSUFFICIENT_SAMPLE",
+      "required_sample": 20,
+      "version": "full-ict-v12.7.0-adaptive-full-volume",
+      "probability_validated": false,
+      "timeframes": {
+        "15m": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "1H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        },
+        "4H": {
+          "trades": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "win_rate": null,
+          "wilson_lower_95": null,
+          "net_r": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "max_drawdown_r": 0.0,
+          "status": "INSUFFICIENT_SAMPLE"
+        }
+      }
+    },
+    "CAPITULATION_RECOVERY": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -432133,349 +432825,7 @@
         }
       }
     },
-    "LIQUIDITY_LADDER": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "OPENING_RANGE_BREAKOUT": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "SESSION_MEAN_RECLAIM": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "TIME_OF_DAY_ADAPTIVE": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "CAPITULATION_RECOVERY": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "FAILED_AUCTION_REJECTION": {
-      "trades": 0,
-      "wins": 0,
-      "losses": 0,
-      "breakeven": 0,
-      "win_rate": null,
-      "wilson_lower_95": null,
-      "net_r": 0,
-      "expectancy_r": null,
-      "profit_factor": null,
-      "max_drawdown_r": 0.0,
-      "status": "INSUFFICIENT_SAMPLE",
-      "required_sample": 20,
-      "version": "full-ict-v12.7.0-adaptive-full-volume",
-      "probability_validated": false,
-      "timeframes": {
-        "15m": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "1H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        },
-        "4H": {
-          "trades": 0,
-          "wins": 0,
-          "losses": 0,
-          "breakeven": 0,
-          "win_rate": null,
-          "wilson_lower_95": null,
-          "net_r": 0,
-          "expectancy_r": null,
-          "profit_factor": null,
-          "max_drawdown_r": 0.0,
-          "status": "INSUFFICIENT_SAMPLE"
-        }
-      }
-    },
-    "LIQUIDITY_SWEEP_REVERSAL_SHORT": {
+    "RANGE_COMPRESSION_BREAKOUT": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -432589,7 +432939,7 @@
         }
       }
     },
-    "BREAKOUT_RETEST": {
+    "DAILY_WEEKLY_OPEN_RECLAIM": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -432646,7 +432996,7 @@
         }
       }
     },
-    "DIRECTION_FLIP_15M": {
+    "SWEEP_RECLAIM": {
       "trades": 0,
       "wins": 0,
       "losses": 0,
@@ -432764,7 +433114,7 @@
   "regime_memory": {
     "last_regime": "TRANSITION",
     "last_bias": "NEUTRAL",
-    "updated_at": "2026-10-18T21:48:18.659000+00:00"
+    "updated_at": "2026-10-18T21:58:18.400000+00:00"
   },
   "watch": [
     {
@@ -432880,7 +433230,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.86,
         "operator": "≥"
       },
@@ -433099,7 +433449,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.71,
         "operator": "≥"
       },
@@ -433309,7 +433659,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.71,
         "operator": "≥"
       },
@@ -433519,7 +433869,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.61,
         "operator": "≥"
       },
@@ -433738,7 +434088,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.18,
         "operator": "≥"
       },
@@ -433960,7 +434310,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.86,
         "operator": "≥"
       },
@@ -434174,7 +434524,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.01,
         "operator": "≥"
       },
@@ -434388,7 +434738,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.46,
         "operator": "≤"
       },
@@ -434709,7 +435059,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -434912,7 +435262,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -435115,7 +435465,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -435319,7 +435669,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -435523,7 +435873,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.93,
         "operator": "≥"
       },
@@ -435737,7 +436087,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 97.64,
         "operator": "≥"
       },
@@ -435906,7 +436256,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.42,
         "operator": "≥"
       },
@@ -436115,7 +436465,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 103.76,
         "operator": "≥"
       },
@@ -436276,7 +436626,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 103.76,
         "operator": "≥"
       },
@@ -436437,7 +436787,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.78,
         "operator": "≥"
       },
@@ -436645,7 +436995,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.93,
         "operator": "≥"
       },
@@ -436854,7 +437204,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.78,
         "operator": "≥"
       },
@@ -437071,7 +437421,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 106.55,
         "operator": "≤"
       },
@@ -437331,7 +437681,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.01,
         "operator": "≤"
       },
@@ -437655,7 +438005,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 106.63,
         "operator": "≤"
       },
@@ -437950,7 +438300,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 106.59,
         "operator": "≤"
       },
@@ -438574,7 +438924,7 @@
       "execution_source": "LIMIT_ARMED_AT_LEVEL",
       "execution": "PAPER_SIGNAL",
       "status": "PENDING",
-      "last_bar": 1792359900000,
+      "last_bar": 1792360440000,
       "parent_keys": [],
       "version": "full-ict-v12.5.0-causal-early-limits",
       "level_key": "51b52d09e5818de2a3",
@@ -438735,7 +439085,7 @@
         "exit_policy": "SINGLE_FULL_EXIT",
         "eligibility_assumption": "FREE_POSITION_CAPACITY_AND_ENTRY_PRIORITY",
         "empirical_win_rate": null,
-        "as_of_ts": 1792360098659,
+        "as_of_ts": 1792360698400,
         "closed_bars": 239,
         "source_timeframe": "3m",
         "fee_assumption": {
@@ -438746,8 +439096,8 @@
           "actual_funding_known": false
         },
         "status": "MODEL_ONLY",
-        "fingerprint": "229f558edc1df1115f9d3f2cb3a2672e58bc194492a3ed56c5bd4f3fc9039cf7",
-        "scenario_seed": "2eaf7146d65c2ccb76e01cb4ff3ccdbd203686d7c1570f49b4b07428f0ba6f76",
+        "fingerprint": "b60dcb2d3f6ed59960cdee51fda16b12009de47e3e16ba426a897de8eb5c0ada",
+        "scenario_seed": "66eed2996a783a8a1d1c09f96d7ff698490ea0a4e93226ea18a0550c4b6f5cff",
         "paths": 96,
         "completed_paths": 96,
         "censored_paths": 0,
@@ -438757,7 +439107,7 @@
         "net_win_probability_per_placed": 0.0,
         "expectancy_r_per_placed": 0.0,
         "expectancy_r_given_fill": null,
-        "expected_occupied_minutes": 925.4390166666667,
+        "expected_occupied_minutes": 867.2245833333334,
         "stress_expectancy_r_per_placed": 0.0,
         "downside_r_given_fill": null,
         "tp1_probability_given_fill": null,
@@ -438790,7 +439140,7 @@
     "pending": [],
     "observations": [],
     "seen": {},
-    "last_run_ts": 1792360098659,
+    "last_run_ts": 1792360698400,
     "unobserved_due_policy_budget": 0
   },
   "quality_archives": [
@@ -446775,7 +447125,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.01,
         "operator": "≥"
       },
@@ -446988,7 +447338,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.71,
         "operator": "≥"
       },
@@ -447202,7 +447552,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.33,
         "operator": "≤"
       },
@@ -447325,7 +447675,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.46,
         "operator": "≤"
       },
@@ -447909,7 +448259,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.86,
         "operator": "≥"
       },
@@ -448130,7 +448480,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.86,
         "operator": "≥"
       },
@@ -448337,7 +448687,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.33,
         "operator": "≤"
       },
@@ -448594,18 +448944,19 @@
         },
         {
           "condition": "Дельта слабшає або верхні хвости",
-          "met": true
+          "met": false
         }
       ],
       "side": -1,
       "level": 107.2,
       "setup": "BUYER_EXHAUSTION_SHORT",
-      "readiness_pct": 25.0,
+      "readiness_pct": 16.7,
       "status": "FORMING",
-      "met_conditions": 3,
+      "met_conditions": 2,
       "total_conditions": 12,
       "missing_conditions": [
         "Тіла свічок стиснулися до 62%",
+        "Дельта слабшає або верхні хвости",
         "Ліміт стоїть на правильному боці ціни",
         "Рівень актуальний і ще не відвіданий",
         "Структурний SL відповідає межам ризику",
@@ -448630,10 +448981,10 @@
         },
         {
           "condition": "Дельта слабшає або верхні хвости",
-          "met": true
+          "met": false
         }
       ],
-      "setup_readiness_pct": 75.0,
+      "setup_readiness_pct": 50.0,
       "entry_checks": [
         {
           "key": "PASSIVE_LIMIT",
@@ -448927,7 +449278,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 106.55,
         "operator": "≤"
       },
@@ -449178,7 +449529,7 @@
       "reason": "ANCHOR_EXPIRED_AWAITING_NEW_EVENT",
       "score": 88.0,
       "score_status": "PATTERN",
-      "anchor_id": "anc-20261018214818-79d60290",
+      "anchor_id": "anc-20261018215818-87f063f8",
       "event_key": "681dc6bfa9d0f5b0e1",
       "distance_pct": 0.6244175209692467,
       "approach_pct": null,
@@ -449412,7 +449763,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 97.64,
         "operator": "≥"
       },
@@ -449919,7 +450270,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -450123,7 +450474,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -450329,7 +450680,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 103.76,
         "operator": "≥"
       },
@@ -450498,7 +450849,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.42,
         "operator": "≥"
       },
@@ -450949,7 +451300,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.18,
         "operator": "≥"
       },
@@ -451288,7 +451639,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.71,
         "operator": "≥"
       },
@@ -451491,7 +451842,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -451695,7 +452046,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.06,
         "operator": "≥"
       },
@@ -451901,7 +452252,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 103.76,
         "operator": "≥"
       },
@@ -452646,7 +452997,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 107.04,
         "operator": "≥"
       },
@@ -453092,7 +453443,7 @@
       "reason": "ANCHOR_EXPIRED_AWAITING_NEW_EVENT",
       "score": 53.0,
       "score_status": "PATTERN",
-      "anchor_id": "anc-20261018214818-27df794c",
+      "anchor_id": "anc-20261018215818-16be7172",
       "event_key": "2bd9b6fe0e2fcd8c26",
       "distance_pct": 0.4939422180801502,
       "approach_pct": null,
@@ -453211,7 +453562,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.78,
         "operator": "≥"
       },
@@ -453420,7 +453771,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 106.59,
         "operator": "≤"
       },
@@ -453792,7 +454143,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.78,
         "operator": "≥"
       },
@@ -454354,7 +454705,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.61,
         "operator": "≥"
       },
@@ -454568,7 +454919,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.33,
         "operator": "≤"
       },
@@ -455642,7 +455993,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.93,
         "operator": "≥"
       },
@@ -455848,7 +456199,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.93,
         "operator": "≥"
       },
@@ -456055,7 +456406,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 106.63,
         "operator": "≤"
       },
@@ -456571,7 +456922,7 @@
       "quote_gate": {
         "passive": true,
         "quote_name": "ASK",
-        "current_quote": 107.3,
+        "current_quote": 107.31,
         "required_quote": 106.77,
         "operator": "≥"
       },
@@ -457024,7 +457375,7 @@
       "quote_gate": {
         "passive": false,
         "quote_name": "BID",
-        "current_quote": 107.29,
+        "current_quote": 107.3,
         "required_quote": 107.01,
         "operator": "≤"
       },
@@ -457480,7 +457831,7 @@
     "quote_gate": {
       "passive": true,
       "quote_name": "ASK",
-      "current_quote": 107.3,
+      "current_quote": 107.31,
       "required_quote": 106.86,
       "operator": "≥"
     },
@@ -457590,8 +457941,8 @@
   "price_tick": 0.01,
   "market_history_status": {
     "status": "RECORDED_VERIFIED_SOURCE",
-    "quotes": 10,
-    "fingerprint": "0a68f96fd5c45237c7c6054a5fe6f9bd0985c4d721366e303ce6e638c5239661",
+    "quotes": 11,
+    "fingerprint": "0bbf676b55372d6ec4f57335f2be9438f4c43e8fa4ff7686e5ea0d1bf6ce5983",
     "revisions": 0
   },
   "setup_renewals": [
