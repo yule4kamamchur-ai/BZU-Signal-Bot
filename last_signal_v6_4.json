@@ -469,7 +469,7 @@
     "execution_source": "LIMIT_ARMED_AT_LEVEL",
     "execution": "PAPER_SIGNAL",
     "status": "PENDING",
-    "last_bar": 1792352880000,
+    "last_bar": 1792353600000,
     "parent_keys": [],
     "version": "full-ict-v12.5.0-causal-early-limits",
     "level_key": "fbec655f90dba71649",
@@ -570,7 +570,7 @@
       "calibrated": false,
       "target": "FULL_TRADE_NET_AFTER_COSTS",
       "empirical_win_rate": null,
-      "as_of_ts": 1792353132856,
+      "as_of_ts": 1792353872640,
       "closed_bars": 239,
       "source_timeframe": "3m",
       "fee_assumption": {
@@ -581,19 +581,19 @@
         "actual_funding_known": false
       },
       "status": "MODEL_ONLY",
-      "fingerprint": "81f686f6b0c5b74518a93bbacdb39c223fabf60aef8d860062f562517767e352",
+      "fingerprint": "5360f194d98b81be6c7c247acba395859882572230a071159477d8679f24dd8c",
       "paths": 96,
       "completed_paths": 96,
       "censored_paths": 0,
-      "fill_probability": 0.125,
+      "fill_probability": 0.010416666666666666,
       "net_win_probability_given_fill": 1.0,
-      "net_win_probability_per_placed": 0.125,
-      "expectancy_r_per_placed": 0.10653971449387938,
-      "expectancy_r_given_fill": 0.8523177159510351,
-      "expected_occupied_minutes": 2185.066983333333,
-      "stress_expectancy_r_per_placed": 0.08540159842051781,
+      "net_win_probability_per_placed": 0.010416666666666666,
+      "expectancy_r_per_placed": 0.020182813707280516,
+      "expectancy_r_given_fill": 1.9375501158989297,
+      "expected_occupied_minutes": 1598.3935,
+      "stress_expectancy_r_per_placed": 0.01857623839253574,
       "downside_r_given_fill": -0.0,
-      "tp1_probability_given_fill": 0.08333333333333333,
+      "tp1_probability_given_fill": 1.0,
       "limitations": [
         "Uncalibrated 3m block scenarios with fixed current context",
         "Queue position, future HTF flips and actual future funding are unknown",
@@ -28385,129 +28385,6 @@
     }
   ],
   "signals": [
-    {
-      "ts": 1791527597476,
-      "time": "2026-10-09T06:33:17.476000+00:00",
-      "action": "WATCH",
-      "price": 101.96,
-      "plan_id": null,
-      "placed_ids": [],
-      "followed_ids": [],
-      "occupied_slots": 0,
-      "max_slots": 2,
-      "rejections": {
-        "ANCHOR_INVALIDATED": 2,
-        "LIMIT_WOULD_CROSS_SPREAD": 10,
-        "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION": 13,
-        "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS": 10
-      },
-      "health": [],
-      "daily": {
-        "net_r": 0,
-        "losses_r": 0,
-        "entries": 0
-      },
-      "detectors": [
-        {
-          "detector": "detect_sweep_reclaim",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_capitulation_recovery",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_range_edge_reversal",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_failed_auction_rejection",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_liquidity_sweep_reversal_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_buyer_exhaustion_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_pullback_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_fresh_base_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_acceptance_retest_continuation",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_momentum_no_pullback_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_acceleration_pullback_reentry",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_direction_flip_15m",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_trend_ignition",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_breakout_retest",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_range_compression_breakout",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_opening_range_breakout",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_liquidity_ladder",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_opening_range_breakout",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_breakout_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_mss_reversal_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_or_failure_2_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_session_mean_reclaim",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_daily_weekly_open_reclaim",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_time_of_day_adaptive",
-          "status": "NO_SETUP"
-        }
-      ],
-      "raw_plans": 0,
-      "registered_setups": 24
-    },
     {
       "ts": 1791528530227,
       "time": "2026-10-09T06:48:50.227000+00:00",
@@ -330832,9 +330709,40 @@
       "funnel": {
         "placed": 0
       }
+    },
+    {
+      "ts": 1792353872640,
+      "time": "2026-10-18T20:04:32.640000+00:00",
+      "version": "full-ict-v12.6.0-lifecycle-adaptive-policy",
+      "action": "WAIT_LIMIT",
+      "price": 107.17,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [
+        "0cef9cfe780bbb5f40",
+        "f9a8b160b8656d7b3b"
+      ],
+      "occupied_slots": 2,
+      "max_slots": 2,
+      "rejections": {},
+      "health": [
+        "SPREAD_TOO_WIDE"
+      ],
+      "daily": {
+        "net_r": -0.10286949152541203,
+        "losses_r": 0.10286949152541203,
+        "entries": 0
+      },
+      "detectors": [],
+      "raw_plans": 0,
+      "registered_setups": 24,
+      "timeframe_evaluations": 0,
+      "funnel": {
+        "placed": 0
+      }
     }
   ],
-  "last_run_ts": 1792353132856,
+  "last_run_ts": 1792353872640,
   "notification_queue": [],
   "reconciliation": null,
   "anchor_memory": {
@@ -429498,7 +429406,7 @@
       "execution_source": "LIMIT_ARMED_AT_LEVEL",
       "execution": "PAPER_SIGNAL",
       "status": "PENDING",
-      "last_bar": 1792352880000,
+      "last_bar": 1792353600000,
       "parent_keys": [],
       "version": "full-ict-v12.5.0-causal-early-limits",
       "level_key": "51b52d09e5818de2a3",
@@ -429599,7 +429507,7 @@
         "calibrated": false,
         "target": "FULL_TRADE_NET_AFTER_COSTS",
         "empirical_win_rate": null,
-        "as_of_ts": 1792353132856,
+        "as_of_ts": 1792353872640,
         "closed_bars": 239,
         "source_timeframe": "3m",
         "fee_assumption": {
@@ -429610,7 +429518,7 @@
           "actual_funding_known": false
         },
         "status": "MODEL_ONLY",
-        "fingerprint": "9636a9041f3cc0c63f12fe707baaf27b8a401627c8aff9a8263a915f9f9f2bcb",
+        "fingerprint": "cfe7ba8f8d764139f3cad1416afdd246e6102ab94007febf27352f50a90bc98e",
         "paths": 96,
         "completed_paths": 96,
         "censored_paths": 0,
@@ -429619,7 +429527,7 @@
         "net_win_probability_per_placed": 0.0,
         "expectancy_r_per_placed": 0.0,
         "expectancy_r_given_fill": null,
-        "expected_occupied_minutes": 1108.7857333333334,
+        "expected_occupied_minutes": 1093.2685,
         "stress_expectancy_r_per_placed": 0.0,
         "downside_r_given_fill": null,
         "tp1_probability_given_fill": null,
@@ -429651,7 +429559,7 @@
     "pending": [],
     "observations": [],
     "seen": {},
-    "last_run_ts": 1792353132856
+    "last_run_ts": 1792353872640
   },
   "quality_archives": [
     {
@@ -437046,8 +436954,8 @@
   "price_tick": 0.01,
   "market_history_status": {
     "status": "RECORDED_VERIFIED_SOURCE",
-    "quotes": 1,
-    "fingerprint": "030b0addc32798069c2b4d564a591cbdfdbaa362efb453d7800fe942200a70c5",
+    "quotes": 2,
+    "fingerprint": "0b31f05d020da5238a1b83ea829c035fa365a5bdb25ad0dc8a555e2deef1faf3",
     "revisions": 0
   },
   "setup_renewals": [
