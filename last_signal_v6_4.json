@@ -469,7 +469,7 @@
     "execution_source": "LIMIT_ARMED_AT_LEVEL",
     "execution": "PAPER_SIGNAL",
     "status": "PENDING",
-    "last_bar": 1792349100000,
+    "last_bar": 1792350000000,
     "parent_keys": [],
     "version": "full-ict-v12.5.0-causal-early-limits",
     "level_key": "fbec655f90dba71649",
@@ -543,21 +543,21 @@
       "source_timeframe": "1H",
       "closed_bars": 80,
       "status": "MODEL_ONLY",
-      "fingerprint": "9642b3de30fd0132c0036b67027eb617d09515516e942ce11f5eaf34302373a2",
-      "as_of_ts": 1792346670462,
-      "last_closed_ts": 1792346400000,
+      "fingerprint": "e9a9e62e2a2f6eea17782a5ca79f55cb98a27ec21eff3a211a9520d9593da0bc",
+      "as_of_ts": 1792350268434,
+      "last_closed_ts": 1792350000000,
       "entry": 106.6,
       "stop": 105.53,
       "tp1": 108.73,
       "horizon_minutes": 5760,
       "paths": 512,
-      "tp1_paths": 390,
-      "sl_paths": 117,
-      "timeout_paths": 5,
+      "tp1_paths": 389,
+      "sl_paths": 120,
+      "timeout_paths": 3,
       "ambiguous_paths": 0,
-      "tp1_before_sl": 0.76171875,
-      "stop_before_tp1": 0.228515625,
-      "neither_within_horizon": 0.009765625,
+      "tp1_before_sl": 0.759765625,
+      "stop_before_tp1": 0.234375,
+      "neither_within_horizon": 0.005859375,
       "limitations": [
         "Uncalibrated; recent market regime may change",
         "Conditional on entry; no limit-fill probability",
@@ -28349,130 +28349,6 @@
     }
   ],
   "signals": [
-    {
-      "ts": 1791521295818,
-      "time": "2026-10-09T04:48:15.818000+00:00",
-      "action": "WATCH",
-      "price": 101.59,
-      "plan_id": null,
-      "placed_ids": [],
-      "followed_ids": [],
-      "occupied_slots": 0,
-      "max_slots": 2,
-      "rejections": {
-        "LIMIT_WOULD_CROSS_SPREAD": 8,
-        "LIMIT_UNREACHABLE": 6,
-        "STRUCTURAL_STOP_TOO_WIDE": 10,
-        "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION": 4,
-        "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS": 2
-      },
-      "health": [],
-      "daily": {
-        "net_r": 0,
-        "losses_r": 0,
-        "entries": 0
-      },
-      "detectors": [
-        {
-          "detector": "detect_sweep_reclaim",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_capitulation_recovery",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_range_edge_reversal",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_auction_rejection",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_liquidity_sweep_reversal_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_buyer_exhaustion_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_pullback_continuation",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_fresh_base_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_acceptance_retest_continuation",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_momentum_no_pullback_continuation",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_acceleration_pullback_reentry",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_direction_flip_15m",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_trend_ignition",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_breakout_retest",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_range_compression_breakout",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_opening_range_breakout",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_liquidity_ladder",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_opening_range_breakout",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_failed_breakout_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_mss_reversal_short",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_or_failure_2_short",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_session_mean_reclaim",
-          "status": "DETECTED"
-        },
-        {
-          "detector": "detect_daily_weekly_open_reclaim",
-          "status": "NO_SETUP"
-        },
-        {
-          "detector": "detect_time_of_day_adaptive",
-          "status": "NO_SETUP"
-        }
-      ],
-      "raw_plans": 0,
-      "registered_setups": 24
-    },
     {
       "ts": 1791522211679,
       "time": "2026-10-09T05:03:31.679000+00:00",
@@ -331447,9 +331323,40 @@
       "funnel": {
         "placed": 0
       }
+    },
+    {
+      "ts": 1792350268434,
+      "time": "2026-10-18T19:04:28.434000+00:00",
+      "version": "full-ict-v12.5.0-causal-early-limits",
+      "action": "WAIT_LIMIT",
+      "price": 107.02,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [
+        "0cef9cfe780bbb5f40",
+        "f9a8b160b8656d7b3b"
+      ],
+      "occupied_slots": 2,
+      "max_slots": 2,
+      "rejections": {},
+      "health": [
+        "SPREAD_TOO_WIDE"
+      ],
+      "daily": {
+        "net_r": -0.10286949152541203,
+        "losses_r": 0.10286949152541203,
+        "entries": 0
+      },
+      "detectors": [],
+      "raw_plans": 0,
+      "registered_setups": 24,
+      "timeframe_evaluations": 0,
+      "funnel": {
+        "placed": 0
+      }
     }
   ],
-  "last_run_ts": 1792349336509,
+  "last_run_ts": 1792350268434,
   "notification_queue": [],
   "reconciliation": null,
   "anchor_memory": {
@@ -430113,7 +430020,7 @@
       "execution_source": "LIMIT_ARMED_AT_LEVEL",
       "execution": "PAPER_SIGNAL",
       "status": "PENDING",
-      "last_bar": 1792349100000,
+      "last_bar": 1792350000000,
       "parent_keys": [],
       "version": "full-ict-v12.5.0-causal-early-limits",
       "level_key": "51b52d09e5818de2a3",
@@ -430187,21 +430094,21 @@
         "source_timeframe": "1H",
         "closed_bars": 80,
         "status": "MODEL_ONLY",
-        "fingerprint": "9d7b00ad898de32ab7ea30edccaf67e6c467a25802853763e929b72830c3c194",
-        "as_of_ts": 1792346670462,
-        "last_closed_ts": 1792346400000,
+        "fingerprint": "45a70f8b68e1f425cd3bb17325ecc16f3ea5898e77f529c4a7dd0a04ce274fa7",
+        "as_of_ts": 1792350268434,
+        "last_closed_ts": 1792350000000,
         "entry": 105.92,
         "stop": 104.81,
         "tp1": 108.14,
         "horizon_minutes": 5760,
         "paths": 512,
-        "tp1_paths": 400,
-        "sl_paths": 106,
-        "timeout_paths": 6,
+        "tp1_paths": 401,
+        "sl_paths": 102,
+        "timeout_paths": 9,
         "ambiguous_paths": 0,
-        "tp1_before_sl": 0.78125,
-        "stop_before_tp1": 0.20703125,
-        "neither_within_horizon": 0.01171875,
+        "tp1_before_sl": 0.783203125,
+        "stop_before_tp1": 0.19921875,
+        "neither_within_horizon": 0.017578125,
         "limitations": [
           "Uncalibrated; recent market regime may change",
           "Conditional on entry; no limit-fill probability",
@@ -430268,7 +430175,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792196191623,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -430366,7 +430273,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792197259778,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -430462,7 +430369,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792235080352,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -430545,7 +430452,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792227858954,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": false,
@@ -430628,7 +430535,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792238663418,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": false,
@@ -430711,7 +430618,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792238663418,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -430794,7 +430701,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792080276499,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": false,
@@ -430877,7 +430784,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792081129391,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": false,
@@ -430960,7 +430867,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792249432768,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -431044,7 +430951,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792261091363,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431141,7 +431048,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792263828354,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431238,7 +431145,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792263828354,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431335,7 +431242,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792263828354,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431432,7 +431339,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792265634575,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431529,7 +431436,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792270952314,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431626,7 +431533,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792270952314,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431723,7 +431630,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792274630488,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431820,7 +431727,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792274630488,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -431917,7 +431824,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792276447205,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -432014,7 +431921,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792289072948,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -432111,7 +432018,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792296264533,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -432208,7 +432115,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792298949107,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -432304,7 +432211,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792203529610,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432387,7 +432294,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792199921936,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432470,7 +432377,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792199091835,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432554,7 +432461,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792198052348,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432637,7 +432544,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792197259778,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432721,7 +432628,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792301567160,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -432817,7 +432724,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792331332352,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432900,7 +432807,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792290847552,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -432984,7 +432891,7 @@
           "costs_r": 0.0,
           "timeframe": "15m",
           "zone_created_ts": 1792332272021,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -433081,7 +432988,7 @@
           "costs_r": 0.0,
           "timeframe": "15m",
           "zone_created_ts": 1792333134708,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -433178,7 +433085,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792334935177,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -433274,7 +433181,7 @@
           "costs_r": 0.0,
           "timeframe": "1H",
           "zone_created_ts": 1792331332352,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -433358,7 +433265,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792338541693,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -433454,7 +433361,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792335863264,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -433538,7 +433445,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792339467322,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -433634,7 +433541,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792204442653,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -433717,7 +433624,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792202656965,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -433801,7 +433708,7 @@
           "costs_r": 0.0,
           "timeframe": "15m",
           "zone_created_ts": 1792343012099,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -433846,7 +433753,7 @@
           "resolved_ts": 1792346940000,
           "filled_ts": 1792346760000,
           "opened_at": "2026-10-18T18:06:00+00:00",
-          "mfe_r": 0.02752293577981747,
+          "mfe_r": 0.06422018348623207,
           "mae_r": 0.02752293577981747,
           "strong_closes": 0,
           "remaining": 1.0,
@@ -433897,7 +433804,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792343012099,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -433980,7 +433887,7 @@
           "costs_r": 0.0,
           "timeframe": "4H",
           "zone_created_ts": 1792344685543,
-          "last_bar": 1792349100000,
+          "last_bar": 1792350000000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -437036,7 +436943,7 @@
       "b45a3c223494690b0dc5c56ebde8f32e67dfe87b5b3f2e10b742b0cb21b8d83d": 1792343012099,
       "342f0940962222b0ea674981d52c5d7c62becd0ec6dd3e89b75d4c3de0407938": 1792344685543
     },
-    "last_run_ts": 1792349336509,
+    "last_run_ts": 1792350268434,
     "unobserved_due_capacity": 63
   },
   "quality_archives": [
@@ -437844,11 +437751,11 @@
   "price_tick": 0.01,
   "market_history_status": {
     "status": "RECORDED",
-    "quotes": 451,
+    "quotes": 452,
     "closed_bars": {
-      "3m": 2279,
-      "15m": 794,
-      "1H": 453,
+      "3m": 2284,
+      "15m": 795,
+      "1H": 454,
       "4H": 179
     }
   },
