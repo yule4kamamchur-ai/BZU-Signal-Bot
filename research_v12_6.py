@@ -36,11 +36,14 @@ def summarize(report,state):
     report['by_timeframe']={tf:engine.statistics([t for t in trades if setup_scanner.timeframe(t)==tf])
                             for tf in setup_scanner.PRIMARY}
     report['dependencies']=trade_dependencies.summary(trades,state.get('price_tick',.001))
-    fill_pairs=[];win_pairs=[];errors=[];censored=0
+    fill_pairs=[];win_pairs=[];errors=[];censored=0;queue_excluded=0
     by_id={t['id']:t for t in trades}
     for order in state.get('orders',[]):
         predicted=order.get('decision_forecast',{})
         if predicted.get('status')!='MODEL_ONLY':
+            continue
+        if predicted.get('eligibility_assumption') and order.get('capacity_waited'):
+            queue_excluded+=1
             continue
         if order['status'] not in ('FILLED','CANCELLED','EXPIRED'):
             censored+=1;continue
@@ -59,6 +62,7 @@ def summarize(report,state):
         'full_net_win_brier':sum((p-y)**2 for p,y in win_pairs)/len(win_pairs) if win_pairs else None,
         'net_r_mean_absolute_error':sum(errors)/len(errors) if errors else None,
         'censored_excluded':censored+len(engine.open_plans(state)),
+        'queue_conditioned_excluded':queue_excluded,
         'prediction_time':'IMMUTABLE_PLACEMENT_DECISION_FORECAST',
         'actual_funding_in_labels':False,'forecast_carry_budget_included':True}
     return report

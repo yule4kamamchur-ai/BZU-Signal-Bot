@@ -79,9 +79,11 @@ class DependencyTests(unittest.TestCase):
         second=order();second.update(id='second',event_key='second',entry=100.4)
         with patch.object(engine,'analyze',return_value=analysis([second])):
             result=engine.run_cycle(state,snapshot(price=101.),cfg)
-        self.assertFalse(result['selected_plans'])
-        self.assertEqual(engine.occupied_slots(state),1)
-        self.assertEqual(result['analysis']['rejections']['DEPENDENT_ENTRY_ALREADY_RESERVED'],1)
+        self.assertEqual(len(result['selected_plans']),1)
+        self.assertEqual(engine.occupied_slots(state),0)
+        eligible=engine.entry_priority(state,NOW,101.,cfg)
+        self.assertEqual(len(eligible),1)
+        self.assertEqual(len(engine.pending_plans(state)),2)
 
 
 class FullLifecycleTests(unittest.TestCase):
@@ -91,27 +93,28 @@ class FullLifecycleTests(unittest.TestCase):
                           expires_ts=NOW+900000)
         return p
 
-    def test_tp1_success_can_end_as_a_losing_full_trade(self):
+    def test_tp1_without_a_following_review_does_not_invent_a_profitable_exit(self):
         p=self.plan();rows=[candle(NOW,100.2,100.3,99.98,100.1),
             candle(NOW+180000,100.1,101.6,100.1,101.5),
             candle(NOW+360000,101.5,101.6,98.9,99.)]
         out=model.simulate(p,rows,engine.Config(),engine,review_ms=86400000)
         self.assertTrue(out['filled']);self.assertTrue(out['tp1_hit'])
         self.assertLess(out['net_r'],0.)
-        self.assertEqual(len(out['realized_legs']),1)
+        self.assertEqual(out['close_reason'],'STOP')
+        self.assertEqual(len(out['realized_legs']),0)
         self.assertGreater(out['fees_r'],0.)
         self.assertLess(out['stress_net_r'],out['net_r'])
 
-    def test_partial_result_and_fees_match_hand_computation(self):
+    def test_full_exit_result_and_fees_match_hand_computation(self):
         p=self.plan();p.update(partials={'TP1':.65,'TP2':.35},tp1=102.,tp=102.)
         rows=[candle(NOW,100.2,100.3,99.98,100.1),
             candle(NOW+180000,100.1,102.1,100.1,101.8),
             candle(NOW+360000,101.8,101.9,98.9,99.)]
-        out=model.simulate(p,rows,engine.Config(),engine,review_ms=86400000)
-        exit_tp=102*(1-.0002);exit_stop=99*(1-.0002)
-        gross=.65*(exit_tp-100)+.35*(exit_stop-100)
-        fees=100*.0002+(.65*exit_tp+.35*exit_stop)*.0005
-        carry=100*.0002*((.65*6+.35*9)/1440)
+        out=model.simulate(p,rows,engine.Config(),engine,review_ms=300000)
+        exit_tp=101.8*(1-.0002)
+        gross=exit_tp-100
+        fees=100*.0002+exit_tp*.0005
+        carry=100*.0002*(6/1440)
         self.assertAlmostEqual(out['net_r'],gross-fees-carry,places=10)
 
     def test_exact_touch_does_not_assume_a_fill(self):

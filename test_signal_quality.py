@@ -171,7 +171,8 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(len(result['analysis']['quality_assessments']),2)
         self.assertEqual(len(state['quality']['pending']),1)
         self.assertEqual(state['quality']['pending'][0]['pending']['setup'],'SWEEP_RECLAIM')
-        self.assertEqual(engine.occupied_slots(state),1)
+        self.assertEqual(engine.occupied_slots(state),0)
+        self.assertEqual(len(engine.pending_plans(state)),1)
 
 
 class EmpiricalTests(unittest.TestCase):

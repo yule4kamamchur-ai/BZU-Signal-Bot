@@ -1,6 +1,7 @@
 """Short Ukrainian lifecycle reports. Formatting never changes trading state."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -61,22 +62,32 @@ def setup_text(plan):
 
 
 def targets(plan):
-    parts = []
-    for name, fraction in plan.get('partials', {'TP1': 1.}).items():
-        if fraction <= 0 or name not in ('TP1', 'TP2', 'TP3'):
-            continue
-        level = plan.get(name.lower(), plan['tp'])
-        mark = 'досягнуто' if plan.get(name.lower() + '_hit') else f'закрити {fraction*100:.0f}%'
-        parts.append(f'{name} {level:.8g} ({mark})')
+    parts=[]
+    for name in ('TP1','TP2','TP3'):
+        level=plan.get(name.lower(),plan.get('tp') if name=='TP1' else None)
+        parts.append(f'{name}: {level:.8g}' if level is not None else f'{name}: —')
     return ' • '.join(parts)
+
+
+def full_exit_text(plan):
+    name=plan.get('full_exit_target')
+    if not name:
+        names=[n for n in ('TP1','TP2','TP3') if not plan.get(n.lower()+'_hit')
+               and plan.get('partials',{'TP1':1.}).get(n,0)>0]
+        name=names[0] if names else 'TP1'
+    if plan.get('tp1_decision_gate') and not plan.get('tp1_hit'):
+        return 'Рішення про вихід — після TP1'
+    if plan.get('awaiting_tp1_review'):
+        return 'TP1 досягнуто — перевіряємо продовження'
+    return 'Повний вихід: '+name
 
 
 def close_reason(trade):
     hits = [name for name in ('TP1', 'TP2', 'TP3') if trade.get(name.lower() + '_hit')]
     reason = {'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
-              'TAKE_PROFIT': 'усі тейки', 'INTRADAY_TIME_EXIT': 'за часом'}.get(
+              'TAKE_PROFIT': 'тейк-профіт', 'ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов', 'INTRADAY_TIME_EXIT': 'за часом'}.get(
                   trade.get('close_reason', trade.get('reason')), 'завершення')
-    detail = ', '.join(hits) + ' досягнуто; ' if hits else ''
+    detail = (', '.join(hits) + ' досягнуто; ' if hits else '') if trade.get('exit_policy') != 'SINGLE_FULL_EXIT' else ''
     if trade.get('ambiguous_ohlc'):
         reason += '; порядок SL/TP невідомий, враховано стоп'
     return detail + reason
@@ -100,39 +111,34 @@ def build(state, snapshot, result, cfg, engine):
     local = datetime.fromtimestamp(now/1000, ZoneInfo(cfg.timezone))
     price_ok = snapshot.trusted and snapshot.price > 0 and 0 <= now-snapshot.ticker_ts <= 120_000
     health = result.get('analysis', {}).get('health', [])
-    frozen = result.get('action') in ('DATA_HOLD', 'DUPLICATE_OR_OUT_OF_ORDER')
+    frozen = (result.get('action')=='DUPLICATE_OR_OUT_OF_ORDER' or
+              (result.get('action')=='DATA_HOLD' and state.get('last_run_ts',0)<now))
     price = f'{snapshot.price:.8g}' if price_ok else 'недоступна'
     lines = [f"{cfg.instrument.removesuffix('-SWAP')} • {local:%d.%m %H:%M} (Київ) • {engine.REPORT_RELEASE}",
-             f'💰 Ціна зараз: {price} • Зайнято місць: {engine.occupied_slots(state)}/2']
+             f'💰 Ціна зараз: {price}']
     active, pending, uncertain = [], [], []
     for _, view in engine.slot_views(state):
         if view.get('active'):
             active.append(view['active'])
-        if view.get('pending'):
-            pending.append(view['pending'])
         if view.get('reconciliation'):
             uncertain.append(view['reconciliation'])
+    pending=engine.pending_plans(state)
     active.sort(key=lambda p: p.get('order_number', 0))
     pending.sort(key=lambda p: p.get('order_number', 0))
-    if health:
-        lines += ['Увага: ' + '; '.join(dict.fromkeys(health_text(x) for x in health)) + '.']
+    lines += [f'Відкриті угоди: {len(active)} • Ліміти в очікуванні: {len(pending)}']
     if frozen:
         checkpoint = state.get('last_run_ts', 0)
         when = engine.report_deadline(checkpoint, now, cfg) if checkpoint else 'попередній цикл'
-        lines += [f'Оновлення супроводу призупинено. Збережений стан на {when}.']
-    elif health:
-        lines += ['Нові входи на паузі; супровід наявних ордерів триває.']
-
-    lines += ['', f'У СУПРОВОДІ — {len(active)}']
-    if not active:
-        lines += ['Відкритих угод немає.']
+        lines += [f'Дані не оновлені. Збережений стан на {when}.']
+    if active:
+        lines += ['', f'У СУПРОВОДІ — {len(active)}']
     for index, p in enumerate(active):
         if index:
             lines += ['']
         label = engine.display_order(state, p['id'])
         side = 'LONG' if p['side'] == 1 else 'SHORT'
         lines += [f"{label} {side} • {scanner.timeframe(p).lower()} • {setup_text(p)}",
-                  f"Вхід: {p['entry']:.8g} • SL: {p['stop']:.8g}", targets(p)]
+                  f"Вхід: {p['entry']:.8g} • SL: {p['stop']:.8g}", targets(p), full_exit_text(p)]
         remaining = p.get('remaining', 1.)
         estimate = 'недоступний'
         if price_ok and not frozen:
@@ -143,15 +149,20 @@ def build(state, snapshot, result, cfg, engine):
                     + remaining*snapshot.price*cost_cfg.taker_fee/p['risk']) if cost_cfg.include_commission else 0.
             slip = remaining*snapshot.price*cost_cfg.slippage_bps/10_000/p['risk']
             estimate = f'{gross-fees-slip:+.2f}R'
-        lines += [f'Залишок {remaining*100:.0f}% • результат зараз ≈ {estimate}']
+        lines += [f'Результат зараз ≈ {estimate}']
+        if p.get('pending_target'):
+            amendment=p['pending_target']
+            lines += [f"Ціль {amendment['name']} з {engine.report_deadline(amendment['effective_ts'],now,cfg)}"]
         if p.get('pending_stop'):
             amendment = p['pending_stop']
             lines += [f"Новий SL {amendment['price']:.8g} з {engine.report_deadline(amendment['effective_ts'], now, cfg)}"]
-        lines += [f"Супровід до {engine.report_deadline(p['exit_deadline'], now, cfg)}"]
+        if not p.get('tp1_decision_gate'):
+            lines += [f"Супровід до {engine.report_deadline(p['exit_deadline'], now, cfg)}"]
 
-    lines += ['', f'ОЧІКУЄМО ВХОДУ — {len(pending)}']
-    if not pending:
-        lines += ['Активованих лімітних входів немає.']
+    if pending:
+        lines += ['', f'ОЧІКУЄМО ВХОДУ — {len(pending)}']
+        if len(active)==2:
+            lines += ['Новий вхід — після закриття однієї з двох угод.']
     for index, p in enumerate(pending):
         if index:
             lines += ['']
@@ -162,7 +173,7 @@ def build(state, snapshot, result, cfg, engine):
                if distance else 'немає свіжої ціни')
         lines += [f"{label} {side} • {scanner.timeframe(p).lower()} • {setup_text(p)}",
                   f"Вхід: {p['entry']:.8g} • До входу: {gap}",
-                  f"SL: {p['stop']:.8g} • {targets(p)}",
+                  f"SL: {p['stop']:.8g} • {targets(p)}", full_exit_text(p),
                   f"Діє до {engine.report_deadline(p['expires_ts'], now, cfg)}"]
         if p.get('cancel_requested_ts'):
             lines += ['Скасування очікує перевірки виконання: '
@@ -170,7 +181,7 @@ def build(state, snapshot, result, cfg, engine):
         elif price_ok and p['side']*(snapshot.price-p['entry']) <= 0:
             lines += ['Ціна на рівні або за ним; виконання перевіряємо за закритими свічками.']
     for r in uncertain:
-        lines += [f"{engine.display_order(state, r['order_id'])} — виконання НЕВИЗНАЧЕНЕ; місце зарезервоване."]
+        lines += [f"{engine.display_order(state, r['order_id'])} — виконання НЕВИЗНАЧЕНЕ; потрібна перевірка."]
 
     lines += ['', 'ЗАКРИТО З МИНУЛОГО ЗВІТУ']
     events = sorted(result.get('events', []), key=lambda e: e['ts'])
@@ -207,7 +218,7 @@ def build(state, snapshot, result, cfg, engine):
 
     # A forming setup is not a third pending order. Suppress it when both slots
     # are occupied or market/execution data do not permit a new decision.
-    if engine.occupied_slots(state) < 2 and not health and not frozen and price_ok:
+    if not pending and engine.occupied_slots(state) < 2 and not health and not frozen and price_ok:
         analysis = result.get('analysis', {})
         rows = analysis.get('watch', []) or analysis.get('setup_matrix', [])
         live = engine.open_plans(state)
@@ -221,9 +232,7 @@ def build(state, snapshot, result, cfg, engine):
                       f"{side} • {best.get('timeframe', '15m').lower()} • {setup_text(best)}",
                       f"Рівень: {best['level']:.8g} • готовність умов {ready:.0f}%",
                       candidate_reason(best, cfg, engine)]
-    if engine.occupied_slots(state) == 2:
-        lines += ['', 'Новий ордер — після звільнення одного місця.']
-    elif result.get('action') in ('DAILY_PAUSE', 'SESSION_CLOSED', 'DIRECTION_CONFLICT'):
+    if result.get('action') in ('DAILY_PAUSE', 'SESSION_CLOSED', 'DIRECTION_CONFLICT'):
         lines += ['', engine.REASON_UA.get(result['action'], 'Нові входи на паузі') + '.']
     stats = engine.statistics_by_entry_version(state.get('trades', []))
     stat = stats.get(engine.VERSION, {})
@@ -260,3 +269,23 @@ def split_message(message, limit=3800):
     if page:
         pages.append(page)
     return pages or ['']
+
+
+def clean_queued_message(message):
+    """Remove obsolete status/exit instructions without dropping closed results."""
+    output=[]
+    for line in message.splitlines():
+        text=line.strip()
+        if any(text.startswith(prefix) for prefix in (
+            'Увага: широкий спред', 'Нові входи на паузі; супровід',
+            'У СУПРОВОДІ — 0', 'Відкритих угод немає.',
+            'Новий ордер — після звільнення')):
+            continue
+        line=re.sub(r' • Зайнято місць: \d+/2', '', line)
+        line=re.sub(r'Залишок \d+% • ', '', line)
+        line=re.sub(r'TP([123]) ([0-9.]+) \((?:закрити [0-9.]+%|досягнуто)\)', r'TP\1: \2',line)
+        if line.strip():
+            output.append(line)
+        elif output and output[-1]:
+            output.append('')
+    return '\n'.join(output).strip()

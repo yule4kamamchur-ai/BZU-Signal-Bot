@@ -143,7 +143,7 @@ class MessageAndUpgradeTests(unittest.TestCase):
 
     def test_reached_target_stays_understandable_without_a_checkmark(self):
         p=order();p.update(tp1=102.,tp1_hit=True,partials={'TP1':1.})
-        self.assertEqual(engine.target_line(p),'TP1 102 (досягнуто)')
+        self.assertEqual(engine.target_line(p),'TP1: 102 • TP2: — • TP3: —')
 
     def test_upgrade_from_1242_preserves_existing_plan_levels_and_ttl(self):
         cfg=replace(engine.Config(),core=core);state=engine.new_state(cfg)

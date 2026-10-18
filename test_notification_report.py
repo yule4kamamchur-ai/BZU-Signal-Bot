@@ -37,8 +37,8 @@ class CompactReports(unittest.TestCase):
         self.assertIn('#005 LONG', followed)
         self.assertNotIn('#008 LONG', followed)
         self.assertIn('#008 LONG', waiting)
-        self.assertIn('Залишок 35%', followed)
-        self.assertIn('TP1 102 (досягнуто)', followed)
+        self.assertNotIn('Залишок', followed)
+        self.assertIn('TP2: 104', followed)
         for key in ('active', 'second_slot'):
             self.assertEqual(self.state[key]['entry'] if key == 'active' else self.state[key]['pending']['entry'],
                              before[key]['entry'] if key == 'active' else before[key]['pending']['entry'])
@@ -51,7 +51,7 @@ class CompactReports(unittest.TestCase):
             {'setup': 'SWEEP_RECLAIM', 'timeframe': '15m', 'side': 1,
              'level': 98., 'readiness_pct': 99., 'reason': 'ACCEPTED'}]}}
         text = self.text(result)
-        self.assertIn('У СУПРОВОДІ — 0', text)
+        self.assertNotIn('У СУПРОВОДІ — 0', text)
         self.assertIn('ОЧІКУЄМО ВХОДУ — 2', text)
         self.assertNotIn('НА СПОСТЕРЕЖЕННІ', text)
         self.assertNotIn('готовність', text)
@@ -81,22 +81,22 @@ class CompactReports(unittest.TestCase):
     def test_unknown_result_keeps_reserved_slot_visible(self):
         self.state['reconciliation'] = {'order_id': 'uncertain', 'ts': NOW}
         text = self.text({'action': 'RECONCILIATION_REQUIRED'})
-        self.assertIn('Зайнято місць: 1/2', text)
-        self.assertIn('виконання НЕВИЗНАЧЕНЕ; місце зарезервоване', text)
+        self.assertIn('Відкриті угоди: 0 • Ліміти в очікуванні: 0', text)
+        self.assertIn('виконання НЕВИЗНАЧЕНЕ; потрібна перевірка', text)
 
     def test_stale_lifecycle_never_presents_saved_position_as_fresh_result(self):
         active = order(); active.update(status='OPEN', exit_deadline=NOW+3600000)
         self.state['active'] = active
         self.state['last_run_ts'] = NOW-3600000
         text = self.text({'action': 'DATA_HOLD', 'analysis': {'health': ['LIFECYCLE_HISTORY_GAP']}})
-        self.assertIn('Оновлення супроводу призупинено', text)
-        self.assertIn('результат зараз ≈ недоступний', text)
+        self.assertIn('Дані не оновлені. Збережений стан', text)
+        self.assertIn('Результат зараз ≈ недоступний', text)
         self.assertNotIn('LIFECYCLE_HISTORY_GAP', text)
 
     def test_touch_or_cross_is_not_automatically_reported_as_a_fill(self):
         self.state['pending'] = order(); self.snap.price = 99.
         text = self.text({'action': 'WAIT_LIMIT'})
-        self.assertIn('У СУПРОВОДІ — 0', text)
+        self.assertNotIn('У СУПРОВОДІ — 0', text)
         self.assertIn('виконання перевіряємо за закритими свічками', text)
 
     def test_forecast_percentage_and_stale_readiness_are_not_in_order_card(self):

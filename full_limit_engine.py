@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.6.0-lifecycle-adaptive-policy"
-REPORT_RELEASE = 'v12.6.0'
+VERSION = "full-ict-v12.7.0-adaptive-full-volume"
+REPORT_RELEASE = 'v12.7.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -88,8 +88,6 @@ class Config:
     cancel_on_bias_flip: bool = True
     core: Any = field(default=None, repr=False, compare=False)
     setup_min_sample: int = 20
-    partial_tp1: float = 0.65
-    partial_tp2: float = 0.20
 
     def validate(self) -> None:
         nums = config_dict(self)
@@ -110,8 +108,8 @@ class Config:
             raise ValueError("Invalid stop bounds")
         if not 0.015 <= self.min_target_pct < 0.50:
             raise ValueError("TP1 must be at least 1.5% from entry")
-        if self.partial_tp1+self.partial_tp2 >= 1 or self.setup_min_sample < 10:
-            raise ValueError("Invalid partial plan / calibration sample")
+        if self.setup_min_sample < 10:
+            raise ValueError("Invalid legacy setup statistic sample")
         ZoneInfo(self.timezone)
 
     @classmethod
@@ -131,7 +129,6 @@ class Config:
             "session_end_hour": ("SESSION_END_HOUR", int),
             "min_score": ("MIN_SETUP_SCORE", float),
             "max_entry_distance_atr": ("LIMIT_MAX_DISTANCE_ATR", float),
-            "partial_tp1": ("TP1_SIZE_PCT", float), "partial_tp2": ("TP2_SIZE_PCT", float),
         }
         kwargs = {k: cast(os.environ[name]) for k, (name, cast) in mapping.items()
                   if os.environ.get(name)}
@@ -626,23 +623,22 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     further = [t for t in later if t["distance"]-buffer > sign*(tp2-entry)+.25*risk]
     tp3 = round_tick(entry+sign*min(further[0]["distance"]-buffer if further else sign*(tp2-entry), 4*risk),
                      cfg.tick, up=sign == -1)
-    # Every partial must also stop before a strong intervening zone. A
-    # minimum spacing rule must never skip an obstacle just after TP1.
+    # Every candidate full exit must be before ALL strong intervening zones.
     previous=tp1
     bounded=[]
     for target in (tp2,tp3):
         barriers=[t for t in targets if t.get('hard_barrier',True)
-                  and sign*(previous-entry)<t['distance']<=sign*(target-entry)+buffer]
+                  and 0<t['distance']<=sign*(target-entry)+buffer]
         if barriers:
             target=entry+sign*max(sign*(previous-entry),min(t['distance'] for t in barriers)-buffer)
         target=round_tick(target,cfg.tick,up=sign==-1)
         bounded.append(target);previous=target
     tp2,tp3=bounded
-    partials = {"TP1": cfg.partial_tp1, "TP2": cfg.partial_tp2, "TP3": 1-cfg.partial_tp1-cfg.partial_tp2}
-    if sign*(tp2-tp1) < cfg.tick:
-        partials = {"TP1": 1.0, "TP2": 0.0, "TP3": 0.0}
-    elif sign*(tp3-tp2) < cfg.tick:
-        partials = {"TP1": cfg.partial_tp1, "TP2": 1-cfg.partial_tp1, "TP3": 0.0}
+    partials = {"TP1": 1.0}
+    exit_candidates=[]
+    for name,level in (('TP1',tp1),('TP2',tp2),('TP3',tp3)):
+        if not any(abs(level-option['price'])<cfg.tick/2 for option in exit_candidates):
+            exit_candidates.append({'name':name,'price':level})
     if score < cfg.min_score:
         return None, "COMBINED_CONTEXT_SCORE_LOW"
     # A 15m report usually arrives inside a 3m candle. Start PAPER observation
@@ -686,6 +682,9 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "anchor_id": a.id, "anchor_kind": a.kind, "entry": entry, "limit_price": entry,
             "stop": stop, "initial_stop": stop, "tp": tp1, "tp0": entry+sign*.6*risk,
             "tp1": tp1, "tp2": tp2, "tp3": tp3, "partials": partials,
+            "exit_policy": "SINGLE_FULL_EXIT", "full_exit_target": "TP1",
+            "full_exit_candidates": exit_candidates, "target_management":"ADAPTIVE_FULL_VOLUME", "tp1_decision_gate":True,
+            "exit_path_barriers":[copy.deepcopy(t) for t in targets if t.get("hard_barrier",True)],
             "rr1": rr1, "rr2": sign*(tp2-entry)/risk, "rr3": sign*(tp3-entry)/risk,
             "risk": risk, "gross_rr": rr1, "net_rr": net_rr, "costs_r": costs,
             "placement_price": s.price, "target_cancel_armed": sign*(s.price-tp1)<0,
@@ -698,7 +697,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "episode_ts":a.evidence.get('episode_ts'),
             "evidence": [a.reason]+candidate.confirmations, "candidate": core.candidate_to_dict(candidate),
             "htf_1h": core.side_sign(b1), "htf_4h": core.side_sign(b4),
-            "forecast": f"Return to {entry}; defend {a.invalidation}; seek {tp1}, {tp2}, {tp3}",
+            "forecast": f"Return to {entry}; defend {a.invalidation}; structural targets {tp1}, {tp2}, {tp3}; select one full exit before entry",
             "probability": None, "probability_status": "REQUIRES_OUT_OF_SAMPLE_VALIDATION",
             "entry_stage": "CORE", "execution_source": "LIMIT_ARMED_AT_LEVEL",
             "execution": "PAPER_SIGNAL", "status": "PENDING", "last_bar": 0,
@@ -861,7 +860,13 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 cluster["supporting_families"].append(p["canonical_setup_family"])
     # Correlated votes do not manufacture a higher success probability or score.
     clusters.sort(key=priority,reverse=True)
-    quality.watch_candidates(state,clusters,assessments,cfg)
+    # Freeze the same target-selection policy for shadow labels and actual
+    # decisions. Bound computation; unmodeled alternatives do not become labels.
+    modeled=clusters[:6]
+    for plan in modeled:
+        lifecycle_forecast.select_full_exit(plan,s,cfg,sys.modules[__name__])
+    quality.watch_candidates(state,modeled,assessments,cfg)
+    ledger['unobserved_due_policy_budget']=ledger.get('unobserved_due_policy_budget',0)+max(0,len(clusters)-len(modeled))
     accepted = []
     for p in clusters:
         q = assessments[p['id']]
@@ -921,7 +926,8 @@ def new_state(cfg: Config) -> dict:
             "notification_queue": [], "reconciliation": None,
             "anchor_memory": {}, "level_cooldown": {}, "setup_statistics": {},
             "ledger_revision": 2, "order_sequence": 0,
-            "second_slot": {"pending": None, "active": None, "reconciliation": None}}
+            "second_slot": {"pending": None, "active": None, "reconciliation": None},
+            "pending_orders": [], "pending_policy":"UNBOUNDED_QUEUE_ACTIVE_CAP_2"}
 
 
 def slot_views(state: dict):
@@ -940,13 +946,59 @@ def store_slot(state: dict, number: int, view: dict) -> None:
         state['second_slot'] = {key:view.get(key) for key in ('pending','active','reconciliation')}
 
 
+def pending_plans(state: dict) -> list[dict]:
+    return [view['pending'] for _,view in slot_views(state) if view.get('pending')]+state.get('pending_orders',[])
+
+
+def active_plans(state: dict) -> list[dict]:
+    return [view['active'] for _,view in slot_views(state) if view.get('active')]
+
+
 def open_plans(state: dict) -> list[dict]:
-    return [view[key] for _,view in slot_views(state) for key in ('pending','active') if view.get(key)]
+    return active_plans(state)+pending_plans(state)
 
 
 def occupied_slots(state: dict) -> int:
-    return sum(bool(view.get('pending') or view.get('active') or view.get('reconciliation'))
-               for _,view in slot_views(state))
+    # Only a filled position or an unresolved possible fill consumes capacity.
+    return sum(bool(view.get('active') or view.get('reconciliation')) for _,view in slot_views(state))
+
+
+def park_pending(state: dict, waiting: list[dict]) -> None:
+    """Compatibility fields hold the first waiting plans; overflow has no cap."""
+    state['pending']=None
+    state.setdefault('second_slot',{})['pending']=None
+    remaining=list(waiting)
+    for plan in remaining:
+        plan.pop('slot',None)  # Waiting plans never own a position slot.
+    for number,view in slot_views(state):
+        if not view.get('active') and not view.get('reconciliation') and remaining:
+            view['pending']=remaining.pop(0)
+            store_slot(state,number,view)
+    state['pending_orders']=remaining
+
+
+def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dict]:
+    """Decide BEFORE observing candle extremes; never pick fills in hindsight."""
+    active=active_plans(state)
+    capacity=max(0,2-occupied_slots(state))
+    daily=day_stats(state,now,cfg)
+    capacity=min(capacity,max(0,cfg.max_daily_trades-daily['entries']))
+    if daily['losses_r']>=cfg.day_loss_cap_r:
+        return []
+    ranked=sorted(pending_plans(state),key=lambda p:scanner.selection_key(p,price),reverse=True)
+    eligible=[]
+    for plan in ranked:
+        if len(eligible)>=capacity:
+            break
+        effective=plan.get('effective_ts',plan['placed_ts'])
+        partial_legacy='effective_ts' not in plan and now<effective<now+TF['3m']
+        cancel=plan.get('cancel_effective_ts',plan.get('cancel_requested_ts',0))
+        if (effective>now and not partial_legacy) or plan['expires_ts']<=now or (cancel and cancel<=now):
+            continue
+        if any(p['side']!=plan['side'] or trade_dependencies.related(p,plan,cfg.tick) for p in active+eligible):
+            continue
+        eligible.append(plan)
+    return eligible
 
 
 def bind_order_numbers(state: dict) -> None:
@@ -963,9 +1015,8 @@ def bind_order_numbers(state: dict) -> None:
         row['display_id'] = f"#{known[key]:03d}"
     state['order_sequence'] = sequence
     for number,view in slot_views(state):
-        for key in ('pending','active'):
-            if view.get(key):
-                view[key]['slot'] = number
+        if view.get('active'):
+            view['active']['slot']=number
 
 
 PAPER_UNCERTAINTY = frozenset({'PLACEMENT_INSIDE_TOUCHED_BAR', 'EXPIRY_INSIDE_BAR', 'CANCEL_INSIDE_TOUCHED_BAR'})
@@ -984,6 +1035,8 @@ def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
         order = next((o for o in reversed(state['orders']) if o['id']==r['order_id']),None)
         if not order or order.get('execution') != 'PAPER_SIGNAL':
             continue
+        if order.get('tp1_decision_gate'):
+            continue  # No finite automatic holding exit to justify erasing a possible fill.
         # Unknown fill can occur anywhere before expiry. Retain its slot until
         # even the latest possible fill has reached the intraday age boundary.
         expiry = order.get('expires_ts',r['ts'])
@@ -1067,7 +1120,43 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
          ambiguous_ohlc=ambiguous)
 
 
-def partial_exit(state: dict, p: dict, name: str, level: float, ts: int, cfg: Config) -> None:
+def use_full_exit(plan: dict, ts: int) -> bool:
+    """Keep all targets; change future sizing without restoring realized volume."""
+    if plan.get('exit_policy') == 'SINGLE_FULL_EXIT':
+        return False
+    active = plan.get('status') == 'OPEN' or 'filled_ts' in plan
+    names = [name for name in ('TP1','TP2','TP3')
+             if not (active and plan.get(name.lower()+'_hit'))
+             and plan.get('partials', {'TP1':1.}).get(name,0)>0]
+    name = names[0] if names else 'TP1'
+    target = plan.get(name.lower(), plan['tp'])
+    plan['legacy_exit_terms'] = {key: copy.deepcopy(plan[key]) for key in
+        ('tp','tp1','tp2','tp3','partials','tp1_hit','tp2_hit','tp3_hit') if key in plan}
+    plan.update(exit_policy='SINGLE_FULL_EXIT', exit_policy_changed_ts=ts,
+                tp=target, full_exit_target=name, partials={name:1.},target_management='ADAPTIVE_FULL_VOLUME',tp1_decision_gate=True,
+                continuation_decided=bool(active and plan.get('tp1_hit')))
+    plan.setdefault('tp1',target)
+    # Older levels remain visible. Without a fresh path audit only the nearest
+    # unpassed old target is eligible for a full exit, never a speculative runner.
+    plan['full_exit_candidates']=[{'name':name,'price':target}]
+    if not plan.get('tp1_hit') and plan.get('pending_stop'):
+        plan['legacy_pending_stop']=plan.pop('pending_stop')
+    for key in ('decision_forecast','outcome_forecast'):
+        if plan.get(key):
+            plan['legacy_'+key] = plan.pop(key)
+    return True
+
+
+def upgrade_open_exits(state: dict, ts: int) -> None:
+    for plan in open_plans(state):
+        if use_full_exit(plan,ts):
+            state.setdefault('exit_policy_migrations',[]).append({
+                'order_id':plan['id'], 'ts':ts, 'to':'SINGLE_FULL_EXIT',
+                'target':plan['tp'], 'remaining':plan.get('remaining',1.)})
+
+
+def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int, cfg: Config) -> None:
+    # Only replay of intervals BEFORE the one-time policy change uses this.
     cfg = execution_config(p,cfg)
     size = min(p.get("remaining",1.0),p.get("partials",{}).get(name,1.0 if name=="TP1" else 0))
     p[name.lower()+"_hit"] = True
@@ -1090,13 +1179,20 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False) -> N
     ts = c.ts+TF["3m"]
     if c.ts <= p.get("last_bar", -1):
         return
+    target_amend=p.get('pending_target')
+    if target_amend and c.ts>=target_amend['effective_ts']:
+        p.update(tp=target_amend['price'],full_exit_target=target_amend['name'],
+                 partials={target_amend['name']:1.})
+        p.pop('pending_target')
     amend = p.get("pending_stop")
     if amend and c.ts >= amend["effective_ts"]:
         p["stop"] = amend["price"]
         p.pop("pending_stop")
     stop_hit = c.low <= p["stop"] if side == 1 else c.high >= p["stop"]
-    targets = [(name,p.get(name.lower(),p["tp"])) for name in ("TP1","TP2","TP3")
-               if not p.get(name.lower()+"_hit") and p.get("partials",{"TP1":1.0}).get(name,0)>0]
+    full_exit = p.get('exit_policy') == 'SINGLE_FULL_EXIT'
+    targets = [('TP',p['tp'])] if full_exit else [
+        (name,p.get(name.lower(),p['tp'])) for name in ('TP1','TP2','TP3')
+        if not p.get(name.lower()+'_hit') and p.get('partials',{'TP1':1.}).get(name,0)>0]
     tp_hit = any(c.high >= level if side == 1 else c.low <= level for _,level in targets)
     open_stop = side*(c.open-p["stop"]) <= 0
     # Whole-bar excursions cannot establish post-fill MFE in the entry bar.
@@ -1113,18 +1209,36 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False) -> N
         return
     # On the fill candle the favorable extreme may have happened BEFORE entry.
     # A close beyond TP proves price traversed TP AFTER entering; otherwise defer.
+    before_tp1=not p.get('tp1_hit')
+    if full_exit:
+        for milestone in ('TP1','TP2','TP3'):
+            level=p.get(milestone.lower())
+            if level is not None and not p.get(milestone.lower()+'_hit'):
+                reached=c.high>=level if side==1 else c.low<=level
+                if reached and (not fill_bar or side*(c.close-level)>=0):
+                    p[milestone.lower()+'_hit']=True
+    if p.get('tp1_decision_gate') and before_tp1 and p.get('tp1_hit'):
+        p['awaiting_tp1_review']=True
+        p['tp1_reached_ts']=ts
+        emit(state,'TP1_REACHED',ts,order_id=p['id'],price=p.get('tp1',p['tp']))
     for name,level in targets:
         reached = c.high >= level if side==1 else c.low <= level
         if reached and (not fill_bar or side*(c.close-level)>=0):
-            partial_exit(state,p,name,level,ts,cfg)
+            if full_exit:
+                if p.get('tp1_decision_gate') and (p.get('awaiting_tp1_review') or not p.get('continuation_decided')):
+                    continue  # First TP is a decision gate, not an automatic partial/full exit.
+                p[p.get('full_exit_target','TP1').lower()+'_hit'] = True
+                close_trade(state,p,level*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg)
+                return
+            _legacy_partial_exit(state,p,name,level,ts,cfg)
             if p.get("remaining",1.0) <= 1e-8:
                 close_trade(state,p,level*(1-side*cfg.slippage_bps/10_000),ts,"TAKE_PROFIT",cfg)
                 return
-    if p.get("tp0") and not p.get("tp0_hit"):
+    if not full_exit and p.get("tp0") and not p.get("tp0_hit"):
         if (c.high>=p["tp0"] if side==1 else c.low<=p["tp0"]) and (not fill_bar or side*(c.close-p["tp0"])>=0):
             p["tp0_hit"] = True
             emit(state,"TP0_MARKER",ts,order_id=p["id"],price=p["tp0"])
-    if ts >= p["exit_deadline"]:
+    if ts >= p["exit_deadline"] and not p.get("tp1_decision_gate"):
         close_trade(state, p, c.close*(1-side*cfg.slippage_bps/10_000), ts, "INTRADAY_TIME_EXIT", cfg)
         return
     if not fill_bar:
@@ -1133,9 +1247,84 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False) -> N
     p["last_bar"] = c.ts
 
 
+def review_full_exit(state: dict, s: Snapshot, cfg: Config) -> None:
+    """Current-information decision, effective forward; never a retroactive TP."""
+    p=state.get('active')
+    if not p or p.get('target_management')!='ADAPTIVE_FULL_VOLUME' or p.get('pending_target'):
+        return
+    rows=limit_structure.closed(s,'3m')
+    if not p.get('tp1_hit'):
+        return  # No discretionary exit/extension before an observed TP1.
+    if len(rows)<2 or p.get('last_target_review_ts',0)>=s.now:
+        return
+    p['last_target_review_ts']=s.now
+    side=p['side'];risk=p['risk'];first=p.get('tp1',p['tp'])
+    # Reassess near the first destination, rather than chase distant targets
+    # immediately after entry. This does not change any target geometry.
+    recent=rows[-2:]
+    momentum=(side*(recent[-1].close-recent[-2].close)>0
+              and all(side*(c.close-c.open)>0 for c in recent))
+    opposing=sum(bias(limit_structure.closed(s,tf))['side']==-side for tf in ('1H','4H'))==2
+    barriers=p.get('exit_path_barriers',[])
+    fresh=cfg.core is not None and all(len(limit_structure.closed(s,tf))>=MIN_BARS[tf] for tf in ('15m','1H','4H'))
+    if fresh:
+        context={'analysis_timeframe':scanner.timeframe(p),'session':{}}
+        barriers=[t for t in full_targets(context,s,'LONG' if side==1 else 'SHORT',p['entry'],cfg)
+                  if t.get('hard_barrier',True)]
+    milestones=[(name,p.get(name.lower())) for name in ('TP1','TP2','TP3')]
+    reference=first
+    for _,level in milestones:
+        if level is not None and side*(s.price-level)>=-.25*risk and side*(level-reference)>0:
+            reference=level
+    higher=[(name,level) for name,level in milestones if level is not None
+            and side*(level-s.price)>cfg.tick and side*(level-reference)>cfg.tick]
+    buffer=max(2*cfg.tick,.15*atr(rows[-20:]))
+    eligible_names={o['name'] for o in p.get('full_exit_candidates',[])}
+    def clear(name,level):
+        return (fresh or name in eligible_names) and not any(
+            0<side*(t['level']-s.price)<=side*(level-s.price)+buffer for t in barriers)
+    near_first=side*(s.price-first)>=-.25*risk or p.get('tp1_hit')
+    blocked_goal=not clear(p.get('full_exit_target','TP1'),p['tp'])
+    if not near_first and not (fresh and blocked_goal):
+        return
+    continuation=next(((name,level) for name,level in higher if clear(name,level)),None)
+    if not continuation and side*(p['tp']-s.price)>cfg.tick and clear(p.get('full_exit_target','TP1'),p['tp']):
+        continuation=(p.get('full_exit_target','TP1'),p['tp'])
+    if momentum and not opposing and continuation:
+        name,level=continuation
+        # Do not shorten a valid preselected target while momentum is intact.
+        current_name=p.get('full_exit_target','TP1')
+        if side*(p['tp']-level)>0 and clear(current_name,p['tp']):
+            name,level=current_name,p['tp']
+        action='CONTINUE_WITH_FULL_VOLUME'
+    else:
+        name,level='TP1',first
+        action='PROTECT_FULL_RESULT'
+        if p.get('tp1_hit') or side*(s.price-first)>=0 or (fresh and blocked_goal):
+            p['target_reviews']=(p.get('target_reviews',[])+[{'ts':s.now,'action':'CLOSE_FULL_NOW','price':s.price,
+                'momentum':momentum,'fresh_zones':fresh,'blocked_goal':blocked_goal}])[-100:]
+            actual=execution_config(p,cfg)
+            close_trade(state,p,s.price*(1-side*actual.slippage_bps/10_000),s.now,
+                        'ADAPTIVE_FULL_EXIT',cfg)
+            return
+    decision={'ts':s.now,'action':action,'target':name,'price':level,
+              'momentum':momentum,'path_clear':bool(continuation),'fresh_zones':fresh}
+    p['target_reviews']=(p.get('target_reviews',[])+[decision])[-100:]
+    p['awaiting_tp1_review']=False
+    p['continuation_decided']=True
+    if name==p.get('full_exit_target','TP1') and abs(level-p['tp'])<cfg.tick/2:
+        return
+    effective=((s.now+TF['3m']-1)//TF['3m'])*TF['3m']
+    p['pending_target']={'name':name,'price':level,'effective_ts':effective}
+    emit(state,'FULL_TARGET_AMENDED',s.now,order_id=p['id'],target=name,price=level,effective_ts=effective)
+
+
 def _amend_slot_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
-    """Decisions happen at the 15m report, never at historical intra-cycle bars."""
+    """Current review in each 5m scan; amendments start at the next whole bar."""
+    review_full_exit(state,s,cfg)
     p = state.get("active")
+    if p and p.get('tp1_decision_gate') and not p.get('tp1_hit'):
+        return  # Initial SL remains unchanged until the first target is observed.
     if not p or p.get("pending_stop") or (p.get("strong_closes", 0) < 2 and not p.get("tp1_hit")):
         return
     cfg = execution_config(p,cfg)
@@ -1164,7 +1353,7 @@ def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
         store_slot(state,number,view)
 
 
-def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
+def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
     for c in s.candles.get("3m", []):
         if state["active"]:
@@ -1177,7 +1366,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
         effective = p.get('effective_ts',p['placed_ts'])
         if c.ts < effective:
             if 'effective_ts' not in p and end > p["placed_ts"]:
-                possible_fill = c.low < p["entry"]-cfg.tick/2 if p["side"] == 1 else c.high > p["entry"]+cfg.tick/2
+                possible_fill = allow_fill and (c.low < p["entry"]-cfg.tick/2 if p["side"] == 1 else c.high > p["entry"]+cfg.tick/2)
                 if possible_fill:
                     end_order(state, p, "UNRESOLVED", "PLACEMENT_INSIDE_TOUCHED_BAR", end)
             continue
@@ -1188,7 +1377,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
         if c.ts >= p["expires_ts"]:
             end_order(state, p, "EXPIRED", "LIMIT_TTL", p["expires_ts"])
             continue
-        fill = c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8
+        fill = allow_fill and (c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8)
         if cancel_ts and c.ts < cancel_ts < end:
             end_order(state, p, "UNRESOLVED" if fill else "CANCELLED",
                       "CANCEL_INSIDE_TOUCHED_BAR" if fill else p["cancel_reason"], cancel_ts)
@@ -1224,9 +1413,52 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
 
 
 def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
-    for number,view in slot_views(state):
-        _advance_slot_lifecycle(view,s,cfg)
-        store_slot(state,number,view)
+    if state.get('pending_policy')!='UNBOUNDED_QUEUE_ACTIVE_CAP_2':
+        # Catch up the old contract before changing future queue behavior.
+        for number,view in slot_views(state):
+            _advance_slot_lifecycle(view,s,cfg)
+            store_slot(state,number,view)
+        return
+    rows=[c for c in s.candles.get('3m',[]) if c.confirmed and c.ts+TF['3m']<=s.now]
+    for c in rows:
+        # Freeze priorities using only the bar OPEN and earlier decisions.
+        # A close in this bar frees capacity from the NEXT bar, not retroactively.
+        eligible={p['id'] for p in entry_priority(state,c.ts,c.open,cfg)}
+        waiting=pending_plans(state)
+        park_pending(state,[])
+        for number,view in slot_views(state):
+            if view.get('active'):
+                manage_bar(view,c,cfg)
+                store_slot(state,number,view)
+        remaining=[]
+        for plan in waiting:
+            if plan.get('effective_ts',plan['placed_ts'])<=c.ts<plan['expires_ts'] and plan['id'] not in eligible:
+                plan['capacity_waited']=True
+            book={**state,'pending':plan,'active':None,'reconciliation':None}
+            _advance_slot_lifecycle(book,Snapshot(c.ts+TF['3m'],c.close,{'3m':[c]}),cfg,
+                                    allow_fill=plan['id'] in eligible)
+            if book.get('pending'):
+                remaining.append(book['pending'])
+            if book.get('active') or book.get('reconciliation'):
+                for number,view in slot_views(state):
+                    if not view.get('active') and not view.get('reconciliation'):
+                        view['active']=book.get('active')
+                        view['reconciliation']=book.get('reconciliation')
+                        if view.get('active'):
+                            view['active']['slot']=number
+                        store_slot(state,number,view)
+                        break
+                else:
+                    raise ValueError('Active position cap would be exceeded; refusing a third fill')
+        park_pending(state,remaining)
+    # Resolve an aligned expiry even when no new candle was needed.
+    waiting=[]
+    for plan in pending_plans(state):
+        book={**state,'pending':plan,'active':None,'reconciliation':None}
+        _advance_slot_lifecycle(book,Snapshot(s.now,s.price,{'3m':[]}),cfg,allow_fill=False)
+        if book.get('pending'):
+            waiting.append(book['pending'])
+    park_pending(state,waiting)
 
 
 def day_stats(state: dict, now: int, cfg: Config) -> dict:
@@ -1244,7 +1476,13 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
     if p.get("cancel_requested_ts"):
         return
     if now % TF["3m"] == 0:
-        end_order(state, p, "CANCELLED", reason, now)
+        if 'pending_orders' in state:
+            waiting=[other for other in pending_plans(state) if other['id']!=p['id']]
+            book={**state,'pending':p,'active':None,'reconciliation':None}
+            end_order(book,p,'CANCELLED',reason,now)
+            park_pending(state,waiting)
+        else:
+            end_order(state,p,'CANCELLED',reason,now)
     else:
         # Current partial candle might contain a fill BEFORE cancellation.
         # Reserve the slot until that candle closes; do not erase that interval.
@@ -1261,7 +1499,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         raise ValueError("Instrument changed: use a separate state path")
     config_hash = ident(json.dumps(config_dict(cfg), sort_keys=True))
     if state.get("config_hash") != config_hash and open_plans(state):
-        # One-time release migration: keep EXISTING stop/TP/TTL unchanged.
+        # One-time release migration preserves entry/stop/TTL. Exit policy
+        # changes explicitly after catching up the previous observed interval.
         # Later operator configuration changes still require closed slots.
         if state.get('version') not in ('full-ict-v12.2.0-confirmed-ict-quality',
                                        'full-ict-v12.3.0-causal-geometry-reports',
@@ -1269,7 +1508,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.4.1-single-scenario-no-commission',
                                        'full-ict-v12.4.2-quote-gates-price-forecast',
                                        'full-ict-v12.4.3-minimum-sl-tp',
-                                       'full-ict-v12.5.0-causal-early-limits'):
+                                       'full-ict-v12.5.0-causal-early-limits',
+                                       'full-ict-v12.6.0-lifecycle-adaptive-policy'):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1281,6 +1521,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     release_unconfirmed_paper(state,s.now,cfg)
     bind_order_numbers(state)
     advance_lifecycle(state, s, cfg)
+    upgrade_open_exits(state, s.now)
+    state['pending_policy']='UNBOUNDED_QUEUE_ACTIVE_CAP_2'
+    state.setdefault('pending_orders',[])
     amend_at_report(state, s, cfg)
     quality.advance(state,s,cfg,sys.modules[__name__])
     # A non-PAPER reconciliation still needs a human check. Existing positions
@@ -1296,8 +1539,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         quality.refresh_confirmations(state,s,analysis['full_context'],cfg,sys.modules[__name__],
                                       analysis.get('timeframe_contexts'))
     ctx = analysis.get("contexts", {})
-    for number,view in slot_views(state):
-        pending = view.get("pending")
+    for pending in list(pending_plans(state)):
+        view=state
         if pending and ctx:
             if pending["side"]*(s.price-pending["tp"]) < 0:
                 pending["target_cancel_armed"] = True
@@ -1309,7 +1552,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 request_cancel(view, pending, "STRUCTURE_INVALIDATED_NOW", s.now)
             elif pending.get("target_cancel_armed",True) and pending["side"]*(s.price-pending["tp"]) >= 0:
                 request_cancel(view, pending, "TARGET_REACHED_WITHOUT_FILL", s.now)
-        store_slot(state,number,view)
     release_unconfirmed_paper(state,s.now,cfg)
     daily = day_stats(state, s.now, cfg)
     busy = open_plans(state)
@@ -1320,8 +1562,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         action = "FOLLOW"
     elif busy:
         action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
-    reserved = sum(bool(view.get('pending')) for _,view in slot_views(state))
-    can_place = occupied_slots(state)<2 and not manual_block
+    can_place = not manual_block
     if can_place and analysis['health']:
         if not busy:
             action = 'DATA_HOLD'
@@ -1331,7 +1572,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if not busy:
             action = 'SESSION_CLOSED'
         can_place = False
-    elif can_place and (daily['losses_r']>=cfg.day_loss_cap_r or daily['entries']+reserved>=cfg.max_daily_trades):
+    elif can_place and (daily['losses_r']>=cfg.day_loss_cap_r or daily['entries']>=cfg.max_daily_trades):
         if not busy:
             action = 'DAILY_PAUSE'
         can_place = False
@@ -1340,54 +1581,40 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         # Evaluate a bounded shortlist instead of Monte Carlo for thousands of
         # near-duplicate anchors. A valid lower-ranked candidate is still a
         # fallback; missing/negative model estimates never create a WR veto.
+        for candidate in plans:
+            use_full_exit(candidate,s.now)
         for candidate in plans[:6]:
-            candidate['outcome_forecast']=lifecycle_forecast.forecast(candidate,s,cfg,sys.modules[__name__])
+            lifecycle_forecast.select_full_exit(candidate,s,cfg,sys.modules[__name__])
             candidate['decision_score']=candidate.get('decision_score',candidate.get('score',0))\
                                         +lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
         plans[:6]=sorted(plans[:6],key=lambda p:scanner.selection_key(p,s.price),reverse=True)
-        sides = {p['side'] for p in busy}
-        if not sides and plans:
-            top = plans[0]
-            sides = {top['side']}
-        # Opposing proposals never hedge or replace an existing thesis.
-        for top in plans if can_place and len(sides)==1 else []:
-            busy = open_plans(state)
-            if occupied_slots(state)>=2 or daily['entries']+reserved>=cfg.max_daily_trades:
-                break
-            keys = {top['event_key'],*top.get('parent_keys',[])}
-            live_keys = {key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
-            tolerance = max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
-            if top['side'] not in sides or keys.intersection(state['used_events']) or keys.intersection(live_keys):
+        active_sides={p['side'] for p in active_plans(state)}
+        # Pending plans do not reserve a position. Keep waiting alternatives
+        # beyond two; only the entry arbiter can admit an actual fill.
+        for top in plans:
+            busy=open_plans(state)
+            keys={top['event_key'],*top.get('parent_keys',[])}
+            live_keys={key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
+            tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
+            if keys.intersection(state['used_events']) or keys.intersection(live_keys):
+                continue
+            if active_sides and top['side'] not in active_sides:
                 continue
             if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
                 continue
-            linked=next((p for p in busy if trade_dependencies.related(p,top,cfg.tick)),None)
-            if linked:
-                analysis.setdefault('rejections',{})['DEPENDENT_ENTRY_ALREADY_RESERVED']=\
-                    analysis.get('rejections',{}).get('DEPENDENT_ENTRY_ALREADY_RESERVED',0)+1
-                continue
-            for number,view in slot_views(state):
-                if view.get('pending') or view.get('active') or view.get('reconciliation'):
-                    continue
-                plan = copy.deepcopy(top)
-                plan['decision_forecast']=copy.deepcopy(plan.get('outcome_forecast') or
-                    lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__]))
-                # Also enforce timing for injected/replay planner proposals.
-                plan['placed_ts'] = s.now
-                plan.setdefault('effective_ts',((s.now+TF['3m']-1)//TF['3m'])*TF['3m'])
-                plan.setdefault('target_cancel_armed',plan['side']*(s.price-plan['tp'])<0)
-                plan['slot'] = number
-                view['pending'] = plan
-                store_slot(state,number,view)
-                bind_order_numbers(state)
-                selected.append(plan)
-                reserved += 1
-                emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
-                     stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
-                action = 'PLACE_LIMIT'
-                break
-            if selected:
-                break  # One best new scenario per cycle, at most two live slots.
+            plan=copy.deepcopy(top)
+            lifecycle_forecast.select_full_exit(plan,s,cfg,sys.modules[__name__])
+            plan['decision_forecast']=copy.deepcopy(plan.get('outcome_forecast') or {})
+            plan['placed_ts']=s.now
+            plan.setdefault('effective_ts',((s.now+TF['3m']-1)//TF['3m'])*TF['3m'])
+            plan.setdefault('target_cancel_armed',plan['side']*(s.price-plan['tp'])<0)
+            park_pending(state,pending_plans(state)+[plan])
+            bind_order_numbers(state)
+            selected.append(plan)
+            emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
+                 stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
+            action='PLACE_LIMIT'
+            break  # One best new scenario per scan; the waiting queue has no cap.
     # Convert the market-ready state into the ACTUAL portfolio decision, so a
     # suppressed duplicate or a full book is never described as unexplained.
     tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
@@ -1403,7 +1630,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                        followed_id=(exact or duplicate)['id'])
         elif occupied_slots(state)>=2:
             row.update(status='WAIT_CAPACITY',reason='SLOTS_FULL')
-        elif live and row.get('side') not in {p['side'] for p in live}:
+        elif active_plans(state) and row.get('side') not in {p['side'] for p in active_plans(state)}:
             row.update(status='BLOCKED',reason='EXISTING_OPPOSITE_PLAN')
         elif action in ('DIRECTION_CONFLICT','DAILY_PAUSE','SESSION_CLOSED','DATA_HOLD'):
             row.update(status='BLOCKED',reason=action)
@@ -1417,11 +1644,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         best=analysis['best_scenario']
         best['outcome_forecast']=next((p.get('outcome_forecast') for p in live
                                       if p['id']==best.get('signal_id')),None)
-    for number,view in slot_views(state):
-        if view.get('pending'):
-            plan=view['pending']
-            plan['outcome_forecast']=lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__])
-            store_slot(state,number,view)
+    for plan in pending_plans(state):
+        plan['outcome_forecast']=lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__])
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
     state['last_run_ts'] = s.now
     state['config_hash'] = config_hash
@@ -1530,9 +1754,8 @@ def local_time(ts: int, cfg: Config) -> str:
 
 
 def target_line(p: dict) -> str:
-    names = [name for name in ('TP1','TP2','TP3') if p.get('partials',{'TP1':1}).get(name,0)>0]
-    return ' • '.join(f"{name} {p.get(name.lower(),p['tp']):.6g}"
-                    + (' (досягнуто)' if p.get(name.lower()+'_hit') else '') for name in names)
+    import notification_report
+    return notification_report.targets(p)
 
 
 def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
@@ -1545,18 +1768,18 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         trade = next((t for t in reversed(state['trades']) if t['id']==event['order_id']),{})
         reason = event.get('reason')
         text = {'STOP':'стоп','STOP_GAP':'стоп із розривом ціни',
-                'TAKE_PROFIT':'усі тейки','INTRADAY_TIME_EXIT':'кінець часу угоди'}.get(reason,'завершення')
+                'TAKE_PROFIT':'тейк-профіт','ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов','INTRADAY_TIME_EXIT':'кінець часу угоди'}.get(reason,'завершення')
         value = event['net_r']
         outcome = 'прибуток' if value>0 else 'збиток' if value<0 else 'беззбитково'
         achieved = [name for name in ('TP1','TP2','TP3') if trade.get(name.lower()+'_hit')]
-        details = ', '.join(achieved)+' досягнуто; ' if achieved else 'тейків не досягнуто; '
+        details = (', '.join(achieved)+' досягнуто; ' if achieved else '') if trade.get('exit_policy') != 'SINGLE_FULL_EXIT' else ''
         uncertainty = ' • порядок SL/TP у свічці невідомий, узято стоп' if event.get('ambiguous_ohlc') else ''
         emoji='✅' if value>0 else '🔴' if value<0 else '⚪'
         return f"{emoji} {at} {label} ЗАКРИТО: {value:+.2f}R — {outcome}\n   {details}{text}{uncertainty}"
     if kind=='FILLED':
         return f"🟢 {at} {label} ЦІНА ПРОЙШЛА ЛІМІТ — супровід сигналу розпочато"
     if kind in ('TP1','TP2','TP3'):
-        return f"🎯 {at} {label} {kind} досягнуто — зафіксовано {event['fraction']*100:.0f}% позиції"
+        return None  # Legacy partial events remain in the ledger, not in current alerts.
     if kind=='PAPER_STOP_AMENDED':
         return f"🛡️ {at} {label} Перенесення стопа на {event['stop']:.6g} з {local_time(event['effective_ts'],cfg)}"
     if kind in ('CANCELLED','EXPIRED'):
@@ -1575,7 +1798,7 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
-    'SLOTS_FULL':'обидва місця зайняті; потрібне закриття одного ордера',
+    'SLOTS_FULL':'відкриті дві угоди; новий вхід після закриття однієї',
     'EXISTING_OPPOSITE_PLAN':'вже супроводжуємо протилежний напрямок',
     'DIRECTION_CONFLICT':'протилежні сценарії мають близьку оцінку',
     'DAILY_PAUSE':'денний ліміт ризику або кількості входів',
@@ -1717,6 +1940,9 @@ def load_state(path: Path, cfg: Config) -> dict:
     for key in ("trades", "orders", "events", "signals", "notification_queue", "used_events"):
         if key not in raw:
             raise ValueError(f"State missing {key}; refusing reset")
+    raw.setdefault('pending_orders',[])
+    if not isinstance(raw['pending_orders'],list):
+        raise ValueError('Invalid pending queue; refusing reset')
     if 'second_slot' not in raw:
         raw['second_slot'] = {'pending':None,'active':None,'reconciliation':None}
     if not isinstance(raw['second_slot'],dict):
@@ -1751,7 +1977,8 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "signals": state["signals"], "events": state["events"],
                       "pending": state.get("pending"), "active": state.get("active"),
                       "reconciliation": state.get("reconciliation"),
-                      "second_slot": state.get('second_slot'), "open_plans": open_plans(state),
+                      "second_slot": state.get('second_slot'), "pending_orders":state.get("pending_orders",[]),
+                      "open_plans": open_plans(state),
                       "occupied_slots": occupied_slots(state), "max_slots": 2,
                       "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
                       "setup_matrix": state.get("setup_matrix",[]), "watch":state.get("watch",[]),
@@ -1816,7 +2043,8 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
         raise ValueError("Telegram token/chat_id required for --notify")
     while state["notification_queue"]:
         item = state["notification_queue"][0]
-        body=item['text']
+        import notification_report
+        body=notification_report.clean_queued_message(item['text'])
         if not item.get('version') and ('Найближчі сетапи:' in body or 'після комісій' in body):
             body='🕓 Збережений звіт старого формату з черги\n'+body
         body=decorate_message(body)

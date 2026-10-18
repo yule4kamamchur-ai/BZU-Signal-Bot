@@ -73,11 +73,11 @@ def audit(state, journal=None, market=None):
         'orders_current_strategy': {'total': len(orders)+sum(p['id'] not in {o['id'] for o in orders}
                                                                for p in engine.open_plans(state)),
                     'finished_status_counts': dict(Counter(o['status'] for o in orders)),
-                    'pending': sum(bool(v.get('pending')) for _, v in engine.slot_views(state)),
+                    'pending': len(engine.pending_plans(state)),
                     'active': sum(bool(v.get('active')) for _, v in engine.slot_views(state))},
         'open_plans': [{k: p.get(k) for k in ('id', 'display_id', 'order_number', 'status', 'side',
                                               'setup', 'setup_timeframe', 'entry', 'stop',
-                                              'tp1', 'tp2', 'tp3', 'placed_ts', 'expires_ts')}
+                                              'tp1', 'tp2', 'tp3', 'full_exit_target', 'tp1_hit', 'awaiting_tp1_review', 'placed_ts', 'expires_ts')}
                       for p in engine.open_plans(state)],
         'trade_rows': [{k: t.get(k) for k in ('id', 'order_number', 'side', 'setup', 'timeframe',
                      'placed_ts', 'filled_ts', 'closed_ts', 'entry', 'exit', 'net_r',

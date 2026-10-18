@@ -225,8 +225,8 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         text=engine.build_message(state,s,{'action':'DATA_HOLD','analysis':{'health':['UNTRUSTED_PRICE']}},cfg)
         self.assertIn('Ціна зараз: недоступна',text)
         self.assertIn('До входу: немає свіжої ціни',text)
-        self.assertIn('немає підтвердженої ціни',text)
-        self.assertIn('Оновлення супроводу призупинено',text)
+        self.assertIn('Ціна зараз: недоступна',text)
+        self.assertIn('Дані не оновлені. Збережений стан',text)
         self.assertNotIn('Ціна зараз: 0',text)
 
     def test_current_price_distance_progress_and_no_repeated_banners(self):
@@ -235,11 +235,11 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         state['pending']=p;engine.bind_order_numbers(state)
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
         for text in ('Ціна зараз: 101.25','До входу: 0.543%',
-                     'LONG • 1h • Повернення після зняття мінімуму','ОЧІКУЄМО ВХОДУ — 1','SL:','TP1'):
+                     'LONG • 1h • Повернення після зняття мінімуму','ОЧІКУЄМО ВХОДУ — 1','SL:','TP1:'):
             self.assertIn(text,message)
         for noise in ('PAPER','не біржові ордери','Нових входів немає','PAPER ='):
             self.assertNotIn(noise,message)
-        self.assertIn('У СУПРОВОДІ — 0',message)
+        self.assertNotIn('У СУПРОВОДІ — 0',message)
         self.assertNotIn('Готовність до входу на момент',message)
         self.assertNotIn('модель',message)
 
