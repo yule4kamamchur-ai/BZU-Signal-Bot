@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.5.0 — Exact levels and forecast
+name: BZU Auto Bot — ICT v12.6.0 — Lifecycle adaptive policy
 
 on:
   schedule:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       BOT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -24,10 +24,11 @@ jobs:
       SIGNAL_MEMORY_FILE: last_signal_v6_4.json
       SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
       MARKET_HISTORY_FILE: market_history_v12.json
+      RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.5.0-causal-early-limits'
-      INCLUDE_COMMISSION: 'false'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.6.0-lifecycle-adaptive-policy'
+      INCLUDE_COMMISSION: 'true'
       ABS_MIN_STOP_PCT: '0.01'
       MIN_TP1_DISTANCE_PCT: '0.015'
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
@@ -54,7 +55,7 @@ jobs:
           from pathlib import Path
           import os
           required = ['bot_oneshot.py', 'full_limit_engine.py',
-                      'signal_quality.py', 'setup_scanner.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
+                      'signal_quality.py', 'setup_scanner.py', 'notification_report.py', 'research_evidence.py', 'research_history.py', 'research_v12_6.py', 'lifecycle_forecast.py', 'trade_dependencies.py', 'test_v12_6_policy.py', 'analyze_bot.py', 'test_notification_report.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
                       'test_v12_4_scanner.py', 'test_v12_4_1_selection.py', 'test_v12_4_2_reports.py', 'test_v12_4_3_geometry.py', 'test_v12_5_early_limits.py', 'testdata/reported_20261014.json', 'setup_preservation_manifest.json']
           missing = [name for name in required if not Path(name).is_file()]
           if missing:
@@ -69,7 +70,7 @@ jobs:
       - name: Validate full v12 bot offline
         if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
         run: |
-          python -m py_compile bot_oneshot.py full_limit_engine.py signal_quality.py setup_scanner.py price_forecast.py limit_structure.py market_archive.py test_v12_4_2_reports.py test_v12_4_3_geometry.py
+          python -m py_compile bot_oneshot.py full_limit_engine.py signal_quality.py setup_scanner.py notification_report.py analyze_bot.py price_forecast.py limit_structure.py market_archive.py test_v12_4_2_reports.py test_v12_4_3_geometry.py
           python bot_oneshot.py --self-test
           # Original compatibility fixtures assume their original 0.4% floor.
           # Production and the full new test suite retain the 1% floor above.
@@ -110,7 +111,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           # Commit only runtime files, never remove unrelated or legacy files.
-          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json; do
+          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json; do
             if [ -f "$file" ]; then
               git add -f -- "$file"
             fi
@@ -139,7 +140,7 @@ jobs:
 
             # A different writer changed the same ledger: preserve both copies.
             if ! git diff --quiet "$base_revision" "$remote_revision" -- \
-                last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json; then
+                last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json; then
               echo '::error::Remote state changed during this run. Refusing to overwrite it; recover this run from its state artifact.'
               exit 1
             fi
@@ -164,5 +165,6 @@ jobs:
             last_signal_v6_4.json
             signal_journal_v6_4.json
             market_history_v12.json
+            research_market_v12_6.json
           if-no-files-found: warn
           retention-days: 7
