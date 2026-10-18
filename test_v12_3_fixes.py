@@ -1,5 +1,6 @@
 """Targeted causal and risk regressions; synthetic data is not win-rate evidence."""
 import copy
+import os
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -131,7 +132,7 @@ class QualityAndReportingTests(unittest.TestCase):
         p.update(status='PENDING',partials={'TP1':1.0},expires_ts=s.now+3_600_000)
         state['pending']=p
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
-        for label in ('💰','🧩','SL:','TP1','ЛІМІТНИЙ СИГНАЛ','Зайнято місць','Ціна зараз','До входу'):
+        for label in ('💰','SL:','TP1','ОЧІКУЄМО ВХОДУ — 1','Зайнято місць','Ціна зараз','До входу'):
             self.assertIn(label,message)
 
 
@@ -178,7 +179,8 @@ class DeploymentContinuityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             state_path=Path(temp)/'memory.json';journal_path=Path(temp)/'journal.json'
             engine.atomic_write(state_path,state)
-            with patch.object(core,'STATE_FILE',str(state_path)), \
+            with patch.dict(os.environ, {'MARKET_HISTORY_FILE':str(Path(temp)/'market.json')}), \
+                 patch.object(core,'STATE_FILE',str(state_path)), \
                  patch.object(core,'JOURNAL_FILE',str(journal_path)), \
                  patch.object(core,'TELEGRAM_TOKEN','test'), \
                  patch.object(core,'TELEGRAM_CHAT_ID','test'), \

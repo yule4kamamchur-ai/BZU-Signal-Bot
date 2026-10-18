@@ -1,0 +1,159 @@
+{
+  "source": "UPLOADED_LEGACY_SNAPSHOT_EXPLORATORY_NOT_HELD_OUT_VALIDATION",
+  "snapshot_utc": "2026-10-18T18:34:17.254000+00:00",
+  "code_version": "full-ict-v12.6.0-lifecycle-adaptive-policy",
+  "elapsed_seconds": 0.4541614239997216,
+  "action": "WAIT_LIMIT",
+  "open_orders_preserved": true,
+  "input_files_written": false,
+  "new_orders": 0,
+  "historical_v12_5_statistics": {
+    "trades": 7,
+    "wins": 3,
+    "losses": 4,
+    "breakeven": 0,
+    "win_rate": 0.42857142857142855,
+    "wilson_lower_95": 0.1582169222626268,
+    "net_r": 1.7257558790322243,
+    "expectancy_r": 0.24653655414746062,
+    "profit_factor": 1.7717099107740444,
+    "max_drawdown_r": 2.0387311286844003
+  },
+  "historical_v12_5_dependencies": {
+    "raw_trades": 7,
+    "dependency_episodes": 5,
+    "cluster_win_rate": 0.4,
+    "cluster_expectancy_r": 0.20894516211516787,
+    "groups": [
+      {
+        "episode_id": "38e1c4086c92870938",
+        "members": [
+          "dd4c86e9010c20a2b6"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.5612399999999973,
+        "decision_ts": 1791998315640,
+        "closed_ts": 1792008000000
+      },
+      {
+        "episode_id": "aa47f666a35a5e5611",
+        "members": [
+          "98d0e24ea24d3c0c2e",
+          "dc92de867611d55b5f"
+        ],
+        "trades": 2,
+        "net_r_equal_weight": -1.0193655643422002,
+        "decision_ts": 1792009051767,
+        "closed_ts": 1792027080000
+      },
+      {
+        "episode_id": "f6619d078e0713dea9",
+        "members": [
+          "1d2ab6171e117132dc",
+          "7eee374d58f0f2db87"
+        ],
+        "trades": 2,
+        "net_r_equal_weight": 1.7003956327985854,
+        "decision_ts": 1792027109738,
+        "closed_ts": 1792166760000
+      },
+      {
+        "episode_id": "0e51ae78fc4bb1ee89",
+        "members": [
+          "64881bc0c5c8863957"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -0.09467476635513125,
+        "decision_ts": 1792169348797,
+        "closed_ts": 1792180800000
+      },
+      {
+        "episode_id": "3bed07f48afc595f63",
+        "members": [
+          "763fec68492775dbbd"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -0.10286949152541203,
+        "decision_ts": 1792205321201,
+        "closed_ts": 1792303560000
+      }
+    ],
+    "method": "OVERLAPPING_SAME_SIDE_WITHIN_HALF_INITIAL_RISK",
+    "independence_guaranteed": false,
+    "pnl_weighting": "EQUAL_WEIGHT_WITHIN_EPISODE_NOT_DEPOSIT_RETURN"
+  },
+  "scenario_examples": {
+    "#029": {
+      "schema": "limit_full_lifecycle_scenarios_v1",
+      "calibrated": false,
+      "target": "FULL_TRADE_NET_AFTER_COSTS",
+      "empirical_win_rate": null,
+      "as_of_ts": 1792348457254,
+      "closed_bars": 240,
+      "source_timeframe": "3m",
+      "fee_assumption": {
+        "maker": 0.0002,
+        "taker": 0.0005,
+        "slippage_bps": 2.0,
+        "carry_budget_bps_per_day": 2.0,
+        "actual_funding_known": false
+      },
+      "status": "MODEL_ONLY",
+      "fingerprint": "b4867dc382fa5b44dca0dba10561a90536557caa92af3895afb8185bf91ff3be",
+      "paths": 96,
+      "completed_paths": 96,
+      "censored_paths": 0,
+      "fill_probability": 0.19791666666666666,
+      "net_win_probability_given_fill": 0.7894736842105263,
+      "net_win_probability_per_placed": 0.15625,
+      "expectancy_r_per_placed": 0.10371332388947398,
+      "expectancy_r_given_fill": 0.5240252154415528,
+      "expected_occupied_minutes": 2576.462433333333,
+      "stress_expectancy_r_per_placed": 0.07065743884027734,
+      "downside_r_given_fill": 0.09082835480123834,
+      "tp1_probability_given_fill": 0.05263157894736842,
+      "limitations": [
+        "Uncalibrated 3m block scenarios with fixed current context",
+        "Queue position, future HTF flips and actual future funding are unknown",
+        "Carry is a disclosed cost budget; stress doubles fees, slippage and carry",
+        "SL first when same-candle ordering is ambiguous; exact touches do not fill"
+      ]
+    },
+    "#028": {
+      "schema": "limit_full_lifecycle_scenarios_v1",
+      "calibrated": false,
+      "target": "FULL_TRADE_NET_AFTER_COSTS",
+      "empirical_win_rate": null,
+      "as_of_ts": 1792348457254,
+      "closed_bars": 240,
+      "source_timeframe": "3m",
+      "fee_assumption": {
+        "maker": 0.0002,
+        "taker": 0.0005,
+        "slippage_bps": 2.0,
+        "carry_budget_bps_per_day": 2.0,
+        "actual_funding_known": false
+      },
+      "status": "MODEL_ONLY",
+      "fingerprint": "8a89c20b63642cefd81a7bbfd52f70a474a827a911d087927dcf8729a4e635da",
+      "paths": 96,
+      "completed_paths": 96,
+      "censored_paths": 0,
+      "fill_probability": 0.0,
+      "net_win_probability_given_fill": null,
+      "net_win_probability_per_placed": 0.0,
+      "expectancy_r_per_placed": 0.0,
+      "expectancy_r_given_fill": null,
+      "expected_occupied_minutes": 1186.7124333333334,
+      "stress_expectancy_r_per_placed": 0.0,
+      "downside_r_given_fill": null,
+      "tp1_probability_given_fill": null,
+      "limitations": [
+        "Uncalibrated 3m block scenarios with fixed current context",
+        "Queue position, future HTF flips and actual future funding are unknown",
+        "Carry is a disclosed cost budget; stress doubles fees, slippage and carry",
+        "SL first when same-candle ordering is ambiguous; exact touches do not fill"
+      ]
+    }
+  }
+}

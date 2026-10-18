@@ -15,16 +15,14 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'native-mtf-causal-episodes-fresh-targets-v4'
+STRATEGY = 'native-mtf-full-lifecycle-continuous-learning-v5'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
 @dataclass(frozen=True)
 class Settings:
     target_win_rate: float = .70
-    minimum_observations: int = 40
-    minimum_lower_bound: float = .55
-    minimum_expectancy_r: float = .05
+    learning_prior_weight: float = 12.
     maximum_cost_fraction: float = .25
     maximum_shadow_plans: int = 48
     maximum_observations: int = 2500
@@ -202,13 +200,20 @@ def empirical(f: dict, rows: list[dict], now: int, settings: Settings=Settings()
     past=[r for r in rows if r.get('strategy')==STRATEGY and now-90*86_400_000<=r['closed_ts']<now
           and r['decision_ts']<r['closed_ts'] and r.get('qualified') and math.isfinite(r['net_r'])]
     base=lambda r:r['features']['alignment']==f['alignment'] and r['features']['regime']==f['regime'] and r['features']['side']==f['side'] and r['features'].get('setup_timeframe','15m')==f.get('setup_timeframe','15m')
-    exact=independent([r for r in past if base(r) and r['features']['setup']==f['setup']])
-    group=independent([r for r in past if base(r) and r['features']['family']==f['family']])
-    selected=exact if len(exact)>=settings.minimum_observations else group
+    import trade_dependencies
+    exact=independent(trade_dependencies.evidence_rows([r for r in past if base(r) and r['features']['setup']==f['setup']]))
+    group=independent(trade_dependencies.evidence_rows([r for r in past if base(r) and r['features']['family']==f['family']]))
+    selected=exact if exact else group
     n=len(selected);wins=sum(r['net_r']>0 for r in selected)
+    # Continuous shrinkage starts with the first resolved episode. It never
+    # turns a target WR, sample count, or uncertainty bound into an entry veto.
+    reliability=n/(n+settings.learning_prior_weight)
     return {'observations':n,'wins':wins,'win_rate':wins/n if n else None,
-            'estimate':(wins+1)/(n+2) if n else None,'lower_95':wilson(wins,n) if n else None,
+            'estimate':(.5*settings.learning_prior_weight+wins)/(settings.learning_prior_weight+n) if n else None,
+            'lower_95':wilson(wins,n) if n else None,
             'expectancy_r':mean(r['net_r'] for r in selected) if n else None,
+            'learning_weight':reliability,
+            'ranking_adjustment':max(-5.,min(5.,5*reliability*mean(r['net_r'] for r in selected))) if n else 0.,
             'scope':'setup' if selected is exact else 'family',
             'latest_label_ts':max((r['closed_ts'] for r in selected),default=0)}
 
@@ -216,18 +221,11 @@ def empirical(f: dict, rows: list[dict], now: int, settings: Settings=Settings()
 def assess(plan, snapshot, context, cfg, engine, rows, settings: Settings=Settings()):
     f=features(plan,snapshot,context,cfg,engine);reason=structural_reason(f,settings)
     stat=empirical(f,rows,snapshot.now,settings)
-    status='BOOTSTRAP_NOT_VALIDATED'
-    if reason=='CONFIRMED' and stat['observations']>=settings.minimum_observations:
-        status='PAST_ONLY_EMPIRICAL_FILTER'
-        if stat['estimate']<settings.target_win_rate:
-            reason='EMPIRICAL_WIN_RATE_BELOW_TARGET'
-        elif stat['lower_95']<settings.minimum_lower_bound:
-            reason='EMPIRICAL_CONFIDENCE_TOO_LOW'
-        elif stat['expectancy_r']<settings.minimum_expectancy_r:
-            reason='EXPECTANCY_TOO_LOW_AFTER_COSTS'
+    status='CONTINUOUS_FEEDBACK_NO_WR_VETO'
     return {'accepted':reason=='CONFIRMED','reason':reason,'features':f,'statistics':stat,
             'status':status,'target':settings.target_win_rate,'strategy':STRATEGY,
-            'probability_validated':False}
+            'probability_validated':False,'win_rate_gate_enabled':False,
+            'ranking_adjustment':stat['ranking_adjustment']}
 
 
 PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
@@ -236,13 +234,13 @@ PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
              'zone_created_ts','last_bar','execution','status','target_cancel_armed','version',
              'setup_timeframe','micro_timeframe','entry_policy','detector_confirmed',
-             'max_hold_minutes','intraday','include_commission')
+             'max_hold_minutes','intraday','include_commission','entry_fee_rate','exit_fee_rate','slippage_bps')
 
 
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))
@@ -386,7 +384,9 @@ def advance(state: dict, snapshot, cfg, engine) -> None:
             q['observations'].append({'id':trade['id'],'strategy':STRATEGY,'features':trade['features'],
                                       'qualified':trade['qualified'],'decision_ts':trade['decision_ts'],
                                       'closed_ts':trade['closed_ts'],'net_r':trade['net_r'],
-                                      'conservative_ambiguity':trade.get('ambiguous_ohlc',False)})
+                                      'conservative_ambiguity':trade.get('ambiguous_ohlc',False),
+                                      'entry':trade['entry'],'risk':trade['risk'],'side':trade['side'],
+                                      'filled_ts':trade.get('filled_ts'),'instrument':trade.get('instrument','')})
         if book.get('pending') or book.get('active'):
             remaining.append({'pending':book.get('pending'),'active':book.get('active')})
     q['pending']=remaining
@@ -400,9 +400,11 @@ def validation_status(trades: list[dict], independent_trades: list[dict]|None=No
     independent_values=[t['net_r'] for t in independent_trades] if independent_trades is not None else values
     lower=wilson(sum(v>0 for v in independent_values),len(independent_values))
     expectation=mean(values) if values else None
-    confirmed=n>=100 and len(independent_values)>=100 and lower>=.70 and expectation>0
+    observed_goal_met=(wins/n>=.70) if n else False
+    confidence_support=bool(independent_values) and lower>=.70 and expectation is not None and expectation>0
     return {'target':.70,'closed_trades':n,'observed_win_rate':wins/n if n else None,
             'independent_trades':len(independent_values),'wilson_lower_95':lower,
-            'expectancy_r':expectation,'target_confirmed_on_this_period':confirmed,
-            'status':'TARGET_SUPPORTED_ON_HELD_OUT_PERIOD' if confirmed else 'TARGET_NOT_CONFIRMED',
+            'expectancy_r':expectation,'observed_goal_met':observed_goal_met,
+            'target_confirmed_on_this_period':confidence_support,'entry_gate_enabled':False,
+            'status':'OBSERVED_GOAL_MET_NOT_A_GUARANTEE' if observed_goal_met else 'GOAL_NOT_YET_MET',
             'future_performance_guaranteed':False}

@@ -75,7 +75,20 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
                                 'timeframe':tf,'known_ts':point['known_ts']+TF[tf],
                                 'hard_barrier':False,'freshness':'UNSWEPT'})
         volatility=max(engine.atr(rows),cfg.tick)
-        for zone in cfg.core.detect_order_blocks(rows,volatility)+cfg.core.detect_fvg(rows,volatility):
+        gaps=cfg.core.detect_fvg(rows,volatility,limit=64)
+        # The original FVG helper discards any gap crossed by a wick. Restore
+        # its geometry for target-risk analysis; acceptance is decided below.
+        known_gaps={(z.kind,z.created_ts,z.low,z.high) for z in gaps}
+        for first,middle,last in zip(rows,rows[1:],rows[2:]):
+            for kind,sd,low,high in (('FVG_BULL','LONG',first.high,last.low),
+                                     ('FVG_BEAR','SHORT',last.high,first.low)):
+                if high-low<.75*volatility:
+                    continue
+                key=(kind,middle.ts,low,high)
+                if key not in known_gaps:
+                    gaps.append(cfg.core.Zone(kind,sd,low,high,middle.ts,tf,min(4.,(high-low)/volatility)))
+                    known_gaps.add(key)
+        for zone in cfg.core.detect_order_blocks(rows,volatility,limit=64)+gaps:
             if cfg.core.side_sign(zone.side)!=-sign or zone.mitigated:
                 continue
             # OB is known after the next displacement candle; FVG after its
@@ -83,16 +96,20 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
             known=zone.created_ts+2*TF[tf]
             if known>snapshot.now:
                 continue
-            later=[c for c in rows if c.ts>=known]
-            traversed=any(c.high>=zone.high+cfg.tick if sign==1 else c.low<=zone.low-cfg.tick for c in later)
-            if traversed:
+            life=zone_lifecycle(zone,rows,tf,snapshot.now,volatility,cfg.tick)
+            if life['state']=='BROKEN_ACCEPTED':
                 continue
             level=zone.low if sign==1 else zone.high
+            inside=zone.low<=entry<=zone.high
+            if inside:
+                level=zone.high if sign==1 else zone.low
             if sign*(level-entry)>2*cfg.tick:
                 targets.append({'kind':zone.kind,'level':level,'timeframe':tf,
                                 'known_ts':known,'strength':zone.strength,
-                                'hard_barrier':zone.kind.endswith('_OB') and zone.strength>=1.10,
-                                'freshness':'UNMITIGATED'})
+                                'hard_barrier':life['hard_barrier'],
+                                'freshness':life['state'],'role':life['role'],
+                                'entry_inside_zone':inside,
+                                'zone_lifecycle':life})
     # Session reference levels remain valid targets, but a current day's
     # evolving extrema must not redefine the original fixed entry.
     session=context.get('session',{})
@@ -110,6 +127,45 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
         if previous is None or (target['hard_barrier'],TF.get(target['timeframe'],0))>(previous['hard_barrier'],TF.get(previous['timeframe'],0)):
             unique[key]=target
     return sorted(unique.values(),key=lambda t:t['distance'])
+
+
+def zone_lifecycle(zone,rows,tf,now,volatility,tick):
+    """A rejection wick does not erase supply/demand. Acceptance does.
+
+    Age and repeat tests describe freshness; age alone cannot dissolve a
+    strong barrier. Two closes outside, or a full displacement close outside,
+    establish a break using information available at this decision only.
+    """
+    known=zone.created_ts+2*TF[tf]
+    later=[c for c in rows if c.confirmed and known<=c.ts and c.ts+TF[tf]<=now]
+    support=1 if zone.side=='LONG' else -1
+    far=zone.low if support==1 else zone.high
+    beyond=lambda c:support*(c.close-far)<-tick
+    consecutive=0;broken=False;touches=0;inside=False;penetration=0.
+    width=max(zone.high-zone.low,tick)
+    for c in later:
+        touched=c.low<=zone.high and c.high>=zone.low
+        if touched and not inside:
+            touches+=1
+        inside=touched
+        if touched:
+            depth=(zone.high-c.low)/width if support==1 else (c.high-zone.low)/width
+            penetration=max(penetration,max(0.,min(1.,depth)))
+        consecutive=consecutive+1 if beyond(c) else 0
+        displacement=beyond(c) and support*(c.close-c.open)<-1.1*volatility
+        if consecutive>=2 or displacement:
+            broken=True
+    age=max(0,(now-known)//TF[tf])
+    is_ob=zone.kind.endswith('_OB')
+    formation=[c for c in rows if zone.created_ts<=c.ts<known and c.ts+TF[tf]<=now and c.confirmed]
+    displacement=max((abs(c.close-c.open)/max(volatility,tick) for c in formation),default=0.)
+    strong=(is_ob and zone.strength>=1.10) or (not is_ob and zone.strength>=.75 and displacement>=1.10)
+    state='BROKEN_ACCEPTED' if broken else 'FRESH' if touches==0 and age<=24 else 'TESTED' if touches else 'AGED_UNTESTED'
+    role='STRONG_OPPOSING_BARRIER' if strong and not broken else 'STRUCTURAL_DESTINATION'
+    return {'known_ts':known,'age_bars':age,'touch_episodes':touches,
+            'penetration_fraction':round(penetration,4),'state':state,'role':role,
+            'hard_barrier':strong and not broken,'formation_strength':zone.strength,
+            'formation_displacement_atr':round(displacement,4)}
 
 
 def choose_target(targets,entry,risk,buffer,side,cfg):

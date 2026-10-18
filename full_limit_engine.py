@@ -28,13 +28,16 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.5.0-causal-early-limits"
-REPORT_RELEASE = 'v12.5.0'
+VERSION = "full-ict-v12.6.0-lifecycle-adaptive-policy"
+REPORT_RELEASE = 'v12.6.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
 import limit_structure
 import market_archive
+import research_evidence
+import lifecycle_forecast
+import trade_dependencies
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -132,7 +135,7 @@ class Config:
         }
         kwargs = {k: cast(os.environ[name]) for k, (name, cast) in mapping.items()
                   if os.environ.get(name)}
-        flag=os.environ.get('INCLUDE_COMMISSION','false').lower()
+        flag=os.environ.get('INCLUDE_COMMISSION','true').lower()
         if flag not in ('true','false','1','0'):
             raise ValueError('INCLUDE_COMMISSION must be true or false')
         kwargs['include_commission']=flag in ('true','1')
@@ -321,6 +324,20 @@ def fees_r(entry: float, exit_price: float, risk: float, cfg: Config) -> float:
 
 def fee_rate(cfg: Config, kind: str) -> float:
     return getattr(cfg,kind+'_fee') if cfg.include_commission else 0.
+
+
+def execution_config(plan: dict, cfg: Config) -> Config:
+    """Freeze entry-era costs, including existing no-commission orders."""
+    included = plan.get('include_commission', cfg.include_commission)
+    if (included==cfg.include_commission
+            and plan.get('entry_fee_rate',cfg.maker_fee)==cfg.maker_fee
+            and plan.get('exit_fee_rate',cfg.taker_fee)==cfg.taker_fee
+            and plan.get('slippage_bps',cfg.slippage_bps)==cfg.slippage_bps):
+        return cfg
+    return replace(cfg, include_commission=included,
+                   maker_fee=plan.get('entry_fee_rate',cfg.maker_fee) if included else 0.,
+                   taker_fee=plan.get('exit_fee_rate',cfg.taker_fee) if included else 0.,
+                   slippage_bps=plan.get('slippage_bps',cfg.slippage_bps))
 
 
 REVERSALS = frozenset({"SWEEP_RECLAIM", "CAPITULATION_RECOVERY", "RANGE_EDGE_REVERSAL",
@@ -573,6 +590,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     regime_score = 75 if regime == "TREND" and continuation else (65 if regime in {"RANGE", "TRANSITION"} else 50)
     targets = full_targets(ctx, s, side, entry, cfg)
     diag.update(target_geometry(entry,stop,risk,buffer,sign,targets,cfg))
+    if any(t.get('entry_inside_zone') and t.get('hard_barrier') for t in targets):
+        return None, "ENTRY_INSIDE_STRONG_OPPOSING_ZONE"
     if not targets:
         return None, "NO_STRUCTURAL_TARGET"
     nearest = diag['path_barrier'] or diag['chosen_target']
@@ -587,10 +606,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     score-=min(8,2*len(diag.get('intermediate_levels',[])))
     prior = stats.get(a.setup_type, {})
     prior = prior.get('timeframes',{}).get(source_tf,prior)
-    if prior.get("status") == "NEGATIVE_EXPECTANCY":
-        score -= min(12, abs(prior["expectancy_r"])*10)
-    elif prior.get("status") == "POSITIVE_EXPECTANCY":
-        score += min(5, prior["expectancy_r"]*5)
+    # Historical outcomes affect comparative ranking after structural admission,
+    # never the minimum context score or a fixed sample-triggered veto.
     score = round(min(100,max(0,score)), 2)
     diag['score']=score
     mark('CONTEXT_SCORE',score>=cfg.min_score)
@@ -609,6 +626,18 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     further = [t for t in later if t["distance"]-buffer > sign*(tp2-entry)+.25*risk]
     tp3 = round_tick(entry+sign*min(further[0]["distance"]-buffer if further else sign*(tp2-entry), 4*risk),
                      cfg.tick, up=sign == -1)
+    # Every partial must also stop before a strong intervening zone. A
+    # minimum spacing rule must never skip an obstacle just after TP1.
+    previous=tp1
+    bounded=[]
+    for target in (tp2,tp3):
+        barriers=[t for t in targets if t.get('hard_barrier',True)
+                  and sign*(previous-entry)<t['distance']<=sign*(target-entry)+buffer]
+        if barriers:
+            target=entry+sign*max(sign*(previous-entry),min(t['distance'] for t in barriers)-buffer)
+        target=round_tick(target,cfg.tick,up=sign==-1)
+        bounded.append(target);previous=target
+    tp2,tp3=bounded
     partials = {"TP1": cfg.partial_tp1, "TP2": cfg.partial_tp2, "TP3": 1-cfg.partial_tp1-cfg.partial_tp2}
     if sign*(tp2-tp1) < cfg.tick:
         partials = {"TP1": 1.0, "TP2": 0.0, "TP3": 0.0}
@@ -651,6 +680,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "max_hold_minutes": cfg.max_hold_minutes*scale, "intraday": source_tf == '15m',
             "readiness_pct": 100.0,
             "include_commission":cfg.include_commission,
+            "entry_fee_rate":fee_rate(cfg,'maker'),"exit_fee_rate":fee_rate(cfg,'taker'),
+            "slippage_bps":cfg.slippage_bps,
             "entry_checks":copy.deepcopy(diag['entry_checks']),
             "anchor_id": a.id, "anchor_kind": a.kind, "entry": entry, "limit_price": entry,
             "stop": stop, "initial_stop": stop, "tp": tp1, "tp0": entry+sign*.6*risk,
@@ -788,13 +819,14 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         # Accepted planner proposals have already passed the first six gates.
         # This also keeps injected replay planners under the same contract.
         for check in checks:
-            if check['key'] not in ('STRUCTURAL_CONFIRMATION','STATISTICAL_FILTER') and check['met'] is None:
+            if check['key'] not in ('STRUCTURAL_CONFIRMATION','DECISION_EVALUATED') and check['met'] is None:
                 check['met']=True
             if check['key']=='STRUCTURAL_CONFIRMATION':
                 check['met']=quality.structural_reason(q['features'])=='CONFIRMED'
-            if check['key']=='STATISTICAL_FILTER':
-                check['met']=q['reason'] not in ('EMPIRICAL_WIN_RATE_BELOW_TARGET','EMPIRICAL_CONFIDENCE_TOO_LOW','EXPECTANCY_TOO_LOW_AFTER_COSTS')
-        p['probability'] = q['statistics']['estimate'] if q['statistics']['observations']>=quality.Settings().minimum_observations else None
+            if check['key']=='DECISION_EVALUATED':
+                check['met']=True
+        p['probability'] = None
+        p['decision_score'] = p['score']+q['ranking_adjustment']
         p['probability_status'] = q['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
         row=next((r for r in matrix if r.get('signal_id')==p['id']),None)
@@ -807,7 +839,6 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         p['distance_pct']=scanner.proximity(s.price,p['entry'])['distance_pct']
     def priority(p):
         q=p['quality'];stat=q['statistics']
-        supported=stat['observations']>=quality.Settings().minimum_observations
         structural=quality.structural_reason(q['features'])=='CONFIRMED'
         return (q['accepted'],*scanner.selection_key(p,s.price))
     plans.sort(key=priority,reverse=True)
@@ -1010,6 +1041,7 @@ def end_order(state: dict, order: dict, status: str, reason: str, ts: int) -> No
 
 def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: Config,
                 ambiguous: bool = False) -> None:
+    cfg = execution_config(p,cfg)
     side, risk = p["side"], p["risk"]
     remaining = p.get("remaining",1.0)
     gross = p.get("realized_gross_r",0)+remaining*side*(price-p["entry"])/risk
@@ -1019,11 +1051,11 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
               "closed_at": iso(ts), "close_reason": reason, "gross_r": gross,
               "fees_r": fees, "net_r": gross-fees, "pnl_r": gross-fees,
               "stop_initial": p["initial_stop"], "stop_at_close": p["stop"],
-              "bot_version_at_entry": p.get("entry_version", VERSION),
+              "bot_version_at_entry": trade_entry_version(p),
               "architecture_version_at_entry": SCHEMA,
               "result": "WIN" if gross-fees>0 else "LOSS" if gross-fees<0 else "BREAKEVEN",
               "close_action": reason, "ambiguous_ohlc": ambiguous,
-              "version": VERSION, "execution": "PAPER_SIGNAL"}
+              "version": trade_entry_version(p), "exit_version": VERSION, "execution": "PAPER_SIGNAL"}
     if not any(t["id"] == closed["id"] for t in state["trades"]):
         state["trades"].append(closed)
     for record in state['orders']:
@@ -1036,6 +1068,7 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
 
 
 def partial_exit(state: dict, p: dict, name: str, level: float, ts: int, cfg: Config) -> None:
+    cfg = execution_config(p,cfg)
     size = min(p.get("remaining",1.0),p.get("partials",{}).get(name,1.0 if name=="TP1" else 0))
     p[name.lower()+"_hit"] = True
     if size <= 0:
@@ -1052,6 +1085,7 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False) -> N
     p = state["active"]
     if not p:
         return
+    cfg = execution_config(p,cfg)
     side, entry, risk = p["side"], p["entry"], p["risk"]
     ts = c.ts+TF["3m"]
     if c.ts <= p.get("last_bar", -1):
@@ -1104,6 +1138,7 @@ def _amend_slot_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
     p = state.get("active")
     if not p or p.get("pending_stop") or (p.get("strong_closes", 0) < 2 and not p.get("tp1_hit")):
         return
+    cfg = execution_config(p,cfg)
     entry, side, risk = p["entry"], p["side"], p["risk"]
     if not p.get("tp1_hit") and side*(s.price-entry)/risk < cfg.break_even_trigger_r:
         return
@@ -1233,7 +1268,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.4.0-native-mtf-limit-scanner',
                                        'full-ict-v12.4.1-single-scenario-no-commission',
                                        'full-ict-v12.4.2-quote-gates-price-forecast',
-                                       'full-ict-v12.4.3-minimum-sl-tp'):
+                                       'full-ict-v12.4.3-minimum-sl-tp',
+                                       'full-ict-v12.5.0-causal-early-limits'):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1301,6 +1337,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place = False
     if can_place:
         plans = sorted(analysis.get('plans',[]),key=lambda p:scanner.selection_key(p,s.price),reverse=True)
+        # Evaluate a bounded shortlist instead of Monte Carlo for thousands of
+        # near-duplicate anchors. A valid lower-ranked candidate is still a
+        # fallback; missing/negative model estimates never create a WR veto.
+        for candidate in plans[:6]:
+            candidate['outcome_forecast']=lifecycle_forecast.forecast(candidate,s,cfg,sys.modules[__name__])
+            candidate['decision_score']=candidate.get('decision_score',candidate.get('score',0))\
+                                        +lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
+        plans[:6]=sorted(plans[:6],key=lambda p:scanner.selection_key(p,s.price),reverse=True)
         sides = {p['side'] for p in busy}
         if not sides and plans:
             top = plans[0]
@@ -1317,10 +1361,17 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 continue
             if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
                 continue
+            linked=next((p for p in busy if trade_dependencies.related(p,top,cfg.tick)),None)
+            if linked:
+                analysis.setdefault('rejections',{})['DEPENDENT_ENTRY_ALREADY_RESERVED']=\
+                    analysis.get('rejections',{}).get('DEPENDENT_ENTRY_ALREADY_RESERVED',0)+1
+                continue
             for number,view in slot_views(state):
                 if view.get('pending') or view.get('active') or view.get('reconciliation'):
                     continue
                 plan = copy.deepcopy(top)
+                plan['decision_forecast']=copy.deepcopy(plan.get('outcome_forecast') or
+                    lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__]))
                 # Also enforce timing for injected/replay planner proposals.
                 plan['placed_ts'] = s.now
                 plan.setdefault('effective_ts',((s.now+TF['3m']-1)//TF['3m'])*TF['3m'])
@@ -1364,11 +1415,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     analysis['best_scenario']=selected_row or scanner.best_scenario(analysis.get('watch',[]),s.price,sides)
     if analysis['best_scenario']:
         best=analysis['best_scenario']
-        best['price_forecast']=price_forecast.forecast(best,s,cfg)
+        best['outcome_forecast']=next((p.get('outcome_forecast') for p in live
+                                      if p['id']==best.get('signal_id')),None)
     for number,view in slot_views(state):
         if view.get('pending'):
             plan=view['pending']
-            plan['price_forecast']=price_forecast.forecast(plan,s,cfg)
+            plan['outcome_forecast']=lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__])
             store_slot(state,number,view)
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
     state['last_run_ts'] = s.now
@@ -1415,6 +1467,19 @@ def statistics(trades: list[dict], key: str = "net_r") -> dict:
             "expectancy_r": mean(vals) if n else None,
             "profit_factor": gains/losses if losses else None,
             "max_drawdown_r": drawdown(vals)}
+
+
+def trade_entry_version(trade: dict) -> str:
+    """A close after a code update still belongs to its original entry cohort."""
+    return (trade.get('bot_version_at_entry') or trade.get('entry_version')
+            or trade.get('version') or 'UNKNOWN')
+
+
+def statistics_by_entry_version(trades: list[dict]) -> dict:
+    groups = {}
+    for trade in sorted(trades, key=lambda t: t.get('closed_ts', 0)):
+        groups.setdefault(trade_entry_version(trade), []).append(trade)
+    return {version: statistics(rows) for version, rows in groups.items()}
 
 
 def drawdown(values: list[float]) -> float:
@@ -1526,6 +1591,7 @@ REASON_UA = {
     'TARGET_RR_TOO_LOW':'потенціал TP відносно SL нижчий за мінімум',
     'TARGET_DISTANCE_TOO_SMALL':'найближча структурна ціль ближча за мінімальний TP1 1.5%',
     'STRONG_OPPOSING_ZONE_BEFORE_TP':'сильна протилежна зона перекриває шлях до TP1',
+    'ENTRY_INSIDE_STRONG_OPPOSING_ZONE':'вхід усередині сильної протилежної зони',
     'ANCHOR_EXPIRED_AWAITING_NEW_EVENT':'строк рівня минув; потрібна нова підтверджена реакція або нова сесія',
     'NO_STRUCTURAL_TARGET':'немає підтвердженої цілі на графіку',
     'COMBINED_CONTEXT_SCORE_LOW':'оцінка контексту нижча порогу',
@@ -1540,24 +1606,24 @@ REASON_UA = {
     'RANGE_ENTRY_NOT_AT_EDGE':'точка входу посередині діапазону',
     'SHOCK_STILL_ACTIVE':'чекаємо завершення різкого стрибка волатильності',
     'RETURN_PATH_TOO_LONG':'ціна надто далеко від рівня',
-    'EMPIRICAL_WIN_RATE_BELOW_TARGET':'історична оцінка win rate нижча порогу',
-    'EMPIRICAL_CONFIDENCE_TOO_LOW':'історична вибірка недостатньо переконлива',
-    'EXPECTANCY_TOO_LOW_AFTER_COSTS':'історичний результат після витрат надто низький',
-    'ANCHOR_TOO_OLD_TO_PLACE':'сетап утратив актуальність',
+        'ANCHOR_TOO_OLD_TO_PLACE':'сетап утратив актуальність',
     'ORDER_LIFETIME_BELOW_REPORT_CADENCE':'до завершення сесії замало часу',
     'LEVEL_OR_EVENT_COOLDOWN':'цей рівень уже використаний; чекаємо новий сетап',
     'ANCHOR_COOLDOWN':'рівень ще на паузі',
     'STOP_INSIDE_NOISE':'стоп усередині цінового шуму',
     'DETECTOR_ERROR':'помилка аналізу цього сетапу',
+    'DEPENDENT_ENTRY_ALREADY_RESERVED':'близький залежний вхід уже займає місце',
 }
 
 
 def expected_line(stat: dict, forecast=None) -> str:
     n=stat.get('observations',0)
-    if n>=quality.Settings().minimum_observations and stat.get('estimate') is not None:
+    if n and stat.get('estimate') is not None:
         scope='сетап' if stat.get('scope')=='setup' else 'сім’я сетапів'
+        lower=stat.get('lower_95')
         return (f"📈 Оцінка win rate: {stat['estimate']*100:.1f}% • {scope}, n={n}"
-                +f" • нижня межа 95%: {stat['lower_95']*100:.1f}%")
+                +(f" • нижня межа 95%: {lower*100:.1f}%" if lower is not None else '')
+                +' • історична оцінка, ще не перевірена на відкладених даних')
     model=forecast or {}
     if model.get('status')=='MODEL_ONLY':
         minutes=model['horizon_minutes']
@@ -1581,133 +1647,8 @@ def report_deadline(ts: int, now: int, cfg: Config) -> str:
 
 
 def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
-    local = datetime.fromtimestamp(s.now/1000,ZoneInfo(cfg.timezone))
-    symbol=cfg.instrument.removesuffix('-SWAP')
-    price_ok=s.trusted and s.price>0 and 0<=s.now-s.ticker_ts<=120_000
-    current_price=f'{s.price:.6g}' if price_ok else 'недоступна'
-    lines = [f"📊 {symbol} • {local:%d.%m %H:%M} (Київ) • {REPORT_RELEASE}",
-             f"Ціна зараз: {current_price} • Зайнято місць: {occupied_slots(state)}/2"]
-    new_ids = {p['id'] for p in result.get('selected_plans',[])}
-    if result.get('selected'):
-        new_ids.add(result['selected']['id'])
-    live_keys=set()
-    for number,view in slot_views(state):
-        p = view.get('active') or view.get('pending')
-        if p:
-            live_keys.add((p.get('setup'),scanner.timeframe(p)))
-            label = display_order(state,p['id'])
-            side = 'LONG' if p['side']==1 else 'SHORT'
-            # A price-signal book cannot certify exchange fills. Avoid the old
-            # banners and label the concrete lifecycle as a SIGNAL once.
-            status = 'СУПРОВІД СИГНАЛУ' if view.get('active') else 'НОВИЙ ЛІМІТНИЙ СИГНАЛ' if p['id'] in new_ids else 'ЛІМІТНИЙ СИГНАЛ — ЧЕКАЄМО'
-            lines += ['',f"{label} {side} • {status}",
-                      f"{p.get('setup','Сетап')} • {scanner.timeframe(p).lower()}",
-                      f"Вхід: {p['entry']:.6g} • SL: {p['stop']:.6g} ({p.get('stop_distance_pct',p['risk']/p['entry']*100):.2f}%)",
-                      target_line(p)]
-            if view.get('pending'):
-                distance=scanner.proximity(s.price if price_ok else 0,p['entry'],p.get('placement_price'))
-                detail=scanner.distance_text(s.price,p['entry'],cfg.tick) if price_ok else '📏 До входу: немає свіжої ціни'
-                if distance['approach_pct'] is not None and s.price!=p['entry']:
-                    detail+=f" • наближення {distance['approach_pct']:.0f}%"
-                lines.append(detail)
-                if price_ok and s.price==p['entry']:
-                    lines.append('⏳ Ліміт активний; підтвердження проходу ціни перевіряється на наступних свічках')
-                elif price_ok:
-                    move='зниження' if s.price>p['entry'] else 'зростання'
-                    lines.append(f"🚦 Чекаємо {move} до ціни входу {p['entry']:.8g}")
-                lines += ["Готовність до входу на момент сигналу: 100%",
-                          f"⏱ Ліміт діє до {report_deadline(p['expires_ts'],s.now,cfg)}"]
-                if p.get('cancel_requested_ts'):
-                    lines.append('Скасування: '+REASON_UA.get(p.get('cancel_reason'),'сетап утратив чинність'))
-            else:
-                remaining = p.get('remaining',1)
-                gross = p.get('realized_gross_r',0)+remaining*p['side']*(s.price-p['entry'])/p['risk']
-                fees = (p['entry']*p.get('entry_fee_rate',cfg.maker_fee)/p['risk']+p.get('realized_exit_fees_r',0)+remaining*s.price*cfg.taker_fee/p['risk']) if cfg.include_commission else 0.
-                slip = remaining*s.price*cfg.slippage_bps/10_000/p['risk']
-                estimate=f'{gross-fees-slip:+.2f}R' if price_ok else 'н/д — немає свіжої ціни'
-                lines.append(f"Залишилось {remaining*100:.0f}% • оцінний результат: {estimate}")
-                if p.get('pending_stop'):
-                    amend = p['pending_stop']
-                    lines.append(f"Новий SL {amend['price']:.6g} з {local_time(amend['effective_ts'],cfg)}")
-                lines.append(f"Завершити до {report_deadline(p['exit_deadline'],s.now,cfg)}")
-            lines.append(expected_line(p.get('quality',{}).get('statistics',{}),p.get('price_forecast') if view.get('pending') and price_ok and not result.get('analysis',{}).get('health') else None))
-        if view.get('reconciliation'):
-            r = view['reconciliation']
-            lines += ['',f"{display_order(state,r['order_id'])} — РЕЗУЛЬТАТ НЕВИЗНАЧЕНИЙ",
-                      'За свічками не можна встановити порядок виконання.']
-            if r.get('release_ts'):
-                lines.append(f"Місце зарезервовано до {report_deadline(r['release_ts'],s.now,cfg)}")
-    events = [message_event(state,e,cfg) for e in result.get('events',[])]
-    events = [e for e in events if e]
-    if events:
-        lines += ['','Зміни:']+events[-8:]
-    analysis=result.get('analysis',{})
-    watches=analysis.get('watch',state.get('watch',[])) if price_ok and not analysis.get('health') else []
-    live_sides={p['side'] for p in open_plans(state)} or None
-    best=analysis.get('best_scenario') or scanner.best_scenario(watches,s.price,live_sides)
-    if best and ((best.get('setup'),best.get('timeframe','15m')) in live_keys or new_ids):
-        best=None  # The chosen live signal has already been shown above.
-    if best is None and not open_plans(state) and price_ok and not analysis.get('health'):
-        best=scanner.best_scenario(analysis.get('setup_matrix',[]),s.price)
-    if best is not None:
-        w=best
-        side='LONG' if w.get('side')==1 else 'SHORT'
-        ready=w.get('readiness_pct',0) or 0.
-        lines += ['','Найкращий сценарій:',f"{w['setup']} • {w.get('timeframe','15m').lower()} • {side}"]
-        count=f" ({w['met_conditions']}/{w['total_conditions']})" if 'met_conditions' in w else ''
-        lines.append(f"Готовність до входу: {ready:.1f}%{count}")
-        if w.get('score'):
-            label='Якість контексту' if w.get('score_status')=='CONTEXT' else 'Оцінка патерну' if w.get('score_status')=='PATTERN' else 'Оцінка'
-            lines.append(f"{label}: {w['score']:.1f}/100")
-        if w.get('level'):
-            lines.append(f"🎯 Вхід: {w['level']:.8g}")
-            lines.append(scanner.distance_text(s.price,w['level'],cfg.tick))
-        if w.get('stop'):
-            distance=abs(w['stop']-w.get('entry',w.get('level',0)))/w.get('entry',w['level'])*100
-            if w.get('tp1'):
-                lines.append(f"SL: {w['stop']:.6g} ({distance:.2f}%) • TP1: {w['tp1']:.6g}")
-            elif w.get('required_tp'):
-                lines.append(f"SL: {w['stop']:.6g} ({distance:.2f}%) • TP1 потрібен {'≥' if w['side']==1 else '≤'} {w['required_tp']:.8g}")
-        reason=w.get('reason')
-        if reason=='LIMIT_WOULD_CROSS_SPREAD' and w.get('level'):
-            lines.append(scanner.wait_text(w['level'],w['side'],s.bid,s.ask,cfg.tick))
-        elif reason=='TARGET_DISTANCE_TOO_SMALL':
-            lines.append(f"Вхід заблоковано: доступна ціль {w['available_tp1']:.8g} дає {w['tp1_distance_pct']:.2f}%; мінімум {w.get('min_target_pct',cfg.min_target_pct)*100:.1f}%")
-        elif reason=='STRONG_OPPOSING_ZONE_BEFORE_TP':
-            barrier=w.get('path_barrier',{})
-            lines.append(f"Вхід заблоковано: {barrier.get('kind','протилежна зона')} {barrier.get('timeframe','')} на {barrier.get('level',w.get('obstacle_level',0)):.8g} перед TP1")
-        elif reason in ('TARGET_RR_TOO_LOW','NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'):
-            if w.get('gross_rr') is not None:
-                lines.append(f"Вхід заблоковано: TP дає {w['gross_rr']:.2f}R; мінімум {w.get('required_rr',cfg.min_net_rr):.2f}R")
-                if w.get('required_tp') and w['required_tp']>0:
-                    lines.append(f"🎯 При цьому SL потрібен структурний TP {'≥' if w['side']==1 else '≤'} {w['required_tp']:.8g}")
-            else:
-                lines.append('Вхід заблоковано: потенціал TP відносно SL нижчий за мінімум')
-        elif reason in ('CONFIRMED','ACCEPTED'):
-            lines.append('Умови входу виконані; очікуємо активацію ліміту')
-        elif reason=='SETUP_CONDITIONS_INCOMPLETE':
-            pattern=[c['condition'] for c in w.get('setup_conditions',w.get('conditions',[])) if c.get('met') is not True]
-            lines.append('Чекаємо: '+('; '.join(pattern[:2]) or '; '.join(w.get('missing_conditions',[])[:2]) or 'підтвердження патерну'))
-        else:
-            lines.append('Чекаємо: '+REASON_UA.get(reason,'підтвердження допустимості входу'))
-        lines.append(expected_line(w.get('statistics',{}),w.get('price_forecast')))
-    reasons = {'DIRECTION_CONFLICT':'Вхід відкладено: однаково сильні протилежні сценарії.',
-               'DAILY_PAUSE':'Нові входи на паузі: денний ліміт ризику або угод.',
-               'SESSION_CLOSED':'Нові 15m входи — з наступної сесії.',
-               'DATA_HOLD':'Аналіз призупинено: ринкові дані неповні або застарілі.',
-               'DUPLICATE_OR_OUT_OF_ORDER':'Цей звіт уже оброблено.'}
-    if result['action'] in reasons:
-        lines += ['',reasons[result['action']]]
-    if result['action']=='DATA_HOLD':
-        lines.append('Причина: '+', '.join(analysis.get('health',[])))
-    if occupied_slots(state)==2:
-        lines.append('Новий ордер — після звільнення одного місця.')
-    # A fixed Telegram limit. Drop whole optional scenario cards first; all
-    # lifecycle events remain durably available in the journal/dashboard.
-    message=decorate_message('\n'.join(lines))
-    if len(message)>4000:
-        message=message[:3950].rsplit('\n',1)[0]+'\nПовні деталі — у журналі.'
-    return message
+    import notification_report
+    return decorate_message(notification_report.build(state, s, result, cfg, sys.modules[__name__]))
 
 
 def decorate_message(message):
@@ -1822,7 +1763,12 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                                           "shadow_plans":len(state.get('quality',{}).get('pending',[])),
                                           "target_win_rate":quality.Settings().target_win_rate,
                                           "target_validated":False},
-                      "statistics": statistics(state["trades"]),"setup_statistics": state.get("setup_statistics",{})}
+                      "statistics": statistics(state["trades"]),
+                      "statistics_scope": "ALL_ENTRY_VERSIONS",
+                      "dependency_statistics":trade_dependencies.summary(state['trades'],state.get('price_tick',.001)),
+                      "statistics_by_entry_version": statistics_by_entry_version(state["trades"]),
+                      "current_strategy_statistics": statistics_by_entry_version(state["trades"]).get(VERSION, statistics([])),
+                      "setup_statistics": state.get("setup_statistics",{})}
     # Preserve complete legacy history and unknown fields. New ledger is merged by
     # stable identity; state remains authoritative if journal export fails once.
     for target,source,key in (("trades","trades","id"),("limit_orders","orders","order_id"),
@@ -2111,6 +2057,10 @@ def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
     data['trusted'] = data.get('execution_price_trusted',False)
     data['candles'] = {tf:[asdict(c) for c in rows] for tf,rows in data.get('candles',{}).items()}
     data['smt_candles_15m'] = [asdict(c) for c in data.get('smt_candles_15m',[])]
+    if (data.get('price_source')=='OKX_TICKER' and data.get('execution_venue')=='OKX'
+            and data.get('trusted') is True and data.get('instrument')==cfg.instrument):
+        data['research_provenance']={'origin':research_evidence.ORIGIN,
+                                    'instrument':cfg.instrument,'observed_ts':data['now']}
     return Snapshot.parse(data)
 
 
@@ -2157,9 +2107,13 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         # changes in the NEXT 15-minute report, never send a Telegram every 5m.
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
-        archive_path=Path(os.environ.get('MARKET_HISTORY_FILE',str(state_path.with_name('market_history_v12.json'))))
+        archive_path=Path(os.environ.get('RESEARCH_ARCHIVE_FILE',str(state_path.with_name('research_market_v12_6.json'))))
         try:
-            state['market_history_status']=market_archive.record(archive_path,snap,cfg,sys.modules[__name__])
+            # Offline/test snapshots never acquire live provenance just because
+            # a caller requested --snapshot or patched collect_snapshot.
+            if snapshot_path is not None:
+                snap.metadata.pop('research_provenance',None)
+            state['market_history_status']=research_evidence.record(archive_path,snap,cfg,sys.modules[__name__])
         except (ValueError,OSError) as exc:
             state['market_history_status']={'status':'FAILED','error':str(exc)}
             print('Market evidence recording failed: '+str(exc),file=sys.stderr)
@@ -2175,7 +2129,10 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             export_journal(journal_path,state,core)
             return 0 if not notify or notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path) else 2
         if notify:
-            state['notification_queue'].append({'id':ident(snap.now,message),'text':message,'version':VERSION,'ts':snap.now})
+            import notification_report
+            for page, part in enumerate(notification_report.split_message(message)):
+                state['notification_queue'].append({'id':ident(snap.now,page,part),'text':part,
+                                                    'version':VERSION,'ts':snap.now})
         atomic_write(state_path,state)
         export_journal(journal_path,state,core)
         if notify and not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):
@@ -2206,7 +2163,24 @@ def main(core) -> int:
         suite = unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
         if not suite.countTestCases():
             raise ValueError('test_full_limit_engine.py required')
-        return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+        # GitHub's job-level MARKET_HISTORY_FILE also reaches tests that mock
+        # run_live. Never let fixtures append artificial prices to live evidence.
+        previous_archive = os.environ.get('MARKET_HISTORY_FILE')
+        previous_research = os.environ.get('RESEARCH_ARCHIVE_FILE')
+        with tempfile.TemporaryDirectory(prefix='bzu-self-test-') as directory:
+            os.environ['MARKET_HISTORY_FILE'] = str(Path(directory)/'market.json')
+            os.environ['RESEARCH_ARCHIVE_FILE'] = str(Path(directory)/'research.json')
+            try:
+                return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+            finally:
+                if previous_archive is None:
+                    os.environ.pop('MARKET_HISTORY_FILE',None)
+                else:
+                    os.environ['MARKET_HISTORY_FILE'] = previous_archive
+                if previous_research is None:
+                    os.environ.pop('RESEARCH_ARCHIVE_FILE',None)
+                else:
+                    os.environ['RESEARCH_ARCHIVE_FILE'] = previous_research
     if args.audit_journal or args.replay:
         if args.audit_journal:
             with market_clock(core,int(time.time()*1000)):

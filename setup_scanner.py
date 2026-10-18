@@ -58,7 +58,7 @@ ENTRY_CHECKS = (
     ('TARGET_RR','Потенціал TP достатній відносно SL'),
     ('CONTEXT_SCORE','Якість контексту проходить поріг'),
     ('STRUCTURAL_CONFIRMATION','Структурні умови входу підтверджені'),
-    ('STATISTICAL_FILTER','Історичні дані не блокують вхід'),
+    ('DECISION_EVALUATED','Сценарій оцінено без порогу win rate'),
 )
 
 
@@ -93,11 +93,11 @@ def selection_key(row, price=None):
     """
     ready=row.get('readiness_pct',100. if row.get('quality',{}).get('accepted') else 0.) or 0.
     stat=row.get('statistics',row.get('quality',{}).get('statistics',{}))
-    lower=stat.get('lower_95') if stat.get('observations',0)>=40 else None
+    adjustment=stat.get('ranking_adjustment',0.)
     level=row.get('level',row.get('entry'))
     distance=proximity(price,level)['distance_pct'] if price else row.get('distance_pct')
     tf=row.get('timeframe',row.get('setup_timeframe','15m'))
-    return (float(ready),float(lower or 0),float(row.get('score',0) or 0),
+    return (float(ready),float(row.get('decision_score',float(row.get('score',0) or 0)+adjustment)),float(row.get('score',0) or 0),
             -float(distance) if distance is not None else float('-inf'),
             MINUTES.get(tf,15),str(row.get('setup','')),str(row.get('id',row.get('event_key','')) or ''))
 

@@ -7,6 +7,19 @@ SCHEMA='closed_market_evidence_v1'
 RETENTION_MS=30*86_400_000
 
 
+def known_test_contamination(archive):
+    """Identify exact old LiveTickTests quotes; do not infer from price alone."""
+    fixtures = {(1791288000000, 70., 69.995, 70.005),
+                (1791288900000, 70.02, 70.01, 70.03)}
+    matches = [q for q in (archive or {}).get('quotes', [])
+               if (q.get('now'), q.get('price'), q.get('bid'), q.get('ask')) in fixtures]
+    return {'known_test_quotes': len(matches),
+            'known_test_quote_timestamps': [q['now'] for q in matches],
+            'safe_research_after_ts': max((q['now'] for q in matches), default=None),
+            'status': 'KNOWN_TEST_FIXTURES_PRESENT' if matches else 'NO_KNOWN_TEST_QUOTES',
+            'meaning': 'A match identifies specific test data; absence is not a full provenance certification'}
+
+
 def record(path,snapshot,cfg,engine):
     data=engine.read_json(path)
     if data and (data.get('schema')!=SCHEMA or data.get('instrument')!=cfg.instrument):

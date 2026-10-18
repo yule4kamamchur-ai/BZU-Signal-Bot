@@ -6,6 +6,7 @@ import copy
 import io
 import json
 import math
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -76,7 +77,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertTrue(q['features']['impulse'])
         self.assertIsNone(q['statistics']['estimate'])
         self.assertFalse(q['probability_validated'])
-        self.assertEqual(q['status'],'BOOTSTRAP_NOT_VALIDATED')
+        self.assertEqual(q['status'],'CONTINUOUS_FEEDBACK_NO_WR_VETO')
 
     def test_full_original_registry_can_place_confirmed_signals_without_detector_mocks(self):
         # Independent synthetic timeframe fixtures, not historical OHLC or a
@@ -199,25 +200,30 @@ class EmpiricalTests(unittest.TestCase):
             row['features']['alignment']='mixed'
         self.assertEqual(quality.empirical(confirmed_features(),rows,NOW)['observations'],0)
 
-    def test_low_rate_blocks_and_high_rate_with_negative_expectancy_also_blocks(self):
+    def test_past_win_rate_and_expectancy_adjust_ranking_without_veto(self):
         cfg,s,ctx,p=quality_snapshot()
         for rows,reason in [(observations(40,20),'EMPIRICAL_WIN_RATE_BELOW_TARGET'),
                             (observations(40,32,win_r=.1),'EXPECTANCY_TOO_LOW_AFTER_COSTS')]:
             q=quality.assess(p,s,ctx,cfg,engine,rows)
-            self.assertFalse(q['accepted']);self.assertEqual(q['reason'],reason)
+            self.assertTrue(q['accepted']);self.assertEqual(q['reason'],'CONFIRMED')
+            self.assertFalse(q['win_rate_gate_enabled'])
 
     def test_positive_net_cohort_accepts_but_is_not_a_validated_probability(self):
         cfg,s,ctx,p=quality_snapshot();q=quality.assess(p,s,ctx,cfg,engine,observations())
         self.assertTrue(q['accepted'],q)
         self.assertEqual(q['statistics']['observations'],40)
-        self.assertGreater(q['statistics']['estimate'],.70)
+        self.assertGreater(q['statistics']['estimate'],.5)
         self.assertGreater(q['statistics']['expectancy_r'],0)
         self.assertFalse(q['probability_validated'])
 
     def test_validation_requires_enough_independent_wins_and_positive_net_result(self):
         for wins,n,win_r,expected in [(10,10,1,False),(70,100,1,False),(85,100,1,True),(99,100,.001,False)]:
             trades=[{'net_r':win_r if i<wins else -1} for i in range(n)]
-            self.assertEqual(quality.validation_status(trades)['target_confirmed_on_this_period'],expected)
+            result=quality.validation_status(trades)
+            self.assertEqual(result['target_confirmed_on_this_period'],
+                             result['wilson_lower_95']>=.70 and result['expectancy_r']>0)
+            self.assertEqual(result['observed_goal_met'],wins/n>=.70)
+            self.assertFalse(result['entry_gate_enabled'])
         trades=[{'net_r':1} for _ in range(100)]
         self.assertFalse(quality.validation_status(trades,trades[:2])['target_confirmed_on_this_period'])
 
@@ -329,7 +335,8 @@ class ShadowAndModelTests(unittest.TestCase):
             'instId':'BZ-USDT-SWAP','state':'live','tickSz':'0.01'}]}))
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'state.json';engine.atomic_write(path,state)
-            with patch.object(core,'STATE_FILE',str(path)),patch.object(core,'JOURNAL_FILE',str(Path(tmp)/'journal.json')), \
+            with patch.dict(os.environ,{'INCLUDE_COMMISSION':'false'}), \
+                 patch.object(core,'STATE_FILE',str(path)),patch.object(core,'JOURNAL_FILE',str(Path(tmp)/'journal.json')), \
                  patch.object(core,'http_get',return_value=response),patch.object(engine,'collect_snapshot',return_value=snapshot(NOW+900_000,price=101)), \
                  patch.object(engine,'analyze',return_value=analysis()),patch.object(quality,'seed',side_effect=ValueError('wrong model')), \
                  redirect_stdout(io.StringIO()),redirect_stderr(io.StringIO()):

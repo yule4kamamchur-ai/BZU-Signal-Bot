@@ -336,7 +336,7 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("депозит", msg)
         self.assertNotIn("розмір позиції", msg)
         self.assertIn("SL:", msg)
-        self.assertIn("ЛІМІТНИЙ СИГНАЛ", msg)
+        self.assertIn("ОЧІКУЄМО ВХОДУ — 1", msg)
         self.assertNotIn("не біржові ордери",msg)
 
 
@@ -428,14 +428,17 @@ class LiveTickTests(unittest.TestCase):
         later.price, later.bid, later.ask = 70.02, 70.01, 70.03
         later.candles['3m'] += [candle(NOW+i*180_000,70,70.05,69.98,70.02) for i in range(5)]
         later.candles['15m'].append(candle(NOW,70,70.05,69.98,70.02))
+        def planning(s,c,st):
+            proposed,_=b.full_plan(anchor,ctx,s,c,{})
+            return analysis([proposed] if proposed else [])
         with tempfile.TemporaryDirectory() as tmp:
             state_path, journal_path = Path(tmp)/'state.json', Path(tmp)/'journal.json'
-            with patch.dict(os.environ, {'PRICE_TICK_SIZE':'0.001'}), \
+            with patch.dict(os.environ, {'PRICE_TICK_SIZE':'0.001', 'INCLUDE_COMMISSION':'false', 'MARKET_HISTORY_FILE':str(Path(tmp)/'market.json')}), \
                  patch.object(core, 'STATE_FILE', str(state_path)), \
                  patch.object(core, 'JOURNAL_FILE', str(journal_path)), \
                  patch.object(core, 'http_get', return_value=self.metadata()) as fetch, \
                  patch.object(b, 'collect_snapshot', side_effect=[snap,later]) as collect, \
-                 patch.object(b, 'analyze', side_effect=lambda s,c,st:analysis([b.full_plan(anchor,ctx,s,c,{})[0]])), \
+                 patch.object(b, 'analyze', side_effect=planning), \
                  patch.object(b, 'load_state', wraps=b.load_state) as load, redirect_stdout(io.StringIO()):
                 self.assertEqual(b.run_live(core), 0)
                 first = b.read_json(state_path)
@@ -460,7 +463,7 @@ class LiveTickTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'snapshot.json'
             b.atomic_write(path, payload)
-            with patch.dict(os.environ, {'PRICE_TICK_SIZE':'0.001'}), \
+            with patch.dict(os.environ, {'PRICE_TICK_SIZE':'0.001', 'INCLUDE_COMMISSION':'false', 'MARKET_HISTORY_FILE':str(Path(tmp)/'market.json')}), \
                  patch.object(core, 'STATE_FILE', str(Path(tmp)/'state.json')), \
                  patch.object(core, 'JOURNAL_FILE', str(Path(tmp)/'journal.json')), \
                  patch.object(core, 'http_get', side_effect=AssertionError('offline network request')), \

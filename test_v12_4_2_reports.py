@@ -144,9 +144,9 @@ class ForecastTests(unittest.TestCase):
         result=engine.run_cycle(state,s,cfg)
         self.assertTrue(result['selected_plans'])
         selected=result['selected_plans'][0]
-        self.assertEqual(selected['price_forecast']['status'],'MODEL_ONLY')
+        self.assertEqual(selected['outcome_forecast']['status'],'MODEL_ONLY')
         self.assertIsNone(selected['probability'])
-        self.assertFalse(selected['price_forecast']['calibrated'])
+        self.assertFalse(selected['outcome_forecast']['calibrated'])
 
 
 class ReleaseAndMessageTests(unittest.TestCase):
@@ -156,11 +156,11 @@ class ReleaseAndMessageTests(unittest.TestCase):
            'readiness_pct':40.,'reason':'LIMIT_WOULD_CROSS_SPREAD','score':60.}
         text=engine.build_message(engine.new_state(cfg),s,{'action':'WATCH','analysis':{'watch':[w]}},cfg)
         self.assertIn(engine.REPORT_RELEASE,text)
-        self.assertIn('ASK ≥ 103.071',text)
+        self.assertIn('поточні ASK/BID не дозволяють пасивний ліміт',text)
         self.assertNotIn('комісі',text)
         self.assertIn('💰 Ціна зараз:',text)
-        self.assertIn('🏆 Найкращий сценарій:',text)
-        self.assertIn('🧩 Готовність до входу:',text)
+        self.assertIn('НА СПОСТЕРЕЖЕННІ — ордер ще не активований',text)
+        self.assertIn('готовність умов 40%',text)
         for line in text.splitlines():
             if line and line[0] not in '💰🏆🧩':
                 self.assertLess(ord(line[0]),0x2300,line)

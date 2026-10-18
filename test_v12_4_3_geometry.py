@@ -135,10 +135,11 @@ class MessageAndUpgradeTests(unittest.TestCase):
         row={'setup':'RANGE_EDGE_REVERSAL','timeframe':'1H','side':-1,'level':a.level,
              'readiness_pct':75.,'reason':why,**diag}
         text=engine.build_message(engine.new_state(cfg),s,{'action':'WATCH','analysis':{'watch':[row]}},cfg)
-        self.assertIn('SL: 104.8 (1.00%) • TP1 потрібен ≤ 102.2',text)
-        self.assertIn('мінімум 1.5%',text)
+        self.assertIn('SHORT • 1h • Розворот від межі діапазону',text)
+        self.assertIn('ордер ще не активований',text)
+        self.assertIn('мінімальний TP1 1.5%',text)
         self.assertNotIn('TP1: 103.',text)
-        self.assertEqual([c for c in text if ord(c)>=0x1F000],['💰','🏆','🧩'])
+        self.assertEqual([c for c in text if ord(c)>=0x1F000],['💰'])
 
     def test_reached_target_stays_understandable_without_a_checkmark(self):
         p=order();p.update(tp1=102.,tp1_hit=True,partials={'TP1':1.})

@@ -101,7 +101,7 @@ def download(instrument: str, days: int, end: int, fetch=request_json) -> dict:
             smt=[]
     return {'instrument':instrument,'tick':tick,'start_ts':start,'end_ts':end,
             'spread_bps':2.,'report_delay_ms':180_000,'scan_interval_ms':300_000,
-            'candles':candles,'smt_candles_15m':smt,
+            'candles':candles,'smt_candles_15m':smt,'smt_asset_id':peer,
             'source':'OKX_PUBLIC_CONFIRMED_HISTORY','downloaded_at':engine.iso(int(time.time()*1000)),
             'limitations':['Uniform current tick and estimated historical spread',
                            'Scans every 5 minutes with an assumed 3-minute scheduler delay',
@@ -115,6 +115,9 @@ def audit_data(data: dict) -> dict:
         rows=sorted({c.ts:c for row in data['candles'].get(tf,[]) for c in [engine.Candle.parse(row)]
                      if c.confirmed and c.ts+step<=end}.values(),key=lambda c:c.ts)
         warmup=[c for c in rows if c.ts+step<=start]
+        if data.get('first_seen'):
+            seen=data['first_seen'].get(tf,{})
+            warmup=[c for c in warmup if seen.get(str(c.ts),{}).get('observed_ts',2**63-1)<=start]
         if len(warmup)<engine.MIN_BARS[tf]:
             raise ValueError(f'Insufficient {tf} warmup history')
         needed=[c for c in rows if c.ts>=warmup[-engine.MIN_BARS[tf]].ts]
@@ -129,8 +132,13 @@ def audit_data(data: dict) -> dict:
 def archive_dataset(archive: dict) -> dict:
     """Actual observed quotes and closed OHLC; never reconstruct missed scans."""
     import market_archive
+    import research_evidence
+    if archive.get('schema')==research_evidence.SCHEMA:
+        return research_evidence.dataset(archive,engine)
     if archive.get('schema')!=market_archive.SCHEMA:
         raise ValueError('Expected a v12 market archive')
+    if market_archive.known_test_contamination(archive)['known_test_quotes']:
+        raise ValueError('Archive contains known synthetic self-test quotes; use verified history, not this contaminated archive')
     quotes=sorted(archive.get('quotes',[]),key=lambda q:q['now'])
     if len(quotes)<2:
         raise ValueError('Not enough archived scans for research')
@@ -175,7 +183,14 @@ def snapshots(data: dict):
         current={}
         for tf,rows in raw.items():
             index=bisect_right(available[tf],now)
-            current[tf]=rows[max(0,index-300):index]
+            eligible=rows[:index]
+            if data.get('first_seen'):
+                seen=data['first_seen'].get(tf,{})
+                eligible=[c for c in eligible if str(c.ts) in seen and seen[str(c.ts)]['observed_ts']<=now]
+            revisions={r['ts']:engine.Candle.parse(r['bar']) for r in data.get('revisions',[])
+                       if r['timeframe']==tf and r['observed_ts']<=now}
+            eligible=[revisions.get(c.ts,c) for c in eligible]
+            current[tf]=eligible[-300:]
         if not current['3m']:
             continue
         price=current['3m'][-1].close
@@ -188,6 +203,13 @@ def snapshots(data: dict):
         else:
             snap=engine.Snapshot(now,price,current,price-spread/2,price+spread/2,True,now,data['instrument'])
         index=bisect_right(peer_closed,now);snap.smt_candles=peer[max(0,index-300):index]
+        if data.get('smt_first_seen'):
+            seen=data['smt_first_seen']
+            snap.smt_candles=[c for c in snap.smt_candles if seen.get(str(c.ts),{}).get('observed_ts',2**63-1)<=now]
+        peer_revisions={r['ts']:engine.Candle.parse(r['bar']) for r in data.get('smt_revisions',[]) if r['observed_ts']<=now}
+        snap.smt_candles=[peer_revisions.get(c.ts,c) for c in snap.smt_candles]
+        if quotes and quotes[now].get('smt_available') is False:
+            snap.smt_candles=[]
         yield snap
 
 
@@ -275,17 +297,17 @@ def validate(data: dict, folds: int=3) -> dict:
                 'One fixed research policy, no parameter grid was optimized',
                 'Model frozen in each held-out fold; training labels before the embargo only',
                 'Filled positions liquidated at fixed period boundaries in both versions',
-                'At least 100 independent held-out trades and lower 95% bound >=70% required for target support',
+                '70% is a monitored goal, never an entry veto or a minimum-sample switch',
                 'Historical support never guarantees future results']}
 
 
 def markdown(report: dict) -> str:
     e=report['target_evidence'];stats=report['aggregate_improved'];old=report['aggregate_baseline']
     pct=lambda x:'—' if x is None else f'{x*100:.2f}%'
-    lines=['# Перевірка цілі 70%+','',f"Статус: **{e['status']}**.",'',
+    lines=['# Оцінка прогресу до цілі 70%','',f"Статус: **{e['status']}**.",'',
            '| Версія | Закриті угоди | Win rate | Сумарний R | Середній R |',
            '| --- | ---: | ---: | ---: | ---: |']
-    for label,row in [('v12.1 — базова',old),('v12.2 — новий відбір',stats)]:
+    for label,row in [('v12.1 — базова',(old)),(engine.VERSION,stats)]:
         expectation='—' if row['expectancy_r'] is None else f"{row['expectancy_r']:.3f}"
         lines.append(f"| {label} | {row['trades']} | {pct(row['win_rate'])} | {row['net_r']:.3f} | {expectation} |")
     lines += ['',f"Неперекритих завершених угод: {e['independent_trades']}.",

@@ -225,7 +225,8 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         text=engine.build_message(state,s,{'action':'DATA_HOLD','analysis':{'health':['UNTRUSTED_PRICE']}},cfg)
         self.assertIn('Ціна зараз: недоступна',text)
         self.assertIn('До входу: немає свіжої ціни',text)
-        self.assertIn('UNTRUSTED_PRICE',text)
+        self.assertIn('немає підтвердженої ціни',text)
+        self.assertIn('Оновлення супроводу призупинено',text)
         self.assertNotIn('Ціна зараз: 0',text)
 
     def test_current_price_distance_progress_and_no_repeated_banners(self):
@@ -233,16 +234,18 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         p.update(placement_price=102.70,setup_timeframe='1H',expires_ts=s.now+3600000)
         state['pending']=p;engine.bind_order_numbers(state)
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
-        for text in ('Ціна зараз: 101.25','До входу: 0.543%','наближення 73%',
-                     'SWEEP_RECLAIM • 1h','Готовність до входу на момент сигналу: 100%','Історія: 0 завершених сценаріїв','SL:','TP1'):
+        for text in ('Ціна зараз: 101.25','До входу: 0.543%',
+                     'LONG • 1h • Повернення після зняття мінімуму','ОЧІКУЄМО ВХОДУ — 1','SL:','TP1'):
             self.assertIn(text,message)
         for noise in ('PAPER','не біржові ордери','Нових входів немає','PAPER ='):
             self.assertNotIn(noise,message)
-        self.assertIn('ЛІМІТНИЙ СИГНАЛ',message)
+        self.assertIn('У СУПРОВОДІ — 0',message)
+        self.assertNotIn('Готовність до входу на момент',message)
+        self.assertNotIn('модель',message)
 
     def test_signal_with_unknown_history_does_not_present_seventy_percent_probability(self):
-        self.assertIn('ще не перевірений',engine.expected_line({'observations':39,'estimate':.95}))
-        self.assertNotIn('95.0%',engine.expected_line({'observations':39,'estimate':.95}))
+        self.assertIn('ще не перевірена',engine.expected_line({'observations':39,'estimate':.95}))
+        self.assertIn('95.0%',engine.expected_line({'observations':39,'estimate':.95}))
         text=engine.expected_line({'observations':40,'estimate':.80,'scope':'family','lower_95':.65})
         self.assertIn('сім’я сетапів',text)
         self.assertIn('80.0%',text)
@@ -256,7 +259,7 @@ class EmpiricalAndReportingTests(unittest.TestCase):
                {'setup':'BREAKOUT_RETEST','timeframe':'1H','side':-1,'level':103.,
                 'readiness_pct':60.,'reason':'TARGET_RR_TOO_LOW'}]
         text=engine.build_message(state,s,{'action':'WATCH','analysis':{'watch':watch}},cfg)
-        self.assertIn('Готовність до входу: 75.0% (3/4)',text)
+        self.assertIn('готовність умов 75%',text)
         self.assertIn('Закриття повернулося над рівень',text)
         self.assertNotIn('BREAKOUT_RETEST',text)
         self.assertNotIn('Нових входів немає',text)

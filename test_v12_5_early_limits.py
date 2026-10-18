@@ -249,6 +249,10 @@ class EvidenceAndRuntimeTests(unittest.TestCase):
     def test_supported_empirical_confidence_outranks_an_unvalidated_context_score(self):
         proven={'setup':'A','side':1,'readiness_pct':100,'score':65,'statistics':{'observations':50,'lower_95':.72}}
         heuristic={'setup':'B','side':1,'readiness_pct':100,'score':99,'price_forecast':{'tp1_before_sl':.99}}
+        # Neither an old sample threshold nor an uncalibrated price-model WR
+        # overrides the current continuous decision score.
+        self.assertEqual(scanner.best_scenario([heuristic,proven],100)['setup'],'B')
+        proven['decision_score']=101.
         self.assertEqual(scanner.best_scenario([heuristic,proven],100)['setup'],'A')
 
     def test_archive_excludes_future_bars_and_preserves_first_observed_closed_data(self):
