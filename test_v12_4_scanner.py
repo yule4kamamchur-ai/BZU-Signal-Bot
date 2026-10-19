@@ -224,7 +224,8 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         s.price=0;s.trusted=False
         text=engine.build_message(state,s,{'action':'DATA_HOLD','analysis':{'health':['UNTRUSTED_PRICE']}},cfg)
         self.assertIn('Ціна зараз: недоступна',text)
-        self.assertIn('До входу: немає свіжої ціни',text)
+        self.assertIn('Вхід:',text)
+        self.assertNotIn('До входу:',text)
         self.assertIn('Ціна зараз: недоступна',text)
         self.assertIn('Дані не оновлені. Збережений стан',text)
         self.assertNotIn('Ціна зараз: 0',text)
@@ -234,8 +235,8 @@ class EmpiricalAndReportingTests(unittest.TestCase):
         p.update(placement_price=102.70,setup_timeframe='1H',expires_ts=s.now+3600000)
         state['pending']=p;engine.bind_order_numbers(state)
         message=engine.build_message(state,s,{'action':'WAIT_LIMIT','events':[]},cfg)
-        for text in ('Ціна зараз: 101.25','До входу: 0.543%',
-                     'LONG • 1h • Повернення після зняття мінімуму','ОЧІКУЄМО ВХОДУ — 1','SL:','TP1:'):
+        for text in ('Ціна зараз: 101.25',
+                     'LONG • Вхід:','ОЧІКУЄМО ВХОДУ — 1'):
             self.assertIn(text,message)
         for noise in ('PAPER','не біржові ордери','Нових входів немає','PAPER ='):
             self.assertNotIn(noise,message)

@@ -166,9 +166,9 @@ class ClearNotifications(unittest.TestCase):
         engine.upgrade_open_exits(state,NOW);engine.bind_order_numbers(state)
         text=engine.build_message(state,snapshot(),{'action':'WAIT_LIMIT','analysis':{'health':['SPREAD_TOO_WIDE']}},cfg)
         self.assertIn('Відкриті угоди: 0 • Ліміти в очікуванні: 2',text)
-        self.assertEqual(text.count('TP1: 108.14'),2)
-        self.assertEqual(text.count('TP2: 109.25'),2)
-        self.assertEqual(text.count('TP3: 110.3'),2)
+        self.assertEqual(text.count('LONG • Вхід:'),2)
+        for plan in engine.pending_plans(state):
+            self.assertEqual((plan['tp1'],plan['tp2'],plan['tp3']),(108.14,109.25,110.3))
         for banned in ('Увага: широкий спред','супровід наявних ордерів триває',
                        'У СУПРОВОДІ — 0','Відкритих угод немає','Зайнято місць',
                        'закрити 65%','закрити 20%','закрити 15%'):
@@ -200,7 +200,8 @@ SL: 104.81 • TP1 108.14 (закрити 65%) • TP2 109.25 (закрити 20
             sent.append(body['text']);return {'ok':True}
         with tempfile.TemporaryDirectory() as directory, patch.object(engine,'http_json',side_effect=send):
             self.assertTrue(engine.notify_queue(state,'test','test',Path(directory)/'state.json'))
-        self.assertIn('SL: 104.81 • TP1: 108.14 • TP2: 109.25 • TP3: 110.3',sent[0])
+        self.assertNotIn('SL:',sent[0])
+        self.assertNotIn('TP2:',sent[0])
         self.assertIn('#027 ЗАКРИТО: -0.10R — збиток',sent[0])
         for banned in ('65%','20%','15%','Зайнято місць','СУПРОВОДІ — 0','супровід наявних'):
             self.assertNotIn(banned,sent[0])
@@ -330,17 +331,17 @@ class UnlimitedWaitingQueue(unittest.TestCase):
             journal=Path(directory)/'journal.json';engine.export_journal(journal,restored)
             self.assertEqual(len(engine.read_json(journal)['full_v12']['pending_orders']),8)
 
-    def test_arbitration_uses_priority_before_seeing_which_level_will_be_touched(self):
+    def test_arbitration_accounts_for_distance_before_seeing_candle_extremes(self):
         cfg=engine.Config();state=engine.new_state(cfg)
         # The highest-scoring distant limit retains priority; the third lower
         # priority limit cannot be selected after observing a favorable touch.
         p1=self.pending(1,90,99);p2=self.pending(2,92,90);p3=self.pending(3,100,80)
         engine.park_pending(state,[p3,p2,p1])
-        self.assertEqual([p['id'] for p in engine.entry_priority(state,NOW,101,cfg)],['p1','p2'])
+        self.assertEqual([p['id'] for p in engine.entry_priority(state,NOW,101,cfg)],['p3','p1'])
         engine.advance_lifecycle(state,lifecycle_snapshot([candle(NOW,101,101.2,99.9,100.5)]),cfg)
-        self.assertFalse(engine.active_plans(state))
-        self.assertEqual(len(engine.pending_plans(state)),3)
-        self.assertTrue(p3['capacity_waited'])
+        self.assertEqual([p['id'] for p in engine.active_plans(state)],['p3'])
+        self.assertEqual(len(engine.pending_plans(state)),2)
+        self.assertTrue(p2['capacity_waited'])
 
     def test_three_simultaneous_triggers_cannot_create_a_third_fill(self):
         cfg=engine.Config();state=engine.new_state(cfg)

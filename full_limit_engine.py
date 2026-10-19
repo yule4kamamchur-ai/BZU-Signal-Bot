@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.7.0-adaptive-full-volume"
-REPORT_RELEASE = 'v12.7.0'
+VERSION = "full-ict-v12.8.0-directional-limit-paths"
+REPORT_RELEASE = 'v12.8.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -38,6 +38,7 @@ import market_archive
 import research_evidence
 import lifecycle_forecast
 import trade_dependencies
+import setup_paths
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -337,10 +338,7 @@ def execution_config(plan: dict, cfg: Config) -> Config:
                    slippage_bps=plan.get('slippage_bps',cfg.slippage_bps))
 
 
-REVERSALS = frozenset({"SWEEP_RECLAIM", "CAPITULATION_RECOVERY", "RANGE_EDGE_REVERSAL",
-                      "FAILED_AUCTION_REJECTION", "LIQUIDITY_SWEEP_REVERSAL_SHORT",
-                      "BUYER_EXHAUSTION_SHORT", "FAILED_BREAKOUT_SHORT", "MSS_REVERSAL_SHORT",
-                      "FAILED_OPENING_RANGE_BREAKOUT", "OR_FAILURE_2_SHORT", "DIRECTION_FLIP_15M"})
+REVERSALS = quality.COUNTERTREND_SETUPS
 
 
 def setup_statistics(state: dict, cfg: Config) -> dict:
@@ -445,7 +443,7 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
                 for name in ('state','touched','touched_ts','last_checked_ts','reject_reason'):
                     if name in previous:
                         setattr(a,name,previous[name])
-                for name in ('episode_ts','episode_kind'):
+                for name in ('activation_policy','activation_phase','break_known_ts','break_observed_ts','original_created_ts','episode_ts','episode_kind'):
                     if name in previous.get('evidence',{}):
                         a.evidence[name]=previous['evidence'][name]
         a.evidence['zone_identity']=zone
@@ -455,6 +453,17 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         by_zone[zone]=memory[key]
     # Retain tombstones beyond setup lifetime to prevent a detector refreshing age.
     memory = {k: v for k, v in memory.items() if s.now-v["created_ts"] <= 7*86_400_000}
+    for key,raw in list(memory.items()):
+        a=core.anchor_from_dict(raw)
+        if a is None or not (a.created_ts<=s.now<a.expires_ts):continue
+        native=(contexts or {}).get(a.evidence.get('setup_timeframe','15m'),{})
+        if a.setup_type in setup_paths.BREAK_RETEST and 'activation_phase' not in a.evidence:
+            if key not in {p['event_key'] for p in open_plans(state)}:
+                a.evidence.update(activation_phase='WAIT_BREAK',activation_policy='CLOSED_BREAK_THEN_LIMIT_RETEST')
+                memory[key]=core.anchor_to_dict(a)
+        if setup_paths.activate(a,native,s,cfg,observed_after=state.get('last_run_ts',0)):
+            memory.pop(key)
+            memory[anchor_key(a,cfg)]=core.anchor_to_dict(a)
     state["anchor_memory"] = memory
     return [a for raw in memory.values() for a in [core.anchor_from_dict(raw)] if a is not None
             and a.created_ts <= s.now < a.expires_ts
@@ -534,6 +543,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     a15, a3 = ctx["atr15"], ctx["atr3"]
     if not sign or min(a15, a3) <= 0:
         return None, "INVALID_DIRECTION_OR_VOLATILITY"
+    if a.evidence.get('activation_phase')=='WAIT_BREAK':
+        return None, 'WAIT_CONFIRMED_BREAK_FOR_LIMIT'
     if a.cooldown_until_ts > s.now:
         return None, "ANCHOR_COOLDOWN"
     entry = round_tick(a.level, cfg.tick, up=sign == -1)
@@ -566,7 +577,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     b15, b3 = ctx["structure15"]["direction"], ctx["structure3m"]["direction"]
     opposite = "SHORT" if sign == 1 else "LONG"
     both_against = b1 == opposite and b4 == opposite
-    reversal_confirmed = a.setup_type in REVERSALS and b15 == side and b3 == side
+    reversal_confirmed = quality.pretouch_countertrend_allowed(a.setup_type,sign,core.side_sign(b15),core.side_sign(b3))
     mark('HTF_ALIGNMENT',not both_against or reversal_confirmed)
     if both_against and not reversal_confirmed:
         return None, "BOTH_HTF_AGAINST_WITHOUT_CONFIRMED_REVERSAL"
@@ -725,25 +736,36 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             evaluations=[]
             for tf,native in tf_contexts.items():
                 try:
-                    a = detector(native)
+                    alternatives=setup_paths.candidates(detector,setup,native,core)
+                    a=max(alternatives,key=lambda item:(
+                        core.side_sign(item.side)*(s.price-item.level)>0,item.score),default=None)
                     row = scanner.conditions(setup,native,core,a)
                     row['setup_conditions']=copy.deepcopy(row.get('conditions',[]))
                     row['setup_readiness_pct']=row.get('readiness_pct',0)
                     scanner.update_readiness(row)
+                    for candidate in alternatives:
+                        candidate=copy.deepcopy(candidate)
+                        candidate.evidence['setup_timeframe']=tf
+                        candidate.evidence['micro_timeframe']=scanner.MICRO[tf]
+                        candidate.evidence['setup_conditions']=copy.deepcopy(scanner.conditions(setup,native,core,candidate)['conditions'])
+                        candidate.expires_ts=candidate.created_ts+(candidate.expires_ts-candidate.created_ts)*scanner.MINUTES[tf]//15
+                        seen_zone=anchor_zone_key(candidate,cfg)
+                        known=any((old.get('evidence',{}).get('zone_identity')==seen_zone
+                            or (old.get('setup_type')==candidate.setup_type and old.get('side')==candidate.side
+                                and abs(old.get('level',0)-candidate.level)<cfg.tick/2))
+                            for old in state.get('anchor_memory',{}).values())
+                        if not known:
+                            setup_paths.activate(candidate,native,s,cfg,initial=True)
+                        fresh.append(candidate)
                     if a is not None:
-                        a=copy.deepcopy(a)
-                        a.evidence['setup_timeframe']=tf
-                        a.evidence['micro_timeframe']=scanner.MICRO[tf]
-                        a.evidence['setup_conditions']=copy.deepcopy(row['setup_conditions'])
-                        # A detector's shorter TTL also scales with its bars.
-                        a.expires_ts=a.created_ts+(a.expires_ts-a.created_ts)*scanner.MINUTES[tf]//15
-                        fresh.append(a)
+                        a=next((c for c in fresh[::-1] if c.setup_type==setup and c.side==a.side and c.level==a.level),a)
                     row.update(timeframe=tf,reason='ACCEPTED' if a else 'SETUP_CONDITIONS_INCOMPLETE',
                                score=a.score if a else 0,score_status='PATTERN' if a else 'UNAVAILABLE',anchor_id=a.id if a else None)
                     row['event_key']=anchor_key(a,cfg) if a else None
                     row.update(scanner.proximity(s.price,row.get('level')))
                     matrix.append(row)
-                    evaluations.append({'timeframe':tf,'status':'DETECTED' if a else 'NO_SETUP'})
+                    evaluations.append({'timeframe':tf,'status':'DETECTED' if a else 'NO_SETUP',
+                        'branches':len(alternatives),'sides':sorted({candidate.side for candidate in alternatives})})
                 except Exception as exc:
                     row={'setup':setup,'timeframe':tf,'status':'ERROR','reason':'DETECTOR_ERROR',
                          'error':type(exc).__name__,'readiness_pct':None,'score':0,
@@ -756,6 +778,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         anchors = merge_full_anchors(fresh,state,s,cfg,tf_contexts)
         stats = setup_statistics(state,cfg)
         plans, watch, refused = [], [], {}
+        admission_paths=[]
         active_keys={anchor_key(a,cfg) for a in anchors}
         for a in fresh:
             row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==a.evidence.get('setup_timeframe','15m')),None)
@@ -781,8 +804,13 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
                 if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
                     diagnostics.update(preview_geometry(a,native,s,cfg))
+            admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
+                'entry':a.level,'reason':reason,'event_key':key})
             row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None)
-            if row is not None and (row['status'] not in ('DETECTED','LIMIT_READY') or row.get('event_key')==key):
+            if row is not None:
+                row.setdefault('branch_results',[]).append({'side':core.side_sign(a.side),'level':a.level,'reason':reason,'event_key':key})
+            replace_row=row is not None and (row.get('status')!='LIMIT_READY' or (p is not None and p['score']>row.get('score',0)))
+            if replace_row:
                 row.update(level=a.level,side=core.side_sign(a.side),anchor_id=a.id,
                            reason=reason,score=p['score'] if p else a.score,
                            status='LIMIT_READY' if p else 'BLOCKED',
@@ -797,6 +825,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 scanner.update_readiness(row)
                 row.update(scanner.proximity(s.price,a.level))
             if p:
+                p["setup_conditions"]=copy.deepcopy(a.evidence.get("setup_conditions",[]))
                 p["level_key"] = level_key
                 plans.append(p)
             else:
@@ -814,6 +843,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     for p in plans:
         q = assessments[p['id']]
         p['quality'] = q
+        for path in admission_paths:
+            if path['event_key']==p['event_key']:
+                path['reason']=q['reason'] if not q['accepted'] else 'ACCEPTED'
         checks=p.setdefault('entry_checks',scanner.entry_checks())
         # Accepted planner proposals have already passed the first six gates.
         # This also keeps injected replay planners under the same contract.
@@ -836,6 +868,17 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             scanner.update_readiness(row)
         p['readiness_pct']=100. if q['accepted'] else round(100*sum(c['met'] is True for c in checks)/len(checks),1)
         p['distance_pct']=scanner.proximity(s.price,p['entry'])['distance_pct']
+    for row in matrix:
+        alternatives=[p for p in plans if p['setup']==row['setup'] and scanner.timeframe(p)==row['timeframe']]
+        if alternatives:
+            best=max(alternatives,key=lambda p:(p['quality']['accepted'],scanner.selection_key(p,s.price)))
+            q=best['quality']
+            row.update(signal_id=best['id'],event_key=best['event_key'],side=best['side'],level=best['entry'],
+                       reason=q['reason'],status='LIMIT_READY' if q['accepted'] else 'BLOCKED',
+                       score=best['score'],entry_checks=copy.deepcopy(best['entry_checks']),statistics=q['statistics'])
+            if best.get('setup_conditions'):
+                row['setup_conditions']=copy.deepcopy(best['setup_conditions'])
+            scanner.update_readiness(row)
     def priority(p):
         q=p['quality'];stat=q['statistics']
         structural=quality.structural_reason(q['features'])=='CONFIRMED'
@@ -896,7 +939,15 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                  'ANCHOR_EXPIRED_AWAITING_NEW_EVENT')]
     actionable.sort(key=lambda r:scanner.selection_key(r,s.price),reverse=True)
     watch=actionable[:24]
-    return {"health": [],"plans": accepted,"candidate_plans":clusters,"quality_assessments":assessments,
+    directional={}
+    for label,side in (('LONG',1),('SHORT',-1)):
+        subset=[path for path in admission_paths if path['side']==side]
+        reasons={}
+        for path in subset:
+            if path['reason']!='ACCEPTED':reasons[path['reason']]=reasons.get(path['reason'],0)+1
+        directional[label]={'evaluated_paths':len(subset),
+            'accepted_paths':sum(path['reason']=='ACCEPTED' for path in subset),'rejections':reasons}
+    return {"health": [],"plans": accepted,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
             "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
@@ -985,7 +1036,11 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
     capacity=min(capacity,max(0,cfg.max_daily_trades-daily['entries']))
     if daily['losses_r']>=cfg.day_loss_cap_r:
         return []
-    ranked=sorted(pending_plans(state),key=lambda p:scanner.selection_key(p,price),reverse=True)
+    def entry_key(p):
+        key=scanner.selection_key(p,price)
+        wait_r=abs(price-p['entry'])/max(p.get('risk',cfg.tick),cfg.tick)
+        return (key[0],key[1]-min(30.,10.*wait_r),*key[2:])
+    ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
     eligible=[]
     for plan in ranked:
         if len(eligible)>=capacity:
@@ -995,7 +1050,7 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
         cancel=plan.get('cancel_effective_ts',plan.get('cancel_requested_ts',0))
         if (effective>now and not partial_legacy) or plan['expires_ts']<=now or (cancel and cancel<=now):
             continue
-        if any(p['side']!=plan['side'] or trade_dependencies.related(p,plan,cfg.tick) for p in active+eligible):
+        if any(trade_dependencies.related(p,plan,cfg.tick) for p in active+eligible):
             continue
         eligible.append(plan)
     return eligible
@@ -1509,7 +1564,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.4.2-quote-gates-price-forecast',
                                        'full-ict-v12.4.3-minimum-sl-tp',
                                        'full-ict-v12.5.0-causal-early-limits',
-                                       'full-ict-v12.6.0-lifecycle-adaptive-policy'):
+                                       'full-ict-v12.6.0-lifecycle-adaptive-policy',
+                                       'full-ict-v12.7.0-adaptive-full-volume'):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1588,7 +1644,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             candidate['decision_score']=candidate.get('decision_score',candidate.get('score',0))\
                                         +lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
         plans[:6]=sorted(plans[:6],key=lambda p:scanner.selection_key(p,s.price),reverse=True)
-        active_sides={p['side'] for p in active_plans(state)}
         # Pending plans do not reserve a position. Keep waiting alternatives
         # beyond two; only the entry arbiter can admit an actual fill.
         for top in plans:
@@ -1597,8 +1652,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             live_keys={key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
             tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
             if keys.intersection(state['used_events']) or keys.intersection(live_keys):
-                continue
-            if active_sides and top['side'] not in active_sides:
                 continue
             if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
                 continue
@@ -1630,13 +1683,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                        followed_id=(exact or duplicate)['id'])
         elif occupied_slots(state)>=2:
             row.update(status='WAIT_CAPACITY',reason='SLOTS_FULL')
-        elif active_plans(state) and row.get('side') not in {p['side'] for p in active_plans(state)}:
-            row.update(status='BLOCKED',reason='EXISTING_OPPOSITE_PLAN')
         elif action in ('DIRECTION_CONFLICT','DAILY_PAUSE','SESSION_CLOSED','DATA_HOLD'):
             row.update(status='BLOCKED',reason=action)
     if analysis.get('setup_matrix'):
         analysis['watch']=[w for w in analysis.get('watch',[]) if w.get('status')!='FOLLOWED']
-    sides={p['side'] for p in live} or None
+    sides=None  # Existing long positions must not hide short candidates.
     selected_row=next((row for row in analysis.get('setup_matrix',[]) if selected
                        and row.get('signal_id')==selected[0]['id']),None)
     analysis['best_scenario']=selected_row or scanner.best_scenario(analysis.get('watch',[]),s.price,sides)
@@ -1666,7 +1717,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'detectors':analysis.get('detectors',[]),'raw_plans':analysis.get('raw_plans',0),
                'registered_setups':analysis.get('registered_setups',24),
                'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
-               'funnel':{**analysis.get('funnel',{}),'placed':len(selected)}}
+               'funnel':{**analysis.get('funnel',{}),'placed':len(selected)},
+               'admission_by_side':analysis.get('admission_by_side',{})}
     state['signals'].append(summary)
     state['signals'] = state['signals'][-1000:]
     state['watch'] = analysis.get('watch',[])
@@ -1798,6 +1850,7 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'WAIT_CONFIRMED_BREAK_FOR_LIMIT':'чекаємо підтвердженого пробою перед лімітним ретестом',
     'SLOTS_FULL':'відкриті дві угоди; новий вхід після закриття однієї',
     'EXISTING_OPPOSITE_PLAN':'вже супроводжуємо протилежний напрямок',
     'DIRECTION_CONFLICT':'протилежні сценарії мають близьку оцінку',

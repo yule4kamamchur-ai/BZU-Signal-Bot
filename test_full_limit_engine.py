@@ -336,7 +336,8 @@ class RouterTests(unittest.TestCase):
         msg = b.build_message(s, snapshot(), {"action": "WAIT_LIMIT", "analysis": {}}, b.Config())
         self.assertNotIn("депозит", msg)
         self.assertNotIn("розмір позиції", msg)
-        self.assertIn("SL:", msg)
+        self.assertIn("Вхід:", msg)
+        self.assertNotIn("SL:", msg)
         self.assertIn("ОЧІКУЄМО ВХОДУ — 1", msg)
         self.assertNotIn("не біржові ордери",msg)
 
@@ -547,7 +548,8 @@ class FullSetupTests(unittest.TestCase):
             wrapped.append(invoke)
         with patch.object(core,"DETECTORS",wrapped):
             out = b.run_cycle(b.new_state(cfg),s,cfg)
-        self.assertEqual(calls,[d.__name__ for d in core.DETECTORS for _ in range(3)])
+        self.assertEqual(list(dict.fromkeys(calls)),[d.__name__ for d in core.DETECTORS])
+        self.assertTrue(all(calls.count(d.__name__)>=3 for d in core.DETECTORS))
         self.assertEqual(out["analysis"]["timeframe_evaluations"],72)
         self.assertEqual(out["analysis"]["registered_setups"],24)
         self.assertFalse([d for d in out["analysis"]["detectors"] if d["status"]=="ERROR"])
@@ -1017,13 +1019,13 @@ class TwoSlotTests(unittest.TestCase):
         self.assertEqual(b.occupied_slots(state),0)
         self.assertEqual(len(b.pending_plans(state)),1)
 
-    def test_opposing_proposal_cannot_hedge_existing_order(self):
+    def test_existing_position_does_not_silently_discard_opposite_proposal(self):
         state = b.new_state(b.Config())
         active=self.plan(1);active.update(status='OPEN',remaining=1.,exit_deadline=NOW+3600000,last_bar=NOW)
         state['active']=active
         result = self.report(state,[self.plan(2,102,-1)])
         self.assertEqual(state['active']['side'],1)
-        self.assertFalse(result['selected_plans'])
+        self.assertEqual([p['side'] for p in result['selected_plans']],[-1])
 
     def test_old_v12_restart_keeps_history_geometry_and_readable_ids(self):
         cfg = b.Config()

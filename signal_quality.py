@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'native-mtf-adaptive-full-exit-open-cap-two-v6'
+STRATEGY = 'native-mtf-directional-limit-paths-v7'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -142,6 +142,16 @@ def features(plan: dict, snapshot, context: dict, cfg, engine) -> dict:
             'as_of_ts':snapshot.now,'strategy':STRATEGY}
 
 
+COUNTERTREND_SETUPS=frozenset({'SWEEP_RECLAIM','CAPITULATION_RECOVERY','RANGE_EDGE_REVERSAL',
+    'FAILED_AUCTION_REJECTION','LIQUIDITY_SWEEP_REVERSAL_SHORT','BUYER_EXHAUSTION_SHORT',
+    'FAILED_BREAKOUT_SHORT','MSS_REVERSAL_SHORT','FAILED_OPENING_RANGE_BREAKOUT',
+    'OR_FAILURE_2_SHORT','DIRECTION_FLIP_15M'})
+
+
+def pretouch_countertrend_allowed(setup,side,primary_side,micro_side):
+    return setup in COUNTERTREND_SETUPS and primary_side==side and micro_side==side
+
+
 def structural_reason(f: dict, settings: Settings=Settings()) -> str:
     if f['shock']:
         return 'SHOCK_STILL_ACTIVE'
@@ -155,7 +165,7 @@ def structural_reason(f: dict, settings: Settings=Settings()) -> str:
         # not wait for a second reaction AFTER its level has been visited.
         if not f.get('detector_confirmed'):
             return 'SETUP_CONDITIONS_INCOMPLETE'
-        if f['htf_opposition']==2 and not (f['shift15'] and f['shift3']):
+        if f['htf_opposition']==2 and not pretouch_countertrend_allowed(f['setup'],f['side'],f['side15'],f['side3']):
             return 'HTF_REVERSAL_NOT_CONFIRMED'
         return 'CONFIRMED'
     if not (f['side3']==f['side'] or f['shift3']):
@@ -240,7 +250,7 @@ PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup',
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))

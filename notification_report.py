@@ -161,25 +161,10 @@ def build(state, snapshot, result, cfg, engine):
 
     if pending:
         lines += ['', f'ОЧІКУЄМО ВХОДУ — {len(pending)}']
-        if len(active)==2:
-            lines += ['Новий вхід — після закриття однієї з двох угод.']
-    for index, p in enumerate(pending):
-        if index:
-            lines += ['']
-        label = engine.display_order(state, p['id'])
-        side = 'LONG' if p['side'] == 1 else 'SHORT'
-        distance = scanner.distance_details(snapshot.price, p['entry'], cfg.tick) if price_ok else None
-        gap = (('<0.001%' if 0 < distance['distance_pct'] < .001 else f"{distance['distance_pct']:.3f}%")
-               if distance else 'немає свіжої ціни')
-        lines += [f"{label} {side} • {scanner.timeframe(p).lower()} • {setup_text(p)}",
-                  f"Вхід: {p['entry']:.8g} • До входу: {gap}",
-                  f"SL: {p['stop']:.8g} • {targets(p)}", full_exit_text(p),
-                  f"Діє до {engine.report_deadline(p['expires_ts'], now, cfg)}"]
-        if p.get('cancel_requested_ts'):
-            lines += ['Скасування очікує перевірки виконання: '
-                      + engine.REASON_UA.get(p.get('cancel_reason'), 'сетап утратив чинність') + '.']
-        elif price_ok and p['side']*(snapshot.price-p['entry']) <= 0:
-            lines += ['Ціна на рівні або за ним; виконання перевіряємо за закритими свічками.']
+    for p in pending:
+        label=engine.display_order(state,p['id'])
+        side='LONG' if p['side']==1 else 'SHORT'
+        lines += [f"{label} {side} • Вхід: {p['entry']:.8g}"]
     for r in uncertain:
         lines += [f"{engine.display_order(state, r['order_id'])} — виконання НЕВИЗНАЧЕНЕ; потрібна перевірка."]
 
@@ -224,7 +209,7 @@ def build(state, snapshot, result, cfg, engine):
         live = engine.open_plans(state)
         live_keys = {(p.get('setup'), scanner.timeframe(p)) for p in live}
         rows = [r for r in rows if (r.get('setup'), r.get('timeframe', '15m')) not in live_keys]
-        best = scanner.best_scenario(rows, snapshot.price, {p['side'] for p in live} or None)
+        best = scanner.best_scenario(rows, snapshot.price, None)
         if best and best.get('level') and best.get('side') in (-1, 1):
             side = 'LONG' if best['side'] == 1 else 'SHORT'
             ready = best.get('readiness_pct', 0) or 0
@@ -271,8 +256,32 @@ def split_message(message, limit=3800):
     return pages or ['']
 
 
+def compact_waiting(message):
+    """Apply the current small waiting card to unsent older reports too."""
+    output=[];waiting=False;header=None
+    for line in message.splitlines():
+        stripped=line.strip()
+        if stripped.startswith('ОЧІКУЄМО ВХОДУ'):
+            waiting=True;header=None;output.append(line);continue
+        if waiting and (stripped.startswith(('ЗАКРИТО','ІНШІ ЗМІНИ','НА СПОСТЕРЕЖЕННІ','У СУПРОВОДІ','WR сигналів','v12.'))
+                        or 'ЗАКРИТО:' in stripped):
+            waiting=False;header=None
+        if waiting:
+            mark=re.match(r'^(#\S+)\s+(LONG|SHORT)\b',stripped)
+            if mark:header=mark.groups()
+            entry=re.search(r'Вхід:\s*([0-9.eE+\-]+)',stripped)
+            if entry and header:
+                output.append(f'{header[0]} {header[1]} • Вхід: {entry.group(1)}');header=None
+            elif 'виконання НЕВИЗНАЧЕНЕ' in stripped:
+                output.append(line)
+            continue
+        output.append(line)
+    return '\n'.join(output)
+
+
 def clean_queued_message(message):
     """Remove obsolete status/exit instructions without dropping closed results."""
+    message=compact_waiting(message)
     output=[]
     for line in message.splitlines():
         text=line.strip()

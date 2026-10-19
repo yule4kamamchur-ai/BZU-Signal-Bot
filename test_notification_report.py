@@ -97,7 +97,8 @@ class CompactReports(unittest.TestCase):
         self.state['pending'] = order(); self.snap.price = 99.
         text = self.text({'action': 'WAIT_LIMIT'})
         self.assertNotIn('У СУПРОВОДІ — 0', text)
-        self.assertIn('виконання перевіряємо за закритими свічками', text)
+        self.assertIn('#001 LONG • Вхід: 100', text)
+        self.assertNotIn('виконання перевіряємо',text)
 
     def test_forecast_percentage_and_stale_readiness_are_not_in_order_card(self):
         p = order()
