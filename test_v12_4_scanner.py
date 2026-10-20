@@ -24,7 +24,7 @@ class NativeScannerTests(unittest.TestCase):
         for detector in core.DETECTORS:
             @wraps(detector)
             def invoke(ctx, original=detector):
-                tf=ctx['analysis_timeframe'];micro=scanner.MICRO[tf]
+                tf=ctx.get('formation_timeframe',ctx['analysis_timeframe']);micro=ctx.get('formation_micro_timeframe',scanner.MICRO[ctx['analysis_timeframe']])
                 self.assertEqual(ctx['candles']['15m'],s.candles[tf])
                 self.assertEqual(ctx['candles']['3m'],s.candles[micro])
                 self.assertAlmostEqual(ctx['atr15'],core._effective_atr15(core.atr(s.candles[tf],14),s.price))
@@ -33,7 +33,7 @@ class NativeScannerTests(unittest.TestCase):
             wrapped.append(invoke)
         with patch.object(core,'DETECTORS',wrapped):
             result=engine.analyze(s,cfg,engine.new_state(cfg))
-        self.assertEqual(len(set(seen)),72)
+        self.assertEqual(len(set(seen)),96)
         self.assertEqual(result['timeframe_evaluations'],72)
         self.assertFalse([r for r in result['setup_matrix'] if r['status']=='ERROR'])
         self.assertEqual(set((r['setup'],r['timeframe']) for r in result['setup_matrix']),
@@ -125,7 +125,7 @@ class PretouchAndLifetimeTests(unittest.TestCase):
                 self.assertEqual(result['action'],'PLACE_LIMIT')
                 self.assertTrue(any(p['setup_timeframe']==target for p in result['selected_plans']))
                 for p in result['selected_plans']:
-                    self.assertLess(p['entry'],s.bid)
+                    self.assertTrue(scanner.passive_gate(p['entry'],p['side'],s.bid,s.ask,cfg.tick)['passive'])
                     self.assertGreaterEqual(p['net_rr'],cfg.min_net_rr)
                     self.assertTrue(p['quality']['accepted'])
                     self.assertIsNone(p['probability'])

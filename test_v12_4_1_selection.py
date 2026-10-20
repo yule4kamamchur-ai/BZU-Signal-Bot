@@ -73,16 +73,16 @@ class PercentageAndWinnerTests(unittest.TestCase):
         rows[2].update(readiness_pct=80.,score=95.)
         self.assertIs(scanner.best_scenario(rows,103.62),rows[1])
 
-    def test_execution_uses_the_same_ranking_and_places_only_one_new_plan(self):
+    def test_execution_ranks_all_ready_alternatives_and_excludes_incomplete(self):
         cfg=engine.Config();state=engine.new_state(cfg)
         first=order();first.update(id='first',event_key='first',readiness_pct=100.,score=70.)
         other=order(-1);other.update(id='other',event_key='other',readiness_pct=90.,score=99.)
         third=copy.deepcopy(first);third.update(id='third',event_key='third',entry=99.,score=65.)
         with patch.object(engine,'analyze',return_value=analysis([other,third,first])):
             result=engine.run_cycle(state,snapshot(),cfg)
-        self.assertEqual([p['id'] for p in result['selected_plans']],['first'])
+        self.assertEqual([p['id'] for p in result['selected_plans']],['first','third'])
         self.assertEqual(state['pending']['side'],1)
-        self.assertIsNone(state['second_slot']['pending'])
+        self.assertEqual(state['second_slot']['pending']['id'],'third')
 
     def test_existing_direction_is_preserved_for_the_next_chosen_scenario(self):
         rows=self.reported_rows();rows[0]['readiness_pct']=95.;rows[1]['readiness_pct']=90.
