@@ -5,6 +5,7 @@ risk filter is fabricated: branches use subsets of the same known references.
 """
 from __future__ import annotations
 import copy
+import execution_atlas
 
 SINGLE_SIDE={'SWEEP_RECLAIM':'LONG','CAPITULATION_RECOVERY':'LONG',
  'LIQUIDITY_SWEEP_REVERSAL_SHORT':'SHORT','BUYER_EXHAUSTION_SHORT':'SHORT',
@@ -24,6 +25,72 @@ def candidates(detector,setup,ctx,core):
     raw=detector(ctx)
     anchors=[raw] if raw is not None else []
     session=dict(ctx.get('session') or {})
+    if setup in ('BREAKOUT_RETEST','FAILED_AUCTION_REJECTION'):
+        frozen=execution_atlas.frozen_week(ctx)
+        if frozen:
+            refs={**session,**{k:frozen[k] for k in ('week_high','week_low')}}
+            a=detector(_context(ctx,session=refs))
+            if a is not None:
+                a.evidence.update(reference_kind='WEEK_BEFORE_EVENT_WINDOW',
+                                  reference_as_of_ts=frozen['reference_as_of_ts'])
+                anchors.append(a)
+            # A first-return daily branch must not hide the independent week branch.
+            for key in ('week_high','week_low'):
+                refs={**session,**dict.fromkeys(('prev_day_high','prev_day_low','week_high','week_low'),0)}
+                refs[key]=frozen[key]
+                a=detector(_context(ctx,session=refs,vwap=0 if setup=='FAILED_AUCTION_REJECTION' else ctx.get('vwap',0)))
+                if a is not None:
+                    a.evidence.update(reference_kind='WEEK_BEFORE_EVENT_WINDOW',reference_as_of_ts=frozen['reference_as_of_ts'])
+                    anchors.append(a)
+    if setup=='PULLBACK_CONTINUATION' and raw is not None:
+        # Original detector chooses only the strongest level, even if far away.
+        # Enumerate its actual EMA/value/swing/zone references with the SAME
+        # direction, regime prerequisite and structural invalidation formula.
+        sign=core.side_sign(raw.side);price=ctx['price'];vol=ctx['atr15']
+        levels=[(name,value,58.) for name,value in core._ema_ladder(ctx['candles']['15m']).items()
+                if name in ('ema20','ema50')]
+        levels.append(('VWAP',ctx.get('vwap',0),58.))
+        structure=ctx.get('structure15',{})
+        levels.extend(('SWING',x,55.) for x in structure.get('swing_lows' if sign==1 else 'swing_highs',[])[-2:])
+        for name in ('order_blocks','fvg'):
+            for zone in ctx.get('zones',{}).get(name,[]):
+                if zone.side!=raw.side or zone.mitigated:continue
+                # Proximal edge is a real boundary, not an invented midpoint.
+                level=zone.high if sign==1 else zone.low
+                levels.append((zone.kind,level,(56+8*zone.strength) if name=='order_blocks' else (54+6*zone.strength)))
+        for name,level,score in levels:
+            if level<=0 or sign*(level-price)>.10*vol:continue
+            anchors.append(core.make_anchor(setup,raw.side,level,
+                level-sign*max(.9*vol,core.min_stop_distance(price)),raw.kind,
+                'Лімітний відкат до '+name,ctx,score=min(100,score),
+                evidence={'pullback_target':name,'enumerated_reference':True,'trend_direction':raw.side}))
+    if setup=='FRESH_BASE_CONTINUATION':
+        rows=ctx.get('candles',{}).get('15m',[])
+        # The displacement candle must not enlarge its own preceding base.
+        if len(rows)>=20:
+            base=core.detect_consolidation(rows[:-1],ctx['atr15'])
+            altered={**ctx,'zones':{**ctx.get('zones',{}),'consolidation':base}}
+            a=detector(altered)
+            if a is not None:
+                a.evidence['base_known_before_displacement']=True
+                anchors.append(a)
+    if setup=='MOMENTUM_NO_PULLBACK_CONTINUATION':
+        for zone in ctx.get('zones',{}).get('fvg',[]):
+            if zone.mitigated:continue
+            altered={**ctx,'zones':{**ctx.get('zones',{}),'fvg':[zone]}}
+            anchors.append(detector(altered))
+    if setup=='RANGE_EDGE_REVERSAL':
+        base=ctx.get('zones',{}).get('consolidation',{});vol=ctx.get('atr15',0)
+        low=base.get('low') or session.get('day_low',0);high=base.get('high') or session.get('day_high',0)
+        if ctx.get('regime') in ('RANGE','TRANSITION') and len(ctx['candles']['15m'])>=30 and low>0 and high-low>=2*vol:
+            for side,level,sign in (('LONG',low,1),('SHORT',high,-1)):
+                # Form the edge scenario before the final approach, rather than
+                # waiting until <=0.6 ATR. The shared planner still checks reach.
+                if 0<=sign*(ctx['price']-level)<=3*vol:
+                    anchors.append(core.make_anchor(setup,side,level,level-sign*.55*vol,
+                        core.AnchorKind.RANGE_EDGE.value,'Заздалегідь визначена межа діапазону',ctx,
+                        score=52+12*core.clamp((2.2-base.get('compression',2.2))/2.2,0.,1.),
+                        evidence={'range_low':low,'range_high':high,'planning_policy':'PREMAPPED_RANGE_EDGE'}))
     if setup=='LIQUIDITY_LADDER':
         for key in ('equal_lows','equal_highs'):
             liq={**ctx.get('liquidity',{}),'equal_lows':[],'equal_highs':[]}
@@ -77,6 +144,8 @@ def candidates(detector,setup,ctx,core):
             a.evidence['symmetric_range_score']=True
         if setup in BREAK_RETEST:
             a.evidence.update(activation_policy='CLOSED_BREAK_THEN_LIMIT_RETEST',activation_phase='WAIT_BREAK')
+        a.evidence.setdefault('formation_timeframe',ctx.get('formation_timeframe',ctx.get('analysis_timeframe','15m')))
+        a.evidence.setdefault('formation_micro_timeframe',ctx.get('formation_micro_timeframe',ctx.get('micro_timeframe','3m')))
         key=(a.side,round(a.level,8),round(a.invalidation,8))
         unique.setdefault(key,a)
     return list(unique.values())

@@ -35,6 +35,10 @@ def summarize(report,state):
     trades=report['trades']
     report['by_timeframe']={tf:engine.statistics([t for t in trades if setup_scanner.timeframe(t)==tf])
                             for tf in setup_scanner.PRIMARY}
+    report['by_formation_timeframe']={tf:engine.statistics([t for t in trades if t.get('formation_timeframe',setup_scanner.timeframe(t))==tf])
+                                    for tf in ('3m',*setup_scanner.PRIMARY)}
+    report['by_entry_route']={route:engine.statistics([t for t in trades if t.get('entry_route','NATIVE_PATTERN')==route])
+                             for route in ('NATIVE_PATTERN','MICRO_PRECURSOR')}
     report['dependencies']=trade_dependencies.summary(trades,state.get('price_tick',.001))
     fill_pairs=[];win_pairs=[];errors=[];censored=0;queue_excluded=0
     by_id={t['id']:t for t in trades}

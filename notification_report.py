@@ -122,10 +122,14 @@ def build(state, snapshot, result, cfg, engine):
             active.append(view['active'])
         if view.get('reconciliation'):
             uncertain.append(view['reconciliation'])
-    pending=engine.pending_plans(state)
+    all_waiting=engine.pending_plans(state)
+    cancelling=[p for p in all_waiting if p.get('cancel_requested_ts')]
+    pending=[p for p in all_waiting if not p.get('cancel_requested_ts')]
     active.sort(key=lambda p: p.get('order_number', 0))
     pending.sort(key=lambda p: p.get('order_number', 0))
     lines += [f'Відкриті угоди: {len(active)} • Ліміти в очікуванні: {len(pending)}']
+    if result.get('action')=='DAILY_PAUSE':
+        lines += ['Нові входи: досягнуто денний ліміт ризику.']
     if frozen:
         checkpoint = state.get('last_run_ts', 0)
         when = engine.report_deadline(checkpoint, now, cfg) if checkpoint else 'попередній цикл'
@@ -165,6 +169,11 @@ def build(state, snapshot, result, cfg, engine):
         label=engine.display_order(state,p['id'])
         side='LONG' if p['side']==1 else 'SHORT'
         lines += [f"{label} {side} • Вхід: {p['entry']:.8g}"]
+    if cancelling:
+        lines += ['', 'СКАСУВАННЯ ЛІМІТІВ']
+        for p in cancelling:
+            reason=engine.REASON_UA.get(p.get('cancel_reason'),'умови входу змінилися')
+            lines += [f"{engine.display_order(state,p['id'])} • {reason}; перевіряємо останню свічку"]
     for r in uncertain:
         lines += [f"{engine.display_order(state, r['order_id'])} — виконання НЕВИЗНАЧЕНЕ; потрібна перевірка."]
 
@@ -192,8 +201,11 @@ def build(state, snapshot, result, cfg, engine):
             text = 'результат невідомий; виключено з WR'
         else:
             text = 'скасовано без входу' if event['kind'] == 'CANCELLED' else 'строк минув, входу не було'
+            reason=event.get('reason')
+            if reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED'):
+                text += ' • '+engine.REASON_UA[reason]
         lines += [f"{engine.display_order(state, order_id)} • {text}"]
-    represented = {p['id'] for p in active+pending} | set(closed) | set(no_entry)
+    represented = {p['id'] for p in active+pending+cancelling} | set(closed) | set(no_entry)
     represented.update(r['order_id'] for r in uncertain)
     other_events = [engine.message_event(state, event, cfg) for event in events
                     if event.get('order_id') not in represented]
@@ -263,7 +275,7 @@ def compact_waiting(message):
         stripped=line.strip()
         if stripped.startswith('ОЧІКУЄМО ВХОДУ'):
             waiting=True;header=None;output.append(line);continue
-        if waiting and (stripped.startswith(('ЗАКРИТО','ІНШІ ЗМІНИ','НА СПОСТЕРЕЖЕННІ','У СУПРОВОДІ','WR сигналів','v12.'))
+        if waiting and (stripped.startswith(('ЗАКРИТО','ІНШІ ЗМІНИ','СКАСУВАННЯ ЛІМІТІВ','НА СПОСТЕРЕЖЕННІ','У СУПРОВОДІ','WR сигналів','v12.'))
                         or 'ЗАКРИТО:' in stripped):
             waiting=False;header=None
         if waiting:

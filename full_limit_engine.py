@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.8.0-directional-limit-paths"
-REPORT_RELEASE = 'v12.8.0'
+VERSION = "full-ict-v12.9.0-anticipatory-execution-atlas"
+REPORT_RELEASE = 'v12.9.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -39,6 +39,7 @@ import research_evidence
 import lifecycle_forecast
 import trade_dependencies
 import setup_paths
+import execution_atlas
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -89,6 +90,7 @@ class Config:
     cancel_on_bias_flip: bool = True
     core: Any = field(default=None, repr=False, compare=False)
     setup_min_sample: int = 20
+    analysis_scan_minutes: int = 5
 
     def validate(self) -> None:
         nums = config_dict(self)
@@ -111,6 +113,8 @@ class Config:
             raise ValueError("TP1 must be at least 1.5% from entry")
         if self.setup_min_sample < 10:
             raise ValueError("Invalid legacy setup statistic sample")
+        if self.analysis_scan_minutes not in (3,5,15):
+            raise ValueError('Analysis scan interval must be 3, 5 or 15 minutes')
         ZoneInfo(self.timezone)
 
     @classmethod
@@ -130,6 +134,7 @@ class Config:
             "session_end_hour": ("SESSION_END_HOUR", int),
             "min_score": ("MIN_SETUP_SCORE", float),
             "max_entry_distance_atr": ("LIMIT_MAX_DISTANCE_ATR", float),
+            "analysis_scan_minutes": ("ANALYSIS_SCAN_MINUTES", int),
         }
         kwargs = {k: cast(os.environ[name]) for k, (name, cast) in mapping.items()
                   if os.environ.get(name)}
@@ -359,6 +364,8 @@ def setup_statistics(state: dict, cfg: Config) -> dict:
             subset['status']='INSUFFICIENT_SAMPLE' if subset['trades']<cfg.setup_min_sample else (
                 'NEGATIVE_EXPECTANCY' if subset['expectancy_r']<=0 else 'POSITIVE_EXPECTANCY')
             report[setup]['timeframes'][tf]=subset
+        report[setup]['formation_timeframes']={tf:statistics([t for t in rows if t.get('formation_timeframe',scanner.timeframe(t))==tf])
+                                               for tf in ('3m',*scanner.PRIMARY)}
     return report
 
 
@@ -383,6 +390,8 @@ def build_full_context(s: Snapshot, state: dict, cfg: Config) -> dict:
 def anchor_zone_key(a, cfg: Config) -> str:
     tf = a.evidence.get('setup_timeframe', '15m')
     parts = (a.setup_type, a.side, round(a.level/cfg.tick), round(a.invalidation/cfg.tick), a.kind)
+    if a.evidence.get('entry_route')=='MICRO_PRECURSOR':
+        return ident(*parts,tf,'FORMATION_3m')
     return ident(*parts) if tf == '15m' else ident(*parts, tf)
 
 
@@ -414,7 +423,7 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         previous=by_zone.get(zone)
         event=None
         if previous and zone not in live_zones and contexts:
-            native=contexts.get(a.evidence.get('setup_timeframe','15m'),{})
+            native=contexts.get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
             sign=core.side_sign(a.side)
             visited=any(c.low<=a.level if sign==1 else c.high>=a.level
                         for c in limit_structure.closed(s,'3m') if c.ts>=previous['created_ts'])
@@ -456,7 +465,7 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
     for key,raw in list(memory.items()):
         a=core.anchor_from_dict(raw)
         if a is None or not (a.created_ts<=s.now<a.expires_ts):continue
-        native=(contexts or {}).get(a.evidence.get('setup_timeframe','15m'),{})
+        native=(contexts or {}).get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
         if a.setup_type in setup_paths.BREAK_RETEST and 'activation_phase' not in a.evidence:
             if key not in {p['event_key'] for p in open_plans(state)}:
                 a.evidence.update(activation_phase='WAIT_BREAK',activation_policy='CLOSED_BREAK_THEN_LIMIT_RETEST')
@@ -577,7 +586,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     b15, b3 = ctx["structure15"]["direction"], ctx["structure3m"]["direction"]
     opposite = "SHORT" if sign == 1 else "LONG"
     both_against = b1 == opposite and b4 == opposite
-    reversal_confirmed = quality.pretouch_countertrend_allowed(a.setup_type,sign,core.side_sign(b15),core.side_sign(b3))
+    early_control=both_against and quality.early_reversal_control(a.setup_type,sign,s,ctx,cfg,sys.modules[__name__])
+    reversal_confirmed = quality.pretouch_countertrend_allowed(a.setup_type,sign,core.side_sign(b15),core.side_sign(b3),early_control)
     mark('HTF_ALIGNMENT',not both_against or reversal_confirmed)
     if both_against and not reversal_confirmed:
         return None, "BOTH_HTF_AGAINST_WITHOUT_CONFIRMED_REVERSAL"
@@ -683,6 +693,10 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "setup_type": a.setup_type, "setup_family": core.journal_setup_family(a.setup_type),
             "canonical_setup_family": core.canonical_setup_family(a.setup_type), "timeframe": source_tf,
             "setup_timeframe": source_tf, "micro_timeframe": scanner.MICRO[source_tf],
+            "formation_timeframe":a.evidence.get('formation_timeframe',source_tf),
+            "formation_micro_timeframe":a.evidence.get('formation_micro_timeframe',scanner.MICRO[source_tf]),
+            "entry_route":a.evidence.get('entry_route','NATIVE_PATTERN'),
+            "planning_policy":a.evidence.get('planning_policy','CONFIRMED_PATTERN_LIMIT'),
             "entry_policy": "PRETOUCH_LIMIT", "detector_confirmed": True,
             "max_hold_minutes": cfg.max_hold_minutes*scale, "intraday": source_tf == '15m',
             "readiness_pct": 100.0,
@@ -702,6 +716,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "score": score, "stop_distance_pct": risk/entry*100,
             "tp1_distance_pct":sign*(tp1-entry)/entry*100,
             "placed_ts": s.now, "effective_ts": effective, "expires_ts": expires, "zone_created_ts": a.created_ts,
+            "queue_execution_policy":"PASSIVE_ARM_V2",
             "invalidation": a.invalidation, "target_source": nearest["kind"],
             "target_timeframe":nearest.get('timeframe',source_tf),
             "intermediate_levels":copy.deepcopy(diag.get('intermediate_levels',[])),
@@ -727,6 +742,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     with market_clock(core,s.now):
         ctx = build_full_context(s,state,cfg)
         tf_contexts = scanner.build_contexts(s,ctx,state,cfg)
+        tf_contexts={tf:execution_atlas.prepare(native,s,cfg,sys.modules[__name__])
+                     for tf,native in tf_contexts.items()}
+        early_context=execution_atlas.micro_context(s,tf_contexts['15m'],state,cfg,sys.modules[__name__])
         state["regime_memory"] = copy.deepcopy(ctx.get("regime_memory", {}))
         fresh, detector_audit, matrix = [], [], []
         # The registry order is stable; each original setup runs on native
@@ -737,6 +755,14 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             for tf,native in tf_contexts.items():
                 try:
                     alternatives=setup_paths.candidates(detector,setup,native,core)
+                    micro_candidates=[]
+                    if tf=='15m':
+                        micro_candidates=setup_paths.candidates(detector,setup,early_context,core)
+                        for early in micro_candidates:
+                            early.evidence['entry_route']='MICRO_PRECURSOR'
+                            early.evidence['formation_timeframe']='3m'
+                            early.expires_ts=min(early.expires_ts,early.created_ts+45*60_000)
+                        alternatives+=micro_candidates
                     a=max(alternatives,key=lambda item:(
                         core.side_sign(item.side)*(s.price-item.level)>0,item.score),default=None)
                     row = scanner.conditions(setup,native,core,a)
@@ -747,15 +773,19 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                         candidate=copy.deepcopy(candidate)
                         candidate.evidence['setup_timeframe']=tf
                         candidate.evidence['micro_timeframe']=scanner.MICRO[tf]
-                        candidate.evidence['setup_conditions']=copy.deepcopy(scanner.conditions(setup,native,core,candidate)['conditions'])
+                        formation=early_context if candidate.evidence.get('entry_route')=='MICRO_PRECURSOR' else native
+                        candidate.evidence['setup_conditions']=copy.deepcopy(scanner.conditions(setup,formation,core,candidate)['conditions'])
+                        if candidate.evidence.get('planning_policy')=='PREMAPPED_RANGE_EDGE':
+                            candidate.evidence['setup_conditions'][-1]={'condition':'Межа визначена до підходу ціни; до 3 ATR','met':True}
                         candidate.expires_ts=candidate.created_ts+(candidate.expires_ts-candidate.created_ts)*scanner.MINUTES[tf]//15
                         seen_zone=anchor_zone_key(candidate,cfg)
                         known=any((old.get('evidence',{}).get('zone_identity')==seen_zone
                             or (old.get('setup_type')==candidate.setup_type and old.get('side')==candidate.side
+                                and old.get('evidence',{}).get('entry_route','NATIVE_PATTERN')==candidate.evidence.get('entry_route','NATIVE_PATTERN')
                                 and abs(old.get('level',0)-candidate.level)<cfg.tick/2))
                             for old in state.get('anchor_memory',{}).values())
                         if not known:
-                            setup_paths.activate(candidate,native,s,cfg,initial=True)
+                            setup_paths.activate(candidate,formation,s,cfg,initial=True)
                         fresh.append(candidate)
                     if a is not None:
                         a=next((c for c in fresh[::-1] if c.setup_type==setup and c.side==a.side and c.level==a.level),a)
@@ -765,7 +795,10 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                     row.update(scanner.proximity(s.price,row.get('level')))
                     matrix.append(row)
                     evaluations.append({'timeframe':tf,'status':'DETECTED' if a else 'NO_SETUP',
-                        'branches':len(alternatives),'sides':sorted({candidate.side for candidate in alternatives})})
+                        'branches':len(alternatives),'sides':sorted({candidate.side for candidate in alternatives}),
+                        'native_status':'DETECTED' if len(alternatives)>len(micro_candidates) else 'NO_SETUP',
+                        'native_branches':len(alternatives)-len(micro_candidates),
+                        'micro_precursors':len(micro_candidates)})
                 except Exception as exc:
                     row={'setup':setup,'timeframe':tf,'status':'ERROR','reason':'DETECTOR_ERROR',
                          'error':type(exc).__name__,'readiness_pct':None,'score':0,
@@ -775,7 +808,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             status='ERROR' if any(e['status']=='ERROR' for e in evaluations) else 'DETECTED' if any(e['status']=='DETECTED' for e in evaluations) else 'NO_SETUP'
             detector_audit.append({'detector':detector.__name__,'setup':setup,'status':status,
                                    'timeframes':evaluations})
-        anchors = merge_full_anchors(fresh,state,s,cfg,tf_contexts)
+        anchors = merge_full_anchors(fresh,state,s,cfg,{**tf_contexts,'MICRO_PRECURSOR':early_context})
         stats = setup_statistics(state,cfg)
         plans, watch, refused = [], [], {}
         admission_paths=[]
@@ -794,7 +827,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 refused[reason]=refused.get(reason,0)+1
         for a in anchors:
             tf=a.evidence.get('setup_timeframe','15m')
-            native=tf_contexts[tf]
+            native=early_context if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[tf]
             key = anchor_key(a,cfg)
             level_key = ident(a.side,round(a.level/cfg.tick))
             diagnostics={}
@@ -838,7 +871,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     ledger = quality.ensure(state,cfg)
     # Evaluate every scenario BEFORE combining nearby levels. A high-score
     # unconfirmed continuation must not suppress a valid reversal at that price.
-    assessments = {p['id']:quality.assess(p,s,tf_contexts[scanner.timeframe(p)],cfg,
+    assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[scanner.timeframe(p)],cfg,
                         sys.modules[__name__],ledger['observations']) for p in plans}
     for p in plans:
         q = assessments[p['id']]
@@ -948,7 +981,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         directional[label]={'evaluated_paths':len(subset),
             'accepted_paths':sum(path['reason']=='ACCEPTED' for path in subset),'rejections':reasons}
     return {"health": [],"plans": accepted,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
-            "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,
+            "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,"early_context":early_context,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
             "raw_plans": len(plans),"registered_setups": len(core.DETECTORS),
@@ -971,7 +1004,7 @@ def core_setup_registry(core):
 
 def new_state(cfg: Config) -> dict:
     return {"schema": SCHEMA, "version": VERSION, "instrument": cfg.instrument,
-            "config_hash": ident(json.dumps(config_dict(cfg), sort_keys=True)),
+            "config_hash": ident(json.dumps(config_dict(cfg), sort_keys=True)),"runtime_config":config_dict(cfg),
             "pending": None, "active": None, "used_events": {}, "trades": [],
             "orders": [], "events": [], "signals": [], "last_run_ts": 0,
             "notification_queue": [], "reconciliation": None,
@@ -1037,9 +1070,7 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
     if daily['losses_r']>=cfg.day_loss_cap_r:
         return []
     def entry_key(p):
-        key=scanner.selection_key(p,price)
-        wait_r=abs(price-p['entry'])/max(p.get('risk',cfg.tick),cfg.tick)
-        return (key[0],key[1]-min(30.,10.*wait_r),*key[2:])
+        return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
     eligible=[]
     for plan in ranked:
@@ -1050,6 +1081,11 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
         cancel=plan.get('cancel_effective_ts',plan.get('cancel_requested_ts',0))
         if (effective>now and not partial_legacy) or plan['expires_ts']<=now or (cancel and cancel<=now):
             continue
+        if (plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
+                and now>=plan.get('queue_policy_effective_ts',effective)):
+            continuous=plan.get('entry_armed_bar')==now-TF['3m']
+            if not continuous and not execution_atlas.passive_at_open(plan,price,cfg.tick):
+                continue
         if any(trade_dependencies.related(p,plan,cfg.tick) for p in active+eligible):
             continue
         eligible.append(plan)
@@ -1474,7 +1510,10 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             _advance_slot_lifecycle(view,s,cfg)
             store_slot(state,number,view)
         return
-    rows=[c for c in s.candles.get('3m',[]) if c.confirmed and c.ts+TF['3m']<=s.now]
+    followed=open_plans(state)
+    cursor=min((max(p.get('effective_ts',p.get('filled_ts',p['placed_ts']//TF['3m']*TF['3m'])),p.get('last_bar',0)+TF['3m'])
+                for p in followed),default=s.now)
+    rows=[c for c in s.candles.get('3m',[]) if c.confirmed and c.ts+TF['3m']<=s.now and c.ts>=cursor]
     for c in rows:
         # Freeze priorities using only the bar OPEN and earlier decisions.
         # A close in this bar frees capacity from the NEXT bar, not retroactively.
@@ -1487,8 +1526,22 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
                 store_slot(state,number,view)
         remaining=[]
         for plan in waiting:
+            if c.ts<=plan.get('last_bar',-1):
+                remaining.append(plan)
+                continue
             if plan.get('effective_ts',plan['placed_ts'])<=c.ts<plan['expires_ts'] and plan['id'] not in eligible:
                 plan['capacity_waited']=True
+            if (plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
+                    and c.ts>=plan.get('queue_policy_effective_ts',plan.get('effective_ts',plan['placed_ts']))):
+                if plan['id'] in eligible:
+                    plan['entry_armed_bar']=c.ts
+                else:
+                    plan.pop('entry_armed_bar',None)
+                    visited=c.low<=plan['entry'] if plan['side']==1 else c.high>=plan['entry']
+                    if visited and c.ts<plan['expires_ts'] and not plan.get('cancel_requested_ts'):
+                        book={**state,'pending':plan,'active':None,'reconciliation':None}
+                        end_order(book,plan,'CANCELLED','LEVEL_PASSED_WHILE_UNARMED',c.ts+TF['3m'])
+                        continue
             book={**state,'pending':plan,'active':None,'reconciliation':None}
             _advance_slot_lifecycle(book,Snapshot(c.ts+TF['3m'],c.close,{'3m':[c]}),cfg,
                                     allow_fill=plan['id'] in eligible)
@@ -1520,8 +1573,8 @@ def day_stats(state: dict, now: int, cfg: Config) -> dict:
     tz = ZoneInfo(cfg.timezone)
     day = datetime.fromtimestamp(now/1000, tz).date()
     same = lambda ts: datetime.fromtimestamp(ts/1000, tz).date() == day
-    trades = [t for t in state["trades"] if same(t["closed_ts"])]
-    entries = [o for o in state["orders"] if o["status"] == "FILLED" and same(o["resolved_ts"])]
+    trades = [t for t in state["trades"] if t['closed_ts']<=now and same(t["closed_ts"])]
+    entries = [o for o in state["orders"] if o["status"] == "FILLED" and o['resolved_ts']<=now and same(o["resolved_ts"])]
     # Gross losses cap cannot be replenished by earlier winners.
     losses = sum(min(0, t["net_r"]) for t in trades)
     return {"net_r": sum(t["net_r"] for t in trades), "losses_r": -losses, "entries": len(entries)}
@@ -1547,6 +1600,22 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
         emit(state, "CANCEL_REQUESTED", now, order_id=p["id"], reason=reason)
 
 
+def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
+    """Shared causal cancellation policy for the book, learning and scenarios."""
+    side=pending['side'];opposite=-side
+    if side*(snapshot.price-pending['tp'])<0:
+        pending['target_cancel_armed']=True
+    if cfg.core is not None and execution_atlas.control_reversed(pending,snapshot,cfg,sys.modules[__name__]):
+        request_cancel(state,pending,'EXECUTION_CONTROL_REVERSED',snapshot.now)
+    elif (cfg.cancel_on_bias_flip and htf1==htf4==opposite
+          and not (pending.get('htf_1h')==opposite and pending.get('htf_4h')==opposite)):
+        request_cancel(state,pending,'CONFIRMED_HTF_FLIP',snapshot.now)
+    elif side*(snapshot.price-pending['invalidation'])<=0:
+        request_cancel(state,pending,'STRUCTURE_INVALIDATED_NOW',snapshot.now)
+    elif pending.get('target_cancel_armed',True) and side*(snapshot.price-pending['tp'])>=0:
+        request_cancel(state,pending,'TARGET_REACHED_WITHOUT_FILL',snapshot.now)
+
+
 def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     if s.now <= state.get("last_run_ts", 0):
         return {"action": "DUPLICATE_OR_OUT_OF_ORDER", "events": [], "analysis": {}}
@@ -1554,6 +1623,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         raise ValueError("Instrument changed: use a separate state path")
     config_hash = ident(json.dumps(config_dict(cfg), sort_keys=True))
     if state.get("config_hash") != config_hash and open_plans(state):
+        old_config=state.get('runtime_config')
+        cadence_only=isinstance(old_config,dict) and {k:v for k,v in old_config.items() if k!='analysis_scan_minutes'}=={
+            k:v for k,v in config_dict(cfg).items() if k!='analysis_scan_minutes'}
         # One-time release migration preserves entry/stop/TTL. Exit policy
         # changes explicitly after catching up the previous observed interval.
         # Later operator configuration changes still require closed slots.
@@ -1565,7 +1637,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.4.3-minimum-sl-tp',
                                        'full-ict-v12.5.0-causal-early-limits',
                                        'full-ict-v12.6.0-lifecycle-adaptive-policy',
-                                       'full-ict-v12.7.0-adaptive-full-volume'):
+                                       'full-ict-v12.7.0-adaptive-full-volume',
+                                       'full-ict-v12.8.0-directional-limit-paths') and not cadence_only:
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1577,6 +1650,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     release_unconfirmed_paper(state,s.now,cfg)
     bind_order_numbers(state)
     advance_lifecycle(state, s, cfg)
+    # First catch up the old entry contract, then change FUTURE queue arming.
+    for pending in pending_plans(state):
+        if pending.get('queue_execution_policy')!='PASSIVE_ARM_V2':
+            pending['queue_execution_policy']='PASSIVE_ARM_V2'
+            pending['entry_policy_migrated_ts']=s.now
+            pending['queue_policy_effective_ts']=((s.now+TF['3m']-1)//TF['3m'])*TF['3m']
     upgrade_open_exits(state, s.now)
     state['pending_policy']='UNBOUNDED_QUEUE_ACTIVE_CAP_2'
     state.setdefault('pending_orders',[])
@@ -1593,23 +1672,18 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
     if analysis.get('full_context'):
         quality.refresh_confirmations(state,s,analysis['full_context'],cfg,sys.modules[__name__],
-                                      analysis.get('timeframe_contexts'))
+                                      {**analysis.get('timeframe_contexts',{}),
+                                       'MICRO_PRECURSOR':analysis.get('early_context',analysis['full_context'])})
     ctx = analysis.get("contexts", {})
     for pending in list(pending_plans(state)):
-        view=state
         if pending and ctx:
-            if pending["side"]*(s.price-pending["tp"]) < 0:
-                pending["target_cancel_armed"] = True
-            opposite = -pending["side"]
-            if (cfg.cancel_on_bias_flip and ctx["1H"]["side"] == opposite and ctx["4H"]["side"] == opposite
-                    and not (pending.get("htf_1h")==opposite and pending.get("htf_4h")==opposite)):
-                request_cancel(view, pending, "CONFIRMED_HTF_FLIP", s.now)
-            elif pending["side"]*(s.price-pending["invalidation"]) <= 0:
-                request_cancel(view, pending, "STRUCTURE_INVALIDATED_NOW", s.now)
-            elif pending.get("target_cancel_armed",True) and pending["side"]*(s.price-pending["tp"]) >= 0:
-                request_cancel(view, pending, "TARGET_REACHED_WITHOUT_FILL", s.now)
+            review_waiting_conditions(state,pending,s,cfg,ctx['1H']['side'],ctx['4H']['side'])
     release_unconfirmed_paper(state,s.now,cfg)
     daily = day_stats(state, s.now, cfg)
+    risk_pause=(daily['losses_r']>=cfg.day_loss_cap_r or daily['entries']>=cfg.max_daily_trades)
+    if risk_pause:
+        for pending in list(pending_plans(state)):
+            request_cancel(state,pending,'DAILY_RISK_LIMIT_REACHED',s.now)
     busy = open_plans(state)
     action, selected = "WATCH", []
     if any(view.get('reconciliation') for _,view in slot_views(state)):
@@ -1618,6 +1692,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         action = "FOLLOW"
     elif busy:
         action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
+    if risk_pause and not active_plans(state):
+        action='DAILY_PAUSE'
     can_place = not manual_block
     if can_place and analysis['health']:
         if not busy:
@@ -1647,6 +1723,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         # Pending plans do not reserve a position. Keep waiting alternatives
         # beyond two; only the entry arbiter can admit an actual fill.
         for top in plans:
+            if top.get('readiness_pct',100.)<100.:
+                continue
             busy=open_plans(state)
             keys={top['event_key'],*top.get('parent_keys',[])}
             live_keys={key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
@@ -1656,7 +1734,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
                 continue
             plan=copy.deepcopy(top)
-            lifecycle_forecast.select_full_exit(plan,s,cfg,sys.modules[__name__])
+            plan.setdefault('queue_execution_policy','PASSIVE_ARM_V2')
+            if plan.get('outcome_forecast'):
+                lifecycle_forecast.select_full_exit(plan,s,cfg,sys.modules[__name__])
+            else:
+                # Model computation has a budget; order admission has no model
+                # threshold or pending-count cap. TP1 remains the initial gate.
+                plan['outcome_forecast']={'status':'DEFERRED_MODEL_BUDGET','calibrated':False,
+                    'as_of_ts':s.now,'entry_gate_enabled':False}
             plan['decision_forecast']=copy.deepcopy(plan.get('outcome_forecast') or {})
             plan['placed_ts']=s.now
             plan.setdefault('effective_ts',((s.now+TF['3m']-1)//TF['3m'])*TF['3m'])
@@ -1667,7 +1752,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
                  stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
             action='PLACE_LIMIT'
-            break  # One best new scenario per scan; the waiting queue has no cap.
+            # All distinct qualified alternatives may wait. Actual fills still
+            # compete for exactly two open positions using pre-bar priority.
     # Convert the market-ready state into the ACTUAL portfolio decision, so a
     # suppressed duplicate or a full book is never described as unexplained.
     tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
@@ -1695,11 +1781,17 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         best=analysis['best_scenario']
         best['outcome_forecast']=next((p.get('outcome_forecast') for p in live
                                       if p['id']==best.get('signal_id')),None)
-    for plan in pending_plans(state):
-        plan['outcome_forecast']=lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__])
+    modeled_waiting=sorted(pending_plans(state),key=lambda p:execution_atlas.entry_rank(p,s.price,scanner,cfg.tick),reverse=True)
+    for index,plan in enumerate(modeled_waiting):
+        if index<6:
+            plan['outcome_forecast']=lifecycle_forecast.forecast(plan,s,cfg,sys.modules[__name__])
+        elif plan.get('outcome_forecast',{}).get('as_of_ts')!=s.now:
+            plan['outcome_forecast']={'status':'DEFERRED_MODEL_BUDGET','calibrated':False,
+                'as_of_ts':s.now,'entry_gate_enabled':False}
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
     state['last_run_ts'] = s.now
     state['config_hash'] = config_hash
+    state['runtime_config']=config_dict(cfg)
     state['include_commission']=cfg.include_commission
     state['price_tick']=cfg.tick
     state['version'] = VERSION
@@ -1719,6 +1811,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
                'funnel':{**analysis.get('funnel',{}),'placed':len(selected)},
                'admission_by_side':analysis.get('admission_by_side',{})}
+    previous=state.get('last_scan_observed_ts')
+    summary['scan_gap_minutes']=(s.now-previous)/60_000 if previous else None
+    state['last_scan_observed_ts']=s.now
     state['signals'].append(summary)
     state['signals'] = state['signals'][-1000:]
     state['watch'] = analysis.get('watch',[])
@@ -1850,6 +1945,9 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'EXECUTION_CONTROL_REVERSED':'підтверджена зміна локального напрямку після виставлення',
+    'LEVEL_PASSED_WHILE_UNARMED':'ціна пройшла рівень, поки вхід був недоступний',
+    'DAILY_RISK_LIMIT_REACHED':'досягнуто денний ліміт ризику',
     'WAIT_CONFIRMED_BREAK_FOR_LIMIT':'чекаємо підтвердженого пробою перед лімітним ретестом',
     'SLOTS_FULL':'відкриті дві угоди; новий вхід після закриття однієї',
     'EXISTING_OPPOSITE_PLAN':'вже супроводжуємо протилежний напрямок',
@@ -2414,6 +2512,7 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             for page, part in enumerate(notification_report.split_message(message)):
                 state['notification_queue'].append({'id':ident(snap.now,page,part),'text':part,
                                                     'version':VERSION,'ts':snap.now})
+            state['last_report_requested_ts']=snap.now
         atomic_write(state_path,state)
         export_journal(journal_path,state,core)
         if notify and not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):

@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'native-mtf-directional-limit-paths-v7'
+STRATEGY = 'native-mtf-anticipatory-execution-atlas-v8'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -98,8 +98,9 @@ def shifted(rows, side: int, engine) -> bool:
 def features(plan: dict, snapshot, context: dict, cfg, engine) -> dict:
     import setup_scanner as scanner
     source_tf=scanner.timeframe(plan)
-    micro_tf=scanner.MICRO[source_tf]
-    side=plan['side'];c3=closed_rows(snapshot,micro_tf);c15=closed_rows(snapshot,source_tf)
+    micro_tf=plan.get('formation_micro_timeframe',scanner.MICRO[source_tf])
+    formation_tf=plan.get('formation_timeframe',source_tf)
+    side=plan['side'];c3=closed_rows(snapshot,micro_tf);c15=closed_rows(snapshot,formation_tf)
     a3=max(engine.atr(c3),cfg.tick);a15=max(engine.atr(c15),cfg.tick)
     side3=direction(context.get('structure3m',{}).get('direction'))
     side15=direction(context.get('structure15',{}).get('direction'))
@@ -131,11 +132,13 @@ def features(plan: dict, snapshot, context: dict, cfg, engine) -> dict:
     align='aligned' if agreement and not opposition else 'mixed' if agreement and opposition else 'against' if opposition else 'neutral'
     return {'setup':plan['setup'],'family':family,'kind':kind,'side':side,
             'setup_timeframe':source_tf,'micro_timeframe':micro_tf,
+            'formation_timeframe':formation_tf,'entry_route':plan.get('entry_route','NATIVE_PATTERN'),
             'entry_policy':plan.get('entry_policy','LEGACY_CONFIRMED'),
             'detector_confirmed':plan.get('detector_confirmed',False),
             'htf_opposition':opposition,'maximum_return_atr':cfg.max_entry_distance_atr,
             'regime':str(context.get('regime','UNKNOWN')),'alignment':align,
             'side3':side3,'side15':side15,'shift3':shift3,'shift15':shift15,
+            'early_reversal_control':early_reversal_control(plan['setup'],side,snapshot,context,cfg,engine),
             'impulse':impulse,'acceptance':accept,'range_position':round(location,4),
             'shock':shock,'distance_atr':round(side*(snapshot.price-plan['entry'])/a15,4),
             'cost_fraction':round(plan.get('costs_r',0)/max(plan.get('gross_rr',0),1e-9),4),
@@ -148,8 +151,21 @@ COUNTERTREND_SETUPS=frozenset({'SWEEP_RECLAIM','CAPITULATION_RECOVERY','RANGE_ED
     'OR_FAILURE_2_SHORT','DIRECTION_FLIP_15M'})
 
 
-def pretouch_countertrend_allowed(setup,side,primary_side,micro_side):
-    return setup in COUNTERTREND_SETUPS and primary_side==side and micro_side==side
+def pretouch_countertrend_allowed(setup,side,primary_side,micro_side,early_control=False):
+    return setup in COUNTERTREND_SETUPS and ((primary_side==side and micro_side==side) or early_control)
+
+
+def early_reversal_control(setup,side,snapshot,context,cfg,engine):
+    # A mapped range edge alone is not a rejection. All other eligible names
+    # here already require a native rejection/reclaim/transfer pattern.
+    if setup not in COUNTERTREND_SETUPS or setup=='RANGE_EDGE_REVERSAL':
+        return False
+    import execution_atlas
+    micro=context.get('formation_micro_timeframe',context.get('micro_timeframe','3m'))
+    rows=closed_rows(snapshot,micro)
+    cross=execution_atlas.causal_shift(rows,micro,engine,cfg.tick)
+    return bool(cross.get('shift') and direction(cross.get('side'))==side
+                and direction(context.get('structure3m',{}).get('direction'))==side)
 
 
 def structural_reason(f: dict, settings: Settings=Settings()) -> str:
@@ -165,7 +181,7 @@ def structural_reason(f: dict, settings: Settings=Settings()) -> str:
         # not wait for a second reaction AFTER its level has been visited.
         if not f.get('detector_confirmed'):
             return 'SETUP_CONDITIONS_INCOMPLETE'
-        if f['htf_opposition']==2 and not pretouch_countertrend_allowed(f['setup'],f['side'],f['side15'],f['side3']):
+        if f['htf_opposition']==2 and not pretouch_countertrend_allowed(f['setup'],f['side'],f['side15'],f['side3'],f.get('early_reversal_control',False)):
             return 'HTF_REVERSAL_NOT_CONFIRMED'
         return 'CONFIRMED'
     if not (f['side3']==f['side'] or f['shift3']):
@@ -209,7 +225,7 @@ def empirical(f: dict, rows: list[dict], now: int, settings: Settings=Settings()
     # Both label availability and the original structural contract are checked.
     past=[r for r in rows if r.get('strategy')==STRATEGY and now-90*86_400_000<=r['closed_ts']<now
           and r['decision_ts']<r['closed_ts'] and r.get('qualified') and math.isfinite(r['net_r'])]
-    base=lambda r:r['features']['alignment']==f['alignment'] and r['features']['regime']==f['regime'] and r['features']['side']==f['side'] and r['features'].get('setup_timeframe','15m')==f.get('setup_timeframe','15m')
+    base=lambda r:r['features']['alignment']==f['alignment'] and r['features']['regime']==f['regime'] and r['features']['side']==f['side'] and r['features'].get('setup_timeframe','15m')==f.get('setup_timeframe','15m') and r['features'].get('entry_route','NATIVE_PATTERN')==f.get('entry_route','NATIVE_PATTERN')
     import trade_dependencies
     exact=independent(trade_dependencies.evidence_rows([r for r in past if base(r) and r['features']['setup']==f['setup']]))
     group=independent(trade_dependencies.evidence_rows([r for r in past if base(r) and r['features']['family']==f['family']]))
@@ -243,14 +259,14 @@ PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
              'zone_created_ts','last_bar','execution','status','target_cancel_armed','version',
-             'setup_timeframe','micro_timeframe','entry_policy','detector_confirmed',
+             'setup_timeframe','micro_timeframe','formation_timeframe','formation_micro_timeframe','entry_route','queue_execution_policy','entry_policy','detector_confirmed',
              'max_hold_minutes','intraday','include_commission','entry_fee_rate','exit_fee_rate','slippage_bps','exit_policy','full_exit_target','full_exit_candidates','exit_selection','target_management','exit_path_barriers','tp1_decision_gate')
 
 
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))
@@ -336,7 +352,7 @@ def refresh_confirmations(state: dict, snapshot, context: dict, cfg, engine, con
         if snapshot.now >= plan['expires_ts']:
             continue
         import setup_scanner as scanner
-        native=(contexts or {}).get(scanner.timeframe(plan),context)
+        native=(contexts or {}).get('MICRO_PRECURSOR' if plan.get('entry_route')=='MICRO_PRECURSOR' else scanner.timeframe(plan),context)
         f=features(plan,snapshot,native,cfg,engine)
         if structural_reason(f)!='CONFIRMED':
             continue
@@ -381,15 +397,7 @@ def advance(state: dict, snapshot, cfg, engine) -> None:
         # Keep the same report-time cancellation policy as selected plans.
         pending=book.get('pending')
         if pending:
-            opposite=-pending['side']
-            if pending['side']*(snapshot.price-pending['tp'])<0:
-                pending['target_cancel_armed']=True
-            if cfg.cancel_on_bias_flip and b1==b4==opposite and not (pending.get('htf_1h')==opposite and pending.get('htf_4h')==opposite):
-                engine.request_cancel(book,pending,'CONFIRMED_HTF_FLIP',snapshot.now)
-            elif pending['side']*(snapshot.price-pending['invalidation'])<=0:
-                engine.request_cancel(book,pending,'STRUCTURE_INVALIDATED_NOW',snapshot.now)
-            elif pending.get('target_cancel_armed',True) and pending['side']*(snapshot.price-pending['tp'])>=0:
-                engine.request_cancel(book,pending,'TARGET_REACHED_WITHOUT_FILL',snapshot.now)
+            engine.review_waiting_conditions(book,pending,snapshot,cfg,b1,b4)
         for trade in book['trades'] if not q.get('freeze_observations') else []:
             q['observations'].append({'id':trade['id'],'strategy':STRATEGY,'features':trade['features'],
                                       'qualified':trade['qualified'],'decision_ts':trade['decision_ts'],

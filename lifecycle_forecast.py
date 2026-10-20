@@ -27,9 +27,10 @@ def economic_config(cfg):
                    taker_fee=cfg.taker_fee if cfg.include_commission else (cfg.taker_fee or .0005))
 
 
-def simulate(plan, rows, cfg, engine, review_ms=300000):
+def simulate(plan, rows, cfg, engine, review_ms=None):
     """Exact deterministic OHLC path evaluator, shared with behavioral tests."""
     cfg = economic_config(cfg)
+    review_ms=review_ms or cfg.analysis_scan_minutes*60000
     keys = ('id','order_id','event_key','zone_key','instrument','side','setup','setup_type',
             'timeframe','setup_timeframe','entry','initial_stop','stop','risk','tp','tp0','tp1','tp2','tp3',
             'partials','placed_ts','effective_ts','expires_ts','last_bar','invalidation',
@@ -53,12 +54,8 @@ def simulate(plan, rows, cfg, engine, review_ms=300000):
             engine._amend_slot_at_report(book,snap,cfg)
             pending = book.get('pending')
             if pending:
-                if pending['side']*(c.close-pending['tp']) < 0:
-                    pending['target_cancel_armed'] = True
-                if pending['side']*(c.close-pending['invalidation']) <= 0:
-                    engine.request_cancel(book,pending,'STRUCTURE_INVALIDATED_NOW',snap.now)
-                elif pending.get('target_cancel_armed',True) and pending['side']*(c.close-pending['tp']) >= 0:
-                    engine.request_cancel(book,pending,'TARGET_REACHED_WITHOUT_FILL',snap.now)
+                # Future HTF facts are unavailable in these 3m-only scenarios.
+                engine.review_waiting_conditions(book,pending,snap,cfg)
             next_review = (snap.now//review_ms+1)*review_ms
         if book['trades'] or not (book.get('pending') or book.get('active')):
             break
@@ -115,7 +112,8 @@ def forecast(plan, snapshot, cfg, engine, paths=PATHS):
               'tp1','tp2','tp3','partials','full_exit_target','target_management','tp1_decision_gate','exit_path_barriers','full_exit_candidates','expires_ts','max_hold_minutes','intraday','invalidation')}
     payload = {'plan':lean,'price':snapshot.price,'start':start,'paths':paths,
                'bars':[(c.ts,c.open,c.high,c.low,c.close) for c in rows],
-               'costs':base['fee_assumption'],'version':engine.VERSION,'schema':SCHEMA}
+               'costs':base['fee_assumption'],'review_ms':cfg.analysis_scan_minutes*60000,
+               'version':engine.VERSION,'schema':SCHEMA}
     fingerprint = hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     previous = plan.get('outcome_forecast') or {}
     if previous.get('fingerprint') == fingerprint:
@@ -150,6 +148,7 @@ def forecast(plan, snapshot, cfg, engine, paths=PATHS):
     unresolved=len(completed)!=paths
     observed_fills=sum(bool(o.get('filled')) for o in outcomes)
     return {**base,'status':'MODEL_ONLY' if len(completed)==paths else 'MODEL_INCOMPLETE',
+            'review_interval_minutes':cfg.analysis_scan_minutes,
             'fingerprint':fingerprint,'scenario_seed':scenario_seed,'paths':paths,
             'completed_paths':len(completed),'censored_paths':paths-len(completed),
             'fill_probability':observed_fills/paths,

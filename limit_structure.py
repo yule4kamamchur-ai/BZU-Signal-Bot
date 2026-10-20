@@ -96,13 +96,16 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
             known=zone.created_ts+2*TF[tf]
             if known>snapshot.now:
                 continue
-            life=zone_lifecycle(zone,rows,tf,snapshot.now,volatility,cfg.tick)
+            acceptance_tf='3m' if tf=='15m' else '15m'
+            life=zone_lifecycle(zone,rows,tf,snapshot.now,volatility,cfg.tick,
+                                closed(snapshot,acceptance_tf),acceptance_tf)
             if life['state']=='BROKEN_ACCEPTED':
                 continue
-            level=zone.low if sign==1 else zone.high
-            inside=zone.low<=entry<=zone.high
+            remaining_low=life['remaining_low'];remaining_high=life['remaining_high']
+            level=remaining_low if sign==1 else remaining_high
+            inside=remaining_low<=entry<=remaining_high
             if inside:
-                level=zone.high if sign==1 else zone.low
+                level=remaining_high if sign==1 else remaining_low
             if sign*(level-entry)>2*cfg.tick:
                 targets.append({'kind':zone.kind,'level':level,'timeframe':tf,
                                 'known_ts':known,'strength':zone.strength,
@@ -129,7 +132,7 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
     return sorted(unique.values(),key=lambda t:t['distance'])
 
 
-def zone_lifecycle(zone,rows,tf,now,volatility,tick):
+def zone_lifecycle(zone,rows,tf,now,volatility,tick,acceptance_rows=None,acceptance_tf=None):
     """A rejection wick does not erase supply/demand. Acceptance does.
 
     Age and repeat tests describe freshness; age alone cannot dissolve a
@@ -155,6 +158,45 @@ def zone_lifecycle(zone,rows,tf,now,volatility,tick):
         displacement=beyond(c) and support*(c.close-c.open)<-1.1*volatility
         if consecutive>=2 or displacement:
             broken=True
+    acceptance_known_ts=None
+    frontier=zone.high if support==1 else zone.low
+    prefix_known_ts=None
+    # A fully traversed HTF zone need not wait hours for its parent close.
+    # Require three contiguous CLOSED execution bars beyond the far edge,
+    # a directional displacement and a meaningful total traversal. Wicks or
+    # one close alone never dissolve an otherwise strong obstacle.
+    accepted=[]
+    if acceptance_tf in TF and acceptance_tf!=tf:
+        prefix=[]
+        for c in acceptance_rows or []:
+            if not c.confirmed or c.ts<known or c.ts+TF[acceptance_tf]>now:
+                continue
+            if accepted and c.ts-accepted[-1].ts!=TF[acceptance_tf]:
+                accepted=[]
+            if prefix and c.ts-prefix[-1].ts!=TF[acceptance_tf]:
+                prefix=[]
+            # An FVG is an imbalance. Three closes into it confirm that its
+            # proximal portion has traded; the untouched remainder stays a
+            # strong obstacle. This never weakens an order block or uses wicks.
+            if not zone.kind.endswith('_OB'):
+                proximal=zone.high if support==1 else zone.low
+                within=support*(proximal-c.close)>2*tick
+                prefix=(prefix+[c])[-3:] if within else []
+                if len(prefix)==3:
+                    boundary=max(x.close for x in prefix) if support==1 else min(x.close for x in prefix)
+                    # Preserve a residual edge until full break acceptance.
+                    reserve=min(width,max(2*tick,min(.10*width,.10*volatility)))
+                    boundary=max(zone.low+reserve,min(zone.high,boundary)) if support==1 else min(zone.high-reserve,max(zone.low,boundary))
+                    if support*(frontier-boundary)>0:
+                        frontier=boundary;prefix_known_ts=c.ts+TF[acceptance_tf]
+            accepted=(accepted+[c])[-3:] if beyond(c) else []
+            if len(accepted)==3:
+                travel=support*(accepted[0].open-accepted[-1].close)
+                impulse=max(support*(x.open-x.close) for x in accepted)
+                if travel>=max(.5*volatility,.5*width) and impulse>=.25*volatility:
+                    broken=True
+                    acceptance_known_ts=c.ts+TF[acceptance_tf]
+                    break
     age=max(0,(now-known)//TF[tf])
     is_ob=zone.kind.endswith('_OB')
     formation=[c for c in rows if zone.created_ts<=c.ts<known and c.ts+TF[tf]<=now and c.confirmed]
@@ -162,9 +204,16 @@ def zone_lifecycle(zone,rows,tf,now,volatility,tick):
     strong=(is_ob and zone.strength>=1.10) or (not is_ob and zone.strength>=.75 and displacement>=1.10)
     state='BROKEN_ACCEPTED' if broken else 'FRESH' if touches==0 and age<=24 else 'TESTED' if touches else 'AGED_UNTESTED'
     role='STRONG_OPPOSING_BARRIER' if strong and not broken else 'STRUCTURAL_DESTINATION'
+    remaining_low=zone.low if support==1 else frontier
+    remaining_high=frontier if support==1 else zone.high
+    accepted_depth=(zone.high-frontier)/width if support==1 else (frontier-zone.low)/width
     return {'known_ts':known,'age_bars':age,'touch_episodes':touches,
             'penetration_fraction':round(penetration,4),'state':state,'role':role,
             'hard_barrier':strong and not broken,'formation_strength':zone.strength,
+            'acceptance_timeframe':acceptance_tf if acceptance_known_ts else tf,
+            'acceptance_known_ts':acceptance_known_ts,
+            'remaining_low':remaining_low,'remaining_high':remaining_high,
+            'accepted_depth_fraction':round(accepted_depth,4),'prefix_acceptance_known_ts':prefix_known_ts,
             'formation_displacement_atr':round(displacement,4)}
 
 
