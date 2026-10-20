@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.9.0-anticipatory-execution-atlas"
-REPORT_RELEASE = 'v12.9.0'
+VERSION = "full-ict-v12.10.0-causal-direction-control"
+REPORT_RELEASE = 'v12.10.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -81,8 +81,10 @@ class Config:
     ttl_minutes: int = 120
     setup_age_minutes: int = 180
     max_hold_minutes: int = 360
-    day_loss_cap_r: float = 3.0
-    max_daily_trades: int = 5
+    # Retained for reading old configuration/journal contracts only.
+    # Daily losses and entry counts never pause or cancel a new entry.
+    day_loss_cap_r: float = 0.0
+    max_daily_trades: int = 0
     timezone: str = "Europe/Kyiv"
     session_end_hour: int = 23
     break_even_trigger_r: float = 1.0
@@ -105,8 +107,8 @@ class Config:
             raise ValueError("TTL must be 1..180 and no longer than setup age")
         if not 0 <= self.session_end_hour <= 23 or self.max_hold_minutes <= 0:
             raise ValueError("Invalid intraday boundaries")
-        if not 0 <= self.min_score <= 100 or self.max_daily_trades < 1:
-            raise ValueError("Invalid ranking / daily trade limit")
+        if not 0 <= self.min_score <= 100:
+            raise ValueError("Invalid ranking")
         if not 0.01 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
             raise ValueError("Invalid stop bounds")
         if not 0.015 <= self.min_target_pct < 0.50:
@@ -128,8 +130,6 @@ class Config:
             "max_hold_minutes": ("MAX_HOLD_MINUTES", int),
             "min_stop_pct": ("ABS_MIN_STOP_PCT", float),
             "min_target_pct": ("MIN_TP1_DISTANCE_PCT", float),
-            "day_loss_cap_r": ("DAILY_LOSS_CAP_R", float),
-            "max_daily_trades": ("MAX_DAILY_TRADES", int),
             "timezone": ("TRADING_TIMEZONE", str),
             "session_end_hour": ("SESSION_END_HOUR", int),
             "min_score": ("MIN_SETUP_SCORE", float),
@@ -581,8 +581,8 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
         return None, "STOP_INSIDE_NOISE"
     if risk > max(cfg.max_stop_atr*a15, 1.25*floor):
         return None, "STRUCTURAL_STOP_TOO_WIDE"
-    b1 = core.structure_snapshot(s.candles["1H"], 60, 2)["direction"]
-    b4 = core.structure_snapshot(s.candles["4H"], 60, 2)["direction"]
+    b1 = execution_atlas.snapshot_control(s,'1H',cfg,sys.modules[__name__])['side']
+    b4 = execution_atlas.snapshot_control(s,'4H',cfg,sys.modules[__name__])['side']
     b15, b3 = ctx["structure15"]["direction"], ctx["structure3m"]["direction"]
     opposite = "SHORT" if sign == 1 else "LONG"
     both_against = b1 == opposite and b4 == opposite
@@ -698,6 +698,7 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "entry_route":a.evidence.get('entry_route','NATIVE_PATTERN'),
             "planning_policy":a.evidence.get('planning_policy','CONFIRMED_PATTERN_LIMIT'),
             "entry_policy": "PRETOUCH_LIMIT", "detector_confirmed": True,
+            "pattern_proof":copy.deepcopy(a.evidence.get('recovery_proof',{})),
             "max_hold_minutes": cfg.max_hold_minutes*scale, "intraday": source_tf == '15m',
             "readiness_pct": 100.0,
             "include_commission":cfg.include_commission,
@@ -781,6 +782,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                         seen_zone=anchor_zone_key(candidate,cfg)
                         known=any((old.get('evidence',{}).get('zone_identity')==seen_zone
                             or (old.get('setup_type')==candidate.setup_type and old.get('side')==candidate.side
+                                and old.get('evidence',{}).get('setup_timeframe','15m')==tf
                                 and old.get('evidence',{}).get('entry_route','NATIVE_PATTERN')==candidate.evidence.get('entry_route','NATIVE_PATTERN')
                                 and abs(old.get('level',0)-candidate.level)<cfg.tick/2))
                             for old in state.get('anchor_memory',{}).values())
@@ -833,7 +835,12 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             diagnostics={}
             if key in state.get("used_events",{}) or state.get("level_cooldown",{}).get(level_key,0)>s.now:
                 p, reason = None, "LEVEL_OR_EVENT_COOLDOWN"
+            elif (a.setup_type=='CAPITULATION_RECOVERY'
+                  and not setup_paths.capitulation_recovery(native,core)['confirmed']):
+                p,reason=None,'CAPITULATION_RECOVERY_NOT_CONFIRMED'
             else:
+                if a.setup_type=='CAPITULATION_RECOVERY':
+                    a.evidence['recovery_proof']=setup_paths.capitulation_recovery(native,core)
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
                 if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
                     diagnostics.update(preview_geometry(a,native,s,cfg))
@@ -951,7 +958,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         else:
             refused[q['reason']] = refused.get(q['reason'],0)+1
             watch.append({'setup':p['setup'],'side':p['side'],'level':p['entry'],'reason':q['reason'],'score':p['score']})
-    contexts = {tf:{**bias(s.candles[tf]), "side": core.side_sign(core.structure_snapshot(s.candles[tf],60,2)["direction"])}
+    contexts = {tf:{**bias(s.candles[tf]), "side": core.side_sign(tf_contexts[tf]['structure15']["direction"])}
                 for tf in ("15m","1H","4H")}
     # Show useful forming setups even when NO detector has produced a plan.
     # Keep all 72 evaluations in state for the dashboard and diagnostics.
@@ -1065,10 +1072,6 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
     """Decide BEFORE observing candle extremes; never pick fills in hindsight."""
     active=active_plans(state)
     capacity=max(0,2-occupied_slots(state))
-    daily=day_stats(state,now,cfg)
-    capacity=min(capacity,max(0,cfg.max_daily_trades-daily['entries']))
-    if daily['losses_r']>=cfg.day_loss_cap_r:
-        return []
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
@@ -1575,7 +1578,7 @@ def day_stats(state: dict, now: int, cfg: Config) -> dict:
     same = lambda ts: datetime.fromtimestamp(ts/1000, tz).date() == day
     trades = [t for t in state["trades"] if t['closed_ts']<=now and same(t["closed_ts"])]
     entries = [o for o in state["orders"] if o["status"] == "FILLED" and o['resolved_ts']<=now and same(o["resolved_ts"])]
-    # Gross losses cap cannot be replenished by earlier winners.
+    # Descriptive statistics only; no daily entry or loss limit.
     losses = sum(min(0, t["net_r"]) for t in trades)
     return {"net_r": sum(t["net_r"] for t in trades), "losses_r": -losses, "entries": len(entries)}
 
@@ -1602,6 +1605,9 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
 
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     """Shared causal cancellation policy for the book, learning and scenarios."""
+    if cfg.core is not None and setup_paths.recovery_failed(pending,snapshot,cfg,sys.modules[__name__]):
+        request_cancel(state,pending,'CAPITULATION_RECOVERY_LOST',snapshot.now)
+        return
     side=pending['side'];opposite=-side
     if side*(snapshot.price-pending['tp'])<0:
         pending['target_cancel_armed']=True
@@ -1638,7 +1644,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.5.0-causal-early-limits',
                                        'full-ict-v12.6.0-lifecycle-adaptive-policy',
                                        'full-ict-v12.7.0-adaptive-full-volume',
-                                       'full-ict-v12.8.0-directional-limit-paths') and not cadence_only:
+                                       'full-ict-v12.8.0-directional-limit-paths',
+                                       'full-ict-v12.9.0-anticipatory-execution-atlas') and not cadence_only:
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1680,10 +1687,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             review_waiting_conditions(state,pending,s,cfg,ctx['1H']['side'],ctx['4H']['side'])
     release_unconfirmed_paper(state,s.now,cfg)
     daily = day_stats(state, s.now, cfg)
-    risk_pause=(daily['losses_r']>=cfg.day_loss_cap_r or daily['entries']>=cfg.max_daily_trades)
-    if risk_pause:
-        for pending in list(pending_plans(state)):
-            request_cancel(state,pending,'DAILY_RISK_LIMIT_REACHED',s.now)
     busy = open_plans(state)
     action, selected = "WATCH", []
     if any(view.get('reconciliation') for _,view in slot_views(state)):
@@ -1692,8 +1695,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         action = "FOLLOW"
     elif busy:
         action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
-    if risk_pause and not active_plans(state):
-        action='DAILY_PAUSE'
     can_place = not manual_block
     if can_place and analysis['health']:
         if not busy:
@@ -1703,10 +1704,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             scanner.timeframe(p) != '15m' for p in analysis.get('plans',[])):
         if not busy:
             action = 'SESSION_CLOSED'
-        can_place = False
-    elif can_place and (daily['losses_r']>=cfg.day_loss_cap_r or daily['entries']>=cfg.max_daily_trades):
-        if not busy:
-            action = 'DAILY_PAUSE'
         can_place = False
     if can_place:
         plans = sorted(analysis.get('plans',[]),key=lambda p:scanner.selection_key(p,s.price),reverse=True)
@@ -1806,6 +1803,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'followed_ids':[p['id'] for p in open_plans(state)],
                'occupied_slots':occupied_slots(state),'max_slots':2,
                'rejections':analysis.get('rejections',{}),'health':analysis['health'],'daily':daily,
+               'daily_entry_limits_enabled':False,
                'detectors':analysis.get('detectors',[]),'raw_plans':analysis.get('raw_plans',0),
                'registered_setups':analysis.get('registered_setups',24),
                'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
@@ -1947,7 +1945,9 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 REASON_UA = {
     'EXECUTION_CONTROL_REVERSED':'підтверджена зміна локального напрямку після виставлення',
     'LEVEL_PASSED_WHILE_UNARMED':'ціна пройшла рівень, поки вхід був недоступний',
-    'DAILY_RISK_LIMIT_REACHED':'досягнуто денний ліміт ризику',
+    'DAILY_RISK_LIMIT_REACHED':'історичне скасування за старим денним обмеженням',
+    'CAPITULATION_RECOVERY_NOT_CONFIRMED':'після капітуляції ще немає підтвердженого відновлення',
+    'CAPITULATION_RECOVERY_LOST':'відновлення після капітуляції зламане до входу',
     'WAIT_CONFIRMED_BREAK_FOR_LIMIT':'чекаємо підтвердженого пробою перед лімітним ретестом',
     'SLOTS_FULL':'відкриті дві угоди; новий вхід після закриття однієї',
     'EXISTING_OPPOSITE_PLAN':'вже супроводжуємо протилежний напрямок',

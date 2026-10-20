@@ -84,7 +84,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v12.9.0-anticipatory-execution-atlas"
+BOT_VERSION = "full-ict-v12.10.0-causal-direction-control"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -14627,7 +14627,7 @@ def _run_self_test() -> bool:
 
 def _verify_runtime(engine) -> None:
     if engine.VERSION != BOT_VERSION:
-        raise RuntimeError(f"Неповне оновлення: bot_oneshot={BOT_VERSION}, engine={engine.VERSION}. Оновіть весь ZIP разом.")
+        raise RuntimeError(f"Неповне оновлення: bot_oneshot={BOT_VERSION}, engine={engine.VERSION}. Замініть усі файли з комплекту змін для цієї версії.")
 
 
 def main() -> None:

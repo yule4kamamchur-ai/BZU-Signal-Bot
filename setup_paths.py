@@ -13,6 +13,45 @@ SINGLE_SIDE={'SWEEP_RECLAIM':'LONG','CAPITULATION_RECOVERY':'LONG',
 BREAK_RETEST={'BUYER_EXHAUSTION_SHORT','OPENING_RANGE_BREAKOUT'}
 
 
+def capitulation_recovery(context,core):
+    """Volume/range locates capitulation; a closed body reclaim proves recovery.
+
+    The original detector accepted a close anywhere above the cluster LOW,
+    including an ongoing liquidation candle. Require a subsequent closed
+    recovery through the last cluster body's midpoint, or a rejecting bullish
+    capitulation bar that itself closes in its upper half.
+    """
+    rows=[c for c in context.get('candles',{}).get('3m',[]) if c.confirmed][-18:]
+    volumes=[c.volume for c in rows if c.volume>0]
+    result={'confirmed':False,'source_timeframe':context.get('formation_micro_timeframe',context.get('micro_timeframe','3m'))}
+    if len(rows)<18 or len(volumes)<8:return result
+    average=sum(volumes)/len(volumes);vol=context.get('atr3',0)
+    clusters=[c for c in rows if c.volume>=1.9*average and c.high-c.low>=1.6*vol]
+    if len(clusters)<2:return result
+    last=rows[-1];last_cluster=clusters[-1]
+    line=(last_cluster.open+last_cluster.close)/2
+    after=last.ts>last_cluster.ts
+    self_rejection=(last.close>last.open and last.close>(last.high+last.low)/2
+                    and last.open-last.low>=abs(last.close-last.open))
+    confirmed=last.close>line and (after or self_rejection)
+    step=execution_atlas.TF[result['source_timeframe']]
+    return {**result,'confirmed':confirmed,'recovery_line':line,
+            'cluster_known_ts':last_cluster.ts+step,'recovery_known_ts':last.ts+step,
+            'cluster_low':min(c.low for c in clusters)}
+
+
+def recovery_failed(plan,snapshot,cfg,engine):
+    """A new displacement can invalidate only an UNFILLED recovery pattern."""
+    proof=plan.get('pattern_proof',{})
+    if plan.get('setup')!='CAPITULATION_RECOVERY' or not proof.get('confirmed'):return False
+    tf=proof['source_timeframe'];step=execution_atlas.TF[tf]
+    rows=[c for c in snapshot.candles.get(tf,[]) if c.confirmed and c.ts+step<=snapshot.now]
+    line=proof['recovery_line'];vol=max(engine.atr(rows),cfg.tick)
+    return any(c.ts+step>plan['placed_ts'] and previous.close>=line
+               and c.close<line-cfg.tick and c.open-c.close>=.65*vol
+               for previous,c in zip(rows,rows[1:]))
+
+
 def _context(ctx,session=None,liquidity=None,vwap=None):
     out=dict(ctx)
     if session is not None:out['session']=session
@@ -23,7 +62,15 @@ def _context(ctx,session=None,liquidity=None,vwap=None):
 
 def candidates(detector,setup,ctx,core):
     raw=detector(ctx)
+    if raw is not None and raw.setup_type=='CAPITULATION_RECOVERY':
+        proof=capitulation_recovery(ctx,core)
+        if proof['confirmed']:raw.evidence['recovery_proof']=proof
+        else:raw=None
     anchors=[raw] if raw is not None else []
+    if setup=='BUYER_EXHAUSTION_SHORT' and ctx.get('swing_structure15'):
+        # Exhaustion describes the preceding uptrend, even when its protected
+        # low has just broken. Preserve that original detector's native route.
+        anchors.append(detector({**ctx,'structure15':ctx['swing_structure15']}))
     session=dict(ctx.get('session') or {})
     if setup in ('BREAKOUT_RETEST','FAILED_AUCTION_REJECTION'):
         frozen=execution_atlas.frozen_week(ctx)
@@ -161,7 +208,7 @@ def activate(anchor,context,snapshot,cfg,initial=False,observed_after=0):
     sign=cfg.core.side_sign(anchor.side)
     eligible=[c for previous,c in zip(rows,rows[1:])
               if sign*(previous.close-anchor.level)<=0 and sign*(c.close-anchor.level)>cfg.tick
-              and ((initial and c is rows[-1]) or c.ts+step>max(anchor.created_ts,observed_after))]
+              and ((initial and c in rows[-6:]) or c.ts+step>max(anchor.created_ts,observed_after))]
     if not eligible or sign*(snapshot.price-anchor.level)<=0:return False
     # The new limit only exists from the decision that observes this break.
     event=eligible[-1].ts+step

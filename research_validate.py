@@ -253,6 +253,18 @@ def evaluate(module, cfg, samples: list, begin: int, end: int, observations=None
     return report,state
 
 
+def baseline_config(module,cfg):
+    """Preserve the frozen baseline's own daily policy.
+
+    Zero means disabled in the current release. In the frozen engine it means
+    no capacity at all; copying those sentinels would manufacture a no-trade
+    baseline and a misleading comparison.
+    """
+    fields={field.name for field in __import__('dataclasses').fields(module.Config)}
+    preserved={'core','day_loss_cap_r','max_daily_trades'}
+    return module.Config(**{k:v for k,v in vars(cfg).items() if k in fields and k not in preserved},core=core)
+
+
 def validate(data: dict, folds: int=3) -> dict:
     if folds!=3:
         raise ValueError('This predeclared research uses three folds; no parameter sweep')
@@ -263,7 +275,7 @@ def validate(data: dict, folds: int=3) -> dict:
     cfg.validate();data_quality=audit_data(data);samples=list(snapshots(data))
     if not samples:
         raise ValueError('No evaluation snapshots')
-    baseline=baseline_module();base_cfg=baseline.Config(**{k:v for k,v in vars(cfg).items() if k!='core' and k in {field.name for field in __import__('dataclasses').fields(baseline.Config)}},core=core)
+    baseline=baseline_module();base_cfg=baseline_config(baseline,cfg)
     embargo=(cfg.ttl_minutes+cfg.max_hold_minutes)*16*60_000+engine.TF['4H']
     middle=start+(end-start)//2
     cuts=[middle+(end-middle)*i//folds for i in range(folds+1)]
@@ -291,7 +303,9 @@ def validate(data: dict, folds: int=3) -> dict:
     artifact['artifact_id']=quality.digest(artifact)
     return {'engine_version':engine.VERSION,'fixed_policy':quality.STRATEGY,
             'data_fingerprint':quality.digest(data),'source':data.get('source','USER_PROVIDED_OHLC'),
-            'config':engine.config_dict(cfg),'data_quality':data_quality,'folds':reports,'aggregate_baseline':engine.statistics(old_trades),
+            'config':engine.config_dict(cfg),'baseline_config':baseline.config_dict(base_cfg),
+            'baseline_daily_policy':'FROZEN_BASELINE_DEFAULTS_CURRENT_DAILY_LIMITS_DISABLED',
+            'data_quality':data_quality,'folds':reports,'aggregate_baseline':engine.statistics(old_trades),
             'aggregate_improved':engine.statistics(new_trades),'target_evidence':evidence,'model':artifact,
             'limitations':data.get('limitations',[])+['PAPER candle-based execution, not exchange fills',
                 'One fixed research policy, no parameter grid was optimized',

@@ -323,13 +323,15 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(out["action"], "DUPLICATE_OR_OUT_OF_ORDER")
         self.assertEqual(s, before)
 
-    def test_daily_losses_not_offset_by_winners(self):
+    def test_daily_losses_are_statistics_and_never_pause_entries(self):
         cfg = b.Config()
         s = b.new_state(cfg)
         s["trades"] = [{"closed_ts": NOW, "net_r": x} for x in (4, -1.1, -1.1, -1.1)]
         with patch.object(b, "analyze", return_value=analysis([order()])):
             out = b.run_cycle(s, snapshot(), cfg)
-        self.assertEqual(out["action"], "DAILY_PAUSE")
+        self.assertEqual(out["action"], "PLACE_LIMIT")
+        self.assertAlmostEqual(out['daily']['losses_r'],3.3)
+        self.assertEqual(len(out['selected_plans']),1)
 
     def test_does_not_resize_or_expose_deposit_allocation(self):
         s = state_with_order()

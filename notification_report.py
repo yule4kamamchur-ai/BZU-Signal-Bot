@@ -202,7 +202,7 @@ def build(state, snapshot, result, cfg, engine):
         else:
             text = 'скасовано без входу' if event['kind'] == 'CANCELLED' else 'строк минув, входу не було'
             reason=event.get('reason')
-            if reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED'):
+            if reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED','CAPITULATION_RECOVERY_LOST'):
                 text += ' • '+engine.REASON_UA[reason]
         lines += [f"{engine.display_order(state, order_id)} • {text}"]
     represented = {p['id'] for p in active+pending+cancelling} | set(closed) | set(no_entry)

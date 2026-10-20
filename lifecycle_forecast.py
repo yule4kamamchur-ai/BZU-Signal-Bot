@@ -92,7 +92,10 @@ def simulate(plan, rows, cfg, engine, review_ms=None):
 def forecast(plan, snapshot, cfg, engine, paths=PATHS):
     rows = [c for c in snapshot.candles.get('3m',[]) if c.confirmed and c.ts+engine.TF['3m']<=snapshot.now][-LOOKBACK:]
     base = {'schema':SCHEMA,'calibrated':False,'target':'FULL_TRADE_NET_AFTER_COSTS',
-            'exit_policy':'SINGLE_FULL_EXIT','eligibility_assumption':'FREE_POSITION_CAPACITY_AND_ENTRY_PRIORITY','empirical_win_rate':None,'as_of_ts':snapshot.now,'closed_bars':len(rows),
+            'exit_policy':'SINGLE_FULL_EXIT',
+            'eligibility_assumption':'FREE_CAPACITY_ENTRY_PRIORITY_AND_NO_FUTURE_CONTROL_CANCELLATION',
+            'future_control_cancellations_modeled':False,
+            'empirical_win_rate':None,'as_of_ts':snapshot.now,'closed_bars':len(rows),
             'source_timeframe':'3m','fee_assumption':{'maker':economic_config(cfg).maker_fee,
               'taker':economic_config(cfg).taker_fee,'slippage_bps':cfg.slippage_bps,
               'carry_budget_bps_per_day':2.,'actual_funding_known':False}}
@@ -113,7 +116,8 @@ def forecast(plan, snapshot, cfg, engine, paths=PATHS):
     payload = {'plan':lean,'price':snapshot.price,'start':start,'paths':paths,
                'bars':[(c.ts,c.open,c.high,c.low,c.close) for c in rows],
                'costs':base['fee_assumption'],'review_ms':cfg.analysis_scan_minutes*60000,
-               'version':engine.VERSION,'schema':SCHEMA}
+               'version':engine.VERSION,'schema':SCHEMA,
+               'conditioning':base['eligibility_assumption']}
     fingerprint = hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     previous = plan.get('outcome_forecast') or {}
     if previous.get('fingerprint') == fingerprint:
@@ -125,6 +129,8 @@ def forecast(plan, snapshot, cfg, engine, paths=PATHS):
     # Common random numbers: alternative full-exit targets see EXACTLY the
     # same prices. The selected target changes execution, never the sampled path.
     common=copy.deepcopy(payload)
+    # An explicit conditioning label changes cache identity, not sampled prices.
+    common.pop('conditioning',None)
     for key in ('tp','partials','full_exit_target'):
         common['plan'].pop(key,None)
     scenario_seed=hashlib.sha256(json.dumps(common,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -163,6 +169,7 @@ def forecast(plan, snapshot, cfg, engine, paths=PATHS):
             'tp1_probability_given_fill':sum(o['tp1_hit'] for o in filled)/len(filled) if filled and not unresolved else None,
             'limitations':['Uncalibrated 3m block scenarios with fixed current context',
                            'Queue priority is conditional on eligibility; future HTF flips and funding are unknown',
+                           'Future 3m/15m control cancellations are not modeled; fill estimates are conditional',
                            'TP1 starts a full-volume review; unresolved paths at the horizon are censored',
                            'Carry is a disclosed cost budget; stress doubles fees, slippage and carry',
                            'SL first when same-candle ordering is ambiguous; exact touches do not fill']}

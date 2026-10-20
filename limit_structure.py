@@ -96,7 +96,10 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
             known=zone.created_ts+2*TF[tf]
             if known>snapshot.now:
                 continue
-            acceptance_tf='3m' if tf=='15m' else '15m'
+            # The execution clock can prove full traversal of a 1H/4H zone.
+            # Three contiguous closes plus displacement are still mandatory;
+            # merely waiting for three 15m closes introduced a 45-minute lag.
+            acceptance_tf='3m'
             life=zone_lifecycle(zone,rows,tf,snapshot.now,volatility,cfg.tick,
                                 closed(snapshot,acceptance_tf),acceptance_tf)
             if life['state']=='BROKEN_ACCEPTED':

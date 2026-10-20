@@ -40,11 +40,15 @@ def summarize(report,state):
     report['by_entry_route']={route:engine.statistics([t for t in trades if t.get('entry_route','NATIVE_PATTERN')==route])
                              for route in ('NATIVE_PATTERN','MICRO_PRECURSOR')}
     report['dependencies']=trade_dependencies.summary(trades,state.get('price_tick',.001))
-    fill_pairs=[];win_pairs=[];errors=[];censored=0;queue_excluded=0
+    fill_pairs=[];win_pairs=[];errors=[];censored=0;queue_excluded=0;control_excluded=0
     by_id={t['id']:t for t in trades}
     for order in state.get('orders',[]):
         predicted=order.get('decision_forecast',{})
         if predicted.get('status')!='MODEL_ONLY':
+            continue
+        if (predicted.get('future_control_cancellations_modeled') is False
+                and order.get('reason') in ('CAPITULATION_RECOVERY_LOST','EXECUTION_CONTROL_REVERSED','CONFIRMED_HTF_FLIP')):
+            control_excluded+=1
             continue
         if predicted.get('eligibility_assumption') and order.get('capacity_waited'):
             queue_excluded+=1
@@ -67,6 +71,7 @@ def summarize(report,state):
         'net_r_mean_absolute_error':sum(errors)/len(errors) if errors else None,
         'censored_excluded':censored+len(engine.open_plans(state)),
         'queue_conditioned_excluded':queue_excluded,
+        'control_conditioned_excluded':control_excluded,
         'prediction_time':'IMMUTABLE_PLACEMENT_DECISION_FORECAST',
         'actual_funding_in_labels':False,'forecast_carry_budget_included':True}
     return report

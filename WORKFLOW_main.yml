@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.6.0 — Lifecycle adaptive policy
+name: BZU Auto Bot — ICT v12.10.0 — Causal direction control
 
 on:
   schedule:
@@ -16,7 +16,8 @@ concurrency:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-latest
+    if: ${{ vars.BOT_RUNTIME_MODE != 'worker' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       BOT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -27,8 +28,9 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.6.0-lifecycle-adaptive-policy'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.10.0-causal-direction-control'
       INCLUDE_COMMISSION: 'true'
+      ANALYSIS_SCAN_MINUTES: '5'
       ABS_MIN_STOP_PCT: '0.01'
       MIN_TP1_DISTANCE_PCT: '0.015'
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
@@ -55,7 +57,7 @@ jobs:
           from pathlib import Path
           import os
           required = ['bot_oneshot.py', 'full_limit_engine.py',
-                      'signal_quality.py', 'setup_scanner.py', 'notification_report.py', 'research_evidence.py', 'research_history.py', 'research_v12_6.py', 'lifecycle_forecast.py', 'trade_dependencies.py', 'test_v12_6_policy.py', 'analyze_bot.py', 'test_notification_report.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
+                      'signal_quality.py', 'setup_scanner.py', 'notification_report.py', 'research_evidence.py', 'research_history.py', 'research_v12_6.py', 'lifecycle_forecast.py', 'trade_dependencies.py', 'test_v12_6_policy.py', 'test_v12_7_policy.py', 'test_v12_8_paths.py', 'setup_paths.py', 'execution_atlas.py', 'continuous_worker.py', 'test_v12_9_atlas.py', 'test_v12_10_control.py', 'analyze_bot.py', 'test_notification_report.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
                       'test_v12_4_scanner.py', 'test_v12_4_1_selection.py', 'test_v12_4_2_reports.py', 'test_v12_4_3_geometry.py', 'test_v12_5_early_limits.py', 'testdata/reported_20261014.json', 'setup_preservation_manifest.json']
           missing = [name for name in required if not Path(name).is_file()]
           if missing:

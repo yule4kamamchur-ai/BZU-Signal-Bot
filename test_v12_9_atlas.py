@@ -195,17 +195,17 @@ class QueueArming(unittest.TestCase):
         self.assertFalse(e.pending_plans(state))
         self.assertEqual(state['orders'][-1]['reason'],'LEVEL_PASSED_WHILE_UNARMED')
 
-    def test_daily_limit_cancels_waiting_alternatives_and_report_names_reason(self):
+    def test_daily_loss_never_cancels_waiting_alternatives(self):
         cfg=e.Config();state=e.new_state(cfg);state['pending']=self.plan()
         state['trades']=[{'id':'loss','net_r':-3.1,'closed_ts':NOW-180000,'side':1,'entry_version':'OLD'}]
         with patch.object(e,'analyze',return_value=analysis()):
             result=e.run_cycle(state,snapshot(price=101.),cfg)
-        self.assertFalse(e.pending_plans(state))
-        self.assertEqual(result['action'],'DAILY_PAUSE')
-        self.assertEqual(state['orders'][-1]['reason'],'DAILY_RISK_LIMIT_REACHED')
+        self.assertEqual(len(e.pending_plans(state)),1)
+        self.assertEqual(result['action'],'WAIT_LIMIT')
+        self.assertFalse(state['orders'])
         message=e.build_message(state,snapshot(),result,cfg)
-        self.assertNotIn('ОЧІКУЄМО ВХОДУ',message)
-        self.assertIn('денний ліміт ризику',message)
+        self.assertIn('ОЧІКУЄМО ВХОДУ',message)
+        self.assertNotIn('денний ліміт ризику',message)
 
     def test_future_closed_label_cannot_pause_an_earlier_entry(self):
         cfg=e.Config();state=e.new_state(cfg)

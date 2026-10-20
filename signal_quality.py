@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'native-mtf-anticipatory-execution-atlas-v8'
+STRATEGY = 'native-mtf-causal-direction-control-v9'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -139,6 +139,7 @@ def features(plan: dict, snapshot, context: dict, cfg, engine) -> dict:
             'regime':str(context.get('regime','UNKNOWN')),'alignment':align,
             'side3':side3,'side15':side15,'shift3':shift3,'shift15':shift15,
             'early_reversal_control':early_reversal_control(plan['setup'],side,snapshot,context,cfg,engine),
+            'recovery_confirmed':plan.get('pattern_proof',{}).get('confirmed',True),
             'impulse':impulse,'acceptance':accept,'range_position':round(location,4),
             'shock':shock,'distance_atr':round(side*(snapshot.price-plan['entry'])/a15,4),
             'cost_fraction':round(plan.get('costs_r',0)/max(plan.get('gross_rr',0),1e-9),4),
@@ -169,6 +170,8 @@ def early_reversal_control(setup,side,snapshot,context,cfg,engine):
 
 
 def structural_reason(f: dict, settings: Settings=Settings()) -> str:
+    if f.get('setup')=='CAPITULATION_RECOVERY' and not f.get('recovery_confirmed',True):
+        return 'CAPITULATION_RECOVERY_NOT_CONFIRMED'
     if f['shock']:
         return 'SHOCK_STILL_ACTIVE'
     if f['cost_fraction']>settings.maximum_cost_fraction:
@@ -259,14 +262,14 @@ PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
              'zone_created_ts','last_bar','execution','status','target_cancel_armed','version',
-             'setup_timeframe','micro_timeframe','formation_timeframe','formation_micro_timeframe','entry_route','queue_execution_policy','entry_policy','detector_confirmed',
+             'setup_timeframe','micro_timeframe','formation_timeframe','formation_micro_timeframe','entry_route','queue_execution_policy','pattern_proof','entry_policy','detector_confirmed',
              'max_hold_minutes','intraday','include_commission','entry_fee_rate','exit_fee_rate','slippage_bps','exit_policy','full_exit_target','full_exit_candidates','exit_selection','target_management','exit_path_barriers','tp1_decision_gate')
 
 
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))
@@ -384,8 +387,9 @@ def advance(state: dict, snapshot, cfg, engine) -> None:
     # All counterfactuals see the same current HTF facts and historical interval.
     b1=b4=0
     if q['pending']:
-        b1=direction(cfg.core.structure_snapshot(closed_rows(snapshot,'1H'),60,2)['direction'])
-        b4=direction(cfg.core.structure_snapshot(closed_rows(snapshot,'4H'),60,2)['direction'])
+        import execution_atlas
+        b1=direction(execution_atlas.snapshot_control(snapshot,'1H',cfg,engine)['side'])
+        b4=direction(execution_atlas.snapshot_control(snapshot,'4H',cfg,engine)['side'])
     checkpoint=(q['last_run_ts']//TF['3m'])*TF['3m']
     from dataclasses import replace
     lifecycle=replace(snapshot,candles={**snapshot.candles,'3m':[c for c in closed_rows(snapshot,'3m') if c.ts>=checkpoint]})

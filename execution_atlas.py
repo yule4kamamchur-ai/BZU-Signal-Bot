@@ -8,12 +8,12 @@ from __future__ import annotations
 TF = {'3m':180000, '15m':900000, '1H':3600000, '4H':14400000}
 
 
-def causal_shift(rows, timeframe, engine, tick):
+def causal_shift(rows, timeframe, engine, tick, lookback=6):
     """A crossing of a pivot available before the crossing candle opened."""
     points = engine.pivots(rows, 2)
     events = []
     step = TF[timeframe]
-    for i in range(max(1, len(rows)-6), len(rows)):
+    for i in range(max(1, len(rows)-lookback), len(rows)):
         previous, current = rows[i-1:i+1]
         for side, kind in ((1,'HIGH'),(-1,'LOW')):
             known = [p for p in points if p['kind']==kind and p['known_ts']+step<=current.ts]
@@ -29,12 +29,68 @@ def causal_shift(rows, timeframe, engine, tick):
     return events[-1] if events else {'shift':False,'side':'NEUTRAL','level':0.,'age_bars':0}
 
 
+def control_state(rows, timeframe, cfg, engine):
+    """Separate the historical swing sequence from its latest accepted break.
+
+    A HH/HL sequence is history after its protected low has broken. Waiting
+    for two new lows AND two new highs kept the old LONG vote during a selloff.
+    A break remains control until its level is reclaimed; all pivots must have
+    been available before the crossing bar opened.
+    """
+    rows=list(rows)[-80:]
+    swings=cfg.core.structure_snapshot(rows,60,2) if rows else {'direction':'NEUTRAL'}
+    direction=swings['direction'];event={'shift':False,'side':'NEUTRAL','known_ts':0}
+    if rows:
+        broken=(direction=='LONG' and swings.get('last_swing_low',0)>0
+                and rows[-1].close<swings['last_swing_low']-cfg.tick) or (
+                direction=='SHORT' and swings.get('last_swing_high',0)>0
+                and rows[-1].close>swings['last_swing_high']+cfg.tick)
+        if broken or direction=='NEUTRAL':
+            event=causal_shift(rows,timeframe,engine,cfg.tick,lookback=60 if broken else 6)
+            if event['shift'] and (direction=='NEUTRAL' or event['side']!=direction):
+                direction=event['side']
+    accepted=event.get('shift') and event['side']==direction
+    return {**event,'side':direction,
+            'source':'CONFIRMED_PIVOT_BREAK' if accepted else 'SWING_SEQUENCE',
+            'swing_direction':swings['direction']}
+
+
+def snapshot_control(snapshot,timeframe,cfg,engine,as_of=None):
+    cutoff=snapshot.now if as_of is None else as_of
+    rows=[c for c in snapshot.candles.get(timeframe,[])
+          if c.confirmed and c.ts+TF[timeframe]<=cutoff]
+    key=(timeframe,cutoff,cfg.tick,tuple((c.ts,c.high,c.low,c.close) for c in rows[-80:]))
+    cache=getattr(snapshot,'_closed_control_cache',None)
+    if cache is None:
+        cache={};snapshot._closed_control_cache=cache
+    if key not in cache:
+        cache[key]=control_state(rows,timeframe,cfg,engine)
+    return cache[key]
+
+
 def prepare(context, snapshot, cfg, engine, formation=None):
     out = dict(context)
     formation = formation or context.get('analysis_timeframe','15m')
-    rows = list(context.get('candles',{}).get('15m',[]))
+    rows = [c for c in context.get('candles',{}).get('15m',[])
+            if c.confirmed and c.ts+TF[formation]<=snapshot.now]
     if rows:
         out['structure_shift_15m'] = causal_shift(rows, formation, engine, cfg.tick)
+        control=control_state(rows,formation,cfg,engine)
+        out['swing_structure15']=dict(context.get('structure15',{}))
+        out['structure15']={**context.get('structure15',{}),'direction':control['side'],
+                            'direction_source':control['source']}
+        out['market_control']=control
+    micro=context.get('micro_timeframe','3m')
+    child_rows=[c for c in context.get('candles',{}).get('3m',[])
+                if c.confirmed and c.ts+TF[micro]<=snapshot.now]
+    child=control_state(child_rows,micro,cfg,engine)
+    out['structure3m']={**context.get('structure3m',{}),'direction':child['side'],
+                       'direction_source':child['source']}
+    first=snapshot_control(snapshot,'1H',cfg,engine)['side']
+    fourth=snapshot_control(snapshot,'4H',cfg,engine)['side']
+    state='ALIGNED' if first==fourth and first!='NEUTRAL' else 'UNKNOWN' if first==fourth=='NEUTRAL' else 'MIXED' if 'NEUTRAL' in (first,fourth) else 'AGAINST'
+    out['htf_fact']={**context.get('htf_fact',{}),'direction_1h':first,'direction_4h':fourth,
+                     'state':state,'score':100 if state=='ALIGNED' else 55 if state=='MIXED' else 0}
     out['formation_timeframe'] = formation
     out['formation_micro_timeframe'] = context.get('micro_timeframe','3m')
     return out
