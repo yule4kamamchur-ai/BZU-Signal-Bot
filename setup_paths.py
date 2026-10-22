@@ -10,7 +10,7 @@ import execution_atlas
 SINGLE_SIDE={'SWEEP_RECLAIM':'LONG','CAPITULATION_RECOVERY':'LONG',
  'LIQUIDITY_SWEEP_REVERSAL_SHORT':'SHORT','BUYER_EXHAUSTION_SHORT':'SHORT',
  'FAILED_BREAKOUT_SHORT':'SHORT','MSS_REVERSAL_SHORT':'SHORT','OR_FAILURE_2_SHORT':'SHORT'}
-BREAK_RETEST={'BUYER_EXHAUSTION_SHORT','OPENING_RANGE_BREAKOUT'}
+BREAK_RETEST={'BUYER_EXHAUSTION_SHORT','OPENING_RANGE_BREAKOUT', 'RANGE_COMPRESSION_BREAKOUT'}
 
 
 def capitulation_recovery(context,core):
@@ -66,7 +66,10 @@ def candidates(detector,setup,ctx,core):
         proof=capitulation_recovery(ctx,core)
         if proof['confirmed']:raw.evidence['recovery_proof']=proof
         else:raw=None
-    anchors=[raw] if raw is not None else []
+    # A compression LOCATION is not yet a breakout. The original single-side
+    # detector chooses the wrong (near) edge for a continuation retest.
+    # Keep the detector unchanged, but remap both breakout boundaries below.
+    anchors=[raw] if raw is not None and setup!='RANGE_COMPRESSION_BREAKOUT' else []
     if setup=='BUYER_EXHAUSTION_SHORT' and ctx.get('swing_structure15'):
         # Exhaustion describes the preceding uptrend, even when its protected
         # low has just broken. Preserve that original detector's native route.
@@ -126,6 +129,21 @@ def candidates(detector,setup,ctx,core):
             if zone.mitigated:continue
             altered={**ctx,'zones':{**ctx.get('zones',{}),'fvg':[zone]}}
             anchors.append(detector(altered))
+    if setup=='RANGE_COMPRESSION_BREAKOUT':
+        base=ctx.get('zones',{}).get('consolidation',{})
+        vol=ctx.get('atr15',0);price=ctx.get('price',0)
+        if (base.get('found') and 0<base.get('compression',99)<=1.4
+                and base.get('low',0)>0 and base.get('high',0)>base['low'] and vol>0):
+            # Real breakout is LONG above the BASE HIGH and SHORT below LOW,
+            # not a blind fade of the opposite edge based on the current quote.
+            for side,level,sign in (('LONG',base['high'],1),('SHORT',base['low'],-1)):
+                anchors.append(core.make_anchor(setup,side,level,
+                    level-sign*max(.75*vol,core.min_stop_distance(max(price,.01))),
+                    core.AnchorKind.BREAK_LEVEL.value,
+                    'Закритий пробій стиснення; потім пасивний ретест',ctx,
+                    score=52+12*core.clamp((1.4-base['compression'])/1.4,0,1),
+                    evidence={'base_low':base['low'],'base_high':base['high'],
+                              'compression':base['compression'],'planning_policy':'MAPPED_BREAK_RETEST'}))
     if setup=='RANGE_EDGE_REVERSAL':
         base=ctx.get('zones',{}).get('consolidation',{});vol=ctx.get('atr15',0)
         low=base.get('low') or session.get('day_low',0);high=base.get('high') or session.get('day_high',0)

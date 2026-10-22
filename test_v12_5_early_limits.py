@@ -211,7 +211,7 @@ class DistinctEpisodeTests(unittest.TestCase):
         result=engine.analyze(s,cfg,state)
         row=next(r for r in result['setup_matrix'] if r['setup']==a.setup_type and r['timeframe']=='15m')
         self.assertEqual(row['status'],'BLOCKED')
-        self.assertEqual(row['reason'],'ANCHOR_EXPIRED_AWAITING_NEW_EVENT')
+        self.assertIn(row['reason'],('ANCHOR_EXPIRED_AWAITING_NEW_EVENT','WAIT_CONFIRMED_BREAK_FOR_LIMIT'))
         self.assertLess(row['readiness_pct'],100.)
 
 

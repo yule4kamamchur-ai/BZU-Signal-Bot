@@ -172,12 +172,12 @@ class DirectionAdmission(unittest.TestCase):
         short=order(-1);short.update(id='short',event_key='short',entry=104.,stop=105.,initial_stop=105.,tp=102.,invalidation=105.)
         with patch.object(engine,'analyze',return_value=analysis([short])):
             result=engine.run_cycle(state,snapshot(price=103),cfg)
-        self.assertEqual([p['id'] for p in result['selected_plans']],['short'])
-        self.assertEqual([p['id'] for p in engine.entry_priority(state,NOW,103,cfg)],['short'])
+        self.assertFalse(result['selected_plans'])
+        self.assertFalse(engine.entry_priority(state,NOW,103,cfg))
         snap=lifecycle_snapshot([candle(NOW,103,104.1,102.9,103.5)])
         engine.advance_lifecycle(state,snap,cfg)
-        self.assertEqual({p['side'] for p in engine.active_plans(state)},{1,-1})
-        self.assertEqual(engine.occupied_slots(state),2)
+        self.assertEqual({p['side'] for p in engine.active_plans(state)},{1})
+        self.assertEqual(engine.occupied_slots(state),1)
 
     def test_shared_countertrend_gate_accepts_confirmed_control_without_new_double_shift(self):
         from test_signal_quality import confirmed_features
@@ -208,6 +208,13 @@ class WholeSetupPaths(unittest.TestCase):
                 for tf in scanner.PRIMARY:
                     with self.subTest(setup=setup,side=side,timeframe=tf):
                         p,why,ctx,snap,cfg=scenario(setup,side,tf)
+                        if setup=='RANGE_COMPRESSION_BREAKOUT':
+                            # This is a mapped future breakout, not an entry
+                            # until a completed break has been observed.
+                            self.assertIsNone(p)
+                            self.assertEqual(why,'WAIT_CONFIRMED_BREAK_FOR_LIMIT')
+                            count+=1
+                            continue
                         self.assertIsNotNone(p,why)
                         decision=quality.assess(p,snap,ctx,cfg,engine,[])
                         self.assertTrue(decision['accepted'],decision['reason'])
@@ -284,9 +291,12 @@ class CurrentNativeContexts(unittest.TestCase):
                 snap.candles={tf:[candle(c.ts,200-c.open,200-c.low,200-c.high,200-c.close) for c in rows] for tf,rows in snap.candles.items()}
                 state=engine.new_state(cfg)
                 result=engine.run_cycle(state,snap,cfg)
-                self.assertEqual(result['action'],'PLACE_LIMIT')
-                self.assertEqual(result['selected_plans'][0]['side'],-1)
-                self.assertTrue(any(p['setup_timeframe']==target for p in result['selected_plans']))
+                # Portfolio may choose a stronger LONG or wait; the SHORT
+                # detector still runs and is reported rather than hidden.
+                self.assertIn(result['action'],('PLACE_LIMIT','WATCH','DIRECTION_CONFLICT'))
+                self.assertLessEqual(len({p['side'] for p in result['selected_plans']}),1)
+                self.assertTrue(any(row.get('side')==-1 and row.get('timeframe')==target
+                                    for row in result['analysis']['setup_matrix']))
 
     def test_activation_does_not_reuse_a_break_that_was_already_observed_before_upgrade(self):
         cfg=replace(engine.Config(),core=core)

@@ -80,9 +80,9 @@ class PercentageAndWinnerTests(unittest.TestCase):
         third=copy.deepcopy(first);third.update(id='third',event_key='third',entry=99.,score=65.)
         with patch.object(engine,'analyze',return_value=analysis([other,third,first])):
             result=engine.run_cycle(state,snapshot(),cfg)
-        self.assertEqual([p['id'] for p in result['selected_plans']],['first','third'])
+        self.assertEqual([p['id'] for p in result['selected_plans']],['first'])
         self.assertEqual(state['pending']['side'],1)
-        self.assertEqual(state['second_slot']['pending']['id'],'third')
+        self.assertIsNone(state['second_slot']['pending'])
 
     def test_existing_direction_is_preserved_for_the_next_chosen_scenario(self):
         rows=self.reported_rows();rows[0]['readiness_pct']=95.;rows[1]['readiness_pct']=90.

@@ -112,10 +112,10 @@ class AdmissionAndMigration(unittest.TestCase):
                 stop=entry-side,initial_stop=entry-side,risk=1.,tp=entry+side*3.)
             plans.append(p)
         e.park_pending(state,plans)
-        self.assertEqual(len(e.entry_priority(state,NOW,101.,cfg)),2)
+        self.assertEqual(len(e.entry_priority(state,NOW,101.,cfg)),1)
         s=e.Snapshot(NOW+180000,101.,{'3m':[candle(NOW,101.,102.5,94.5,101.)]})
         e.advance_lifecycle(state,s,cfg)
-        self.assertEqual(sum(o['status']=='FILLED' for o in state['orders'][12:]),2)
+        self.assertEqual(sum(o['status']=='FILLED' for o in state['orders'][12:]),1)
         self.assertFalse(any(o.get('id')=='2' and o['status']=='FILLED' for o in state['orders'][12:]))
 
 

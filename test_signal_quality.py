@@ -162,7 +162,7 @@ class ConfirmationTests(unittest.TestCase):
             detector.__name__='contract_detector_'+str(i);detectors.append(detector)
         state=engine.new_state(cfg)
         with patch.object(core,'DETECTORS',detectors),patch.object(engine,'build_full_context',return_value=ctx), \
-             patch.object(engine,'full_plan',side_effect=lambda anchor,*_: (copy.deepcopy(plans[anchor.setup_type]),'ACCEPTED')):
+             patch.object(engine,'full_plan',side_effect=lambda anchor,*_: (copy.deepcopy(plans[anchor.setup_type]),'ACCEPTED') if anchor.setup_type in plans else (None,'WAIT_CONFIRMED_BREAK_FOR_LIMIT')):
             result=engine.run_cycle(state,s,cfg)
         self.assertEqual(result['action'],'PLACE_LIMIT',result)
         self.assertEqual(state['pending']['setup'],'SWEEP_RECLAIM')

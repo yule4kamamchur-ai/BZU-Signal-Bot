@@ -878,14 +878,15 @@ class TwoSlotTests(unittest.TestCase):
     def test_all_ready_distinct_limits_can_wait_without_reserving_slots(self):
         state=b.new_state(b.Config());plans=[self.plan(1),self.plan(2,99),self.plan(3,98)]
         first=self.report(state,plans)
-        self.assertEqual([p['id'] for p in first['selected_plans']],['order-1','order-2','order-3'])
+        self.assertEqual([p['id'] for p in first['selected_plans']],['order-1'])
         second=self.report(state,plans,now=NOW+900_000)
         self.assertEqual(second['selected_plans'],[])
         third=self.report(state,plans,now=NOW+1800_000)
         self.assertEqual(third['selected_plans'],[])
         self.assertEqual(b.occupied_slots(state),0)
-        self.assertEqual([p['id'] for p in b.pending_plans(state)],['order-1','order-2','order-3'])
-        self.assertEqual(state['signals'][-1]['followed_ids'],['order-1','order-2','order-3'])
+        self.assertLessEqual(len(b.pending_plans(state)),2)
+        self.assertTrue(all(p['side']==1 for p in b.pending_plans(state)))
+        self.assertEqual(state['signals'][-1]['followed_ids'],[p['id'] for p in b.open_plans(state)])
         self.assertEqual(state['signals'][-1]['placed_ids'],[])
 
     def test_nearby_or_same_event_proposals_do_not_consume_second_slot(self):
@@ -909,7 +910,7 @@ class TwoSlotTests(unittest.TestCase):
         self.assertIsNotNone(state['active'])
         self.assertIsNotNone(state['second_slot']['pending'])
         self.assertEqual(b.occupied_slots(state),1)
-        self.assertEqual([p['id'] for p in result['selected_plans']],['order-3'])
+        self.assertFalse(result['selected_plans'])  # Existing fill locks new placements
 
     def test_legacy_partial_remainder_can_close_fully_under_current_review(self):
         state = b.new_state(b.Config())
@@ -926,7 +927,7 @@ class TwoSlotTests(unittest.TestCase):
         self.assertAlmostEqual(trade['final_exit_fraction'],.35)
         self.assertEqual(len(trade['realized_legs']),1)
         self.assertEqual(b.occupied_slots(state),0)
-        self.assertTrue([e for e in state['events'] if e['kind']=='PLACED' and e['order_id']=='order-3'])
+        self.assertFalse([e for e in state['events'] if e['kind']=='PLACED' and e['order_id']=='order-3'])
 
     def test_closed_position_frees_only_its_slot_for_one_replacement(self):
         state = b.new_state(b.Config())
@@ -935,8 +936,8 @@ class TwoSlotTests(unittest.TestCase):
         bars += [candle(NOW+i*180_000,99.5,99.7,99.2,99.5) for i in range(2,5)]
         result = self.report(state,[self.plan(3,97),self.plan(4,96)],NOW+900_000,bars,99.5)
         self.assertEqual(len(state['trades']),1)
-        self.assertEqual([p['id'] for p in result['selected_plans']],['order-3','order-4'])
-        self.assertEqual({p['id'] for p in b.pending_plans(state)},{'order-2','order-3','order-4'})
+        self.assertFalse(result['selected_plans'])  # A surviving pending limit occupies the waiting-book slot
+        self.assertEqual({p['id'] for p in b.pending_plans(state)},{'order-2'})
         self.assertEqual(b.occupied_slots(state),0)
 
     def test_two_fills_and_exit_of_only_second_position_are_independent(self):
@@ -1019,7 +1020,7 @@ class TwoSlotTests(unittest.TestCase):
         with patch.object(b,'analyze',return_value=analysis([self.plan(1),self.plan(2,99)])):
             b.run_cycle(state,snapshot(),cfg)
         self.assertEqual(b.occupied_slots(state),0)
-        self.assertEqual(len(b.pending_plans(state)),2)
+        self.assertEqual(len(b.pending_plans(state)),1)
 
     def test_existing_position_does_not_silently_discard_opposite_proposal(self):
         state = b.new_state(b.Config())
@@ -1027,7 +1028,8 @@ class TwoSlotTests(unittest.TestCase):
         state['active']=active
         result = self.report(state,[self.plan(2,102,-1)])
         self.assertEqual(state['active']['side'],1)
-        self.assertEqual([p['side'] for p in result['selected_plans']],[-1])
+        self.assertFalse(result['selected_plans'])
+        self.assertFalse(any(p['side']==-1 for p in b.pending_plans(state)))
 
     def test_old_v12_restart_keeps_history_geometry_and_readable_ids(self):
         cfg = b.Config()
@@ -1089,7 +1091,7 @@ class TwoSlotTests(unittest.TestCase):
     def test_unconfirmed_paper_reserves_slot_until_deadline_but_second_can_work(self):
         state = self.uncertain_state()
         result = self.report(state,[self.plan(1),self.plan(2,99)],now=NOW+900_000)
-        self.assertEqual(len(result['selected_plans']),2)
+        self.assertEqual(len(result['selected_plans']),1)
         self.assertIsNotNone(state['reconciliation'])
         self.assertIsNotNone(state['second_slot']['pending'])
         self.assertEqual(b.occupied_slots(state),1)

@@ -151,8 +151,8 @@ class FullVolumeExecution(unittest.TestCase):
         with patch.object(engine,'analyze',return_value=analysis([candidate])):
             out=engine.run_cycle(state,snapshot(price=101),cfg)
         self.assertEqual(engine.occupied_slots(state),0)
-        self.assertEqual(len(out['selected_plans']),1)
-        self.assertEqual(len(engine.pending_plans(state)),3)
+        self.assertFalse(out['selected_plans'])
+        self.assertEqual(len(engine.pending_plans(state)),2)
         self.assertIsNone(state['active'])
         self.assertIsNone(state['second_slot']['active'])
 

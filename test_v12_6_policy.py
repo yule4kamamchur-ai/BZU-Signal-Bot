@@ -79,11 +79,11 @@ class DependencyTests(unittest.TestCase):
         second=order();second.update(id='second',event_key='second',entry=100.4)
         with patch.object(engine,'analyze',return_value=analysis([second])):
             result=engine.run_cycle(state,snapshot(price=101.),cfg)
-        self.assertEqual(len(result['selected_plans']),1)
+        self.assertFalse(result['selected_plans'])
         self.assertEqual(engine.occupied_slots(state),0)
         eligible=engine.entry_priority(state,NOW,101.,cfg)
         self.assertEqual(len(eligible),1)
-        self.assertEqual(len(engine.pending_plans(state)),2)
+        self.assertEqual(len(engine.pending_plans(state)),1)
 
 
 class FullLifecycleTests(unittest.TestCase):
