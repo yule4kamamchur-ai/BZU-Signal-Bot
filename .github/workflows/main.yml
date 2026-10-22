@@ -67,6 +67,10 @@ jobs:
           expected=os.environ['EXPECTED_BOT_VERSION']
           if core.BOT_VERSION != expected or engine.VERSION != expected or len(core.DETECTORS) != 24:
               raise SystemExit('Incompatible bot files: all 24 detectors and matching v12 versions are required')
+          import setup_paths
+          if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
+              raise SystemExit('Incomplete v12.12 update: setup_paths.py is from an older release. '
+                               'Apply the v12.12 compatibility hotfix before running the bot.')
           PY
 
       - name: Validate full v12 bot offline
