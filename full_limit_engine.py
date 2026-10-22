@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.10.0-causal-direction-control"
-REPORT_RELEASE = 'v12.10.0'
+VERSION = "full-ict-v12.12.0-causal-meta-selector"
+REPORT_RELEASE = 'v12.12.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -40,6 +40,8 @@ import lifecycle_forecast
 import trade_dependencies
 import setup_paths
 import execution_atlas
+import directional_policy as policy
+import trade_meta_model as meta
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -876,12 +878,31 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     if set(quality.CONTRACTS)!=set(core.DETECTED_SETUP_TYPES):
         raise ValueError('Quality contracts must cover all 24 original setups')
     ledger = quality.ensure(state,cfg)
+    # An independent model is trained only on fully resolved past shadow fills.
+    # Failure/insufficient data => monitoring only, never a made-up P(win).
+    meta_model = meta.train(ledger['observations'],s.now,quality.STRATEGY)
+    ledger['last_meta_diagnostic']={key:value for key,value in meta_model.items()
+                                    if key not in ('weights','calibration_offset')}
     # Evaluate every scenario BEFORE combining nearby levels. A high-score
     # unconfirmed continuation must not suppress a valid reversal at that price.
     assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[scanner.timeframe(p)],cfg,
                         sys.modules[__name__],ledger['observations']) for p in plans}
     for p in plans:
         q = assessments[p['id']]
+        proof=policy.evidence(p,s,cfg.tick)
+        p['ict_evidence']=proof
+        admitted,ict_reason=policy.admit(p,proof)
+        if q['accepted'] and not admitted:
+            q={**q,'accepted':False,'reason':ict_reason}
+            assessments[p['id']]=q
+        # A holdout-validated meta model may veto a low-quality executable
+        # plan; never train on the current plan's unknown future outcome.
+        meta_decision=meta.evaluate(meta_model,q['features'],
+                                    net_rr=p.get('net_rr',0),costs_r=p.get('costs_r',0))
+        p['meta_decision']=meta_decision
+        if q['accepted'] and not meta_decision['accepted']:
+            q={**q,'accepted':False,'reason':meta_decision['reason']}
+            assessments[p['id']]=q
         p['quality'] = q
         for path in admission_paths:
             if path['event_key']==p['event_key']:
@@ -896,9 +917,11 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 check['met']=quality.structural_reason(q['features'])=='CONFIRMED'
             if check['key']=='DECISION_EVALUATED':
                 check['met']=True
-        p['probability'] = None
+        p['probability'] = meta_decision['probability']
         p['decision_score'] = p['score']+q['ranking_adjustment']
-        p['probability_status'] = q['status']
+        p['direction_score'] = policy.adjusted_score(p,proof)+meta_decision.get('score_adjustment',0)
+        p['decision_score'] = p['direction_score']
+        p['probability_status'] = meta_decision['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
         row=next((r for r in matrix if r.get('signal_id')==p['id']),None)
         if row is not None:
@@ -907,6 +930,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             row['entry_checks']=copy.deepcopy(checks)
             scanner.update_readiness(row)
         p['readiness_pct']=100. if q['accepted'] else round(100*sum(c['met'] is True for c in checks)/len(checks),1)
+        p['ict_admission_reason']=ict_reason
         p['distance_pct']=scanner.proximity(s.price,p['entry'])['distance_pct']
     for row in matrix:
         alternatives=[p for p in plans if p['setup']==row['setup'] and scanner.timeframe(p)==row['timeframe']]
@@ -988,6 +1012,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         directional[label]={'evaluated_paths':len(subset),
             'accepted_paths':sum(path['reason']=='ACCEPTED' for path in subset),'rejections':reasons}
     return {"health": [],"plans": accepted,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
+            "meta_model":ledger['last_meta_diagnostic'],
             "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,"early_context":early_context,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
@@ -1018,7 +1043,8 @@ def new_state(cfg: Config) -> dict:
             "anchor_memory": {}, "level_cooldown": {}, "setup_statistics": {},
             "ledger_revision": 2, "order_sequence": 0,
             "second_slot": {"pending": None, "active": None, "reconciliation": None},
-            "pending_orders": [], "pending_policy":"UNBOUNDED_QUEUE_ACTIVE_CAP_2"}
+            "pending_orders": [], "pending_policy":"ONE_DIRECTION_TWO_PENDING_MAX",
+            "portfolio_policy":"ONE_DIRECTION_TWO_PENDING_MAX"}
 
 
 def slot_views(state: dict):
@@ -1055,7 +1081,7 @@ def occupied_slots(state: dict) -> int:
 
 
 def park_pending(state: dict, waiting: list[dict]) -> None:
-    """Compatibility fields hold the first waiting plans; overflow has no cap."""
+    """Compatibility fields hold two slots; legacy waiting overflow is replayed/cancelled."""
     state['pending']=None
     state.setdefault('second_slot',{})['pending']=None
     remaining=list(waiting)
@@ -1071,6 +1097,12 @@ def park_pending(state: dict, waiting: list[dict]) -> None:
 def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dict]:
     """Decide BEFORE observing candle extremes; never pick fills in hindsight."""
     active=active_plans(state)
+    # The old dependency test deliberately ignored opposite sides. That allowed
+    # a 15m LONG and 4H SHORT to fill in the same three-minute candle.
+    active_sides={p['side'] for p in active}
+    if len(active_sides)>1:
+        return []  # Legacy hedge: do not add risk; manage both to their exits.
+    locked_side=next(iter(active_sides),0)
     capacity=max(0,2-occupied_slots(state))
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
@@ -1089,6 +1121,10 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
             continuous=plan.get('entry_armed_bar')==now-TF['3m']
             if not continuous and not execution_atlas.passive_at_open(plan,price,cfg.tick):
                 continue
+        if locked_side and plan['side']!=locked_side:
+            continue
+        if eligible and plan['side']!=eligible[0]['side']:
+            continue  # Never fill two opposing directions in a single bar.
         if any(trade_dependencies.related(p,plan,cfg.tick) for p in active+eligible):
             continue
         eligible.append(plan)
@@ -1507,7 +1543,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
 
 
 def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
-    if state.get('pending_policy')!='UNBOUNDED_QUEUE_ACTIVE_CAP_2':
+    if state.get('pending_policy') not in ('UNBOUNDED_QUEUE_ACTIVE_CAP_2','ONE_DIRECTION_TWO_PENDING_MAX'):
         # Catch up the old contract before changing future queue behavior.
         for number,view in slot_views(state):
             _advance_slot_lifecycle(view,s,cfg)
@@ -1645,7 +1681,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.6.0-lifecycle-adaptive-policy',
                                        'full-ict-v12.7.0-adaptive-full-volume',
                                        'full-ict-v12.8.0-directional-limit-paths',
-                                       'full-ict-v12.9.0-anticipatory-execution-atlas') and not cadence_only:
+                                       'full-ict-v12.9.0-anticipatory-execution-atlas',
+                                       'full-ict-v12.10.0-causal-direction-control',
+                                       'full-ict-v12.11.0-directional-ict-arbiter') and not cadence_only:
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1664,7 +1702,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             pending['entry_policy_migrated_ts']=s.now
             pending['queue_policy_effective_ts']=((s.now+TF['3m']-1)//TF['3m'])*TF['3m']
     upgrade_open_exits(state, s.now)
-    state['pending_policy']='UNBOUNDED_QUEUE_ACTIVE_CAP_2'
+    state['pending_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
     state.setdefault('pending_orders',[])
     amend_at_report(state, s, cfg)
     quality.advance(state,s,cfg,sys.modules[__name__])
@@ -1705,38 +1743,148 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if not busy:
             action = 'SESSION_CLOSED'
         can_place = False
-    if can_place:
-        plans = sorted(analysis.get('plans',[]),key=lambda p:scanner.selection_key(p,s.price),reverse=True)
-        # Evaluate a bounded shortlist instead of Monte Carlo for thousands of
-        # near-duplicate anchors. A valid lower-ranked candidate is still a
-        # fallback; missing/negative model estimates never create a WR veto.
-        for candidate in plans:
-            use_full_exit(candidate,s.now)
-        for candidate in plans[:6]:
-            lifecycle_forecast.select_full_exit(candidate,s,cfg,sys.modules[__name__])
-            candidate['decision_score']=candidate.get('decision_score',candidate.get('score',0))\
-                                        +lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
-        plans[:6]=sorted(plans[:6],key=lambda p:scanner.selection_key(p,s.price),reverse=True)
-        # Pending plans do not reserve a position. Keep waiting alternatives
-        # beyond two; only the entry arbiter can admit an actual fill.
+    # Direction is a portfolio decision, NOT 24 unrelated entry permissions.
+    # Existing live positions lock direction until they close. Existing pending
+    # orders are canceled causally before any opposite entry can be submitted.
+    valid=sorted((p for p in analysis.get('plans',[])
+                  if p.get('readiness_pct',100.)>=100.),
+                 key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+    # Compare both directions on the same execution/exit model BEFORE
+    # deciding the portfolio direction (not only after selecting one side).
+    for candidate in valid[:6]:
+        use_full_exit(candidate,s.now)
+        lifecycle_forecast.select_full_exit(candidate,s,cfg,sys.modules[__name__])
+        adjustment=lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
+        candidate['direction_score']=round(candidate.get('direction_score',
+            candidate.get('decision_score',candidate.get('score',0)))+adjustment,4)
+    # The target may have changed since initial analysis; re-evaluate the
+    # same frozen model against FINAL executable net RR, without retraining.
+    fitted=meta.train(quality.ensure(state,cfg)['observations'],s.now,quality.STRATEGY)
+    meta_rejected=0
+    surviving=[]
+    for candidate in valid:
+        prior=candidate.get('meta_decision',{})
+        outcome=meta.evaluate(fitted,candidate.get('quality',{}).get('features',{}),
+                              net_rr=candidate.get('net_rr',0),costs_r=candidate.get('costs_r',0))
+        candidate['meta_decision']=outcome
+        candidate['probability']=outcome['probability']
+        candidate['probability_status']=outcome['status']
+        if outcome['accepted']:
+            surviving.append(candidate)
+        else:
+            meta_rejected+=1
+            analysis.setdefault('rejections',{})[outcome['reason']]=(
+                analysis.setdefault('rejections',{}).get(outcome['reason'],0)+1)
+            for row in analysis.get('setup_matrix',[]):
+                if row.get('signal_id')==candidate.get('id'):
+                    row.update(status='BLOCKED',reason=outcome['reason'])
+    valid=surviving
+    valid.sort(key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+    active=active_plans(state)
+    pending=pending_plans(state)
+    # The older router may have persisted many waiting orders. Do not admit
+    # any new risk until the legacy surplus has been cancelled. At an
+    # in-progress 3m candle the cancel becomes effective on its next boundary.
+    if len([p for p in pending if not p.get('cancel_requested_ts')])>2:
+        ranked_legacy=sorted((p for p in pending if not p.get('cancel_requested_ts')),
+                             key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+        for obsolete in ranked_legacy[2:]:
+            request_cancel(state,obsolete,'LEGACY_PENDING_EXCESS_CAP_2',s.now)
+        can_place=False
+        pending=pending_plans(state)
+    active_sides={p['side'] for p in active}
+    pending_sides={p['side'] for p in pending if not p.get('cancel_requested_ts')}
+    selected_side=0
+    direction_reason='NO_VALID_ICT_SCENARIO'
+    if len(active_sides)>1:
+        direction_reason='LEGACY_OPPOSING_OPEN_POSITIONS_MANAGE_ONLY'
+        can_place=False
+    elif active_sides:
+        selected_side=next(iter(active_sides))
+        direction_reason='ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT'
+        can_place=False  # Follow first; never expand while a fill is open.
+    else:
+        proposed_side,ranked,direction_reason=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
+        if len(pending_sides)>1:
+            # A state created by the previous unlimited/opposing router is
+            # resolved by preserving its highest-priority existing thesis.
+            keeper=max((p for p in pending if not p.get('cancel_requested_ts')),
+                       key=lambda p:policy.ranking(p,s.price,cfg.tick))
+            selected_side=keeper['side']
+            direction_reason='LEGACY_OPPOSING_LIMITS_CANCELLING'
+            for p in pending:
+                if p['side']!=selected_side:
+                    request_cancel(state,p,'PORTFOLIO_DIRECTION_CONFLICT',s.now)
+            can_place=False
+        elif pending_sides:
+            current=next(iter(pending_sides))
+            incumbent=max((p for p in pending if p['side']==current and not p.get('cancel_requested_ts')),
+                           key=lambda p:policy.ranking(p,s.price,cfg.tick))
+            if direction_reason=='DIRECTION_AMBIGUOUS_NO_TRADE':
+                # A newly ambiguous two-way thesis should not leave a stale
+                # limit waiting to fill. Cancel causally on the next boundary.
+                for stale in pending:
+                    if not stale.get('cancel_requested_ts'):
+                        request_cancel(state,stale,'DIRECTION_AMBIGUOUS_CANCEL_PENDING',s.now)
+                can_place=False
+                selected_side=current
+                direction_reason='DIRECTION_AMBIGUOUS_CANCEL_PENDING'
+            challenger=next((p for p in valid if p['side']==proposed_side),None)
+            improvement=(policy.ranking(challenger,s.price,cfg.tick)[0]
+                         -policy.ranking(incumbent,s.price,cfg.tick)[0]) if challenger else 0.
+            if can_place and proposed_side in (-1,1) and proposed_side!=current and improvement>=cfg.conflict_margin:
+                # Switch to a materially stronger thesis ONLY after the
+                # old limit cancellation has become effective on a 3m boundary.
+                for p in pending:
+                    if p['side']!=proposed_side and not p.get('cancel_requested_ts'):
+                        request_cancel(state,p,'BETTER_OPPOSING_SCENARIO',s.now)
+                direction_reason='DIRECTION_SWITCH_AWAITING_CANCEL'
+                can_place=False
+                selected_side=current
+            elif can_place:
+                selected_side=current
+                direction_reason='PENDING_DIRECTION_LOCK'
+        elif proposed_side:
+            selected_side=proposed_side
+        # No existing thesis and tied scores => WAIT, not simultaneous hedges.
+    analysis['direction_policy']={'side':selected_side,'reason':direction_reason,
+        'meta_rejected':meta_rejected,
+        'meta_status':fitted['status'],
+        'pending':len(pending),'open_positions':len(active),
+        'long_ready':sum(p['side']==1 for p in valid),
+        'short_ready':sum(p['side']==-1 for p in valid)}
+    state['portfolio_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
+    if can_place and selected_side:
+        # At most TWO waiting limit orders TOTAL. This is the user's risk book,
+        # not a pile of unbounded candidates competing after the next quote.
+        plans=[p for p in valid if p['side']==selected_side]
+        plans=sorted(plans,key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
         for top in plans:
-            if top.get('readiness_pct',100.)<100.:
-                continue
+            existing=pending_plans(state)
+            if len(existing)>=2 or occupied_slots(state)>=2:
+                break
+            if any(p.get('cancel_requested_ts') for p in existing):
+                break
             busy=open_plans(state)
             keys={top['event_key'],*top.get('parent_keys',[])}
             live_keys={key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
             tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
             if keys.intersection(state['used_events']) or keys.intersection(live_keys):
                 continue
+            if any(p['side']!=top['side'] for p in busy):
+                break
             if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
+                continue
+            if existing and not policy.compatible(top,existing[0],cfg.tick):
+                continue
+            if existing and policy.ranking(top,s.price,cfg.tick)[0] < \
+                    policy.ranking(existing[0],s.price,cfg.tick)[0]-cfg.conflict_margin:
                 continue
             plan=copy.deepcopy(top)
             plan.setdefault('queue_execution_policy','PASSIVE_ARM_V2')
             if plan.get('outcome_forecast'):
                 lifecycle_forecast.select_full_exit(plan,s,cfg,sys.modules[__name__])
             else:
-                # Model computation has a budget; order admission has no model
-                # threshold or pending-count cap. TP1 remains the initial gate.
                 plan['outcome_forecast']={'status':'DEFERRED_MODEL_BUDGET','calibrated':False,
                     'as_of_ts':s.now,'entry_gate_enabled':False}
             plan['decision_forecast']=copy.deepcopy(plan.get('outcome_forecast') or {})
@@ -1749,8 +1897,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
                  stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
             action='PLACE_LIMIT'
-            # All distinct qualified alternatives may wait. Actual fills still
-            # compete for exactly two open positions using pre-bar priority.
+    elif can_place and not selected_side and valid:
+        action='DIRECTION_CONFLICT'
+    elif can_place and meta_rejected and not valid:
+        action='META_REJECTED'
+    elif direction_reason in ('LEGACY_OPPOSING_LIMITS_CANCELLING','DIRECTION_SWITCH_AWAITING_CANCEL','DIRECTION_AMBIGUOUS_CANCEL_PENDING'):
+        action='CANCEL_LIMIT'
     # Convert the market-ready state into the ACTUAL portfolio decision, so a
     # suppressed duplicate or a full book is never described as unexplained.
     tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
@@ -1808,7 +1960,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'registered_setups':analysis.get('registered_setups',24),
                'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
                'funnel':{**analysis.get('funnel',{}),'placed':len(selected)},
-               'admission_by_side':analysis.get('admission_by_side',{})}
+               'admission_by_side':analysis.get('admission_by_side',{}),
+               'direction_policy':analysis.get('direction_policy',{})}
     previous=state.get('last_scan_observed_ts')
     summary['scan_gap_minutes']=(s.now-previous)/60_000 if previous else None
     state['last_scan_observed_ts']=s.now
@@ -1952,6 +2105,7 @@ REASON_UA = {
     'SLOTS_FULL':'відкриті дві угоди; новий вхід після закриття однієї',
     'EXISTING_OPPOSITE_PLAN':'вже супроводжуємо протилежний напрямок',
     'DIRECTION_CONFLICT':'протилежні сценарії мають близьку оцінку',
+    'META_REJECTED':'метамодель відхилила сценарії; немає підтвердженої переваги',
     'DAILY_PAUSE':'денний ліміт ризику або кількості входів',
     'SESSION_CLOSED':'наступна торгова сесія для 15m входу',
     'DATA_HOLD':'відновлення повних актуальних даних',
@@ -1987,6 +2141,18 @@ REASON_UA = {
     'STOP_INSIDE_NOISE':'стоп усередині цінового шуму',
     'DETECTOR_ERROR':'помилка аналізу цього сетапу',
     'DEPENDENT_ENTRY_ALREADY_RESERVED':'близький залежний вхід уже займає місце',
+    'ICT_LIQUIDITY_SWEEP_NOT_CONFIRMED':'ліквідність позначено, але зняття та повернення ціни ще немає',
+    'ICT_RECLAIM_LACKS_LIQUIDITY_OR_IMBALANCE':'немає підтвердженого зняття ліквідності або FVG',
+    'PORTFOLIO_DIRECTION_CONFLICT':'скасування: в портфелі не можна одночасно вести LONG і SHORT',
+    'LEGACY_PENDING_EXCESS_CAP_2':'скасування зайвого ліміту, залишаємо максимум два',
+    'BETTER_OPPOSING_SCENARIO':'скасування: протилежний сценарій тепер істотно сильніший',
+    'ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT':'супроводжуємо відкриту позицію; нові ліміти на паузі',
+    'PENDING_DIRECTION_LOCK':'зберігаємо обраний напрямок очікуваних лімітів',
+    'DIRECTION_SELECTED_NARROW_EDGE':'LONG і SHORT близькі за оцінкою; обрано лише один напрямок',
+    'DIRECTION_AMBIGUOUS_NO_TRADE':'оцінки LONG і SHORT занадто близькі: не відкривати угоду',
+    'DIRECTION_AMBIGUOUS_CANCEL_PENDING':'напрямок став неоднозначним, старий ліміт скасовується',
+    'META_LOW_PROBABILITY_OR_NONPOSITIVE_EXPECTANCY':'оцінена перевага входу недостатня',
+    'LEGACY_OPPOSING_OPEN_POSITIONS_MANAGE_ONLY':'виявлено старі протилежні відкриті позиції; нові входи заблоковані',
 }
 
 

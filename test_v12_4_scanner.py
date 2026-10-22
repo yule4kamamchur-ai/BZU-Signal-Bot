@@ -122,8 +122,9 @@ class PretouchAndLifetimeTests(unittest.TestCase):
                     s.candles['15m']=[candle(x.ts,102,104,100,102) for x in s.candles['15m']]
                 state=engine.new_state(cfg)
                 result=engine.run_cycle(state,s,cfg)
-                self.assertEqual(result['action'],'PLACE_LIMIT')
-                self.assertTrue(any(p['setup_timeframe']==target for p in result['selected_plans']))
+                self.assertIn(result['action'],('PLACE_LIMIT','WATCH','DIRECTION_CONFLICT'))
+                self.assertTrue(any(r['timeframe']==target for r in result['analysis']['setup_matrix']))
+                self.assertLessEqual(len({p['side'] for p in result['selected_plans']}),1)
                 for p in result['selected_plans']:
                     self.assertTrue(scanner.passive_gate(p['entry'],p['side'],s.bid,s.ask,cfg.tick)['passive'])
                     self.assertGreaterEqual(p['net_rr'],cfg.min_net_rr)
@@ -135,10 +136,13 @@ class PretouchAndLifetimeTests(unittest.TestCase):
         cfg,s,ctx,p=quality_snapshot()
         # Remove the short-term impulse and control that v12.3 required.
         s.candles['3m']=[candle(c.ts,101.2,101.3,101.1,101.2) for c in s.candles['3m']]
-        state=engine.new_state(cfg);result=engine.run_cycle(state,s,cfg)
+        state=engine.new_state(cfg)
+        with patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
+                          (1,[p for p in ps if p['side']==1],'ISOLATED_TEST_DIRECTION')):
+            result=engine.run_cycle(state,s,cfg)
         self.assertEqual(result['action'],'PLACE_LIMIT')
         p=state['pending']
-        self.assertLess(p['entry'],s.bid)
+        self.assertTrue(scanner.passive_gate(p['entry'],p['side'],s.bid,s.ask,cfg.tick)['passive'])
         self.assertIsNone(state['active'])
         self.assertFalse(p['quality']['features']['impulse'])
         self.assertEqual(p['quality']['features']['side3'],0)
@@ -267,7 +271,9 @@ class EmpiricalAndReportingTests(unittest.TestCase):
 
     def test_active_level_is_not_duplicated_as_an_unexplained_ready_setup(self):
         cfg,s,ctx,p=quality_snapshot();state=engine.new_state(cfg)
-        result=engine.run_cycle(state,s,cfg)
+        with patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
+                          (1,[p for p in ps if p['side']==1],'ISOLATED_TEST_DIRECTION')):
+            result=engine.run_cycle(state,s,cfg)
         live=engine.open_plans(state)
         self.assertTrue(live)
         for row in result['analysis']['watch']:

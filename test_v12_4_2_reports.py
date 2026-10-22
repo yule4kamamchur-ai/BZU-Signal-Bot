@@ -141,7 +141,11 @@ class ForecastTests(unittest.TestCase):
     def test_actual_cycle_persists_forecast_without_replacing_empirical_probability(self):
         from test_signal_quality import quality_snapshot
         cfg,s,ctx,p=quality_snapshot();state=engine.new_state(cfg)
-        result=engine.run_cycle(state,s,cfg)
+        # The fixture has equally plausible LONG/SHORT range sides; this test
+        # isolates forecast persistence rather than the new abstain policy.
+        with patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
+                          (1,[p for p in ps if p['side']==1],'ISOLATED_TEST_DIRECTION')):
+            result=engine.run_cycle(state,s,cfg)
         self.assertTrue(result['selected_plans'])
         selected=result['selected_plans'][0]
         self.assertEqual(selected['outcome_forecast']['status'],'MODEL_ONLY')

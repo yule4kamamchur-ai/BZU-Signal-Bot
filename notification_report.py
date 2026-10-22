@@ -128,6 +128,17 @@ def build(state, snapshot, result, cfg, engine):
     active.sort(key=lambda p: p.get('order_number', 0))
     pending.sort(key=lambda p: p.get('order_number', 0))
     lines += [f'Відкриті угоди: {len(active)} • Ліміти в очікуванні: {len(pending)}']
+    # Explain why no third signal or counter-trend limit is sent this cycle.
+    direction = result.get('analysis', {}).get('direction_policy', {})
+    if direction and not frozen:
+        bias = {1:'LONG',-1:'SHORT',0:'ОЧІКУВАННЯ'}.get(direction.get('side'),'ОЧІКУВАННЯ')
+        why = engine.REASON_UA.get(direction.get('reason'), direction.get('reason',''))
+        lines += [f'Обраний сценарій: {bias}' + (f' • {why}' if why else '')]
+
+    diagnostic = result.get('analysis', {}).get('meta_model', {})
+    if diagnostic.get('validated'):
+        lines += [f'Метафільтр: перевірений на PAPER-епізодах • {diagnostic.get("independent_episodes",0)} незалежних']
+    # Do not print an unsupported 70-90% win probability from a cold model.
     if result.get('action')=='DAILY_PAUSE':
         lines += ['Нові входи: досягнуто денний ліміт ризику.']
     if frozen:
@@ -169,6 +180,9 @@ def build(state, snapshot, result, cfg, engine):
         label=engine.display_order(state,p['id'])
         side='LONG' if p['side']==1 else 'SHORT'
         lines += [f"{label} {side} • Вхід: {p['entry']:.8g}"]
+        meta_view=p.get('meta_decision') or {}
+        if meta_view.get('validated') and meta_view.get('probability') is not None:
+            lines += [f"Прогноз TP раніше SL після входу: {meta_view['probability']:.0%} (PAPER-модель, експериментально)"]
     if cancelling:
         lines += ['', 'СКАСУВАННЯ ЛІМІТІВ']
         for p in cancelling:
@@ -202,7 +216,7 @@ def build(state, snapshot, result, cfg, engine):
         else:
             text = 'скасовано без входу' if event['kind'] == 'CANCELLED' else 'строк минув, входу не було'
             reason=event.get('reason')
-            if reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED','CAPITULATION_RECOVERY_LOST'):
+            if reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED','CAPITULATION_RECOVERY_LOST','PORTFOLIO_DIRECTION_CONFLICT','BETTER_OPPOSING_SCENARIO','LEGACY_PENDING_EXCESS_CAP_2'):
                 text += ' • '+engine.REASON_UA[reason]
         lines += [f"{engine.display_order(state, order_id)} • {text}"]
     represented = {p['id'] for p in active+pending+cancelling} | set(closed) | set(no_entry)

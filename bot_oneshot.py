@@ -84,7 +84,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v12.10.0-causal-direction-control"
+BOT_VERSION = "full-ict-v12.12.0-causal-meta-selector"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
