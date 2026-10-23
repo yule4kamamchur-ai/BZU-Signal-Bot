@@ -78,6 +78,34 @@ class CompactReports(unittest.TestCase):
         self.assertIn('Остання закрита:', text)
         self.assertNotIn('ЗАКРИТО: -1.00R', text)
 
+    def test_closure_after_upgrade_is_counted_in_total_not_new_entry_cohort(self):
+        old_trade = order()
+        old_trade.update(id='closed-previous', order_id='closed-previous',
+                         version='full-ict-v12.10.0-causal-direction-control',
+                         entry_version='full-ict-v12.10.0-causal-direction-control',
+                         exit_version=engine.VERSION, closed_ts=NOW-1000,
+                         net_r=1.69, close_reason='ADAPTIVE_FULL_EXIT')
+        self.state['trades'] = [old_trade]
+        text = self.text()
+        self.assertIn('Усі закриті угоди (історія всіх версій): 1', text)
+        self.assertIn('100.0% (1/1) • +1.69R', text)
+        self.assertIn('Угоди, відкриті за v12.12.0: ще немає завершених', text)
+        self.assertIn('Останнє закриття зараховано до версії входу v12.10.0', text)
+        self.assertNotIn('v12.12.0: закритих угод ще немає', text)
+
+    def test_new_and_legacy_closures_are_separate_cohorts_but_one_history(self):
+        old = order()
+        old.update(id='older', order_id='older', version='full-ict-v12.10.0-older',
+                   net_r=-1., closed_ts=NOW-2000)
+        current = order()
+        current.update(id='newer', order_id='newer', entry_version=engine.VERSION,
+                       version=engine.VERSION, net_r=1.7, closed_ts=NOW-1000)
+        self.state['trades'] = [old, current]
+        text = self.text()
+        self.assertIn('Усі закриті угоди (історія всіх версій): 2', text)
+        self.assertIn('50.0% (1/2) • +0.70R', text)
+        self.assertIn('Угоди, відкриті за v12.12.0: WR 100.0% (1/1) • +1.70R', text)
+
     def test_unknown_result_keeps_reserved_slot_visible(self):
         self.state['reconciliation'] = {'order_id': 'uncertain', 'ts': NOW}
         text = self.text({'action': 'RECONCILIATION_REQUIRED'})

@@ -245,19 +245,30 @@ def build(state, snapshot, result, cfg, engine):
                       candidate_reason(best, cfg, engine)]
     if result.get('action') in ('DAILY_PAUSE', 'SESSION_CLOSED', 'DIRECTION_CONFLICT'):
         lines += ['', engine.REASON_UA.get(result['action'], 'Нові входи на паузі') + '.']
-    stats = engine.statistics_by_entry_version(state.get('trades', []))
+    # Display two separate accounting scopes: all completed PAPER trades and
+    # the entry-version cohort. A trade opened on v12.10 and closed while
+    # v12.12 is running remains a v12.10 entry, but MUST still be visible as
+    # a real closure in the lifetime history.
+    trades = state.get('trades', [])
+    if trades:
+        lifetime = engine.statistics(trades)
+        lines += ['', f"Усі закриті угоди (історія всіх версій): "
+                  f"{lifetime['trades']} • WR {lifetime['win_rate']*100:.1f}% "
+                  f"({lifetime['wins']}/{lifetime['trades']}) • {lifetime['net_r']:+.2f}R"]
+    stats = engine.statistics_by_entry_version(trades)
     stat = stats.get(engine.VERSION, {})
     if stat.get('trades'):
-        version_label = engine.VERSION.split('-')[2]
-        lines += ['', f"WR сигналів {version_label}: {stat['win_rate']*100:.1f}% ({stat['wins']}/{stat['trades']}) • "
+        lines += [f"Угоди, відкриті за {engine.REPORT_RELEASE}: "
+                  f"WR {stat['win_rate']*100:.1f}% ({stat['wins']}/{stat['trades']}) • "
                   f"{stat['net_r']:+.2f}R"]
-    elif state.get('trades'):
-        last=max(state['trades'],key=lambda t:t.get('closed_ts',0))
-        previous_version=engine.trade_entry_version(last)
-        previous=stats[previous_version]
-        label=previous_version.split('-')[2] if previous_version.startswith('full-ict-') else previous_version
-        lines += ['',f"{engine.REPORT_RELEASE}: закритих угод ще немає.",
-                  f"Попередня {label}: WR {previous['win_rate']*100:.1f}% ({previous['wins']}/{previous['trades']})."]
+    elif trades:
+        last = max(trades, key=lambda t: t.get('closed_ts', 0))
+        previous_version = engine.trade_entry_version(last)
+        label = (previous_version.split('-')[2]
+                 if previous_version.startswith('full-ict-') else previous_version)
+        lines += [f"Угоди, відкриті за {engine.REPORT_RELEASE}: ще немає завершених.",
+                  f"Останнє закриття зараховано до версії входу {label}, "
+                  f"а не до версії програми на момент виходу."]
     return '\n'.join(lines)
 
 
