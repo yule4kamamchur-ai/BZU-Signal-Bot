@@ -7,6 +7,7 @@ sweeps, and FVGs are not confused with liquidity events.
 from __future__ import annotations
 
 from math import isfinite
+import ict_methodology
 
 TF = {'3m':180_000, '15m':900_000, '1H':3_600_000, '4H':14_400_000}
 # These detectors can propose a useful *location* without an ICT trade trigger.
@@ -72,30 +73,76 @@ def evidence(plan, snapshot, tick):
             gaps.append({'known_ts':right.ts+TF[tf], 'low':round(low,8),
                          'high':round(high,8), 'distance':round(distance,8)})
     impulse=False
+    last_impulse_ts=0
     for c in rows[-6:]:
         if side*(c.close-c.open)>=.75*vol:
             span=max(c.high-c.low,tick)
             location=(c.close-c.low)/span if side==1 else (c.high-c.close)/span
             if location>=.70:
                 impulse=True
-                break
+                last_impulse_ts=c.ts+TF[tf]
+
     sweep=bool(sweeps); fvg=bool(gaps)
+    # Strictly historical confirmed pivot: two CLOSED right-hand bars are
+    # required before a level may be broken. A close beyond the level alone
+    # cannot retroactively establish that the pivot was known at that moment.
+    shifts=[]
+    if len(rows)>=12:
+        for j in range(3,len(rows)-3):
+            window=rows[j-2:j+3]
+            pivot=(rows[j].high==max(b.high for b in window) if side==1
+                   else rows[j].low==min(b.low for b in window))
+            if not pivot:continue
+            level=rows[j].high if side==1 else rows[j].low
+            known=rows[j+2].ts+TF[tf]
+            for k in range(max(j+3,len(rows)-8),len(rows)):
+                if rows[k].ts < known:continue
+                if side*(rows[k-1].close-level)<=0 and side*(rows[k].close-level)>tick:
+                    shifts.append({'known_ts':rows[k].ts+TF[tf], 'level':round(level,8)})
+    # The price must FIRST sweep/reclaim liquidity and only THEN break the
+    # known structure. An FVG without this order is not an ICT sweep+MSS.
+    sequence=any(t['known_ts']>w['known_ts'] for w in sweeps for t in shifts)
+    # A rejection is a completed wick-through and close-back at the PLANNED
+    # entry level; a nearby price quote without a candle is not a rejection.
+    rejected=[]; reclaimed=[]; accepted=[]
+    for i in range(max(1,len(rows)-8),len(rows)):
+        c,previous=rows[i],rows[i-1]
+        hit=(c.low<entry-tick if side==1 else c.high>entry+tick)
+        ret=side*(c.close-entry)>tick*.5
+        wick=(min(c.open,c.close)-c.low if side==1 else c.high-max(c.open,c.close))
+        if hit and ret and wick>=max(.12*vol,2*tick):
+            rejected.append(c.ts+TF[tf])
+        if side*(previous.close-entry)<-tick and ret:
+            reclaimed.append(c.ts+TF[tf])
+        if side*(previous.close-entry)<=tick and ret and \
+                side*(c.close-c.open)>=.50*vol:
+            accepted.append(c.ts+TF[tf])
+    # Breakout acceptance also recognizes 2 consecutive closed candles on
+    # the breakout side of a pre-mapped reference. This is *not* inferred from
+    # the current unconfirmed quote.
+    if len(rows)>=8 and any(side*(c.close-entry)<=0 for c in rows[-8:-2]) and \
+            all(side*(c.close-entry)>tick for c in rows[-2:]):
+        accepted.append(rows[-1].ts+TF[tf])
     return {'timeframe':tf,'as_of_ts':snapshot.now,
             'sweep_reclaim':sweep,'latest_sweep':sweeps[-1] if sweep else None,
             'near_unmitigated_fvg':fvg,'nearest_fvg':min(gaps,key=lambda g:g['distance']) if fvg else None,
-            'displacement':impulse,
-            'ict_confluence_count':int(sweep)+int(fvg)+int(impulse),
+            'displacement':impulse,'latest_displacement_known_ts':last_impulse_ts,
+            'structure_shift':bool(shifts),
+            'latest_structure_shift':shifts[-1] if shifts else None,
+            'sweep_then_shift':sequence,'level_rejection':bool(rejected),
+            'reference_reclaim':bool(reclaimed),'break_acceptance':bool(accepted),
+            'ict_confluence_count':int(sweep)+int(fvg)+int(impulse)+int(bool(shifts)),
             'proof_source':'CLOSED_CANDLES_ONLY'}
 
 
 def admit(plan, proof):
-    """Named claims need the named evidence; others stay eligible for ranking."""
-    setup=plan.get('setup','')
-    if setup in SWEEP_REQUIRED and not proof['sweep_reclaim']:
-        return False, 'ICT_LIQUIDITY_SWEEP_NOT_CONFIRMED'
-    if setup in RECLAIM_REQUIRED and not (proof['sweep_reclaim'] or proof['near_unmitigated_fvg']):
-        return False, 'ICT_RECLAIM_LACKS_LIQUIDITY_OR_IMBALANCE'
-    return True, 'CONFIRMED'
+    """Every original detector has a distinct, auditable ICT contract."""
+    accepted,reason,details=ict_methodology.validate(plan,proof)
+    plan['ict_contract']=details
+    # Preserve the historical external reason for the original liquidity map.
+    if not accepted and plan.get('setup')=='LIQUIDITY_LADDER' and not proof.get('sweep_reclaim'):
+        reason='ICT_LIQUIDITY_SWEEP_NOT_CONFIRMED'
+    return accepted,reason
 
 
 def adjusted_score(plan, proof):

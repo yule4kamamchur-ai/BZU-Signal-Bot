@@ -101,7 +101,9 @@ class PercentageAndWinnerTests(unittest.TestCase):
 
     def test_real_ready_rows_pass_all_counted_conditions(self):
         cfg,s,ctx,p=quality_snapshot()
-        result=engine.analyze(s,cfg,engine.new_state(cfg))
+        # Scope to readiness arithmetic, not the newly strict ICT event gate.
+        with patch.object(engine.policy,'admit',return_value=(True,'CONFIRMED')):
+            result=engine.analyze(s,cfg,engine.new_state(cfg))
         ready=[r for r in result['setup_matrix'] if r['status']=='LIMIT_READY']
         self.assertTrue(ready)
         for row in ready:

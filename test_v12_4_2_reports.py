@@ -143,7 +143,8 @@ class ForecastTests(unittest.TestCase):
         cfg,s,ctx,p=quality_snapshot();state=engine.new_state(cfg)
         # The fixture has equally plausible LONG/SHORT range sides; this test
         # isolates forecast persistence rather than the new abstain policy.
-        with patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
+        with patch.object(engine.policy,'admit',return_value=(True,'CONFIRMED')), \
+             patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
                           (1,[p for p in ps if p['side']==1],'ISOLATED_TEST_DIRECTION')):
             result=engine.run_cycle(state,s,cfg)
         self.assertTrue(result['selected_plans'])

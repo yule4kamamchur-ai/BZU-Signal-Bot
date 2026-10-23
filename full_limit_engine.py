@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.12.0-causal-meta-selector"
-REPORT_RELEASE = 'v12.12.0'
+VERSION = "full-ict-v12.13.0-causal-ict-fast-rotation"
+REPORT_RELEASE = 'v12.13.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -42,6 +42,7 @@ import setup_paths
 import execution_atlas
 import directional_policy as policy
 import trade_meta_model as meta
+import portfolio_arbitration as arbitration
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -701,6 +702,11 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "planning_policy":a.evidence.get('planning_policy','CONFIRMED_PATTERN_LIMIT'),
             "entry_policy": "PRETOUCH_LIMIT", "detector_confirmed": True,
             "pattern_proof":copy.deepcopy(a.evidence.get('recovery_proof',{})),
+            # Original native detector's observed event, not a forecast or a
+            # claim invented by the portfolio router. Required by the ICT
+            # contracts when an event predates the short confluence window.
+            "anchor_proof":copy.deepcopy(a.evidence),
+            "anchor_known_ts":min(s.now,a.created_ts),
             "max_hold_minutes": cfg.max_hold_minutes*scale, "intraday": source_tf == '15m',
             "readiness_pct": 100.0,
             "include_commission":cfg.include_commission,
@@ -1606,6 +1612,30 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
         if book.get('pending'):
             waiting.append(book['pending'])
     park_pending(state,waiting)
+    reconcile_cancellations_at_closed_boundary(state, s)
+
+
+def reconcile_cancellations_at_closed_boundary(state: dict, s: Snapshot) -> None:
+    """Finalize cancel on its boundary, not a whole candle later.
+
+    The engine has already examined the last possibly executable 3m bar;
+    last_bar plus a matching CLOSED bar are required to prove no fill. An
+    unknown interval remains reserved and cannot silently become a vacancy.
+    """
+    waiting = []
+    for plan in pending_plans(state):
+        effective = plan.get('cancel_effective_ts',0)
+        if (effective and s.now >= effective and
+                plan.get('last_bar',-1) >= effective-TF['3m'] and
+                any(c.confirmed and c.ts+TF['3m']==effective
+                    for c in s.candles.get('3m',[]))):
+            book={**state,'pending':plan,'active':None,'reconciliation':None}
+            end_order(book,plan,'CANCELLED',
+                      plan.get('cancel_reason','PORTFOLIO_REPLACEMENT'),effective)
+        else:
+            waiting.append(plan)
+    if len(waiting)!=len(pending_plans(state)):
+        park_pending(state,waiting)
 
 
 def day_stats(state: dict, now: int, cfg: Config) -> dict:
@@ -1792,6 +1822,51 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             request_cancel(state,obsolete,'LEGACY_PENDING_EXCESS_CAP_2',s.now)
         can_place=False
         pending=pending_plans(state)
+    # Predictive limit rotation: compare eligible challengers in parallel with
+    # both occupied orders. At a fully reconciled 3m boundary, the cancelled
+    # PAPER plan and its replacement may change in the SAME cycle. At any
+    # other timestamp the unresolved part-bar remains reserved until proven.
+    arbitration_audit={'decision':'SKIPPED','reason':'NO_PENDING_OR_UNSAFE_BOOK'}
+    rotation=state.get('portfolio_rotation_intent')
+    if rotation and (s.now>rotation.get('expires_ts',0) or active):
+        state.pop('portfolio_rotation_intent',None)
+    if pending and not active and not manual_block and not analysis['health'] and can_place \
+            and not any(p.get('cancel_requested_ts') for p in pending):
+        proposed_for_rotation,_,_=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
+        pending_sides_for_rotation={p['side'] for p in pending}
+        if len(pending_sides_for_rotation)==1 and proposed_for_rotation in pending_sides_for_rotation:
+            arbitration_audit=arbitration.decision(pending,valid,s,cfg,policy,
+                                                   state.get('last_portfolio_swap_ts',0))
+        else:
+            arbitration_audit={'decision':'SKIPPED','reason':'DIRECTION_NOT_CONFIRMED_FOR_ROTATION'}
+        if arbitration_audit['decision']=='REQUEST_REPLACEMENT':
+            obsolete=next(p for p in pending if p['id']==arbitration_audit['replace_id'])
+            challenger=next(p for p in valid if p['id']==arbitration_audit['candidate_id'])
+            at_boundary=(s.now%TF['3m']==0 and any(
+                c.confirmed and c.ts+TF['3m']==s.now for c in s.candles.get('3m',[])))
+            request_cancel(state,obsolete,'BETTER_SAME_DIRECTION_ICT_CANDIDATE',s.now)
+            state['last_portfolio_swap_ts']=s.now
+            intent={'candidate_event_key':challenger.get('event_key'),
+                    'candidate_id':challenger['id'],'replaced_id':obsolete['id'],
+                    'decided_ts':s.now,'expires_ts':min(challenger['expires_ts'],
+                                                       s.now+15*60_000),
+                    'status':'PREPARED_WAIT_RECONCILIATION'}
+            state['portfolio_rotation_intent']=intent
+            emit(state,'PORTFOLIO_REPLACEMENT_DECISION',s.now,
+                 order_id=obsolete['id'],replacement_id=challenger['id'],
+                 advantage=arbitration_audit['advantage'],
+                 criterion='COMPARATIVE_SCORE_NOT_EXPECTED_WR',
+                 fast_path=bool(at_boundary and all(p['id']!=obsolete['id'] for p in pending_plans(state))))
+            pending=pending_plans(state)
+            if at_boundary and all(p['id']!=obsolete['id'] for p in pending) \
+                    and not active_plans(state) and not any(p.get('cancel_requested_ts') for p in pending):
+                arbitration_audit['decision']='FAST_ROTATE_SAME_CYCLE'
+                intent['status']='READY_TO_ARM'
+            else:
+                can_place=False
+                action='CANCEL_LIMIT'
+                arbitration_audit['decision']='WAIT_CANCEL_RECONCILIATION'
+    analysis['portfolio_arbitration']=arbitration_audit
     active_sides={p['side'] for p in active}
     pending_sides={p['side'] for p in pending if not p.get('cancel_requested_ts')}
     selected_side=0
@@ -1844,6 +1919,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             elif can_place:
                 selected_side=current
                 direction_reason='PENDING_DIRECTION_LOCK'
+            elif arbitration_audit.get('decision')=='REQUEST_REPLACEMENT':
+                selected_side=current
+                direction_reason='BETTER_LIMIT_CANCELLING_BEFORE_REPLACEMENT'
         elif proposed_side:
             selected_side=proposed_side
         # No existing thesis and tied scores => WAIT, not simultaneous hedges.
@@ -1852,13 +1930,24 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         'meta_status':fitted['status'],
         'pending':len(pending),'open_positions':len(active),
         'long_ready':sum(p['side']==1 for p in valid),
-        'short_ready':sum(p['side']==-1 for p in valid)}
+        'short_ready':sum(p['side']==-1 for p in valid),
+        'arbitration_decision':arbitration_audit.get('decision')}
     state['portfolio_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
     if can_place and selected_side:
         # At most TWO waiting limit orders TOTAL. This is the user's risk book,
         # not a pile of unbounded candidates competing after the next quote.
         plans=[p for p in valid if p['side']==selected_side]
         plans=sorted(plans,key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+        intent=state.get('portfolio_rotation_intent')
+        if intent and not any(p.get('cancel_requested_ts') for p in pending_plans(state)):
+            # Revalidate right NOW; a plan saved in a previous cycle is never
+            # authorised to trade without current closed-candle/price proof.
+            matching=next((p for p in plans if p.get('event_key')==intent.get('candidate_event_key')
+                           and execution_atlas.passive_at_open(p,s.price,cfg.tick)),None)
+            if matching:
+                plans=[matching]+[p for p in plans if p is not matching]
+            else:
+                state.pop('portfolio_rotation_intent',None)
         for top in plans:
             existing=pending_plans(state)
             if len(existing)>=2 or occupied_slots(state)>=2:
@@ -1894,6 +1983,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             park_pending(state,pending_plans(state)+[plan])
             bind_order_numbers(state)
             selected.append(plan)
+            intent=state.get('portfolio_rotation_intent')
+            if intent and intent.get('candidate_event_key')==plan.get('event_key'):
+                emit(state,'PORTFOLIO_ROTATION_COMMITTED',s.now,
+                     replacement_id=plan['id'],replaced_id=intent['replaced_id'],
+                     decision_ts=intent['decided_ts'],no_third_limit=True)
+                state.pop('portfolio_rotation_intent',None)
             emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
                  stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
             action='PLACE_LIMIT'
@@ -1961,7 +2056,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
                'funnel':{**analysis.get('funnel',{}),'placed':len(selected)},
                'admission_by_side':analysis.get('admission_by_side',{}),
-               'direction_policy':analysis.get('direction_policy',{})}
+               'direction_policy':analysis.get('direction_policy',{}),
+               'portfolio_arbitration':analysis.get('portfolio_arbitration',{})}
     previous=state.get('last_scan_observed_ts')
     summary['scan_gap_minutes']=(s.now-previous)/60_000 if previous else None
     state['last_scan_observed_ts']=s.now
@@ -2142,6 +2238,19 @@ REASON_UA = {
     'DETECTOR_ERROR':'помилка аналізу цього сетапу',
     'DEPENDENT_ENTRY_ALREADY_RESERVED':'близький залежний вхід уже займає місце',
     'ICT_LIQUIDITY_SWEEP_NOT_CONFIRMED':'ліквідність позначено, але зняття та повернення ціни ще немає',
+    'BETTER_LIMIT_CANCELLING_BEFORE_REPLACEMENT':'очікуємо підтвердження скасування слабшого ліміту',
+    'BETTER_SAME_DIRECTION_ICT_CANDIDATE':'сильніший незалежний ICT-сценарій; спершу скасовуємо старий ліміт',
+    'ICT_RANGE_EDGE_WITHOUT_REJECTION':'рівень діапазону є, але підтвердженої реакції поки немає',
+    'ICT_SESSION_HAS_NO_PRICE_TRIGGER':'час сесії сам по собі не є сигналом ICT',
+    'ICT_VALUE_RECLAIM_UNCONFIRMED':'рівень вартості без підтвердженого reclaim і імпульсу',
+    'ICT_CONTINUATION_DEPARTURE_MISSING':'відкат без підтвердженого початку руху',
+    'ICT_SWEEP_STRUCTURE_SEQUENCE_MISSING':'немає послідовності зняття ліквідності та зміни структури',
+    'ICT_MOMENTUM_IMBALANCE_MISSING':'імпульс без підтвердженої незаповненої FVG',
+    'ICT_BREAK_CLOSE_MISSING':'немає підтвердженого пробою закритою свічкою',
+    'ICT_ACCEPTANCE_NOT_CONFIRMED':'немає підтвердженого прийняття пробитого рівня',
+    'ICT_STRUCTURE_SHIFT_NOT_CONFIRMED':'немає підтвердженого MSS/BOS',
+    'ICT_FAILED_BREAK_NOT_PROVEN':'немає доказу відмови від пробою',
+    'ICT_RECOVERY_NOT_CONFIRMED':'відновлення після капітуляції не підтверджено',
     'ICT_RECLAIM_LACKS_LIQUIDITY_OR_IMBALANCE':'немає підтвердженого зняття ліквідності або FVG',
     'PORTFOLIO_DIRECTION_CONFLICT':'скасування: в портфелі не можна одночасно вести LONG і SHORT',
     'LEGACY_PENDING_EXCESS_CAP_2':'скасування зайвого ліміту, залишаємо максимум два',

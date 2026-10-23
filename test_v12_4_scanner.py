@@ -137,7 +137,9 @@ class PretouchAndLifetimeTests(unittest.TestCase):
         # Remove the short-term impulse and control that v12.3 required.
         s.candles['3m']=[candle(c.ts,101.2,101.3,101.1,101.2) for c in s.candles['3m']]
         state=engine.new_state(cfg)
-        with patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
+        # Legacy fixtures verify messaging/pretouch logic, not ICT admission.
+        with patch.object(engine.policy,'admit',return_value=(True,'CONFIRMED')), \
+             patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
                           (1,[p for p in ps if p['side']==1],'ISOLATED_TEST_DIRECTION')):
             result=engine.run_cycle(state,s,cfg)
         self.assertEqual(result['action'],'PLACE_LIMIT')
@@ -271,7 +273,9 @@ class EmpiricalAndReportingTests(unittest.TestCase):
 
     def test_active_level_is_not_duplicated_as_an_unexplained_ready_setup(self):
         cfg,s,ctx,p=quality_snapshot();state=engine.new_state(cfg)
-        with patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
+        # Legacy fixtures verify messaging/pretouch logic, not ICT admission.
+        with patch.object(engine.policy,'admit',return_value=(True,'CONFIRMED')), \
+             patch.object(engine.policy,'choose',side_effect=lambda ps,*a,**kw:
                           (1,[p for p in ps if p['side']==1],'ISOLATED_TEST_DIRECTION')):
             result=engine.run_cycle(state,s,cfg)
         live=engine.open_plans(state)

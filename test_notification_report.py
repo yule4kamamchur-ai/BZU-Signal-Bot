@@ -22,6 +22,22 @@ class CompactReports(unittest.TestCase):
         engine.bind_order_numbers(self.state)
         return engine.build_message(self.state, self.snap, result or {'action': 'WATCH'}, self.cfg)
 
+    def test_portfolio_rotation_message_only_reports_actual_commit(self):
+        self.state['events']=[{'kind':'PORTFOLIO_ROTATION_COMMITTED','ts':NOW,
+                               'replaced_id':'old','replacement_id':'new'}]
+        result={'action':'PLACE_LIMIT','events':self.state['events']}
+        text=self.text(result)
+        self.assertIn('Заміна ліміту:',text)
+        self.assertIn('без третього ордера',text)
+
+    def test_staged_rotation_does_not_pretend_to_be_an_open_limit(self):
+        self.state['portfolio_rotation_intent']={
+            'status':'PREPARED_WAIT_RECONCILIATION','candidate_id':'future',
+            'replaced_id':'old'}
+        text=self.text({'action':'CANCEL_LIMIT'})
+        self.assertIn('перевіряємо виконання старого ліміту',text)
+        self.assertIn('Ліміти в очікуванні: 0',text)
+
     def test_pending_and_active_have_distinct_sections_and_stable_numbers(self):
         active = order()
         active.update(id='opened', order_number=5, status='OPEN', remaining=.35,
@@ -89,9 +105,9 @@ class CompactReports(unittest.TestCase):
         text = self.text()
         self.assertIn('Усі закриті угоди (історія всіх версій): 1', text)
         self.assertIn('100.0% (1/1) • +1.69R', text)
-        self.assertIn('Угоди, відкриті за v12.12.0: ще немає завершених', text)
+        self.assertIn(f'Угоди, відкриті за {engine.REPORT_RELEASE}: ще немає завершених', text)
         self.assertIn('Останнє закриття зараховано до версії входу v12.10.0', text)
-        self.assertNotIn('v12.12.0: закритих угод ще немає', text)
+        self.assertNotIn(f'{engine.REPORT_RELEASE}: закритих угод ще немає', text)
 
     def test_new_and_legacy_closures_are_separate_cohorts_but_one_history(self):
         old = order()
@@ -104,7 +120,7 @@ class CompactReports(unittest.TestCase):
         text = self.text()
         self.assertIn('Усі закриті угоди (історія всіх версій): 2', text)
         self.assertIn('50.0% (1/2) • +0.70R', text)
-        self.assertIn('Угоди, відкриті за v12.12.0: WR 100.0% (1/1) • +1.70R', text)
+        self.assertIn(f'Угоди, відкриті за {engine.REPORT_RELEASE}: WR 100.0% (1/1) • +1.70R', text)
 
     def test_unknown_result_keeps_reserved_slot_visible(self):
         self.state['reconciliation'] = {'order_id': 'uncertain', 'ts': NOW}

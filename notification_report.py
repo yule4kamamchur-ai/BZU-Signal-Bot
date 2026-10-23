@@ -135,6 +135,20 @@ def build(state, snapshot, result, cfg, engine):
         why = engine.REASON_UA.get(direction.get('reason'), direction.get('reason',''))
         lines += [f'Обраний сценарій: {bias}' + (f' • {why}' if why else '')]
 
+    # Describe a real portfolio rotation rather than the misleading message
+    # 'no entries'. A prepared candidate is NOT an actual pending limit.
+    rotations=[ev for ev in result.get('events', [])
+               if ev.get('kind')=='PORTFOLIO_ROTATION_COMMITTED']
+    if rotations and not frozen:
+        latest=rotations[-1]
+        old_label=engine.display_order(state,latest.get('replaced_id',''))
+        new_label=engine.display_order(state,latest.get('replacement_id',''))
+        lines += [f'Заміна ліміту: {old_label} → {new_label}; в одному циклі, без третього ордера.']
+    elif state.get('portfolio_rotation_intent') and not frozen:
+        intent=state['portfolio_rotation_intent']
+        if intent.get('status')=='PREPARED_WAIT_RECONCILIATION':
+            lines += ['Сильніший сценарій підготовлений; перевіряємо виконання старого ліміту перед заміною.']
+
     diagnostic = result.get('analysis', {}).get('meta_model', {})
     if diagnostic.get('validated'):
         lines += [f'Метафільтр: перевірений на PAPER-епізодах • {diagnostic.get("independent_episodes",0)} незалежних']
