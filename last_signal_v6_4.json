@@ -478,7 +478,7 @@
     "execution_source": "LIMIT_ARMED_AT_LEVEL",
     "execution": "PAPER_SIGNAL",
     "status": "OPEN",
-    "last_bar": 1792904400000,
+    "last_bar": 1792905300000,
     "parent_keys": [
       "dc4fea22f32c8ec808",
       "4b3b8578b0e0c4e39f",
@@ -752,7 +752,7 @@
     "filled_ts": 1792867860000,
     "opened_at": "2026-10-24T18:51:00+00:00",
     "mfe_r": 0.0,
-    "mae_r": 0.49122807017544035,
+    "mae_r": 0.5877192982456152,
     "strong_closes": 0,
     "remaining": 1.0,
     "realized_gross_r": 0.0,
@@ -131366,507 +131366,6 @@
     }
   ],
   "signals": [
-    {
-      "ts": 1792104466219,
-      "time": "2026-10-15T22:47:46.219000+00:00",
-      "version": "full-ict-v12.5.0-causal-early-limits",
-      "action": "FOLLOW",
-      "price": 102.8,
-      "plan_id": null,
-      "placed_ids": [],
-      "followed_ids": [
-        "1d2ab6171e117132dc",
-        "7eee374d58f0f2db87"
-      ],
-      "occupied_slots": 2,
-      "max_slots": 2,
-      "rejections": {
-        "ANCHOR_EXPIRED_AWAITING_NEW_EVENT": 1,
-        "LIMIT_WOULD_CROSS_SPREAD": 65,
-        "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION": 59,
-        "LEVEL_OR_EVENT_COOLDOWN": 7,
-        "STRONG_OPPOSING_ZONE_BEFORE_TP": 41,
-        "COMBINED_CONTEXT_SCORE_LOW": 43,
-        "TARGET_DISTANCE_TOO_SMALL": 1,
-        "ANCHOR_INVALIDATED": 1,
-        "LIMIT_UNREACHABLE": 1
-      },
-      "health": [],
-      "daily": {
-        "net_r": 0,
-        "losses_r": 0,
-        "entries": 0
-      },
-      "detectors": [
-        {
-          "detector": "detect_sweep_reclaim",
-          "setup": "SWEEP_RECLAIM",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_capitulation_recovery",
-          "setup": "CAPITULATION_RECOVERY",
-          "status": "DETECTED",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "DETECTED"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_range_edge_reversal",
-          "setup": "RANGE_EDGE_REVERSAL",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_failed_auction_rejection",
-          "setup": "FAILED_AUCTION_REJECTION",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_liquidity_sweep_reversal_short",
-          "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_buyer_exhaustion_short",
-          "setup": "BUYER_EXHAUSTION_SHORT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_pullback_continuation",
-          "setup": "PULLBACK_CONTINUATION",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_fresh_base_continuation",
-          "setup": "FRESH_BASE_CONTINUATION",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_acceptance_retest_continuation",
-          "setup": "ACCEPTANCE_RETEST_CONTINUATION",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_momentum_no_pullback_continuation",
-          "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_acceleration_pullback_reentry",
-          "setup": "ACCELERATION_PULLBACK_REENTRY",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_direction_flip_15m",
-          "setup": "DIRECTION_FLIP_15M",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_trend_ignition",
-          "setup": "TREND_IGNITION",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_breakout_retest",
-          "setup": "BREAKOUT_RETEST",
-          "status": "DETECTED",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "DETECTED"
-            }
-          ]
-        },
-        {
-          "detector": "detect_range_compression_breakout",
-          "setup": "RANGE_COMPRESSION_BREAKOUT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_opening_range_breakout",
-          "setup": "OPENING_RANGE_BREAKOUT",
-          "status": "DETECTED",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "DETECTED"
-            },
-            {
-              "timeframe": "1H",
-              "status": "DETECTED"
-            },
-            {
-              "timeframe": "4H",
-              "status": "DETECTED"
-            }
-          ]
-        },
-        {
-          "detector": "detect_liquidity_ladder",
-          "setup": "LIQUIDITY_LADDER",
-          "status": "DETECTED",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "DETECTED"
-            }
-          ]
-        },
-        {
-          "detector": "detect_failed_opening_range_breakout",
-          "setup": "FAILED_OPENING_RANGE_BREAKOUT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_failed_breakout_short",
-          "setup": "FAILED_BREAKOUT_SHORT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_mss_reversal_short",
-          "setup": "MSS_REVERSAL_SHORT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_or_failure_2_short",
-          "setup": "OR_FAILURE_2_SHORT",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_session_mean_reclaim",
-          "setup": "SESSION_MEAN_RECLAIM",
-          "status": "DETECTED",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "DETECTED"
-            },
-            {
-              "timeframe": "1H",
-              "status": "DETECTED"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        },
-        {
-          "detector": "detect_daily_weekly_open_reclaim",
-          "setup": "DAILY_WEEKLY_OPEN_RECLAIM",
-          "status": "DETECTED",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "DETECTED"
-            },
-            {
-              "timeframe": "4H",
-              "status": "DETECTED"
-            }
-          ]
-        },
-        {
-          "detector": "detect_time_of_day_adaptive",
-          "setup": "TIME_OF_DAY_ADAPTIVE",
-          "status": "NO_SETUP",
-          "timeframes": [
-            {
-              "timeframe": "15m",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "1H",
-              "status": "NO_SETUP"
-            },
-            {
-              "timeframe": "4H",
-              "status": "NO_SETUP"
-            }
-          ]
-        }
-      ],
-      "raw_plans": 3,
-      "registered_setups": 24,
-      "timeframe_evaluations": 72,
-      "funnel": {
-        "evaluated": 72,
-        "detected": 10,
-        "live_anchors": 221,
-        "geometry_passed": 3,
-        "quality_passed": 2,
-        "placed": 0
-      }
-    },
     {
       "ts": 1792105402808,
       "time": "2026-10-15T23:03:22.808000+00:00",
@@ -860637,9 +860136,57 @@
         "reason": "NO_PENDING_OR_UNSAFE_BOOK"
       },
       "scan_gap_minutes": 9.905766666666667
+    },
+    {
+      "ts": 1792905598938,
+      "time": "2026-10-25T05:19:58.938000+00:00",
+      "version": "full-ict-v12.13.0-causal-ict-fast-rotation",
+      "action": "FOLLOW",
+      "price": 111.37,
+      "plan_id": null,
+      "placed_ids": [],
+      "followed_ids": [
+        "aac5b3c4fc52b36d42"
+      ],
+      "occupied_slots": 1,
+      "max_slots": 2,
+      "rejections": {},
+      "health": [
+        "SPREAD_TOO_WIDE"
+      ],
+      "daily": {
+        "net_r": 0,
+        "losses_r": 0,
+        "entries": 0
+      },
+      "daily_entry_limits_enabled": false,
+      "detectors": [],
+      "raw_plans": 0,
+      "registered_setups": 24,
+      "timeframe_evaluations": 0,
+      "funnel": {
+        "placed": 0
+      },
+      "admission_by_side": {},
+      "direction_policy": {
+        "side": 1,
+        "reason": "ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT",
+        "meta_rejected": 0,
+        "meta_status": "MONITOR_ONLY_INSUFFICIENT_HISTORY",
+        "pending": 0,
+        "open_positions": 1,
+        "long_ready": 0,
+        "short_ready": 0,
+        "arbitration_decision": "SKIPPED"
+      },
+      "portfolio_arbitration": {
+        "decision": "SKIPPED",
+        "reason": "NO_PENDING_OR_UNSAFE_BOOK"
+      },
+      "scan_gap_minutes": 16.15435
     }
   ],
-  "last_run_ts": 1792904629677,
+  "last_run_ts": 1792905598938,
   "notification_queue": [],
   "reconciliation": null,
   "anchor_memory": {
@@ -1196709,7 +1196256,7 @@
           "costs_r": 0.067664,
           "timeframe": "4H",
           "zone_created_ts": 1792784989736,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1196828,7 +1196375,7 @@
           "costs_r": 0.08680000000000053,
           "timeframe": "15m",
           "zone_created_ts": 1792796618959,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1196907,7 +1196454,7 @@
           "filled_ts": 1792796940000,
           "opened_at": "2026-10-23T23:09:00+00:00",
           "mfe_r": 0.27118644067797404,
-          "mae_r": 0.5593220338983057,
+          "mae_r": 0.6525423728813566,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1196956,7 +1196503,7 @@
           "costs_r": 0.07873846153846172,
           "timeframe": "4H",
           "zone_created_ts": 1792801139372,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1197035,7 +1196582,7 @@
           "filled_ts": 1792801620000,
           "opened_at": "2026-10-24T00:27:00+00:00",
           "mfe_r": 0.10769230769230836,
-          "mae_r": 0.47692307692308145,
+          "mae_r": 0.5615384615384659,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1197084,7 +1196631,7 @@
           "costs_r": 0.08961578947368416,
           "timeframe": "15m",
           "zone_created_ts": 1792809302842,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1197167,7 +1196714,7 @@
           "filled_ts": 1792809540000,
           "opened_at": "2026-10-24T02:39:00+00:00",
           "mfe_r": 0.37719298245614613,
-          "mae_r": 0.28947368421052466,
+          "mae_r": 0.38596491228069957,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1197215,7 +1196762,7 @@
           "costs_r": 0.0765533834586467,
           "timeframe": "4H",
           "zone_created_ts": 1792829146452,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1197334,7 +1196881,7 @@
           "costs_r": 0.08973421052631575,
           "timeframe": "15m",
           "zone_created_ts": 1792835335490,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1197413,7 +1196960,7 @@
           "filled_ts": 1792835640000,
           "opened_at": "2026-10-24T09:54:00+00:00",
           "mfe_r": 0.24561403508772017,
-          "mae_r": 0.4210526315789507,
+          "mae_r": 0.5175438596491255,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1197462,7 +1197009,7 @@
           "costs_r": 0.07754772727272767,
           "timeframe": "4H",
           "zone_created_ts": 1792835335490,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1197541,7 +1197088,7 @@
           "filled_ts": 1792844280000,
           "opened_at": "2026-10-24T12:18:00+00:00",
           "mfe_r": 0.2803030303030352,
-          "mae_r": 0.2954545454545474,
+          "mae_r": 0.3787878787878807,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1197590,7 +1197137,7 @@
           "costs_r": 0.08970263157894733,
           "timeframe": "15m",
           "zone_created_ts": 1792835335490,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1197669,7 +1197216,7 @@
           "filled_ts": 1792835820000,
           "opened_at": "2026-10-24T09:57:00+00:00",
           "mfe_r": 0.2807017543859713,
-          "mae_r": 0.38596491228069957,
+          "mae_r": 0.4824561403508745,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1197717,7 +1197264,7 @@
           "costs_r": 0.08539495798319344,
           "timeframe": "4H",
           "zone_created_ts": 1792836276377,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1197836,7 +1197383,7 @@
           "costs_r": 0.077549242424242,
           "timeframe": "4H",
           "zone_created_ts": 1792836276377,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1197915,7 +1197462,7 @@
           "filled_ts": 1792843200000,
           "opened_at": "2026-10-24T12:00:00+00:00",
           "mfe_r": 0.27272727272727076,
-          "mae_r": 0.30303030303030565,
+          "mae_r": 0.3863636363636381,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1197964,7 +1197511,7 @@
           "costs_r": 0.07814122137404567,
           "timeframe": "4H",
           "zone_created_ts": 1792839830471,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198043,7 +1197590,7 @@
           "filled_ts": 1792843200000,
           "opened_at": "2026-10-24T12:00:00+00:00",
           "mfe_r": 0.2748091603053426,
-          "mae_r": 0.30534351145038546,
+          "mae_r": 0.38931297709923984,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198092,7 +1197639,7 @@
           "costs_r": 0.07814122137404567,
           "timeframe": "4H",
           "zone_created_ts": 1792841665205,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198171,7 +1197718,7 @@
           "filled_ts": 1792843200000,
           "opened_at": "2026-10-24T12:00:00+00:00",
           "mfe_r": 0.2748091603053426,
-          "mae_r": 0.30534351145038546,
+          "mae_r": 0.38931297709923984,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198220,7 +1197767,7 @@
           "costs_r": 0.07997812499999993,
           "timeframe": "4H",
           "zone_created_ts": 1792843454108,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198299,7 +1197846,7 @@
           "filled_ts": 1792844280000,
           "opened_at": "2026-10-24T12:18:00+00:00",
           "mfe_r": 0.28124999999999933,
-          "mae_r": 0.31250000000000416,
+          "mae_r": 0.39843750000000366,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198347,7 +1197894,7 @@
           "costs_r": 0.08519830508474527,
           "timeframe": "4H",
           "zone_created_ts": 1792843454108,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1198470,7 +1198017,7 @@
           "costs_r": 0.0793596899224811,
           "timeframe": "4H",
           "zone_created_ts": 1792843454108,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198549,7 +1198096,7 @@
           "filled_ts": 1792844460000,
           "opened_at": "2026-10-24T12:21:00+00:00",
           "mfe_r": 0.27131782945737265,
-          "mae_r": 0.31782945736434043,
+          "mae_r": 0.40310077519379783,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198598,7 +1198145,7 @@
           "costs_r": 0.08967280701754493,
           "timeframe": "15m",
           "zone_created_ts": 1792847944702,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198677,7 +1198224,7 @@
           "filled_ts": 1792848060000,
           "opened_at": "2026-10-24T13:21:00+00:00",
           "mfe_r": 0.3070175438596603,
-          "mae_r": 0.35964912280701883,
+          "mae_r": 0.45614035087719496,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198726,7 +1198273,7 @@
           "costs_r": 0.08973421052631575,
           "timeframe": "15m",
           "zone_created_ts": 1792853438860,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198805,7 +1198352,7 @@
           "filled_ts": 1792854900000,
           "opened_at": "2026-10-24T15:15:00+00:00",
           "mfe_r": 0.17543859649123048,
-          "mae_r": 0.4210526315789507,
+          "mae_r": 0.5175438596491255,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198854,7 +1198401,7 @@
           "costs_r": 0.08191760000000001,
           "timeframe": "4H",
           "zone_created_ts": 1792853438860,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1198933,7 +1198480,7 @@
           "filled_ts": 1792855080000,
           "opened_at": "2026-10-24T15:18:00+00:00",
           "mfe_r": 0.2080000000000041,
-          "mae_r": 0.33600000000000135,
+          "mae_r": 0.42400000000000093,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1198982,7 +1198529,7 @@
           "costs_r": 0.08256129032258099,
           "timeframe": "4H",
           "zone_created_ts": 1792854322604,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199061,7 +1198608,7 @@
           "filled_ts": 1792855080000,
           "opened_at": "2026-10-24T15:18:00+00:00",
           "mfe_r": 0.2096774193548437,
-          "mae_r": 0.3387096774193576,
+          "mae_r": 0.42741935483871235,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199110,7 +1198657,7 @@
           "costs_r": 0.08192239999999999,
           "timeframe": "4H",
           "zone_created_ts": 1792856896784,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199189,7 +1198736,7 @@
           "filled_ts": 1792857060000,
           "opened_at": "2026-10-24T15:51:00+00:00",
           "mfe_r": 0.1840000000000032,
-          "mae_r": 0.36000000000000226,
+          "mae_r": 0.44800000000000184,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199238,7 +1198785,7 @@
           "costs_r": 0.08873130434782564,
           "timeframe": "4H",
           "zone_created_ts": 1792857822082,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199321,7 +1198868,7 @@
           "filled_ts": 1792867860000,
           "opened_at": "2026-10-24T18:51:00+00:00",
           "mfe_r": 0.23478260869564754,
-          "mae_r": 0.15652173913043993,
+          "mae_r": 0.25217391304348247,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199370,7 +1198917,7 @@
           "costs_r": 0.08972631578947364,
           "timeframe": "15m",
           "zone_created_ts": 1792859703434,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199449,7 +1198996,7 @@
           "filled_ts": 1792860660000,
           "opened_at": "2026-10-24T16:51:00+00:00",
           "mfe_r": 0.18421052631579637,
-          "mae_r": 0.41228070175438475,
+          "mae_r": 0.5087719298245597,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199498,7 +1199045,7 @@
           "costs_r": 0.0881818965517244,
           "timeframe": "4H",
           "zone_created_ts": 1792861406367,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199577,7 +1199124,7 @@
           "filled_ts": 1792867860000,
           "opened_at": "2026-10-24T18:51:00+00:00",
           "mfe_r": 0.0,
-          "mae_r": 0.3879310344827622,
+          "mae_r": 0.4827586206896586,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199626,7 +1199173,7 @@
           "costs_r": 0.08979736842105258,
           "timeframe": "15m",
           "zone_created_ts": 1792866909762,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199705,7 +1199252,7 @@
           "filled_ts": 1792867860000,
           "opened_at": "2026-10-24T18:51:00+00:00",
           "mfe_r": 0.0,
-          "mae_r": 0.49122807017544035,
+          "mae_r": 0.5877192982456152,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199754,7 +1199301,7 @@
           "costs_r": 0.08976578947368417,
           "timeframe": "15m",
           "zone_created_ts": 1792866909762,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199833,7 +1199380,7 @@
           "filled_ts": 1792867860000,
           "opened_at": "2026-10-24T18:51:00+00:00",
           "mfe_r": 0.0,
-          "mae_r": 0.45614035087720173,
+          "mae_r": 0.5526315789473766,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1199882,7 +1199429,7 @@
           "costs_r": 0.08984473684210523,
           "timeframe": "15m",
           "zone_created_ts": 1792867780114,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1199961,7 +1199508,7 @@
           "filled_ts": 1792867860000,
           "opened_at": "2026-10-24T18:51:00+00:00",
           "mfe_r": 0.0,
-          "mae_r": 0.5438596491228107,
+          "mae_r": 0.6403508771929857,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1200010,7 +1199557,7 @@
           "costs_r": 0.08982105263157891,
           "timeframe": "15m",
           "zone_created_ts": 1792867780114,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1200089,7 +1199636,7 @@
           "filled_ts": 1792867860000,
           "opened_at": "2026-10-24T18:51:00+00:00",
           "mfe_r": 0.0,
-          "mae_r": 0.5175438596491255,
+          "mae_r": 0.6140350877193005,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1200137,7 +1199684,7 @@
           "costs_r": 0.08610677966101646,
           "timeframe": "4H",
           "zone_created_ts": 1792857822082,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1200255,7 +1199802,7 @@
           "costs_r": 0.0875672413793106,
           "timeframe": "4H",
           "zone_created_ts": 1792872227062,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1200374,7 +1199921,7 @@
           "costs_r": 0.0896473684210526,
           "timeframe": "15m",
           "zone_created_ts": 1792878825769,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1200453,7 +1200000,7 @@
           "filled_ts": 1792878840000,
           "opened_at": "2026-10-24T21:54:00+00:00",
           "mfe_r": 0.05263157894737039,
-          "mae_r": 0.2631578947368395,
+          "mae_r": 0.4210526315789507,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1200501,7 +1200048,7 @@
           "costs_r": 0.08720695652173978,
           "timeframe": "4H",
           "zone_created_ts": 1792886638247,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": true,
@@ -1200624,7 +1200171,7 @@
           "costs_r": 0.09102232142857106,
           "timeframe": "4H",
           "zone_created_ts": 1792890279909,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "OPEN",
           "target_cancel_armed": true,
@@ -1200707,7 +1200254,7 @@
           "filled_ts": 1792899180000,
           "opened_at": "2026-10-25T03:33:00+00:00",
           "mfe_r": 0.08928571428570885,
-          "mae_r": 0.044642857142854424,
+          "mae_r": 0.20535714285714557,
           "strong_closes": 0,
           "remaining": 1.0,
           "realized_gross_r": 0.0,
@@ -1200755,7 +1200302,7 @@
           "costs_r": 0.08675130434782566,
           "timeframe": "4H",
           "zone_created_ts": 1792761668665,
-          "last_bar": 1792904400000,
+          "last_bar": 1792905300000,
           "execution": "PAPER_SIGNAL",
           "status": "PENDING",
           "target_cancel_armed": false,
@@ -1203498,7 +1203045,7 @@
       "75c761790991c766970f24b36b94658169a67b61715b68ab40bcf015fe451b27": 1792897483554,
       "6cb112142d5c1f22fcaa5582d34a87aba1f5ec50cfc551abbcd2c3e247f42676": 1792897483554
     },
-    "last_run_ts": 1792904629677,
+    "last_run_ts": 1792905598938,
     "unobserved_due_policy_budget": 6467,
     "last_meta_diagnostic": {
       "version": "bzu-meta-label-v1",
@@ -1214510,8 +1214057,8 @@
   "price_tick": 0.01,
   "market_history_status": {
     "status": "RECORDED_VERIFIED_SOURCE",
-    "quotes": 684,
-    "fingerprint": "4345ad52930d98a7a01c92dc724897213bac41e601afa525425a8b19e985c258",
+    "quotes": 685,
+    "fingerprint": "74e9e70575b038a15eb1384e76c6db6de527773d1b4108846366c3ab6db732e9",
     "revisions": 0
   },
   "setup_renewals": [
@@ -1216183,8 +1215730,8 @@
     "setup_min_sample": 20,
     "analysis_scan_minutes": 5
   },
-  "last_scan_observed_ts": 1792904629677,
-  "last_report_requested_ts": 1792904629677,
+  "last_scan_observed_ts": 1792905598938,
+  "last_report_requested_ts": 1792905598938,
   "portfolio_policy": "ONE_DIRECTION_TWO_PENDING_MAX",
   "last_portfolio_swap_ts": 1792866909762
 }
