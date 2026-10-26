@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.13.0 — Causal ICT fast rotation
+name: BZU Auto Bot — ICT v12.14.0 — Causal entry risk
 
 on:
   schedule:
@@ -28,7 +28,7 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.13.0-causal-ict-fast-rotation'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.14.0-causal-entry-risk'
       INCLUDE_COMMISSION: 'true'
       ANALYSIS_SCAN_MINUTES: '5'
       ABS_MIN_STOP_PCT: '0.01'
@@ -57,7 +57,7 @@ jobs:
           from pathlib import Path
           import os
           required = ['bot_oneshot.py', 'full_limit_engine.py',
-                      'signal_quality.py', 'setup_scanner.py', 'notification_report.py', 'research_evidence.py', 'research_history.py', 'research_v12_6.py', 'lifecycle_forecast.py', 'trade_dependencies.py', 'test_v12_6_policy.py', 'test_v12_7_policy.py', 'test_v12_8_paths.py', 'setup_paths.py', 'execution_atlas.py', 'trade_meta_model.py', 'directional_policy.py', 'continuous_worker.py', 'ict_methodology.py', 'portfolio_arbitration.py', 'test_v12_13_ict_rotation.py', 'test_v12_9_atlas.py', 'test_v12_10_control.py', 'analyze_bot.py', 'test_notification_report.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
+                      'signal_quality.py', 'setup_scanner.py', 'notification_report.py', 'research_evidence.py', 'research_history.py', 'research_v12_6.py', 'lifecycle_forecast.py', 'trade_dependencies.py', 'test_v12_6_policy.py', 'test_v12_7_policy.py', 'test_v12_8_paths.py', 'setup_paths.py', 'execution_atlas.py', 'trade_meta_model.py', 'directional_policy.py', 'continuous_worker.py', 'ict_methodology.py', 'portfolio_arbitration.py', 'entry_adverse_selection.py', 'test_v12_14_adverse_selection.py', 'test_v12_13_ict_rotation.py', 'test_v12_9_atlas.py', 'test_v12_10_control.py', 'analyze_bot.py', 'test_notification_report.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
                       'test_v12_4_scanner.py', 'test_v12_4_1_selection.py', 'test_v12_4_2_reports.py', 'test_v12_4_3_geometry.py', 'test_v12_5_early_limits.py', 'testdata/reported_20261014.json', 'setup_preservation_manifest.json']
           missing = [name for name in required if not Path(name).is_file()]
           if missing:
@@ -76,7 +76,7 @@ jobs:
       - name: Validate full v12 bot offline
         if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
         run: |
-          python -m py_compile bot_oneshot.py full_limit_engine.py ict_methodology.py portfolio_arbitration.py trade_meta_model.py directional_policy.py signal_quality.py setup_scanner.py notification_report.py analyze_bot.py price_forecast.py limit_structure.py market_archive.py test_v12_4_2_reports.py test_v12_4_3_geometry.py
+          python -m py_compile bot_oneshot.py full_limit_engine.py ict_methodology.py portfolio_arbitration.py entry_adverse_selection.py trade_meta_model.py directional_policy.py signal_quality.py setup_scanner.py notification_report.py analyze_bot.py price_forecast.py limit_structure.py market_archive.py test_v12_4_2_reports.py test_v12_4_3_geometry.py
           python bot_oneshot.py --self-test
           # Original compatibility fixtures assume their original 0.4% floor.
           # Production and the full new test suite retain the 1% floor above.

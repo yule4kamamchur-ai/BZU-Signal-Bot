@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.13.0-causal-ict-fast-rotation"
-REPORT_RELEASE = 'v12.13.0'
+VERSION = "full-ict-v12.14.0-causal-entry-risk"
+REPORT_RELEASE = 'v12.14.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -41,6 +41,7 @@ import trade_dependencies
 import setup_paths
 import execution_atlas
 import directional_policy as policy
+import entry_adverse_selection
 import trade_meta_model as meta
 import portfolio_arbitration as arbitration
 SCHEMA = "full_ict_limit_state_v12"
@@ -610,6 +611,14 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     continuation = core.canonical_setup_family(a.setup_type) in {"TREND_CONTINUATION", "STRUCTURAL_EXPANSION", "SESSION_EXPANSION"}
     regime_score = 75 if regime == "TREND" and continuation else (65 if regime in {"RANGE", "TRANSITION"} else 50)
     targets = full_targets(ctx, s, side, entry, cfg)
+    # A passive continuation fill immediately below repeatedly rejected 1H
+    # buy-side liquidity (or above sell-side liquidity for SHORT) is an adverse
+    # selection trap. Check only closed, as-of observations; do not assume
+    # that every nearby pivot is a strong barrier.
+    trap=entry_adverse_selection.admission(a,s,targets,entry,risk,cfg.tick)
+    if trap:
+        diag['adverse_selection']=trap
+        return None,trap['risk']
     diag.update(target_geometry(entry,stop,risk,buffer,sign,targets,cfg))
     if any(t.get('entry_inside_zone') and t.get('hard_barrier') for t in targets):
         return None, "ENTRY_INSIDE_STRONG_OPPOSING_ZONE"
@@ -1390,7 +1399,17 @@ def review_full_exit(state: dict, s: Snapshot, cfg: Config) -> None:
         return
     rows=limit_structure.closed(s,'3m')
     if not p.get('tp1_hit'):
-        return  # No discretionary exit/extension before an observed TP1.
+        # New entries only: the original configured risk horizon is a review
+        # deadline, not unlimited permission to ride a confirmed losing thesis.
+        # Legacy active positions retain their exact historical exit contract.
+        if trade_entry_version(p)==VERSION:
+            failure=entry_adverse_selection.failed_thesis_after_deadline(p,s,cfg.tick)
+            if failure:
+                p.setdefault('risk_reviews',[]).append(failure)
+                actual=execution_config(p,cfg)
+                close_trade(state,p,s.price*(1-p['side']*actual.slippage_bps/10_000),
+                            s.now,'POST_DEADLINE_THESIS_INVALIDATED',cfg)
+        return  # No ordinary discretionary exit/extension before TP1.
     if len(rows)<2 or p.get('last_target_review_ts',0)>=s.now:
         return
     p['last_target_review_ts']=s.now
@@ -2162,7 +2181,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         trade = next((t for t in reversed(state['trades']) if t['id']==event['order_id']),{})
         reason = event.get('reason')
         text = {'STOP':'стоп','STOP_GAP':'стоп із розривом ціни',
-                'TAKE_PROFIT':'тейк-профіт','ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов','INTRADAY_TIME_EXIT':'кінець часу угоди'}.get(reason,'завершення')
+                'TAKE_PROFIT':'тейк-профіт','ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов','INTRADAY_TIME_EXIT':'кінець часу угоди',
+                'POST_DEADLINE_THESIS_INVALIDATED':'вихід після втрати торгового сценарію'}.get(reason,'завершення')
         value = event['net_r']
         outcome = 'прибуток' if value>0 else 'збиток' if value<0 else 'беззбитково'
         achieved = [name for name in ('TP1','TP2','TP3') if trade.get(name.lower()+'_hit')]
@@ -2215,6 +2235,7 @@ REASON_UA = {
     'TARGET_RR_TOO_LOW':'потенціал TP відносно SL нижчий за мінімум',
     'TARGET_DISTANCE_TOO_SMALL':'найближча структурна ціль ближча за мінімальний TP1 1.5%',
     'STRONG_OPPOSING_ZONE_BEFORE_TP':'сильна протилежна зона перекриває шлях до TP1',
+    'HTF_REJECTED_NEAR_LIQUIDITY':'повторне відхилення від близької 1H ліквідності перед входом',
     'ENTRY_INSIDE_STRONG_OPPOSING_ZONE':'вхід усередині сильної протилежної зони',
     'ANCHOR_EXPIRED_AWAITING_NEW_EVENT':'строк рівня минув; потрібна нова підтверджена реакція або нова сесія',
     'NO_STRUCTURAL_TARGET':'немає підтвердженої цілі на графіку',
