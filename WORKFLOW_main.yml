@@ -36,6 +36,7 @@ jobs:
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
       TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
       PYTHONUNBUFFERED: '1'
+      MARKET_FETCH_TIMING: 'true'
 
     steps:
       - name: Checkout latest default branch
@@ -51,36 +52,39 @@ jobs:
           python-version: '3.11'
 
       # v12 has a stdlib fallback; requirements.txt is not required.
-      - name: Verify complete v12 files
+      # Run only cheap safety checks in live trading. The full regression suite
+      # runs separately in bzu-quality.yml when code changes or on demand.
+      - name: Fast preflight (version, detectors, imports and syntax)
         run: |
+          python -m py_compile bot_oneshot.py full_limit_engine.py notification_report.py \
+            setup_scanner.py signal_quality.py ict_methodology.py portfolio_arbitration.py \
+            entry_adverse_selection.py trade_meta_model.py directional_policy.py setup_paths.py
           python - <<'PY'
           from pathlib import Path
           import os
-          required = ['bot_oneshot.py', 'full_limit_engine.py',
-                      'signal_quality.py', 'setup_scanner.py', 'notification_report.py', 'research_evidence.py', 'research_history.py', 'research_v12_6.py', 'lifecycle_forecast.py', 'trade_dependencies.py', 'test_v12_6_policy.py', 'test_v12_7_policy.py', 'test_v12_8_paths.py', 'setup_paths.py', 'execution_atlas.py', 'trade_meta_model.py', 'directional_policy.py', 'continuous_worker.py', 'ict_methodology.py', 'portfolio_arbitration.py', 'entry_adverse_selection.py', 'test_v12_14_adverse_selection.py', 'test_v12_13_ict_rotation.py', 'test_v12_9_atlas.py', 'test_v12_10_control.py', 'analyze_bot.py', 'test_notification_report.py', 'price_forecast.py', 'limit_structure.py', 'market_archive.py', 'test_full_limit_engine.py',
-                      'test_v12_4_scanner.py', 'test_v12_4_1_selection.py', 'test_v12_4_2_reports.py', 'test_v12_4_3_geometry.py', 'test_v12_5_early_limits.py', 'testdata/reported_20261014.json', 'setup_preservation_manifest.json']
-          missing = [name for name in required if not Path(name).is_file()]
+          must_exist = (
+              'bot_oneshot.py', 'full_limit_engine.py', 'notification_report.py',
+              'setup_scanner.py', 'signal_quality.py', 'ict_methodology.py',
+              'portfolio_arbitration.py', 'entry_adverse_selection.py',
+              'trade_meta_model.py', 'directional_policy.py', 'setup_paths.py',
+              'last_signal_v6_4.json', 'signal_journal_v6_4.json',
+          )
+          missing = [file for file in must_exist if not Path(file).is_file()]
           if missing:
-              raise SystemExit('Upload the complete v12 package. Missing: ' + ', '.join(missing))
+              raise SystemExit('Missing production files: ' + ', '.join(missing))
           import bot_oneshot as core
           import full_limit_engine as engine
-          expected=os.environ['EXPECTED_BOT_VERSION']
-          if core.BOT_VERSION != expected or engine.VERSION != expected or len(core.DETECTORS) != 24:
-              raise SystemExit('Incompatible bot files: all 24 detectors and matching v12 versions are required')
           import setup_paths
+          actual = (core.BOT_VERSION, engine.VERSION, len(core.DETECTORS))
+          expected = os.environ['EXPECTED_BOT_VERSION']
+          print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
+          if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
+              raise SystemExit('Mismatched v12.14 files: update bot_oneshot.py and full_limit_engine.py together. '
+                               f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
-              raise SystemExit('Incomplete v12.13 update: setup_paths.py is from an older release. '
-                               'Apply all files from the v12.13 changed-files patch.')
+              raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
+          print('Fast preflight OK; running market scan without full test suite.')
           PY
-
-      - name: Validate full v12 bot offline
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
-        run: |
-          python -m py_compile bot_oneshot.py full_limit_engine.py ict_methodology.py portfolio_arbitration.py entry_adverse_selection.py trade_meta_model.py directional_policy.py signal_quality.py setup_scanner.py notification_report.py analyze_bot.py price_forecast.py limit_structure.py market_archive.py test_v12_4_2_reports.py test_v12_4_3_geometry.py
-          python bot_oneshot.py --self-test
-          # Original compatibility fixtures assume their original 0.4% floor.
-          # Production and the full new test suite retain the 1% floor above.
-          ABS_MIN_STOP_PCT=0.004 python bot_oneshot.py --legacy-self-test
 
       - name: Verify Telegram settings
         if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}

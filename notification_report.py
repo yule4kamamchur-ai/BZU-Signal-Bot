@@ -210,7 +210,9 @@ def build(state, snapshot, result, cfg, engine):
     closed = {e['order_id']: e for e in events if e['kind'] == 'CLOSED'}
     if not closed:
         lines += ['Нових закриттів немає.']
-        previous = max(state.get('trades', []), key=lambda t: t.get('closed_ts', 0), default=None)
+        previous = max((t for t in state.get('trades', []) if isinstance(t.get('closed_ts'), (int, float))
+                        and 0 < t['closed_ts'] <= now),
+                       key=lambda t: t['closed_ts'], default=None)
         if previous:
             lines += [f"Остання закрита: {engine.display_order(state, previous['id'])} • "
                       f"{engine.report_deadline(previous['closed_ts'], now, cfg)} • "
@@ -259,30 +261,30 @@ def build(state, snapshot, result, cfg, engine):
                       candidate_reason(best, cfg, engine)]
     if result.get('action') in ('DAILY_PAUSE', 'SESSION_CLOSED', 'DIRECTION_CONFLICT'):
         lines += ['', engine.REASON_UA.get(result['action'], 'Нові входи на паузі') + '.']
-    # Display two separate accounting scopes: all completed PAPER trades and
-    # the entry-version cohort. A trade opened on v12.10 and closed while
-    # v12.12 is running remains a v12.10 entry, but MUST still be visible as
-    # a real closure in the lifetime history.
-    trades = state.get('trades', [])
-    if trades:
-        lifetime = engine.statistics(trades)
-        lines += ['', f"Усі закриті угоди (історія всіх версій): "
-                  f"{lifetime['trades']} • WR {lifetime['win_rate']*100:.1f}% "
-                  f"({lifetime['wins']}/{lifetime['trades']}) • {lifetime['net_r']:+.2f}R"]
-    stats = engine.statistics_by_entry_version(trades)
-    stat = stats.get(engine.VERSION, {})
-    if stat.get('trades'):
-        lines += [f"Угоди, відкриті за {engine.REPORT_RELEASE}: "
-                  f"WR {stat['win_rate']*100:.1f}% ({stat['wins']}/{stat['trades']}) • "
-                  f"{stat['net_r']:+.2f}R"]
-    elif trades:
-        last = max(trades, key=lambda t: t.get('closed_ts', 0))
-        previous_version = engine.trade_entry_version(last)
-        label = (previous_version.split('-')[2]
-                 if previous_version.startswith('full-ict-') else previous_version)
-        lines += [f"Угоди, відкриті за {engine.REPORT_RELEASE}: ще немає завершених.",
-                  f"Останнє закриття зараховано до версії входу {label}, "
-                  f"а не до версії програми на момент виходу."]
+    # Human-facing daily summary only. Keep full lifetime and entry-version
+    # cohorts in the state/journal for research; do not relabel legacy trades.
+    # Closure day is interpreted in the configured timezone, NOT UTC and NOT
+    # the order entry day. Incomplete/unresolved/expired plans are excluded.
+    today = local.date()
+    daily = []
+    for trade in state.get('trades', []):
+        try:
+            closed_ms = int(trade.get('closed_ts') or 0)
+            if not (0 < closed_ms <= now) or trade.get('net_r') is None:
+                continue
+            closed_day = datetime.fromtimestamp(closed_ms / 1000, ZoneInfo(cfg.timezone)).date()
+            if closed_day == today:
+                daily.append(trade)
+        except (ValueError, TypeError, OverflowError, OSError):
+            # Historical incomplete records are not completed trades.
+            continue
+    total_r = engine.statistics(daily)['net_r']
+    result_r = f'{total_r:+.2f}R' if abs(total_r) > 1e-10 else '0.00R'
+    count = len(daily)
+    noun = ('закрита угода' if count % 10 == 1 and count % 100 != 11
+            else 'закриті угоди' if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14)
+            else 'закритих угод')
+    lines += ['', f'Сьогодні (Київ): {count} {noun} • результат {result_r}']
     return '\n'.join(lines)
 
 
@@ -339,7 +341,10 @@ def clean_queued_message(message):
         if any(text.startswith(prefix) for prefix in (
             'Увага: широкий спред', 'Нові входи на паузі; супровід',
             'У СУПРОВОДІ — 0', 'Відкритих угод немає.',
-            'Новий ордер — після звільнення')):
+            'Новий ордер — після звільнення',
+            'Усі закриті угоди (історія всіх версій):',
+            'Угоди, відкриті за ',
+            'Останнє закриття зараховано до версії входу ')):
             continue
         line=re.sub(r' • Зайнято місць: \d+/2', '', line)
         line=re.sub(r'Залишок \d+% • ', '', line)

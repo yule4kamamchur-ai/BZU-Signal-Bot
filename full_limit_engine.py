@@ -2492,6 +2492,12 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
         item = state["notification_queue"][0]
         import notification_report
         body=notification_report.clean_queued_message(item['text'])
+        if not body.strip():
+            # Obsolete queued pages consisting solely of old version-wide
+            # statistics must not block the delivery of later close events.
+            state['notification_queue'].pop(0)
+            atomic_write(path, state)
+            continue
         if not item.get('version') and ('Найближчі сетапи:' in body or 'після комісій' in body):
             body='🕓 Збережений звіт старого формату з черги\n'+body
         body=decorate_message(body)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import html
 import json
 import collections
@@ -1393,12 +1394,28 @@ def fetch_timeframe(bar: str, direct_limit: int, resample_minutes: int = 0) -> t
 
 def collect_market_data() -> dict[str, Any]:
     """One snapshot of every timeframe the bot reasons about."""
-    c3m = get_okx_candles(OKX_INST_ID, "3m", CANDLES_3M_LIMIT)
-    c15m = get_okx_candles(OKX_INST_ID, "15m", CANDLES_15M_LIMIT)
-    c1h, src1h = fetch_timeframe("1H", CANDLES_1H_LIMIT, 60)
-    c4h, src4h = fetch_timeframe("4H", CANDLES_4H_LIMIT, 240)
-
-    ticker = get_okx_ticker(OKX_INST_ID)
+    # Independent public OHLC/ticker requests run concurrently. Previously
+    # six sequential HTTP calls could each consume their entire retry/timeout
+    # budget before the decision cycle even began. No exchange orders are
+    # submitted by these workers; chronology is enforced when the Snapshot is
+    # parsed. HTF resampling still requires confirmed source candles.
+    started = time.monotonic()
+    smt_id = resolve_smt_asset_id()
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix='bzu-market') as pool:
+        f3 = pool.submit(get_okx_candles, OKX_INST_ID, '3m', CANDLES_3M_LIMIT)
+        f15 = pool.submit(get_okx_candles, OKX_INST_ID, '15m', CANDLES_15M_LIMIT)
+        f1 = pool.submit(fetch_timeframe, '1H', CANDLES_1H_LIMIT, 60)
+        f4 = pool.submit(fetch_timeframe, '4H', CANDLES_4H_LIMIT, 240)
+        fticker = pool.submit(get_okx_ticker, OKX_INST_ID)
+        fsmt = pool.submit(get_okx_candles, smt_id, '15m', SMT_CANDLES_15M_LIMIT) if smt_id else None
+        c3m = f3.result()
+        c15m = f15.result()
+        c1h, src1h = f1.result()
+        c4h, src4h = f4.result()
+        ticker = fticker.result()
+        smt = fsmt.result() if fsmt else []
+    if os.getenv('MARKET_FETCH_TIMING', '').lower() in ('1', 'true', 'yes'):
+        print(f'[INFO] Market feed collection: {time.monotonic()-started:.2f}s', flush=True)
     price = safe_float(ticker.get("price"))
     price_source = "OKX_TICKER"
     execution_price_trusted = True
@@ -1417,9 +1434,6 @@ def collect_market_data() -> dict[str, Any]:
             # Cross-venue display price cannot authorize a real fill.
             execution_price_trusted = False
             execution_price_quality = "DISPLAY_ONLY_UNTRUSTED"
-
-    smt_id = resolve_smt_asset_id()
-    smt = get_okx_candles(smt_id, "15m", SMT_CANDLES_15M_LIMIT) if smt_id else []
 
     spread = 0.0
     bid = safe_float(ticker.get("bid"))

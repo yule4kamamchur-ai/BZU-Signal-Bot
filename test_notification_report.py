@@ -84,7 +84,7 @@ class CompactReports(unittest.TestCase):
         self.assertIn('ЗАКРИТО: +0.30R — прибуток', text)
         self.assertIn('TP1 досягнуто; стоп', text)
         self.assertIn('строк минув, входу не було', text)
-        self.assertIn('100.0% (1/1)', text)
+        self.assertIn('Сьогодні (Київ): 1 закрита угода • результат +0.30R', text)
 
     def test_an_old_close_is_labeled_as_previous_and_not_new(self):
         trade = order(); trade.update(closed_ts=NOW-3600000, net_r=-1., close_reason='STOP')
@@ -94,7 +94,7 @@ class CompactReports(unittest.TestCase):
         self.assertIn('Остання закрита:', text)
         self.assertNotIn('ЗАКРИТО: -1.00R', text)
 
-    def test_closure_after_upgrade_is_counted_in_total_not_new_entry_cohort(self):
+    def test_closure_after_upgrade_is_in_daily_summary_not_version_statistics(self):
         old_trade = order()
         old_trade.update(id='closed-previous', order_id='closed-previous',
                          version='full-ict-v12.10.0-causal-direction-control',
@@ -103,13 +103,33 @@ class CompactReports(unittest.TestCase):
                          net_r=1.69, close_reason='ADAPTIVE_FULL_EXIT')
         self.state['trades'] = [old_trade]
         text = self.text()
-        self.assertIn('Усі закриті угоди (історія всіх версій): 1', text)
-        self.assertIn('100.0% (1/1) • +1.69R', text)
-        self.assertIn(f'Угоди, відкриті за {engine.REPORT_RELEASE}: ще немає завершених', text)
-        self.assertIn('Останнє закриття зараховано до версії входу v12.10.0', text)
-        self.assertNotIn(f'{engine.REPORT_RELEASE}: закритих угод ще немає', text)
+        self.assertIn('Сьогодні (Київ): 1 закрита угода • результат +1.69R', text)
+        self.assertNotIn('Усі закриті угоди', text)
+        self.assertNotIn('Угоди, відкриті за', text)
+        # The core trade cohort remains unchanged.
+        self.assertEqual(engine.trade_entry_version(old_trade),
+                         'full-ict-v12.10.0-causal-direction-control')
 
-    def test_new_and_legacy_closures_are_separate_cohorts_but_one_history(self):
+    def test_daily_summary_excludes_other_days_and_future_closes(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        kyiv = ZoneInfo(self.cfg.timezone)
+        now = datetime.fromtimestamp(NOW/1000, kyiv)
+        previous_day = datetime.fromtimestamp((NOW-24*3600000)/1000, kyiv)
+        trade_old = order()
+        trade_old.update(id='old', closed_ts=int(previous_day.timestamp()*1000), net_r=-1.0)
+        trade_new = order()
+        trade_new.update(id='today', closed_ts=NOW-1000, net_r=.8)
+        future = order()
+        future.update(id='future', closed_ts=NOW+1000, net_r=99.)
+        unclosed = order()
+        unclosed.update(id='unclosed', closed_ts=None, net_r=99.)
+        self.state['trades'] = [trade_old,trade_new,future,unclosed]
+        text = self.text()
+        self.assertIn('Сьогодні (Київ): 1 закрита угода • результат +0.80R', text)
+        self.assertNotIn('WR ', text)
+
+    def test_new_and_legacy_closures_only_show_same_day_total(self):
         old = order()
         old.update(id='older', order_id='older', version='full-ict-v12.10.0-older',
                    net_r=-1., closed_ts=NOW-2000)
@@ -118,9 +138,48 @@ class CompactReports(unittest.TestCase):
                        version=engine.VERSION, net_r=1.7, closed_ts=NOW-1000)
         self.state['trades'] = [old, current]
         text = self.text()
-        self.assertIn('Усі закриті угоди (історія всіх версій): 2', text)
-        self.assertIn('50.0% (1/2) • +0.70R', text)
-        self.assertIn(f'Угоди, відкриті за {engine.REPORT_RELEASE}: WR 100.0% (1/1) • +1.70R', text)
+        self.assertIn('Сьогодні (Київ): 2 закриті угоди • результат +0.70R', text)
+        self.assertNotIn('Усі закриті угоди', text)
+        self.assertNotIn('Угоди, відкриті за', text)
+        self.assertEqual(engine.statistics_by_entry_version(self.state['trades'])[engine.VERSION]['trades'], 1)
+
+    def test_queued_history_is_removed_without_erasing_close_event(self):
+        old_text = ('ЗАКРИТО З МИНУЛОГО ЗВІТУ\n#025 ЗАКРИТО: -1.09R\n'
+                    'Усі закриті угоди (історія всіх версій): 25 • WR 24.0% (6/25) • -9.45R\n'
+                    'Угоди, відкриті за v12.13.0: WR 0.0% (0/1) • -1.09R\n'
+                    'Останнє закриття зараховано до версії входу v12.10.0\n')
+        clean = report.clean_queued_message(old_text)
+        self.assertIn('#025 ЗАКРИТО: -1.09R', clean)
+        self.assertNotIn('Усі закриті угоди', clean)
+        self.assertNotIn('Угоди, відкриті за', clean)
+
+    def test_obsolete_statistics_only_queue_page_does_not_block_next_close(self):
+        from unittest.mock import patch
+        self.state['notification_queue'] = [
+            {'text':'Усі закриті угоди (історія всіх версій): 25 • WR 24.0% (6/25) • -9.45R',
+             'version':engine.VERSION},
+            {'text':'#025 ЗАКРИТО: -1.09R', 'version':engine.VERSION},
+        ]
+        with patch.object(engine, 'http_json', return_value={'ok':True}) as send, \
+             patch.object(engine, 'atomic_write'):
+            success=engine.notify_queue(self.state,'test-token','test-chat',Path('unused.json'))
+        self.assertTrue(success)
+        self.assertEqual(send.call_count, 1)
+        self.assertIn('#025 ЗАКРИТО: -1.09R', send.call_args.args[1]['text'])
+        self.assertFalse(self.state['notification_queue'])
+
+    def test_midnight_kyiv_day_not_utc_day(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime(2026,10,26,0,10,tzinfo=ZoneInfo('Europe/Kyiv'))
+        prior = datetime(2026,10,25,23,55,tzinfo=ZoneInfo('Europe/Kyiv'))
+        today_trade = order();today_trade.update(id='today', closed_ts=int(now.timestamp()*1000),net_r=.5)
+        old = order();old.update(id='yesterday', closed_ts=int(prior.timestamp()*1000),net_r=-2.)
+        self.snap.now = int(now.timestamp()*1000)
+        self.snap.ticker_ts = self.snap.now
+        self.state['trades'] = [today_trade,old]
+        text=self.text()
+        self.assertIn('Сьогодні (Київ): 1 закрита угода • результат +0.50R',text)
 
     def test_unknown_result_keeps_reserved_slot_visible(self):
         self.state['reconciliation'] = {'order_id': 'uncertain', 'ts': NOW}
