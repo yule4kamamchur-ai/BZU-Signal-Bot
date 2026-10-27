@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.15.0-edge-research-guard"
-REPORT_RELEASE = 'v12.15.0'
+VERSION = "full-ict-v12.18.0-organic-strategy-selector"
+REPORT_RELEASE = 'v12.18.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -43,6 +43,8 @@ import execution_atlas
 import directional_policy as policy
 import entry_adverse_selection
 import edge_intelligence
+import entry_playbooks
+import strategy_organics
 import trade_meta_model as meta
 import portfolio_arbitration as arbitration
 SCHEMA = "full_ict_limit_state_v12"
@@ -97,7 +99,7 @@ class Config:
     cancel_on_bias_flip: bool = True
     core: Any = field(default=None, repr=False, compare=False)
     setup_min_sample: int = 20
-    analysis_scan_minutes: int = 5
+    analysis_scan_minutes: int = 15
 
     def validate(self) -> None:
         nums = config_dict(self)
@@ -903,6 +905,10 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     # unconfirmed continuation must not suppress a valid reversal at that price.
     assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[scanner.timeframe(p)],cfg,
                         sys.modules[__name__],ledger['observations']) for p in plans}
+    # Three independent, regime-specific strategy hypotheses are calculated ONCE
+    # per snapshot, not again for every legacy-detector candidate. No future bars.
+    organic_regime = strategy_organics.classify(s)
+    organic_setups = entry_playbooks.scenarios(s,cfg.tick)
     for p in plans:
         q = assessments[p['id']]
         proof=policy.evidence(p,s,cfg.tick)
@@ -930,6 +936,17 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         if q['accepted'] and edge_mode=='ENFORCE' and edge_verdict['status']!='ALLOW':
             q={**q,'accepted':False,'reason':edge_verdict['reason']}
             assessments[p['id']]=q
+        # v12.17: original 24 detectors locate zones; a separate, ordered
+        # early causal 3m/15m event-based playbook must independently justify the LIMIT entry.
+        # This is strategy selection, NOT a portfolio score or a pretend P(win).
+        playbook_mode=os.environ.get('BZU_ENTRY_PLAYBOOK_MODE','SHADOW').strip().upper()
+        if playbook_mode not in ('SHADOW','STRICT'):
+            raise ValueError('BZU_ENTRY_PLAYBOOK_MODE must be SHADOW or STRICT')
+        playbook=entry_playbooks.assess(p,s,cfg.tick,setup_candidates=organic_setups,market_regime=organic_regime)
+        p['entry_playbook']=playbook
+        if q['accepted'] and playbook_mode=='STRICT' and not playbook['accepted']:
+            q={**q,'accepted':False,'reason':playbook['reason']}
+            assessments[p['id']]=q
         if q['accepted'] and not meta_decision['accepted']:
             q={**q,'accepted':False,'reason':meta_decision['reason']}
             assessments[p['id']]=q
@@ -950,6 +967,13 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         p['probability'] = meta_decision['probability']
         p['decision_score'] = p['score']+q['ranking_adjustment']
         p['direction_score'] = policy.adjusted_score(p,proof)+meta_decision.get('score_adjustment',0)
+        if playbook['accepted']:
+            # A capped structural tie-break, NOT a calibrated probability.
+            # Family identity persists for downstream attribution/research.
+            p['strategy_family'] = playbook['strategy']
+            p['strategy_regime'] = playbook['regime']
+            p['strategy_evidence_score'] = playbook['evidence_score']
+            p['direction_score'] += min(3.,max(0.,(playbook['evidence_score']-60.)*.2))
         p['decision_score'] = p['direction_score']
         p['probability_status'] = meta_decision['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
@@ -2807,8 +2831,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             state['second_slot']['reconciliation'] = None
         snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else collect_snapshot(cfg,state['last_run_ts'])
         old_events = len(state.get('events',[]))
-        # A separate scan runs every five minutes; deliver all its lifecycle
-        # changes in the NEXT 15-minute report, never send a Telegram every 5m.
+        # This is one 15-minute snapshot/decision/report cycle; never
+        # require a live worker or a faster intermediate scan.
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
         archive_path=Path(os.environ.get('RESEARCH_ARCHIVE_FILE',str(state_path.with_name('research_market_v12_6.json'))))
