@@ -1,9 +1,8 @@
-name: BZU Auto Bot — ICT v12.15.0 — Research guard
+name: BZU Auto Bot — ICT v12.18.0 — Organic Strategy Selector
 
 on:
   schedule:
     - cron: '*/15 * * * *'
-    - cron: '5,10,20,25,35,40,50,55 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +15,6 @@ concurrency:
 
 jobs:
   run-bot:
-    if: ${{ vars.BOT_RUNTIME_MODE != 'worker' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -28,17 +26,18 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.15.0-edge-research-guard'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.18.0-organic-strategy-selector'
       INCLUDE_COMMISSION: 'true'
-      ANALYSIS_SCAN_MINUTES: '5'
+      ANALYSIS_SCAN_MINUTES: '15'
       ABS_MIN_STOP_PCT: '0.01'
       MIN_TP1_DISTANCE_PCT: '0.015'
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
       TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
       PYTHONUNBUFFERED: '1'
       MARKET_FETCH_TIMING: 'true'
-      # Family/regime admission is explicit; unresolved legacy orders are preserved.
-      BZU_EDGE_MODE: 'RESEARCH_ONLY'
+      # One scheduled 15m cycle; real exchange execution is NOT enabled.
+      BZU_EDGE_MODE: 'SHADOW'
+      BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'
 
     steps:
       - name: Checkout latest default branch
@@ -60,7 +59,7 @@ jobs:
         run: |
           python -m py_compile bot_oneshot.py full_limit_engine.py notification_report.py \
             setup_scanner.py signal_quality.py ict_methodology.py portfolio_arbitration.py \
-            entry_adverse_selection.py edge_intelligence.py edge_research.py strategy_research.py trade_meta_model.py directional_policy.py setup_paths.py
+            entry_adverse_selection.py edge_intelligence.py entry_playbooks.py strategy_organics.py edge_research.py strategy_research.py trade_meta_model.py directional_policy.py setup_paths.py
           python - <<'PY'
           from pathlib import Path
           import os
@@ -81,7 +80,7 @@ jobs:
           expected = os.environ['EXPECTED_BOT_VERSION']
           print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
           if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
-              raise SystemExit('Mismatched v12.14 files: update bot_oneshot.py and full_limit_engine.py together. '
+              raise SystemExit('Mismatched v12.18 files: update bot_oneshot.py and full_limit_engine.py together. '
                                f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
               raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
@@ -109,14 +108,9 @@ jobs:
           TELEGRAM_NOTIFY_EVERY_RUN: 'true'
         run: python bot_oneshot.py --notify
 
-      - name: Scan and supervise between 15-minute reports
-        if: ${{ github.event.schedule == '5,10,20,25,35,40,50,55 * * * *' }}
-        id: silent_scan
-        run: python bot_oneshot.py
-
       - name: Save signal memory and journal
         id: persist
-        if: ${{ always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure' || steps.silent_scan.outcome == 'success' || steps.silent_scan.outcome == 'failure') }}
+        if: ${{ always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure') }}
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
