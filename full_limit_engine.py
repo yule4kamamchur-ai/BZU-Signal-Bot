@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.14.0-causal-entry-risk"
-REPORT_RELEASE = 'v12.14.0'
+VERSION = "full-ict-v12.15.0-edge-research-guard"
+REPORT_RELEASE = 'v12.15.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -42,6 +42,7 @@ import setup_paths
 import execution_atlas
 import directional_policy as policy
 import entry_adverse_selection
+import edge_intelligence
 import trade_meta_model as meta
 import portfolio_arbitration as arbitration
 SCHEMA = "full_ict_limit_state_v12"
@@ -915,6 +916,20 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         meta_decision=meta.evaluate(meta_model,q['features'],
                                     net_rr=p.get('net_rr',0),costs_r=p.get('costs_r',0))
         p['meta_decision']=meta_decision
+        # Independent regime and strategy-family control. SHADOW mode is the
+        # local/test default; production explicitly opts into ENFORCE. Do not
+        # touch pre-existing positions or pending orders during an upgrade.
+        edge_verdict=edge_intelligence.assess(p,s,proof)
+        p['edge_intelligence']=edge_verdict
+        edge_mode=os.environ.get('BZU_EDGE_MODE','SHADOW').strip().upper()
+        if edge_mode not in ('SHADOW','ENFORCE','RESEARCH_ONLY'):
+            raise ValueError('BZU_EDGE_MODE must be SHADOW, ENFORCE, or RESEARCH_ONLY')
+        if q['accepted'] and edge_mode=='RESEARCH_ONLY':
+            q={**q,'accepted':False,'reason':'EDGE_RESEARCH_NOT_VALIDATED'}
+            assessments[p['id']]=q
+        if q['accepted'] and edge_mode=='ENFORCE' and edge_verdict['status']!='ALLOW':
+            q={**q,'accepted':False,'reason':edge_verdict['reason']}
+            assessments[p['id']]=q
         if q['accepted'] and not meta_decision['accepted']:
             q={**q,'accepted':False,'reason':meta_decision['reason']}
             assessments[p['id']]=q
@@ -1763,6 +1778,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         return r.get('reason') not in PAPER_UNCERTAINTY or record.get('execution')!='PAPER_SIGNAL'
     manual_block = any(needs_manual_check(r) for r in unresolved)
     analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
+    analysis['edge_mode']=os.environ.get('BZU_EDGE_MODE','SHADOW').strip().upper()
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
     if analysis.get('full_context'):
         quality.refresh_confirmations(state,s,analysis['full_context'],cfg,sys.modules[__name__],
@@ -1783,6 +1799,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     elif busy:
         action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
     can_place = not manual_block
+    # Independent, final execution interlock: never rely exclusively on the
+    # upstream analyzer (or a restored queue/previous model) to enforce the
+    # research-only deployment. Existing pending/active orders are preserved.
+    if analysis.get('edge_mode') == 'RESEARCH_ONLY':
+        can_place = False
+        if not busy:
+            action = 'RESEARCH_ONLY'
     if can_place and analysis['health']:
         if not busy:
             action = 'DATA_HOLD'

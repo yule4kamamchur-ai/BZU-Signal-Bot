@@ -135,6 +135,9 @@ def build(state, snapshot, result, cfg, engine):
         why = engine.REASON_UA.get(direction.get('reason'), direction.get('reason',''))
         lines += [f'Обраний сценарій: {bias}' + (f' • {why}' if why else '')]
 
+    if result.get('analysis', {}).get('edge_mode') == 'RESEARCH_ONLY' and not frozen:
+        lines += ['Режим дослідження: нові ліміти вимкнено до перевірки переваги; чинні угоди супроводжуються.']
+
     # Describe a real portfolio rotation rather than the misleading message
     # 'no entries'. A prepared candidate is NOT an actual pending limit.
     rotations=[ev for ev in result.get('events', [])
