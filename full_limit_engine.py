@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.18.0-organic-strategy-selector"
-REPORT_RELEASE = 'v12.18.0'
+VERSION = "full-ict-v12.18.1-direct-strategy-entries"
+REPORT_RELEASE = 'v12.18.1'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -45,6 +45,7 @@ import entry_adverse_selection
 import edge_intelligence
 import entry_playbooks
 import strategy_organics
+import strategy_direct_entries
 import trade_meta_model as meta
 import portfolio_arbitration as arbitration
 SCHEMA = "full_ict_limit_state_v12"
@@ -399,6 +400,8 @@ def anchor_zone_key(a, cfg: Config) -> str:
     parts = (a.setup_type, a.side, round(a.level/cfg.tick), round(a.invalidation/cfg.tick), a.kind)
     if a.evidence.get('entry_route')=='MICRO_PRECURSOR':
         return ident(*parts,tf,'FORMATION_3m')
+    if a.evidence.get('entry_route')=='STRATEGY_EVENT':
+        return ident(*parts,tf,'STRATEGY_EVENT',a.evidence.get('source_strategy'))
     return ident(*parts) if tf == '15m' else ident(*parts, tf)
 
 
@@ -830,13 +833,26 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             status='ERROR' if any(e['status']=='ERROR' for e in evaluations) else 'DETECTED' if any(e['status']=='DETECTED' for e in evaluations) else 'NO_SETUP'
             detector_audit.append({'detector':detector.__name__,'setup':setup,'status':status,
                                    'timeframes':evaluations})
+        # Independent strategy-confirmed entries must not require an accidental
+        # price match with one of the legacy 24 location detectors. Use the
+        # SAME shared geometry/target/order machinery, with explicit origin.
+        organic_regime = strategy_organics.classify(s)
+        organic_setups = entry_playbooks.scenarios(s,cfg.tick)
+        direct_anchors = []
+        for signal in organic_setups:
+            a = strategy_direct_entries.from_signal(signal,s,cfg,early_context,
+                                                      core,organic_regime,entry_playbooks)
+            if a is not None:
+                direct_anchors.append(a)
+        fresh.extend(direct_anchors)
         anchors = merge_full_anchors(fresh,state,s,cfg,{**tf_contexts,'MICRO_PRECURSOR':early_context})
         stats = setup_statistics(state,cfg)
         plans, watch, refused = [], [], {}
         admission_paths=[]
         active_keys={anchor_key(a,cfg) for a in anchors}
         for a in fresh:
-            row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==a.evidence.get('setup_timeframe','15m')),None)
+            row=(None if a.evidence.get('entry_route')=='STRATEGY_EVENT' else
+                 next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==a.evidence.get('setup_timeframe','15m')),None))
             if row is None:
                 continue
             row['event_key']=anchor_key(a,cfg)
@@ -849,7 +865,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 refused[reason]=refused.get(reason,0)+1
         for a in anchors:
             tf=a.evidence.get('setup_timeframe','15m')
-            native=early_context if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[tf]
+            native=early_context if a.evidence.get('entry_route') in ('MICRO_PRECURSOR','STRATEGY_EVENT') else tf_contexts[tf]
             key = anchor_key(a,cfg)
             level_key = ident(a.side,round(a.level/cfg.tick))
             diagnostics={}
@@ -865,8 +881,11 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
                     diagnostics.update(preview_geometry(a,native,s,cfg))
             admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
-                'entry':a.level,'reason':reason,'event_key':key})
-            row=next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None)
+                'entry':a.level,'reason':reason,'event_key':key,
+                'route':a.evidence.get('entry_route','NATIVE_PATTERN'),
+                'source_strategy':a.evidence.get('source_strategy')})
+            row=(None if a.evidence.get('entry_route')=='STRATEGY_EVENT' else
+                 next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None))
             if row is not None:
                 row.setdefault('branch_results',[]).append({'side':core.side_sign(a.side),'level':a.level,'reason':reason,'event_key':key})
             replace_row=row is not None and (row.get('status')!='LIMIT_READY' or (p is not None and p['score']>row.get('score',0)))
@@ -903,17 +922,27 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                                     if key not in ('weights','calibration_offset')}
     # Evaluate every scenario BEFORE combining nearby levels. A high-score
     # unconfirmed continuation must not suppress a valid reversal at that price.
-    assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[scanner.timeframe(p)],cfg,
+    assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route') in ('MICRO_PRECURSOR','STRATEGY_EVENT') else tf_contexts[scanner.timeframe(p)],cfg,
                         sys.modules[__name__],ledger['observations']) for p in plans}
     # Three independent, regime-specific strategy hypotheses are calculated ONCE
     # per snapshot, not again for every legacy-detector candidate. No future bars.
-    organic_regime = strategy_organics.classify(s)
-    organic_setups = entry_playbooks.scenarios(s,cfg.tick)
     for p in plans:
         q = assessments[p['id']]
         proof=policy.evidence(p,s,cfg.tick)
         p['ict_evidence']=proof
-        admitted,ict_reason=policy.admit(p,proof)
+        if p.get('entry_route')=='STRATEGY_EVENT':
+            # A direct event is evaluated against its exact as-of strategy
+            # evidence below, not misrepresented as a legacy detector hit.
+            src=p.get('anchor_proof',{})
+            admitted=bool(src.get('source_strategy') and
+                          src.get('strategy_signal_ts') is not None and
+                          src.get('strategy_event_ts') is not None)
+            ict_reason='DIRECT_STRATEGY_EVENT' if admitted else 'DIRECT_STRATEGY_PROOF_MISSING'
+            p['ict_contract']={'source':'STRATEGY_EVENT', 'source_strategy':src.get('source_strategy'),
+                               'signal_ts':src.get('strategy_signal_ts'),
+                               'event_ts':src.get('strategy_event_ts')}
+        else:
+            admitted,ict_reason=policy.admit(p,proof)
         if q['accepted'] and not admitted:
             q={**q,'accepted':False,'reason':ict_reason}
             assessments[p['id']]=q
@@ -944,6 +973,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             raise ValueError('BZU_ENTRY_PLAYBOOK_MODE must be SHADOW or STRICT')
         playbook=entry_playbooks.assess(p,s,cfg.tick,setup_candidates=organic_setups,market_regime=organic_regime)
         p['entry_playbook']=playbook
+        if p.get('entry_route')=='STRATEGY_EVENT' and not playbook['accepted']:
+            q={**q,'accepted':False,'reason':playbook['reason']}
+            assessments[p['id']]=q
         if q['accepted'] and playbook_mode=='STRICT' and not playbook['accepted']:
             q={**q,'accepted':False,'reason':playbook['reason']}
             assessments[p['id']]=q
@@ -1065,7 +1097,13 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             if path['reason']!='ACCEPTED':reasons[path['reason']]=reasons.get(path['reason'],0)+1
         directional[label]={'evaluated_paths':len(subset),
             'accepted_paths':sum(path['reason']=='ACCEPTED' for path in subset),'rejections':reasons}
-    return {"health": [],"plans": accepted,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
+    direct_paths=[p for p in admission_paths if p.get('route')=='STRATEGY_EVENT']
+    direct_report={'observed':len(organic_setups),'regime_qualified':len(direct_anchors),
+                   'geometry_qualified':sum(1 for p in plans if p.get('entry_route')=='STRATEGY_EVENT'),
+                   'admitted':sum(1 for p in accepted if p.get('entry_route')=='STRATEGY_EVENT'),
+                   'rejections':dict(__import__('collections').Counter(
+                       p['reason'] for p in direct_paths if p['reason']!='ACCEPTED'))}
+    return {"health": [],"plans": accepted,"direct_strategy":direct_report,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
             "meta_model":ledger['last_meta_diagnostic'],
             "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,"early_context":early_context,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
@@ -2099,6 +2137,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             plan['outcome_forecast']={'status':'DEFERRED_MODEL_BUDGET','calibrated':False,
                 'as_of_ts':s.now,'entry_gate_enabled':False}
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
+    state['direct_strategy_diagnostic']=copy.deepcopy(analysis.get('direct_strategy',{}))
     state['last_run_ts'] = s.now
     state['config_hash'] = config_hash
     state['runtime_config']=config_dict(cfg)
@@ -2122,6 +2161,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                'timeframe_evaluations':analysis.get('timeframe_evaluations',0),
                'funnel':{**analysis.get('funnel',{}),'placed':len(selected)},
                'admission_by_side':analysis.get('admission_by_side',{}),
+               'direct_strategy':analysis.get('direct_strategy',{}),
                'direction_policy':analysis.get('direction_policy',{}),
                'portfolio_arbitration':analysis.get('portfolio_arbitration',{})}
     previous=state.get('last_scan_observed_ts')

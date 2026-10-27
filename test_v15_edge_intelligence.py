@@ -80,10 +80,11 @@ class ResearchGate(unittest.TestCase):
         self.assertFalse(result['trades'][0]['eligible_for_counterfactual'])
         self.assertEqual(result['eligible_counterfactual_trades'],0)
 
-    def test_workflow_blocks_new_paper_entries_pending_validation(self):
+    def test_workflow_enables_strict_paper_strategy_validation(self):
         root=Path(__file__).resolve().parent
         live=(root/'.github/workflows/main.yml').read_text()
-        self.assertIn("BZU_EDGE_MODE: 'RESEARCH_ONLY'",live)
+        self.assertIn("BZU_EDGE_MODE: 'SHADOW'",live)
+        self.assertIn("BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'", live)
         self.assertIn('edge_intelligence.py',live)
         self.assertTrue((root/'.github/workflows/bzu-quality.yml').exists())
 

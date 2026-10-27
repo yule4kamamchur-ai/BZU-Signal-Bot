@@ -373,7 +373,13 @@ def assess(plan, snapshot, tick, *, setup_candidates=None, market_regime=None):
     if side not in (-1,1) or not isinstance(entry,(int,float)) or entry<=0:
         return {'accepted':False,'reason':'PLAYBOOK_INVALID_PLAN','playbook':None}
     regime = market_regime or organic.classify(snapshot)
+    direct = plan.get('entry_route') == 'STRATEGY_EVENT'
+    proof = plan.get('anchor_proof',{}) if direct else {}
     for signal in setups:
+        if direct and (signal.family != proof.get('source_strategy') or
+                       signal.signal_ts != proof.get('strategy_signal_ts') or
+                       signal.event_ts != proof.get('strategy_event_ts')):
+            continue
         if signal.side!=side:
             continue
         if snapshot.now-signal.signal_ts>STEP or snapshot.now<signal.signal_ts:

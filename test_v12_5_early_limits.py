@@ -279,13 +279,12 @@ class EvidenceAndRuntimeTests(unittest.TestCase):
             result=market_archive.record(path,snapshot(NOW),cfg,engine)
             self.assertEqual(result['status'],'UNCHANGED');self.assertEqual(path.read_bytes(),before)
 
-    def test_workflow_has_5_minute_scans_and_separate_15_minute_reports(self):
+    def test_workflow_has_single_15_minute_trade_and_report_cycle(self):
         workflow=(ROOT/'.github/workflows/main.yml').read_text()
         self.assertIn("cron: '*/15 * * * *'",workflow)
-        self.assertIn("cron: '5,10,20,25,35,40,50,55 * * * *'",workflow)
+        self.assertNotIn("cron: '5,10,20,25,35,40,50,55 * * * *'",workflow)
         self.assertIn('run: python bot_oneshot.py --notify',workflow)
-        self.assertIn('run: python bot_oneshot.py\n',workflow)
-        self.assertIn('steps.silent_scan.outcome',workflow)
+        self.assertNotIn('steps.silent_scan.outcome',workflow)
         self.assertIn('market_history_v12.json',workflow)
         self.assertIn(engine.VERSION,workflow)
         quality=(ROOT/'.github/workflows/bzu-quality.yml').read_text()
