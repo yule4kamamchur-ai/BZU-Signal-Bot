@@ -1919,10 +1919,15 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     # The older router may have persisted many waiting orders. Do not admit
     # any new risk until the legacy surplus has been cancelled. At an
     # in-progress 3m candle the cancel becomes effective on its next boundary.
-    if len([p for p in pending if not p.get('cancel_requested_ts')])>2:
-        ranked_legacy=sorted((p for p in pending if not p.get('cancel_requested_ts')),
+    # Reserves must include filled positions and unresolved fills: an old
+    # archive may contain two pending limits PLUS an active position. Cancel
+    # only surplus waiting orders, never erase an existing filled position.
+    pending_capacity=max(0,2-occupied_slots(state))
+    awaiting=[p for p in pending if not p.get('cancel_requested_ts')]
+    if len(awaiting)>pending_capacity:
+        ranked_legacy=sorted(awaiting,
                              key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
-        for obsolete in ranked_legacy[2:]:
+        for obsolete in ranked_legacy[pending_capacity:]:
             request_cancel(state,obsolete,'LEGACY_PENDING_EXCESS_CAP_2',s.now)
         can_place=False
         pending=pending_plans(state)
@@ -1979,9 +1984,23 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         direction_reason='LEGACY_OPPOSING_OPEN_POSITIONS_MANAGE_ONLY'
         can_place=False
     elif active_sides:
+        # A filled position consumes ONE slot, not the entire book. Review a
+        # second, *independent*, same-direction ICT entry if capacity exists.
+        # An old opposite pending limit must be cancelled and reconciled first;
+        # do not open a hedge even if its recorded score is better.
         selected_side=next(iter(active_sides))
-        direction_reason='ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT'
-        can_place=False  # Follow first; never expand while a fill is open.
+        opposite_waiting=[p for p in pending if p['side']!=selected_side]
+        if opposite_waiting:
+            for old in opposite_waiting:
+                if not old.get('cancel_requested_ts'):
+                    request_cancel(state,old,'PORTFOLIO_DIRECTION_CONFLICT',s.now)
+            can_place=False
+            direction_reason='ACTIVE_POSITION_OPPOSITE_PENDING_RECONCILIATION'
+        elif occupied_slots(state)+len(pending_plans(state))>=2:
+            can_place=False
+            direction_reason='ACTIVE_POSITION_TWO_SLOT_CAPACITY_FULL'
+        else:
+            direction_reason='ACTIVE_POSITION_SECOND_ENTRY_REVIEW'
     else:
         proposed_side,ranked,direction_reason=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
         if len(pending_sides)>1:
@@ -2035,7 +2054,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         'pending':len(pending),'open_positions':len(active),
         'long_ready':sum(p['side']==1 for p in valid),
         'short_ready':sum(p['side']==-1 for p in valid),
-        'arbitration_decision':arbitration_audit.get('decision')}
+        'arbitration_decision':arbitration_audit.get('decision'),
+        'occupied_slots':occupied_slots(state),
+        'reserved_pending':len(pending_plans(state)),
+        'free_slots':max(0,2-occupied_slots(state)-len(pending_plans(state)))}
     state['portfolio_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
     if can_place and selected_side:
         # At most TWO waiting limit orders TOTAL. This is the user's risk book,
@@ -2054,7 +2076,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 state.pop('portfolio_rotation_intent',None)
         for top in plans:
             existing=pending_plans(state)
-            if len(existing)>=2 or occupied_slots(state)>=2:
+            # Each waiting limit may fill before the next 15m scan. Count it
+            # together with already open/uncertain positions, not separately.
+            if occupied_slots(state)+len(existing)>=2:
                 break
             if any(p.get('cancel_requested_ts') for p in existing):
                 break
@@ -2068,7 +2092,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 break
             if any(p['side']==top['side'] and abs(p['entry']-top['entry'])<=tolerance for p in busy):
                 continue
-            if existing and not policy.compatible(top,existing[0],cfg.tick):
+            # The second position must express a distinct ICT thesis, not a
+            # duplicate entry under a different detector name/timeframe.
+            if any(not policy.compatible(top,incumbent,cfg.tick) for incumbent in busy):
+                continue
+            if any(trade_dependencies.related(top,incumbent,cfg.tick) for incumbent in busy):
                 continue
             if existing and policy.ranking(top,s.price,cfg.tick)[0] < \
                     policy.ranking(existing[0],s.price,cfg.tick)[0]-cfg.conflict_margin:
@@ -2363,7 +2391,10 @@ REASON_UA = {
     'PORTFOLIO_DIRECTION_CONFLICT':'скасування: в портфелі не можна одночасно вести LONG і SHORT',
     'LEGACY_PENDING_EXCESS_CAP_2':'скасування зайвого ліміту, залишаємо максимум два',
     'BETTER_OPPOSING_SCENARIO':'скасування: протилежний сценарій тепер істотно сильніший',
-    'ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT':'супроводжуємо відкриту позицію; нові ліміти на паузі',
+    'ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT':'супроводжуємо відкриту позицію; нові ліміти на паузі (стара політика)',
+    'ACTIVE_POSITION_SECOND_ENTRY_REVIEW':'перевіряємо другий незалежний ICT-вхід у тому самому напрямку',
+    'ACTIVE_POSITION_OPPOSITE_PENDING_RECONCILIATION':'скасовуємо протилежний ліміт перед новим входом',
+    'ACTIVE_POSITION_TWO_SLOT_CAPACITY_FULL':'обидва місця зайняті позиціями чи лімітами; новий ордер не додаємо',
     'PENDING_DIRECTION_LOCK':'зберігаємо обраний напрямок очікуваних лімітів',
     'DIRECTION_SELECTED_NARROW_EDGE':'LONG і SHORT близькі за оцінкою; обрано лише один напрямок',
     'DIRECTION_AMBIGUOUS_NO_TRADE':'оцінки LONG і SHORT занадто близькі: не відкривати угоду',

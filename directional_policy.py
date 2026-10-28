@@ -199,10 +199,36 @@ def choose(plans, price, tick, margin=8., locked_side=0):
 
 
 def compatible(second, first, tick):
-    if second['side']!=first['side'] or second.get('event_key')==first.get('event_key'):
+    """Conservative independence test for a SECOND risk-bearing entry.
+
+    Comparing the detector name is not sufficient: two different detectors
+    may describe the same liquidity sweep, level or parent HTF event.
+    Conversely, two truly distinct confirmed events may share a setup name.
+    Missing event identity cannot be used as positive proof of independence.
+    """
+    if second.get('side') not in (-1, 1) or second.get('side') != first.get('side'):
         return False
-    # Do not double the exposure to one nearly identical price zone.
-    risk=min(float(first.get('risk',0)),float(second.get('risk',0)))
-    if abs(second['entry']-first['entry'])<=max(3*tick,.5*risk):
+    if not second.get('event_key') or not first.get('event_key'):
         return False
-    return second.get('setup')!=first.get('setup') or second.get('setup_timeframe')!=first.get('setup_timeframe')
+    if second['event_key'] == first['event_key']:
+        return False
+    identities = lambda p: {str(k) for k in (p.get('event_key'), p.get('zone_key'),
+                         *(p.get('parent_keys') or [])) if k}
+    if identities(first) & identities(second):
+        return False
+    # Shared origin of an actual sweep/BOS, when the source records it.
+    for key in ('strategy_event_ts', 'episode_ts'):
+        a = (first.get('anchor_proof') or {}).get(key, first.get(key))
+        b = (second.get('anchor_proof') or {}).get(key, second.get(key))
+        if a is not None and b is not None and a == b:
+            return False
+    try:
+        risk=min(float(first['risk']), float(second['risk']))
+        entry_gap=abs(float(second['entry'])-float(first['entry']))
+        if not isfinite(risk) or not isfinite(entry_gap) or risk <= 0:
+            return False
+        if entry_gap <= max(3*tick, .5*risk):
+            return False
+    except (ValueError, TypeError, KeyError):
+        return False
+    return True

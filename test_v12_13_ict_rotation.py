@@ -86,7 +86,7 @@ class FastRotation(unittest.TestCase):
         self.incumbents=[]
         for i,(entry,score) in enumerate(((93.,75.),(98.,52.))):
             p=order(1,placed=NOW-3*e.TF['3m'],expiry=NOW+3_600_000)
-            p.update(id='old'+str(i),event_key='old'+str(i),entry=entry,
+            p.update(id='old'+str(i),event_key='old'+str(i),zone_key='old-zone'+str(i),entry=entry,
                      stop=entry-1,initial_stop=entry-1,risk=1.,tp=105.,
                      invalidation=entry-1,score=score,direction_score=score,
                      last_bar=NOW-e.TF['3m'],effective_ts=NOW-3*e.TF['3m'],
@@ -94,7 +94,7 @@ class FastRotation(unittest.TestCase):
             self.incumbents.append(p)
         e.park_pending(self.book,self.incumbents)
         self.new=order(1,placed=NOW,expiry=NOW+3_600_000)
-        self.new.update(id='candidate',event_key='candidate',entry=97.,stop=96.,
+        self.new.update(id='candidate',event_key='candidate',zone_key='new-zone',entry=97.,stop=96.,
                         initial_stop=96.,tp=101.,invalidation=96.,risk=1.,
                         score=99.,direction_score=99.,setup='SWEEP_RECLAIM',
                         setup_timeframe='1H',readiness_pct=100.,

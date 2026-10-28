@@ -11,10 +11,11 @@ import math
 from dataclasses import dataclass
 
 VERSION = 'bzu-meta-label-v1'
-MIN_EPISODES = 120
-MIN_TRAIN = 60
-MIN_CALIBRATE = 18
-MIN_VALIDATE = 30
+MIN_EPISODES = 20  # Begin causal model assessment after 20 independent closes.
+MIN_TRAIN = 10
+MIN_CALIBRATE = 3
+MIN_VALIDATE = 5
+MIN_SELECTED_HOLDOUT = 10  # A 20-episode sample cannot certify a trading edge.
 ENTRY_PROBABILITY_FLOOR = 0.65  # Experimental threshold, not a promised WR.
 SCORE_ADJUSTMENT_CAP = 5.0
 
@@ -154,8 +155,10 @@ def train(observations, now, strategy):
     if len(train_rows)<MIN_TRAIN or len(cal)<MIN_CALIBRATE or len(holdout)<MIN_VALIDATE:
         result['status']='MONITOR_ONLY_SPLIT_TOO_SMALL_OR_OVERLAPPING'
         return result
-    if any(min(sum(r['net_r']>0 for r in group),sum(r['net_r']<=0 for r in group))<5
-           for group in (train_rows,cal,holdout)):
+    # A short calibration/holdout slice can still be examined, but never
+    # treat a slice containing only one outcome class as calibrated evidence.
+    if any(min(sum(r['net_r']>0 for r in group),sum(r['net_r']<=0 for r in group))<minimum
+           for group,minimum in ((train_rows,2),(cal,1),(holdout,1))):
         result['status']='MONITOR_ONLY_CLASS_SUPPORT_INADEQUATE'
         return result
     w=_fit(train_rows)
@@ -186,7 +189,8 @@ def train(observations, now, strategy):
     result.update(holdout_selected=len(selected),
                   selected_win_rate=round(selected_wins/len(selected),6) if selected else None,
                   selected_expectancy_r=round(selected_mean,6) if selected_mean is not None else None)
-    if len(selected)<10 or selected_mean is None or selected_mean<=0 or selected_wins/len(selected)<.65:
+    if len(selected)<MIN_SELECTED_HOLDOUT or selected_mean is None or selected_mean<=0 \
+            or selected_wins/len(selected)<.65:
         result['status']='MONITOR_ONLY_FILTER_HAS_NO_VALIDATED_NET_EDGE'
         return result
     # PAPER out-of-sample validation is deliberately NOT called proof of a
