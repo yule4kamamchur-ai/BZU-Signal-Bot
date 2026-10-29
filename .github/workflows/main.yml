@@ -35,6 +35,7 @@ jobs:
       TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
       PYTHONUNBUFFERED: '1'
       MARKET_FETCH_TIMING: 'true'
+      BOT_STAGE_TIMING: 'true'
       # One scheduled 15m cycle; real exchange execution is NOT enabled.
       BZU_EDGE_MODE: 'SHADOW'
       BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'
@@ -45,8 +46,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: true
-          fetch-depth: 0
-
+          # The job needs only HEAD to write its state-only commit.
+          # Never download the full trading-ledger history on every scan.
+          fetch-depth: 1
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -114,6 +116,8 @@ jobs:
         if: ${{ always() && (steps.bot.outcome == 'success' || steps.bot.outcome == 'failure') }}
         shell: bash
         run: |
+          started=$SECONDS
+          trap 'echo "[PERF] git_state_persistence: ${SECONDS-started}s"' EXIT
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
@@ -141,9 +145,11 @@ jobs:
               break
             fi
 
-            git fetch origin "$BOT_BRANCH"
+            # Read only the newest remote commit, even if we are shallow.
+            # Tree comparison below needs the two tips, NOT their ancestry.
             base_revision=$(git rev-parse HEAD^)
-            remote_revision=$(git rev-parse "origin/${BOT_BRANCH}")
+            git fetch --no-tags --depth=1 origin "$BOT_BRANCH"
+            remote_revision=$(git rev-parse FETCH_HEAD)
 
             # A different writer changed the same ledger: preserve both copies.
             if ! git diff --quiet "$base_revision" "$remote_revision" -- \
@@ -153,7 +159,9 @@ jobs:
             fi
 
             # Keep remote code changes while replaying our state-only commit.
-            if ! git rebase "$remote_revision"; then
+            # Explicitly replay the one local state commit onto remote HEAD;
+            # this works on a shallow checkout without fetching old history.
+            if ! git rebase --onto "$remote_revision" "$base_revision" HEAD; then
               git rebase --abort || true
               echo '::error::Could not rebase the state-only commit. State will be kept as an artifact.'
               exit 1
