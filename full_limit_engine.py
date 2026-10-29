@@ -18,7 +18,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace, fields
 from datetime import datetime, timezone
@@ -755,6 +755,51 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
             "parent_keys": [], "version": VERSION}, "ACCEPTED"
 
 
+def _historical_anchor_index(memory: dict) -> tuple[set[str], dict[tuple, list[float]]]:
+    """Index past zone identities and levels once per cycle, without pruning them.
+
+    The old implementation scanned all saved anchors for EVERY new candidate.
+    That becomes very expensive after thousands of 15-minute cycles. The index
+    preserves the exact less-than-half-tick match used for duplicate detection.
+    """
+    zones: set[str] = set()
+    levels: dict[tuple, list[float]] = {}
+    for old in memory.values():
+        if not isinstance(old, dict):
+            continue
+        evidence = old.get('evidence') or {}
+        zone = evidence.get('zone_identity')
+        if zone:
+            zones.add(zone)
+        group = (old.get('setup_type'), old.get('side'),
+                 evidence.get('setup_timeframe', '15m'),
+                 evidence.get('entry_route', 'NATIVE_PATTERN'))
+        level = old.get('level', 0)
+        if isinstance(level, (int, float)) and math.isfinite(level):
+            levels.setdefault(group, []).append(float(level))
+    for values in levels.values():
+        values.sort()
+    return zones, levels
+
+
+def _anchor_already_seen(index: tuple, candidate: Any, timeframe: str,
+                         zone_identity: str, tick: float) -> bool:
+    zones, levels = index
+    if zone_identity in zones:
+        return True
+    evidence = candidate.evidence
+    group = (candidate.setup_type, candidate.side, timeframe,
+             evidence.get('entry_route', 'NATIVE_PATTERN'))
+    values = levels.get(group, ())
+    if not values:
+        return False
+    position = bisect_left(values, candidate.level)
+    for i in (position-1, position):
+        if 0 <= i < len(values) and abs(values[i] - candidate.level) < tick/2:
+            return True
+    return False
+
+
 def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     errors = health(s,cfg)
     if errors:
@@ -774,6 +819,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         fresh, detector_audit, matrix = [], [], []
         # The registry order is stable; each original setup runs on native
         # 15m, 1H and 4H bars, not merely on a 15m trend with HTF labels.
+        historical_anchor_index = _historical_anchor_index(state.get('anchor_memory', {}))
         names = [row['setup'] for row in core_setup_registry(core)]
         for setup,detector in zip(names,core.DETECTORS):
             evaluations=[]
@@ -804,12 +850,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                             candidate.evidence['setup_conditions'][-1]={'condition':'Межа визначена до підходу ціни; до 3 ATR','met':True}
                         candidate.expires_ts=candidate.created_ts+(candidate.expires_ts-candidate.created_ts)*scanner.MINUTES[tf]//15
                         seen_zone=anchor_zone_key(candidate,cfg)
-                        known=any((old.get('evidence',{}).get('zone_identity')==seen_zone
-                            or (old.get('setup_type')==candidate.setup_type and old.get('side')==candidate.side
-                                and old.get('evidence',{}).get('setup_timeframe','15m')==tf
-                                and old.get('evidence',{}).get('entry_route','NATIVE_PATTERN')==candidate.evidence.get('entry_route','NATIVE_PATTERN')
-                                and abs(old.get('level',0)-candidate.level)<cfg.tick/2))
-                            for old in state.get('anchor_memory',{}).values())
+                        known=_anchor_already_seen(historical_anchor_index,candidate,tf,seen_zone,cfg.tick)
                         if not known:
                             setup_paths.activate(candidate,formation,s,cfg,initial=True)
                         fresh.append(candidate)
@@ -2484,7 +2525,9 @@ def atomic_write(path: Path, data: dict) -> None:
     fd, temp = tempfile.mkstemp(prefix=path.name+".", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2, allow_nan=False)
+            # On large persistent ledgers indentation doubles disk and Git I/O.
+            # Compact encoding preserves all keys, numbers, order and timestamps.
+            json.dump(data, handle, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)
@@ -2888,6 +2931,14 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         raise ValueError('State and journal paths must differ')
     if notify and (not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID):
         raise ValueError('Telegram credentials required before starting --notify')
+    timing_enabled = os.environ.get('BOT_STAGE_TIMING', '').strip().lower() in ('1', 'true', 'yes')
+    stage_start = time.monotonic()
+    def stage(name: str) -> None:
+        nonlocal stage_start
+        now = time.monotonic()
+        if timing_enabled:
+            print(f'[PERF] {name}: {now-stage_start:.2f}s', flush=True)
+        stage_start = now
     with locked(Path(str(state_path)+'.lock')):
         if snapshot_path is None:
             cfg = resolve_live_config(cfg)
@@ -2913,12 +2964,15 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(r),'acknowledged_ts':int(time.time()*1000)})
             emit(state,'RECONCILIATION_ACKNOWLEDGED',int(time.time()*1000),order_id=r['order_id'])
             state['second_slot']['reconciliation'] = None
+        stage('init_state_and_model')
         snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else collect_snapshot(cfg,state['last_run_ts'])
+        stage('market_snapshot')
         old_events = len(state.get('events',[]))
         # This is one 15-minute snapshot/decision/report cycle; never
         # require a live worker or a faster intermediate scan.
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
+        stage('strategy_and_lifecycle')
         archive_path=Path(os.environ.get('RESEARCH_ARCHIVE_FILE',str(state_path.with_name('research_market_v12_6.json'))))
         try:
             # Offline/test snapshots never acquire live provenance just because
@@ -2931,7 +2985,9 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
             print('Market evidence recording failed: '+str(exc),file=sys.stderr)
         if notify:
             result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
+        stage('research_archive')
         message = build_message(state,snap,result,cfg) if notify else ''
+        stage('compose_report')
         state.setdefault('last_notified_event_count',old_events)
         if notify and result['action']!='DUPLICATE_OR_OUT_OF_ORDER':
             state['last_notified_event_count']=len(state['events'])
@@ -2947,9 +3003,13 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
                                                     'version':VERSION,'ts':snap.now})
             state['last_report_requested_ts']=snap.now
         atomic_write(state_path,state)
+        stage('save_state')
         export_journal(journal_path,state,core)
+        stage('save_journal')
         if notify and not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):
+            stage('telegram_delivery_failed')
             return 2
+        stage('telegram_delivery')
         if result['action']=='DATA_HOLD':
             print('DATA_HOLD: no new orders; Telegram summary/state were processed',file=sys.stderr)
         return 0  # preserve queued notifications/ledger even when data are on hold
