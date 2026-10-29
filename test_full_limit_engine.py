@@ -340,7 +340,7 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("розмір позиції", msg)
         self.assertIn("Вхід:", msg)
         self.assertNotIn("SL:", msg)
-        self.assertIn("ОЧІКУЄМО ВХОДУ — 1", msg)
+        self.assertIn("ОЧІКУЄМО ЛІМІТ — 1", msg)
         self.assertNotIn("не біржові ордери",msg)
 
 
@@ -908,7 +908,7 @@ class TwoSlotTests(unittest.TestCase):
         bars = [candle(NOW+i*180_000,101,101.5,99.9 if i==0 else 100.5,101) for i in range(5)]
         result = self.report(state,[self.plan(3,97)],NOW+900_000,bars)
         self.assertIsNotNone(state['active'])
-        self.assertIsNotNone(state['second_slot']['pending'])
+        self.assertIsNone(state['second_slot']['pending'])  # Cancelled after the first fill.
         self.assertEqual(b.occupied_slots(state),1)
         self.assertFalse(result['selected_plans'])  # Existing fill locks new placements
 
@@ -949,16 +949,11 @@ class TwoSlotTests(unittest.TestCase):
         b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
         self.assertEqual(state['active']['id'],'order-1')
         self.assertIsNone(state['second_slot']['active'])
-        self.assertEqual(state['trades'][0]['id'],'order-2')
-        self.assertEqual(state['trades'][0]['close_reason'],'TAKE_PROFIT')
-        self.assertEqual(state['trades'][0]['remaining'],0)
-        closed_order = next(o for o in state['orders'] if o['id']=='order-2')
-        self.assertEqual(closed_order['position_status'],'CLOSED')
-        self.assertEqual(closed_order['trade_net_r'],state['trades'][0]['net_r'])
-        self.assertEqual(len(state['orders']),2)
+        self.assertFalse(state['trades'])
+        self.assertFalse(any(o['id']=='order-2' and o['status']=='FILLED' for o in state['orders']))
         b.advance_lifecycle(state,lifecycle_snapshot(bars),b.Config())
-        self.assertEqual(len(state['orders']),2)
-        self.assertEqual(len(state['trades']),1)
+        self.assertEqual(len(b.active_plans(state)),1)
+        self.assertFalse(state['trades'])
 
     def test_cancelling_second_slot_cannot_erase_first_order(self):
         state = b.new_state(b.Config())

@@ -139,7 +139,7 @@ class MessageAndUpgradeTests(unittest.TestCase):
         self.assertIn('ордер ще не активований',text)
         self.assertIn('мінімальний TP1 1.5%',text)
         self.assertNotIn('TP1: 103.',text)
-        self.assertEqual([c for c in text if ord(c)>=0x1F000],['💰'])
+        self.assertEqual([c for c in text if ord(c)>=0x1F000],['💰','🟠'])
 
     def test_reached_target_stays_understandable_without_a_checkmark(self):
         p=order();p.update(tp1=102.,tp1_hit=True,partials={'TP1':1.})

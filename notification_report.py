@@ -128,12 +128,6 @@ def build(state, snapshot, result, cfg, engine):
     active.sort(key=lambda p: p.get('order_number', 0))
     pending.sort(key=lambda p: p.get('order_number', 0))
     lines += [f'Відкриті угоди: {len(active)} • Ліміти в очікуванні: {len(pending)}']
-    # Explain why no third signal or counter-trend limit is sent this cycle.
-    direction = result.get('analysis', {}).get('direction_policy', {})
-    if direction and not frozen:
-        bias = {1:'LONG',-1:'SHORT',0:'ОЧІКУВАННЯ'}.get(direction.get('side'),'ОЧІКУВАННЯ')
-        why = engine.REASON_UA.get(direction.get('reason'), direction.get('reason',''))
-        lines += [f'Обраний сценарій: {bias}' + (f' • {why}' if why else '')]
 
     if result.get('analysis', {}).get('edge_mode') == 'RESEARCH_ONLY' and not frozen:
         lines += ['Режим дослідження: нові ліміти вимкнено до перевірки переваги; чинні угоди супроводжуються.']
@@ -163,7 +157,7 @@ def build(state, snapshot, result, cfg, engine):
         when = engine.report_deadline(checkpoint, now, cfg) if checkpoint else 'попередній цикл'
         lines += [f'Дані не оновлені. Збережений стан на {when}.']
     if active:
-        lines += ['', f'У СУПРОВОДІ — {len(active)}']
+        lines += ['', f'🔵 СУПРОВІД — {len(active)}']
     for index, p in enumerate(active):
         if index:
             lines += ['']
@@ -182,6 +176,15 @@ def build(state, snapshot, result, cfg, engine):
             slip = remaining*snapshot.price*cost_cfg.slippage_bps/10_000/p['risk']
             estimate = f'{gross-fees-slip:+.2f}R'
         lines += [f'Результат зараз ≈ {estimate}']
+        assessment=next((r for r in result.get('analysis',{}).get('position_reviews',[])
+                         if r.get('order_id') == p.get('id')),None)
+        if assessment and not frozen:
+            labels={'INTACT':'🟢 Структура: без підтвердженого розвороту',
+                    'WEAKENING':'🟠 Структура: можливе послаблення',
+                    'REVERSAL_RISK':'🔴 Структура: ризик розвороту',
+                    'INSUFFICIENT':'⚪ Структура: недостатньо свіжих даних'}
+            lines += [labels.get(assessment.get('status'),'⚪ Структура: невизначено'),
+                      assessment.get('reason','')]
         if p.get('pending_target'):
             amendment=p['pending_target']
             lines += [f"Ціль {amendment['name']} з {engine.report_deadline(amendment['effective_ts'],now,cfg)}"]
@@ -192,7 +195,7 @@ def build(state, snapshot, result, cfg, engine):
             lines += [f"Супровід до {engine.report_deadline(p['exit_deadline'], now, cfg)}"]
 
     if pending:
-        lines += ['', f'ОЧІКУЄМО ВХОДУ — {len(pending)}']
+        lines += ['', f'🟡 ОЧІКУЄМО ЛІМІТ — {len(pending)}']
     for p in pending:
         label=engine.display_order(state,p['id'])
         side='LONG' if p['side']==1 else 'SHORT'
@@ -208,23 +211,15 @@ def build(state, snapshot, result, cfg, engine):
     for r in uncertain:
         lines += [f"{engine.display_order(state, r['order_id'])} — виконання НЕВИЗНАЧЕНЕ; потрібна перевірка."]
 
-    lines += ['', 'ЗАКРИТО З МИНУЛОГО ЗВІТУ']
     events = sorted(result.get('events', []), key=lambda e: e['ts'])
     closed = {e['order_id']: e for e in events if e['kind'] == 'CLOSED'}
-    if not closed:
-        lines += ['Нових закриттів немає.']
-        previous = max((t for t in state.get('trades', []) if isinstance(t.get('closed_ts'), (int, float))
-                        and 0 < t['closed_ts'] <= now),
-                       key=lambda t: t['closed_ts'], default=None)
-        if previous:
-            lines += [f"Остання закрита: {engine.display_order(state, previous['id'])} • "
-                      f"{engine.report_deadline(previous['closed_ts'], now, cfg)} • "
-                      f"{previous['net_r']:+.2f}R ({close_reason(previous)})"]
+    if closed:
+        lines += ['', '✅ ЗАКРИТІ УГОДИ']
     for order_id, event in closed.items():
         trade = next((t for t in reversed(state.get('trades', [])) if t['id'] == order_id), {})
         value = event['net_r']
         outcome = 'прибуток' if value > 0 else 'збиток' if value < 0 else 'беззбитково'
-        lines += [f"{engine.display_order(state, order_id)} ЗАКРИТО: {value:+.2f}R — {outcome} • "
+        lines += [f"{'✅' if value > 0 else '❌' if value < 0 else '⚪'} {engine.display_order(state, order_id)} ЗАКРИТО: {value:+.2f}R — {outcome} • "
                   f"{engine.report_deadline(event['ts'], now, cfg)}",
                   close_reason({**trade, 'close_reason': event.get('reason', trade.get('close_reason')),
                                 'ambiguous_ohlc': event.get('ambiguous_ohlc', False)})]
@@ -248,7 +243,7 @@ def build(state, snapshot, result, cfg, engine):
 
     # A forming setup is not a third pending order. Suppress it when both slots
     # are occupied or market/execution data do not permit a new decision.
-    if not pending and engine.occupied_slots(state) < 2 and not health and not frozen and price_ok:
+    if not active and not pending and engine.occupied_slots(state) < 2 and not health and not frozen and price_ok:
         analysis = result.get('analysis', {})
         rows = analysis.get('watch', []) or analysis.get('setup_matrix', [])
         live = engine.open_plans(state)
@@ -258,9 +253,11 @@ def build(state, snapshot, result, cfg, engine):
         if best and best.get('level') and best.get('side') in (-1, 1):
             side = 'LONG' if best['side'] == 1 else 'SHORT'
             ready = best.get('readiness_pct', 0) or 0
-            lines += ['', 'НА СПОСТЕРЕЖЕННІ — ордер ще не активований',
+            lines += ['', '🟠 СПОСТЕРІГАЄМО — ордер ще не активований',
                       f"{side} • {best.get('timeframe', '15m').lower()} • {setup_text(best)}",
-                      f"Рівень: {best['level']:.8g} • готовність умов {ready:.0f}%",
+                      (f"Рівень: {best['level']:.8g} • патерн {ready:.0f}%, ліміт не допущено"
+                       if best.get('status')=='BLOCKED' and ready >= 100
+                       else f"Рівень: {best['level']:.8g} • готовність умов {ready:.0f}%"),
                       candidate_reason(best, cfg, engine)]
     if result.get('action') in ('DAILY_PAUSE', 'SESSION_CLOSED', 'DIRECTION_CONFLICT'):
         lines += ['', engine.REASON_UA.get(result['action'], 'Нові входи на паузі') + '.']
@@ -317,9 +314,9 @@ def compact_waiting(message):
     output=[];waiting=False;header=None
     for line in message.splitlines():
         stripped=line.strip()
-        if stripped.startswith('ОЧІКУЄМО ВХОДУ'):
+        if stripped.startswith(('ОЧІКУЄМО ВХОДУ', '🟡 ОЧІКУЄМО ЛІМІТ')):
             waiting=True;header=None;output.append(line);continue
-        if waiting and (stripped.startswith(('ЗАКРИТО','ІНШІ ЗМІНИ','СКАСУВАННЯ ЛІМІТІВ','НА СПОСТЕРЕЖЕННІ','У СУПРОВОДІ','WR сигналів','v12.'))
+        if waiting and (stripped.startswith(('ЗАКРИТО','✅ ЗАКРИТІ','ІНШІ ЗМІНИ','СКАСУВАННЯ ЛІМІТІВ','НА СПОСТЕРЕЖЕННІ','🟠 СПОСТЕРІГАЄМО','У СУПРОВОДІ','🔵 СУПРОВІД','WR сигналів','v12.'))
                         or 'ЗАКРИТО:' in stripped):
             waiting=False;header=None
         if waiting:
@@ -339,6 +336,7 @@ def clean_queued_message(message):
     """Remove obsolete status/exit instructions without dropping closed results."""
     message=compact_waiting(message)
     output=[]
+    have_close_header=False
     for line in message.splitlines():
         text=line.strip()
         if any(text.startswith(prefix) for prefix in (
@@ -347,8 +345,24 @@ def clean_queued_message(message):
             'Новий ордер — після звільнення',
             'Усі закриті угоди (історія всіх версій):',
             'Угоди, відкриті за ',
-            'Останнє закриття зараховано до версії входу ')):
+            'Останнє закриття зараховано до версії входу ',
+            'Обраний сценарій: ОЧІКУВАННЯ',
+            'Нових закриттів немає.',
+            'Остання закрита:')):
             continue
+        if text=='ЗАКРИТО З МИНУЛОГО ЗВІТУ':
+            continue
+        if text.startswith('У СУПРОВОДІ — '):
+            line='🔵 '+text.replace('У СУПРОВОДІ','СУПРОВІД',1)
+        elif text.startswith('ОЧІКУЄМО ВХОДУ — '):
+            line='🟡 '+text.replace('ОЧІКУЄМО ВХОДУ','ОЧІКУЄМО ЛІМІТ',1)
+        elif text.startswith('НА СПОСТЕРЕЖЕННІ — '):
+            line='🟠 '+text.replace('НА СПОСТЕРЕЖЕННІ','СПОСТЕРІГАЄМО',1)
+        if text=='✅ ЗАКРИТІ УГОДИ':
+            have_close_header=True
+        elif 'ЗАКРИТО:' in text and not have_close_header:
+            output.extend(['','✅ ЗАКРИТІ УГОДИ'])
+            have_close_header=True
         line=re.sub(r' • Зайнято місць: \d+/2', '', line)
         line=re.sub(r'Залишок \d+% • ', '', line)
         line=re.sub(r'TP([123]) ([0-9.]+) \((?:закрити [0-9.]+%|досягнуто)\)', r'TP\1: \2',line)

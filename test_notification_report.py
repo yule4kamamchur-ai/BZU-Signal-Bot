@@ -48,8 +48,8 @@ class CompactReports(unittest.TestCase):
         self.state['second_slot']['pending'] = pending
         before = copy.deepcopy(self.state)
         text = self.text()
-        followed, waiting = text.split('ОЧІКУЄМО ВХОДУ — 1')
-        self.assertIn('У СУПРОВОДІ — 1', followed)
+        followed, waiting = text.split('ОЧІКУЄМО ЛІМІТ — 1')
+        self.assertIn('🔵 СУПРОВІД — 1', followed)
         self.assertIn('#005 LONG', followed)
         self.assertNotIn('#008 LONG', followed)
         self.assertIn('#008 LONG', waiting)
@@ -68,7 +68,7 @@ class CompactReports(unittest.TestCase):
              'level': 98., 'readiness_pct': 99., 'reason': 'ACCEPTED'}]}}
         text = self.text(result)
         self.assertNotIn('У СУПРОВОДІ — 0', text)
-        self.assertIn('ОЧІКУЄМО ВХОДУ — 2', text)
+        self.assertIn('🟡 ОЧІКУЄМО ЛІМІТ — 2', text)
         self.assertNotIn('НА СПОСТЕРЕЖЕННІ', text)
         self.assertNotIn('готовність', text)
         self.assertLess(len(text), 1500)
@@ -90,8 +90,8 @@ class CompactReports(unittest.TestCase):
         trade = order(); trade.update(closed_ts=NOW-3600000, net_r=-1., close_reason='STOP')
         self.state['trades'] = [trade]
         text = self.text()
-        self.assertIn('Нових закриттів немає', text)
-        self.assertIn('Остання закрита:', text)
+        self.assertNotIn('Нових закриттів немає', text)
+        self.assertNotIn('Остання закрита:', text)
         self.assertNotIn('ЗАКРИТО: -1.00R', text)
 
     def test_closure_after_upgrade_is_in_daily_summary_not_version_statistics(self):

@@ -45,7 +45,7 @@ class DirectionElection(unittest.TestCase):
         self.assertEqual(state['active']['id'],'long')
         self.assertFalse(e.pending_plans(state))
         self.assertEqual(result['analysis']['direction_policy']['reason'],
-                         'ACTIVE_POSITION_SECOND_ENTRY_REVIEW')
+                         'ACTIVE_POSITION_MONITOR_ONLY')
 
     def test_two_pending_opposite_limits_cannot_both_fill_same_bar(self):
         cfg=e.Config();state=e.new_state(cfg)

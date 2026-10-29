@@ -29,7 +29,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 VERSION = "full-ict-v12.18.1-direct-strategy-entries"
-REPORT_RELEASE = 'v12.18.1'
+REPORT_RELEASE = 'v12.18.2'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -48,6 +48,7 @@ import strategy_organics
 import strategy_direct_entries
 import trade_meta_model as meta
 import portfolio_arbitration as arbitration
+import position_monitor
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
@@ -1195,7 +1196,9 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
     if len(active_sides)>1:
         return []  # Legacy hedge: do not add risk; manage both to their exits.
     locked_side=next(iter(active_sides),0)
-    capacity=max(0,2-occupied_slots(state))
+    # A filled position owns the directional thesis: never fill another limit
+    # before the next 15m review, even if it shares the same direction.
+    capacity=0 if active else 1
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
@@ -1861,6 +1864,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     elif busy:
         action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
     can_place = not manual_block
+    # Do not place a replacement in the very report that first discovers a
+    # historical fill (even if it also closed by this report).
+    if any(e.get('kind') == 'FILLED' for e in state['events'][start:]):
+        can_place = False
     # Independent, final execution interlock: never rely exclusively on the
     # upstream analyzer (or a restored queue/previous model) to enforce the
     # research-only deployment. Existing pending/active orders are preserved.
@@ -1922,6 +1929,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     # Reserves must include filled positions and unresolved fills: an old
     # archive may contain two pending limits PLUS an active position. Cancel
     # only surplus waiting orders, never erase an existing filled position.
+    # Up to two waiting plans are allowed when flat; only one may FILL while
+    # the current position is open. Legacy pending states are reconciled first.
     pending_capacity=max(0,2-occupied_slots(state))
     awaiting=[p for p in pending if not p.get('cancel_requested_ts')]
     if len(awaiting)>pending_capacity:
@@ -1984,23 +1993,16 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         direction_reason='LEGACY_OPPOSING_OPEN_POSITIONS_MANAGE_ONLY'
         can_place=False
     elif active_sides:
-        # A filled position consumes ONE slot, not the entire book. Review a
-        # second, *independent*, same-direction ICT entry if capacity exists.
-        # An old opposite pending limit must be cancelled and reconciled first;
-        # do not open a hedge even if its recorded score is better.
+        # User's single-thesis policy: once a position is OPEN, no additional
+        # same-side or opposite-side LIMIT may be admitted. The available second
+        # slot is NOT an instruction to pyramid. Independently watch whether
+        # the existing ICT thesis is losing confirmed 15m/1H structure.
         selected_side=next(iter(active_sides))
-        opposite_waiting=[p for p in pending if p['side']!=selected_side]
-        if opposite_waiting:
-            for old in opposite_waiting:
-                if not old.get('cancel_requested_ts'):
-                    request_cancel(state,old,'PORTFOLIO_DIRECTION_CONFLICT',s.now)
-            can_place=False
-            direction_reason='ACTIVE_POSITION_OPPOSITE_PENDING_RECONCILIATION'
-        elif occupied_slots(state)+len(pending_plans(state))>=2:
-            can_place=False
-            direction_reason='ACTIVE_POSITION_TWO_SLOT_CAPACITY_FULL'
-        else:
-            direction_reason='ACTIVE_POSITION_SECOND_ENTRY_REVIEW'
+        can_place=False
+        direction_reason='ACTIVE_POSITION_MONITOR_ONLY'
+        for old in pending:
+            if not old.get('cancel_requested_ts'):
+                request_cancel(state,old,'OPEN_POSITION_CANCEL_OTHER_LIMITS',s.now)
     else:
         proposed_side,ranked,direction_reason=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
         if len(pending_sides)>1:
@@ -2048,6 +2050,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         elif proposed_side:
             selected_side=proposed_side
         # No existing thesis and tied scores => WAIT, not simultaneous hedges.
+    analysis['position_reviews'] = [dict(order_id=p.get('id'), **position_monitor.review(p,s))
+                                    for p in active_plans(state)]
     analysis['direction_policy']={'side':selected_side,'reason':direction_reason,
         'meta_rejected':meta_rejected,
         'meta_status':fitted['status'],
@@ -2164,6 +2168,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         elif plan.get('outcome_forecast',{}).get('as_of_ts')!=s.now:
             plan['outcome_forecast']={'status':'DEFERRED_MODEL_BUDGET','calibrated':False,
                 'as_of_ts':s.now,'entry_gate_enabled':False}
+    state['position_reviews']=copy.deepcopy(analysis.get('position_reviews',[]))
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
     state['direct_strategy_diagnostic']=copy.deepcopy(analysis.get('direct_strategy',{}))
     state['last_run_ts'] = s.now
@@ -2391,6 +2396,8 @@ REASON_UA = {
     'PORTFOLIO_DIRECTION_CONFLICT':'скасування: в портфелі не можна одночасно вести LONG і SHORT',
     'LEGACY_PENDING_EXCESS_CAP_2':'скасування зайвого ліміту, залишаємо максимум два',
     'BETTER_OPPOSING_SCENARIO':'скасування: протилежний сценарій тепер істотно сильніший',
+    'ACTIVE_POSITION_MONITOR_ONLY':'супроводжуємо угоду; нові ліміти не відкриваємо',
+    'OPEN_POSITION_CANCEL_OTHER_LIMITS':'відкрито позицію; решту лімітів скасовуємо',
     'ACTIVE_POSITION_LOCK_NO_NEW_PLACEMENT':'супроводжуємо відкриту позицію; нові ліміти на паузі (стара політика)',
     'ACTIVE_POSITION_SECOND_ENTRY_REVIEW':'перевіряємо другий незалежний ICT-вхід у тому самому напрямку',
     'ACTIVE_POSITION_OPPOSITE_PENDING_RECONCILIATION':'скасовуємо протилежний ліміт перед новим входом',
@@ -2442,7 +2449,11 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
 def decorate_message(message):
     # Also normalizes inline TP marks and queued messages from older releases.
     # Keep price/math symbols (•, %, ≥, ≤, ≈, +/-) and event text intact.
-    icons=[('Ціна зараз:','💰'),('Найкращий сценарій:','🏆'),('Готовність до входу','🧩')]
+    icons=[('Ціна зараз:','💰'),('Найкращий сценарій:','🏆'),('Готовність до входу','🧩'),
+           ('СУПРОВІД —','🔵'),('ОЧІКУЄМО ЛІМІТ —','🟡'),
+           ('СПОСТЕРІГАЄМО','🟠'),('ЗАКРИТІ УГОДИ','✅'),
+           ('Структура: без','🟢'),('Структура: можливе','🟠'),
+           ('Структура: ризик','🔴'),('Структура: недостатньо','⚪')]
     def is_icon(char):
         point=ord(char)
         return (0x1F000<=point<=0x1FAFF or 0x2300<=point<=0x23FF
@@ -2451,6 +2462,8 @@ def decorate_message(message):
     for line in message.split('\n'):
         stripped=''.join(char for char in line if not is_icon(char)).strip()
         icon=next((mark for start,mark in icons if stripped.startswith(start)),None)
+        if 'ЗАКРИТО:' in stripped and line.lstrip().startswith(('✅','❌','⚪')):
+            icon=line.lstrip()[0]
         output.append(icon+' '+stripped if icon else stripped)
     return '\n'.join(output)
 

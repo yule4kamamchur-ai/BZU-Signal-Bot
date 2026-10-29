@@ -207,7 +207,7 @@ class QueueArming(unittest.TestCase):
         self.assertEqual(result['action'],'WAIT_LIMIT')
         self.assertFalse(state['orders'])
         message=e.build_message(state,snapshot(),result,cfg)
-        self.assertIn('ОЧІКУЄМО ВХОДУ',message)
+        self.assertIn('ОЧІКУЄМО ЛІМІТ',message)
         self.assertNotIn('денний ліміт ризику',message)
 
     def test_future_closed_label_cannot_pause_an_earlier_entry(self):
@@ -300,7 +300,7 @@ class WorkerClock(unittest.TestCase):
         self.assertEqual(state['runtime_config']['analysis_scan_minutes'],3)
 
     def test_queued_waiting_compaction_preserves_cancellation_explanations(self):
-        text='ОЧІКУЄМО ВХОДУ — 1\n#001 LONG • Вхід: 100\nСКАСУВАННЯ ЛІМІТІВ\n#002 • денний ліміт ризику\nЗАКРИТО З МИНУЛОГО ЗВІТУ\nНових закриттів немає.'
+        text='ОЧІКУЄМО ЛІМІТ — 1\n#001 LONG • Вхід: 100\nСКАСУВАННЯ ЛІМІТІВ\n#002 • денний ліміт ризику\nЗАКРИТО З МИНУЛОГО ЗВІТУ\nНових закриттів немає.'
         cleaned=notification_report.clean_queued_message(text)
         self.assertIn('#001 LONG • Вхід: 100',cleaned)
         self.assertIn('#002 • денний ліміт ризику',cleaned)

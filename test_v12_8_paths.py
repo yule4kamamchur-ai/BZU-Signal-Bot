@@ -193,7 +193,7 @@ class DirectionAdmission(unittest.TestCase):
         state['pending']=order();state['second_slot']['pending']=order(-1)
         state['second_slot']['pending']['id']='short';engine.bind_order_numbers(state)
         text=engine.build_message(state,snapshot(),{'action':'WAIT_LIMIT'},cfg)
-        section=text.split('ОЧІКУЄМО ВХОДУ — 2\n')[1].split('\n\nЗАКРИТО')[0]
+        section=text.split('ОЧІКУЄМО ЛІМІТ — 2\n')[1].split('\n\nСьогодні')[0]
         self.assertEqual(section,'#001 LONG • Вхід: 100\n#002 SHORT • Вхід: 100')
         for term in ('До входу','SL:','TP1','Діє до','виконання перевіряємо','Рішення про вихід'):
             self.assertNotIn(term,section)

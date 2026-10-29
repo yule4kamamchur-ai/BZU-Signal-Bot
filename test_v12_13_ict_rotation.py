@@ -154,7 +154,7 @@ class FastRotation(unittest.TestCase):
                             for o in self.book['orders']))
         self.assertTrue(result['selected_plans'])
 
-    def test_fill_before_cancel_never_allows_replacement(self):
+    def test_unselected_old_limit_touch_cannot_invent_fill(self):
         current=NOW+60_000
         self.new['expires_ts']=current+3_600_000
         with patch.object(e,'analyze',return_value=analysis([copy.deepcopy(self.new)])):
@@ -164,10 +164,13 @@ class FastRotation(unittest.TestCase):
         closed=candle(NOW,100.,101.,97.5,99.)
         with patch.object(e,'analyze',return_value=analysis([copy.deepcopy(self.new)])):
             result=e.run_cycle(self.book,self.tick(now=boundary,current_bar=closed),self.cfg)
-        self.assertFalse(result['selected_plans'])
-        self.assertTrue(e.active_plans(self.book) or any(v.get('reconciliation')
-                          for _,v in e.slot_views(self.book)))
-        self.assertFalse(any(p['id']=='candidate' for p in e.pending_plans(self.book)))
+        # Under the new single-fill priority the lower-priority old1 was
+        # NOT eligible at the bar open. Its candle touch must not fabricate
+        # a fill or P&L; the properly prechecked replacement may proceed.
+        self.assertFalse(e.active_plans(self.book))
+        self.assertFalse(self.book['trades'])
+        self.assertLessEqual(len(e.pending_plans(self.book)),2)
+        self.assertFalse(any(p['id']=='old1' and p['status']=='FILLED' for p in self.book['orders']))
 
 
 if __name__=='__main__':

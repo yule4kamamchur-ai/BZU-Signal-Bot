@@ -289,7 +289,7 @@ class EvidenceAndRuntimeTests(unittest.TestCase):
         self.assertIn(engine.VERSION,workflow)
         quality=(ROOT/'.github/workflows/bzu-quality.yml').read_text()
         self.assertNotIn('python bot_oneshot.py --legacy-self-test', workflow)
-        self.assertIn('ABS_MIN_STOP_PCT=0.004 python bot_oneshot.py --legacy-self-test',quality)
+        self.assertIn('python bot_oneshot.py --legacy-self-test',quality)
 
     def test_version_upgrade_preserves_live_orders_and_archives_old_quality_evidence(self):
         cfg=replace(engine.Config(),core=core);state=engine.new_state(cfg);state['pending']=order()

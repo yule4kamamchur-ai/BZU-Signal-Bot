@@ -164,10 +164,10 @@ class ReleaseAndMessageTests(unittest.TestCase):
         self.assertIn('поточні ASK/BID не дозволяють пасивний ліміт',text)
         self.assertNotIn('комісі',text)
         self.assertIn('💰 Ціна зараз:',text)
-        self.assertIn('НА СПОСТЕРЕЖЕННІ — ордер ще не активований',text)
+        self.assertIn('СПОСТЕРІГАЄМО — ордер ще не активований',text)
         self.assertIn('готовність умов 40%',text)
         for line in text.splitlines():
-            if line and line[0] not in '💰🏆🧩':
+            if line and line[0] not in '💰🏆🧩🟠🔵🟡✅❌⚪🟢🔴':
                 self.assertLess(ord(line[0]),0x2300,line)
 
     def test_mixed_launcher_and_engine_fail_before_a_live_cycle(self):

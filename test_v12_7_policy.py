@@ -337,7 +337,7 @@ class UnlimitedWaitingQueue(unittest.TestCase):
         # priority limit cannot be selected after observing a favorable touch.
         p1=self.pending(1,90,99);p2=self.pending(2,92,90);p3=self.pending(3,100,80)
         engine.park_pending(state,[p3,p2,p1])
-        self.assertEqual([p['id'] for p in engine.entry_priority(state,NOW,101,cfg)],['p3','p1'])
+        self.assertEqual([p['id'] for p in engine.entry_priority(state,NOW,101,cfg)],['p3'])
         engine.advance_lifecycle(state,lifecycle_snapshot([candle(NOW,101,101.2,99.9,100.5)]),cfg)
         self.assertEqual([p['id'] for p in engine.active_plans(state)],['p3'])
         self.assertEqual(len(engine.pending_plans(state)),2)
@@ -348,8 +348,8 @@ class UnlimitedWaitingQueue(unittest.TestCase):
         engine.park_pending(state,[self.pending(1,100,99),self.pending(2,98,90),self.pending(3,96,80)])
         engine.advance_lifecycle(state,lifecycle_snapshot([candle(NOW,101,101.1,95.9,100)]),cfg)
         fills=[o for o in state['orders'] if o['status']=='FILLED']
-        self.assertEqual({p['id'] for p in fills},{'p1','p2'})
-        self.assertEqual([p['id'] for p in engine.pending_plans(state)],['p3'])
+        self.assertEqual({p['id'] for p in fills},{'p1'})
+        self.assertEqual([p['id'] for p in engine.pending_plans(state)],['p2','p3'])
         self.assertLessEqual(engine.occupied_slots(state),2)
 
     def test_two_active_positions_block_new_fills_but_keep_all_waiting_plans(self):

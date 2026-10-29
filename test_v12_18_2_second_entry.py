@@ -1,4 +1,4 @@
-"""Regression tests for a second independent same-side ICT limit and 20-episode cold-start.
+"""Regression tests for single-thesis monitoring and 20-episode cold-start.
 
 These are controlled synthetic scenarios, NOT evidence of trading profitability.
 """
@@ -39,14 +39,14 @@ class SecondIndependentEntry(unittest.TestCase):
         with patch.object(engine, 'analyze', return_value=analysis(proposals)):
             return engine.run_cycle(self.state, snapshot(now=NOW,price=103.), self.cfg)
 
-    def test_one_open_position_can_add_one_independent_same_direction_limit(self):
+    def test_open_position_monitored_without_second_same_direction_entry(self):
         result=self.cycle([self.second])
-        self.assertEqual(result['action'], 'PLACE_LIMIT')
+        self.assertNotEqual(result['action'], 'PLACE_LIMIT')
         self.assertEqual(result['analysis']['direction_policy']['reason'],
-                         'ACTIVE_POSITION_SECOND_ENTRY_REVIEW')
+                         'ACTIVE_POSITION_MONITOR_ONLY')
         self.assertEqual([p['id'] for p in engine.active_plans(self.state)],['active-A'])
-        self.assertEqual([p['id'] for p in engine.pending_plans(self.state)],['new-B'])
-        self.assertLessEqual(engine.occupied_slots(self.state)+len(engine.pending_plans(self.state)),2)
+        self.assertEqual(engine.pending_plans(self.state),[])
+        self.assertEqual(result['analysis']['position_reviews'][0]['order_id'],'active-A')
 
     def test_no_extra_limit_if_one_open_and_one_waiting(self):
         waiting=copy.deepcopy(self.second)
@@ -57,8 +57,8 @@ class SecondIndependentEntry(unittest.TestCase):
         result=self.cycle([challenger])
         self.assertEqual(result['selected_plans'],[])
         self.assertEqual(result['analysis']['direction_policy']['reason'],
-                         'ACTIVE_POSITION_TWO_SLOT_CAPACITY_FULL')
-        self.assertEqual(len(engine.pending_plans(self.state)),1)
+                         'ACTIVE_POSITION_MONITOR_ONLY')
+        self.assertEqual(len(engine.pending_plans(self.state)),0)
 
     def test_legacy_one_open_and_two_pending_cancels_only_surplus(self):
         first=copy.deepcopy(self.second)
@@ -109,7 +109,7 @@ class SecondIndependentEntry(unittest.TestCase):
             result=self.cycle([self.second])
         self.assertFalse(result['selected_plans'])
         self.assertEqual(result['analysis']['direction_policy']['reason'],
-                         'ACTIVE_POSITION_OPPOSITE_PENDING_RECONCILIATION')
+                         'ACTIVE_POSITION_MONITOR_ONLY')
         self.assertTrue(any(p.get('cancel_requested_ts') for p in engine.pending_plans(self.state))
                         or any(o['id']=='legacy-short' and o['status']=='CANCELLED'
                                for o in self.state['orders']))
@@ -132,8 +132,9 @@ class SecondIndependentEntry(unittest.TestCase):
         self.assertFalse(policy.compatible(duplicate,self.state['active'],self.cfg.tick))
         self.assertEqual(self.cycle([duplicate])['selected_plans'],[])
 
-    def test_distinct_same_setup_same_timeframe_is_allowed(self):
+    def test_distinct_same_setup_same_timeframe_still_not_opened(self):
         self.assertTrue(policy.compatible(self.second,self.state['active'],self.cfg.tick))
+        self.assertEqual(self.cycle([self.second])['selected_plans'],[])
 
     def test_unknown_event_id_does_not_prove_independence(self):
         duplicate=copy.deepcopy(self.second)
