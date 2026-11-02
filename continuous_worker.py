@@ -26,7 +26,11 @@ def step(now, checkpoint, run_cycle):
     run,notify=due(now,checkpoint)
     if not run:
         return checkpoint,False
+    started = time.monotonic()
     status=run_cycle(notify=notify)
+    runtime = time.monotonic()-started
+    if runtime > SCAN_MS/1000:
+        logging.warning('3m scan deadline exceeded: %.1fs; host/network performance must be improved', runtime)
     if status not in (0,2):
         raise RuntimeError('Bot cycle failed; checkpoint not advanced')
     updated={**checkpoint,'scan_bucket':(now-SETTLE_MS)//SCAN_MS,'last_cycle_ts':now}

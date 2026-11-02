@@ -37,7 +37,7 @@ class DirectStrategyEntries(unittest.TestCase):
                                     engine.ident(anchor.setup_type,anchor.side,
                                       round(anchor.level/cfg.tick),
                                       round(anchor.invalidation/cfg.tick),anchor.kind))
-                plan={'side':side,'entry':anchor.level,'stop':anchor.invalidation-side*.5,
+                plan={'setup_type':anchor.setup_type,'side':side,'entry':anchor.level,'stop':anchor.invalidation-side*.5,
                       'entry_route':'STRATEGY_EVENT','anchor_proof':anchor.evidence}
                 self.assertTrue(playbooks.assess(plan,snap,.01)['accepted'])
 
@@ -46,7 +46,7 @@ class DirectStrategyEntries(unittest.TestCase):
         signal=next(s for s in playbooks.scenarios(snap,.01)
                     if s.family=='MICRO_SWEEP_MSS')
         anchor,_=self.anchor(snap,signal)
-        plan={'side':1,'entry':anchor.level,'stop':anchor.invalidation-.5,
+        plan={'setup_type':anchor.setup_type,'side':1,'entry':anchor.level,'stop':anchor.invalidation-.5,
               'entry_route':'STRATEGY_EVENT','anchor_proof':{**anchor.evidence,
                                                             'source_strategy':'MICRO_HTF_FVG'}}
         self.assertFalse(playbooks.assess(plan,snap,.01)['accepted'])

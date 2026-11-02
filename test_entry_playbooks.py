@@ -77,7 +77,7 @@ class LivePlaybookTests(unittest.TestCase):
                 found=[x for x in p.scenarios(snap,.01) if x.family=='MICRO_SWEEP_MSS' and x.side==side]
                 self.assertTrue(found)
                 x=found[0]
-                plan={'side':side,'entry':x.zone,'stop':x.invalidation-side*.5}
+                plan={'setup_type':'SWEEP_RECLAIM','side':side,'entry':x.zone,'stop':x.invalidation-side*.5}
                 decision=p.assess(plan,snap,.01)
                 self.assertTrue(decision['accepted'],decision)
                 self.assertEqual(decision['playbook'],'MICRO_SWEEP_MSS')
@@ -154,14 +154,16 @@ class LivePlaybookTests(unittest.TestCase):
         s.candles['1H']=[replace_like(c,confirmed=False) for c in s.candles['1H']]
         self.assertFalse(any(x.family=='MICRO_HTF_FVG' for x in p.scenarios(s,.01)))
 
-    def test_exact_schedule_and_strategy_flag(self):
+    def test_schedule_separates_fast_scan_and_15m_reports(self):
         w=(Path(__file__).parent/'.github/workflows/main.yml').read_text()
-        self.assertIn("cron: '*/15 * * * *'",w)
+        self.assertIn("cron: '*/5 * * * *'",w)
+        self.assertIn('bot_oneshot.py --auto-report',w)
         self.assertNotIn("5,10,20,25,35,40,50,55",w)
         self.assertNotIn("RESEARCH_ONLY'",w)
         self.assertIn("BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'",w)
-        self.assertIn("ANALYSIS_SCAN_MINUTES: '15'",w)
-        self.assertNotIn('continuous_worker.py',w)
+        self.assertIn("ANALYSIS_SCAN_MINUTES: '5'",w)
+        self.assertIn("ABS_MIN_STOP_PCT: '0.010'",w)
+        self.assertIn("MIN_TP1_DISTANCE_PCT: '0.020'",w)
 
 
 if __name__=='__main__':

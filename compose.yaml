@@ -1,0 +1,25 @@
+# Dedicated always-on worker. NEVER run simultaneously with GitHub's 5m job.
+services:
+  bzu-worker:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    env_file:
+      - .env
+    environment:
+      JOURNAL_PERSISTENCE_CONFIRMED: "true"
+      SIGNAL_MEMORY_FILE: /app/data/last_signal_v6_4.json
+      SIGNAL_JOURNAL_FILE: /app/data/signal_journal_v6_4.json
+      MARKET_HISTORY_FILE: /app/data/market_history_v12.json
+      RESEARCH_ARCHIVE_FILE: /app/data/research_market_v12_6.json
+      WORKER_CHECKPOINT_FILE: /app/data/worker_schedule_v12_9.json
+      ANALYSIS_SCAN_MINUTES: "3"
+      INCLUDE_COMMISSION: "true"
+      BZU_ENTRY_PLAYBOOK_MODE: STRICT
+      BZU_EDGE_MODE: SHADOW
+      ABS_MIN_STOP_PCT: "0.010"
+      LIMIT_MAX_STOP_ATR: "4.00"
+      MIN_TP1_DISTANCE_PCT: "0.020"
+    volumes:
+      - ./data:/app/data

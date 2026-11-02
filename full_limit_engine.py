@@ -28,8 +28,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.18.1-direct-strategy-entries"
-REPORT_RELEASE = 'v12.18.2'
+VERSION = "full-ict-v12.20.0-reviewed-short"
+REPORT_RELEASE = 'v12.20.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -79,11 +79,11 @@ class Config:
     include_commission: bool = False
     slippage_bps: float = 2.0
     min_net_rr: float = 1.20
-    max_target_r: float = 2.0
+    max_target_r: float = 2.5
     max_stop_atr: float = 2.0
     min_stop_atr3: float = 0.65
-    min_stop_pct: float = 0.01  # 1% of ENTRY for every new limit
-    min_target_pct: float = 0.015  # TP1 at least 1.5% from ENTRY
+    min_stop_pct: float = 0.010  # minimum 1.00%, structural stop may be wider
+    min_target_pct: float = 0.020  # minimum 2.00%; net >=1.20R also required
     max_entry_distance_atr: float = 3.0
     min_score: float = 60.0
     conflict_margin: float = 8.0
@@ -118,10 +118,10 @@ class Config:
             raise ValueError("Invalid intraday boundaries")
         if not 0 <= self.min_score <= 100:
             raise ValueError("Invalid ranking")
-        if not 0.01 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
+        if not 0.010 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
             raise ValueError("Invalid stop bounds")
-        if not 0.015 <= self.min_target_pct < 0.50:
-            raise ValueError("TP1 must be at least 1.5% from entry")
+        if not 0.020 <= self.min_target_pct < 0.50:
+            raise ValueError("TP1 must be at least 2.0% from entry")
         if self.setup_min_sample < 10:
             raise ValueError("Invalid legacy setup statistic sample")
         if self.analysis_scan_minutes not in (3,5,15):
@@ -490,6 +490,33 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
             and a.state not in {"TRIGGERED", "INVALIDATED", "REJECTED"}]
 
 
+def retire_distant_anchor(state: dict, anchor, key: str, snapshot: Snapshot, cfg: Config) -> None:
+    """Tombstone stale candidates; never move the original passive limit.
+
+    Native detector observations can appear repeatedly in later scans. Simply
+    dropping the rejected plan repeats the same LIMIT_UNREACHABLE forever.
+    Record the old *event* as rejected, allowing a subsequent independent BOS,
+    FVG, session event or verified structural renewal to generate a NEW key.
+    Existing pending positions are left to the lifecycle manager.
+    """
+    ledger = state.setdefault('anchor_memory', {})
+    if key not in ledger:
+        return
+    current = dict(ledger[key])
+    if current.get('state') in ('TRIGGERED', 'INVALIDATED', 'REJECTED'):
+        return
+    current['state'] = 'REJECTED'
+    current['reject_reason'] = 'LIMIT_UNREACHABLE_REQUIRES_NEW_STRUCTURE'
+    current['last_checked_ts'] = snapshot.now
+    ledger[key] = current
+    audit = state.setdefault('stale_refresh', [])
+    audit.append({'ts': snapshot.now, 'event_key': key,
+                  'setup': anchor.setup_type, 'side': cfg.core.side_sign(anchor.side),
+                  'level': anchor.level, 'reason': 'LIMIT_UNREACHABLE',
+                  'next_action': 'FRESH_CONFIRMED_BOS_FVG_OR_RENEWAL'})
+    state['stale_refresh'] = audit[-100:]
+
+
 def full_targets(ctx: dict, s: Snapshot, side: str, entry: float, cfg: Config) -> list[dict]:
     return limit_structure.structural_targets(ctx,s,side,entry,cfg,sys.modules[__name__])
 
@@ -576,6 +603,9 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
         return None, "LIMIT_WOULD_CROSS_SPREAD"
     distance = abs(s.price-entry)/a15
     if not 0 <= distance <= cfg.max_entry_distance_atr:
+        # A distant level is not permission to chase. Independently confirmed
+        # 3m BOS/FVG events can create a NEW zone with a NEW episode key.
+        diag['needs_new_structural_event']=True
         return None, "LIMIT_UNREACHABLE"
     if sign*(entry-a.invalidation) <= 0:
         return None, "INVALID_STRUCTURAL_FALSIFIER"
@@ -920,6 +950,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 if a.setup_type=='CAPITULATION_RECOVERY':
                     a.evidence['recovery_proof']=setup_paths.capitulation_recovery(native,core)
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
+                if not p and reason == 'LIMIT_UNREACHABLE':
+                    retire_distant_anchor(state, a, key, s, cfg)
+                    diagnostics['refresh_policy'] = 'NEW_CONFIRMED_STRUCTURE_ONLY'
                 if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
                     diagnostics.update(preview_geometry(a,native,s,cfg))
             admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
@@ -956,6 +989,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                               "level": a.level,"reason": reason,"score": a.score})
     if set(quality.CONTRACTS)!=set(core.DETECTED_SETUP_TYPES):
         raise ValueError('Quality contracts must cover all 24 original setups')
+    entry_playbooks.validate_contracts(core.DETECTED_SETUP_TYPES)
     ledger = quality.ensure(state,cfg)
     # An independent model is trained only on fully resolved past shadow fills.
     # Failure/insufficient data => monitoring only, never a made-up P(win).
@@ -2394,7 +2428,7 @@ REASON_UA = {
     'STRUCTURAL_STOP_TOO_WIDE':'структурний стоп перевищує допустимий ризик',
     'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS':'потенціал TP відносно SL нижчий за мінімум',
     'TARGET_RR_TOO_LOW':'потенціал TP відносно SL нижчий за мінімум',
-    'TARGET_DISTANCE_TOO_SMALL':'найближча структурна ціль ближча за мінімальний TP1 1.5%',
+    'TARGET_DISTANCE_TOO_SMALL':'найближча структурна ціль ближча за мінімальний TP1 2.0%',
     'STRONG_OPPOSING_ZONE_BEFORE_TP':'сильна протилежна зона перекриває шлях до TP1',
     'HTF_REJECTED_NEAR_LIQUIDITY':'повторне відхилення від близької 1H ліквідності перед входом',
     'ENTRY_INSIDE_STRONG_OPPOSING_ZONE':'вхід усередині сильної протилежної зони',
@@ -2919,7 +2953,18 @@ def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
     return Snapshot.parse(data)
 
 
-def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, ack: bool = False) -> int:
+def report_due(now_ms: int, last_report_ms: int) -> bool:
+    """A unique notification per UTC 15m bucket despite late GitHub starts.
+
+    Persisted report timestamp is updated in the same ledger transaction. The
+    first run after deployment reports immediately. Scan/report cadence is
+    independent; a failed Telegram delivery stays queued for later delivery.
+    """
+    return now_ms // TF['15m'] > max(0, last_report_ms) // TF['15m']
+
+
+def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
+             ack: bool = False, auto_report: bool = False) -> int:
     if core.BOT_VERSION != VERSION:
         raise ValueError('Неповне оновлення: оновіть bot_oneshot.py і full_limit_engine.py з одного архіву')
     expected=os.environ.get('EXPECTED_BOT_VERSION')
@@ -2929,8 +2974,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
     state_path,journal_path = Path(core.STATE_FILE),Path(core.JOURNAL_FILE)
     if state_path.resolve()==journal_path.resolve():
         raise ValueError('State and journal paths must differ')
-    if notify and (not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID):
-        raise ValueError('Telegram credentials required before starting --notify')
+    if (notify or auto_report) and (not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID):
+        raise ValueError('Telegram credentials required before starting a reporting cycle')
     timing_enabled = os.environ.get('BOT_STAGE_TIMING', '').strip().lower() in ('1', 'true', 'yes')
     stage_start = time.monotonic()
     def stage(name: str) -> None:
@@ -2943,6 +2988,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         if snapshot_path is None:
             cfg = resolve_live_config(cfg)
         state = load_state(state_path,cfg)
+        if auto_report:
+            notify = report_due(int(time.time()*1000),int(state.get('last_report_requested_ts',0) or 0))
         try:
             quality.seed(state,cfg,Path(os.environ.get('QUALITY_MODEL_FILE',str(ROOT/'quality_model.json'))))
             state.pop('quality_model_warning',None)
@@ -2968,8 +3015,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False, a
         snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else collect_snapshot(cfg,state['last_run_ts'])
         stage('market_snapshot')
         old_events = len(state.get('events',[]))
-        # This is one 15-minute snapshot/decision/report cycle; never
-        # require a live worker or a faster intermediate scan.
+        # Every invocation scans closed data. Only auto_report/notify builds
+        # a Telegram report; on an always-on host this is every third 3m bar.
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
         stage('strategy_and_lifecycle')
@@ -3024,12 +3071,21 @@ def main(core) -> int:
     parser.add_argument('--snapshot',type=Path)
     parser.add_argument('--output',type=Path)
     parser.add_argument('--notify',action='store_true')
+    parser.add_argument('--auto-report',action='store_true',help='Send no more than one Telegram report per 15m bucket')
     parser.add_argument('--ack-unresolved',action='store_true')
     args = parser.parse_args()
     if args.legacy_self_test:
-        # This is the frozen original harness, not a production configuration.
-        # New stop floors are enforced for every production/replay code path.
-        return 0 if core._run_self_test() else 1
+        # Frozen legacy fixtures were designed around the original 0.4% core
+        # screening heuristic. Override it ONLY inside this offline compatibility
+        # harness; actual orders/replays always use the >=1.0% engine stop floor.
+        if not hasattr(core, "ABS_MIN_STOP_PCT"):
+            return 0 if core._run_self_test() else 1
+        saved_core_floor = core.ABS_MIN_STOP_PCT
+        try:
+            core.ABS_MIN_STOP_PCT = 0.004
+            return 0 if core._run_self_test() else 1
+        finally:
+            core.ABS_MIN_STOP_PCT = saved_core_floor
     cfg = replace(Config.from_env(),core=core)
     if args.self_test:
         import unittest
@@ -3066,5 +3122,5 @@ def main(core) -> int:
         print(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))
         return 0
     notify = args.notify or (bool(core.TELEGRAM_TOKEN and core.TELEGRAM_CHAT_ID)
-                            and core.TELEGRAM_NOTIFY_EVERY_RUN and not args.snapshot)
-    return run_live(core,args.snapshot,notify,args.ack_unresolved)
+                            and core.TELEGRAM_NOTIFY_EVERY_RUN and not args.snapshot and not args.auto_report)
+    return run_live(core,args.snapshot,notify,args.ack_unresolved,auto_report=args.auto_report)

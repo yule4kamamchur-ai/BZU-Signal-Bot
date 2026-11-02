@@ -1,4 +1,4 @@
-"""BZU scheduled-15m, causally confirmed *early* entry playbooks.
+"""BZU closed-3m causal entry playbooks with 15m reporting.
 
 Different from the 24 legacy location detectors: a plan must match a fresh,
 ordered closed-candle event and its entry zone. No win-rate claims or ML
@@ -181,11 +181,76 @@ def _untouched_since(rows, signal_index, zone, side, tick):
                for row in rows[signal_index + 1:])
 
 
+def bos_fvg_continuations(snapshot, tick):
+    """Independent closed 3m BOS -> impulse -> FVG -> first passive retest.
+
+    Each new BOS and fresh gap creates its own causal strategy event, so a
+    distant stale SHORT anchor is never simply shifted toward the current bid.
+    The swing boundary is frozen BEFORE the displacement candle; the 3rd
+    candle confirms the FVG and both bars must already be closed. The 15m
+    series is completed-bar context only, never a developing 15m close.
+    """
+    m=bars(snapshot,'3m',MICRO)
+    w=bars(snapshot,'15m',STEP)
+    if tick<=0 or len(m)<42 or len(w)<25 or not _fresh_micro(m,snapshot.now):
+        return []
+    a=vol(m)
+    if a<=0:
+        return []
+    h1=bias(bars(snapshot,'1H',HOUR))
+    h4=bias(bars(snapshot,'4H',FOUR_HOURS))
+    b15=bias(w)
+    output=[]
+    for k in range(max(25,len(m)-9),len(m)):
+        x,y,z=m[k-2:k+1]
+        before=m[k-22:k-2]  # before the 3-candle BOS/FVG sequence
+        if len(before)<20 or (z.ts+MICRO>snapshot.now):
+            continue
+        # Any missing pre-break micro candle fails closed-bar causal proof.
+        if any(v.ts-u.ts!=MICRO for u,v in zip(m[k-22:k],m[k-21:k+1])):
+            continue
+        for side in (1,-1):
+            # Either a confirmed hourly trend or a confirmed 15m structural
+            # direction, but no simultaneous confirmed 1h+4h opposition.
+            if h1==h4==-side or not (h1==side or b15==side):
+                continue
+            edge=max(c.high for c in before) if side==1 else min(c.low for c in before)
+            if side*(y.close-y.open)<.65*a:
+                continue
+            if side*(y.close-edge)<max(2*tick,.12*a):
+                continue
+            if side*(z.close-edge)<2*tick:
+                continue
+            low=x.high if side==1 else z.high
+            high=z.low if side==1 else x.low
+            width=high-low
+            if width<max(2*tick,.18*a):
+                continue
+            if snapshot.now-(z.ts+MICRO)>3*MICRO:
+                continue
+            # Near/proximal first-retest entry, inside the already-confirmed FVG;
+            # a hypothetical midpoint that price can no longer reach is not used.
+            entry=low+.22*width if side==1 else high-.22*width
+            if side*(m[-1].close-entry)<=2*tick:
+                continue
+            if not _untouched_since(m,k,entry,side,tick):
+                continue
+            stop=(min(x.low,y.low,z.low)-max(2*tick,.15*a) if side==1
+                  else max(x.high,y.high,z.high)+max(2*tick,.15*a))
+            if side*(entry-stop)<=2*tick:
+                continue
+            output.append(Setup('MICRO_BOS_FVG',side,entry,stop,
+                                z.ts+MICRO,y.ts+MICRO,a,
+                                'preknown 3m swing BOS -> closed displacement -> '
+                                'confirmed unretouched FVG -> first passive retest'))
+    return sorted(output,key=lambda e:e.signal_ts,reverse=True)
+
+
 def _micro_scenarios(snapshot, tick):
     """3m *closed* confirmations against already-known 15m/1H/4H context.
 
-    This does not make the scheduler run every 3m. It makes recent 3m events
-    usable at the next 15m run, provided no retracement has already occurred.
+    The exact scheduler is external; the strategy observes only CLOSED 3m
+    events, and never resurrects a level after its first retest.
     """
     m = bars(snapshot, '3m', MICRO)
     w = bars(snapshot, '15m', STEP)
@@ -344,7 +409,7 @@ def _micro_scenarios(snapshot, tick):
 
 def scenarios(snapshot, tick):
     """Micro confirmation first, slower 15m plays only before first retest."""
-    micro = _micro_scenarios(snapshot, tick)
+    micro = bos_fvg_continuations(snapshot,tick) + _micro_scenarios(snapshot, tick)
     slow = _slow_scenarios(snapshot, tick)
     # Reject slow events that already retested between the signal and now;
     # otherwise a completed 15m pattern can be too late for a LIMIT.
@@ -361,6 +426,83 @@ def scenarios(snapshot, tick):
     return micro + usable
 
 
+
+# Closed-event confirmations permitted by each of the 24 native ICT families.
+# An unknown native setup NEVER inherits a matching BOS/FVG just because price
+# and direction happen to coincide. Direct strategy events use their exact
+# immutable source signal instead (and are not counted as native detectors).
+ICT_PLAYBOOK_CONTRACTS = {'ACCELERATION_PULLBACK_REENTRY': ('ACCEPTED_BREAK_RETEST',
+                                   'HTF_FVG_RETEST',
+                                   'MICRO_ACCEPTED_BREAK',
+                                   'MICRO_BOS_FVG',
+                                   'MICRO_HTF_FVG'),
+ 'ACCEPTANCE_RETEST_CONTINUATION': ('ACCEPTED_BREAK_RETEST',
+                                    'HTF_FVG_RETEST',
+                                    'MICRO_ACCEPTED_BREAK',
+                                    'MICRO_BOS_FVG',
+                                    'MICRO_HTF_FVG'),
+ 'BREAKOUT_RETEST': ('ACCEPTED_BREAK_RETEST', 'MICRO_ACCEPTED_BREAK', 'MICRO_BOS_FVG'),
+ 'BUYER_EXHAUSTION_SHORT': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'CAPITULATION_RECOVERY': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'DAILY_WEEKLY_OPEN_RECLAIM': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'DIRECTION_FLIP_15M': ('LIQUIDITY_MSS',
+                        'MICRO_ACCEPTED_BREAK',
+                        'MICRO_BOS_FVG',
+                        'MICRO_SWEEP_MSS'),
+ 'FAILED_AUCTION_REJECTION': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'FAILED_BREAKOUT_SHORT': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'FAILED_OPENING_RANGE_BREAKOUT': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'FRESH_BASE_CONTINUATION': ('ACCEPTED_BREAK_RETEST',
+                             'HTF_FVG_RETEST',
+                             'MICRO_ACCEPTED_BREAK',
+                             'MICRO_BOS_FVG',
+                             'MICRO_HTF_FVG'),
+ 'LIQUIDITY_LADDER': ('ACCEPTED_BREAK_RETEST',
+                      'MICRO_ACCEPTED_BREAK',
+                      'MICRO_BOS_FVG',
+                      'MICRO_HTF_FVG'),
+ 'LIQUIDITY_SWEEP_REVERSAL_SHORT': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'MOMENTUM_NO_PULLBACK_CONTINUATION': ('ACCEPTED_BREAK_RETEST',
+                                       'HTF_FVG_RETEST',
+                                       'MICRO_ACCEPTED_BREAK',
+                                       'MICRO_BOS_FVG',
+                                       'MICRO_HTF_FVG'),
+ 'MSS_REVERSAL_SHORT': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'OPENING_RANGE_BREAKOUT': ('ACCEPTED_BREAK_RETEST', 'MICRO_ACCEPTED_BREAK', 'MICRO_BOS_FVG'),
+ 'OR_FAILURE_2_SHORT': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'PULLBACK_CONTINUATION': ('ACCEPTED_BREAK_RETEST',
+                           'HTF_FVG_RETEST',
+                           'MICRO_ACCEPTED_BREAK',
+                           'MICRO_BOS_FVG',
+                           'MICRO_HTF_FVG'),
+ 'RANGE_COMPRESSION_BREAKOUT': ('ACCEPTED_BREAK_RETEST', 'MICRO_ACCEPTED_BREAK', 'MICRO_BOS_FVG'),
+ 'RANGE_EDGE_REVERSAL': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'SESSION_MEAN_RECLAIM': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'SWEEP_RECLAIM': ('LIQUIDITY_MSS', 'MICRO_RANGE_REJECTION', 'MICRO_SWEEP_MSS'),
+ 'TIME_OF_DAY_ADAPTIVE': ('ACCEPTED_BREAK_RETEST',
+                          'MICRO_ACCEPTED_BREAK',
+                          'MICRO_RANGE_REJECTION',
+                          'MICRO_SWEEP_MSS'),
+ 'TREND_IGNITION': ('ACCEPTED_BREAK_RETEST', 'MICRO_ACCEPTED_BREAK', 'MICRO_BOS_FVG')}
+
+def validate_contracts(names):
+    if set(names) != set(ICT_PLAYBOOK_CONTRACTS):
+        raise ValueError('STRICT setup table out of sync with the 24 ICT detectors')
+    if any(not x for x in ICT_PLAYBOOK_CONTRACTS.values()):
+        raise ValueError('A detector has no independent closed-bar playbook')
+    return True
+
+def contract_matches(setup_type, signal_family, *, direct=False, proof=None, side=None):
+    if direct:
+        # For direct strategy events the family must map to the *declared*
+        # native proxy type; a forged unknown setup cannot bypass STRICT.
+        from strategy_direct_entries import proxy_setup
+        return (bool(proof) and signal_family == proof.get('source_strategy')
+                and proxy_setup(signal_family, side) == setup_type)
+    if str(setup_type).endswith('_SHORT') and side != -1:
+        return False
+    return signal_family in ICT_PLAYBOOK_CONTRACTS.get(str(setup_type), ())
+
 def assess(plan, snapshot, tick, *, setup_candidates=None, market_regime=None):
     """Only admit legacy plan when a new independent strategy event matches it.
 
@@ -375,12 +517,21 @@ def assess(plan, snapshot, tick, *, setup_candidates=None, market_regime=None):
     regime = market_regime or organic.classify(snapshot)
     direct = plan.get('entry_route') == 'STRATEGY_EVENT'
     proof = plan.get('anchor_proof',{}) if direct else {}
+    setup_type = plan.get('setup_type') or plan.get('setup')
+    if not setup_type or (not direct and setup_type not in ICT_PLAYBOOK_CONTRACTS):
+        return {'accepted':False,'reason':'PLAYBOOK_SETUP_CONTRACT_UNKNOWN','playbook':None}
+    family_conflict = False
     for signal in setups:
         if direct and (signal.family != proof.get('source_strategy') or
                        signal.signal_ts != proof.get('strategy_signal_ts') or
                        signal.event_ts != proof.get('strategy_event_ts')):
             continue
         if signal.side!=side:
+            continue
+        if not contract_matches(setup_type,signal.family,direct=direct,proof=proof,side=side):
+            if (0 <= snapshot.now-signal.signal_ts <= STEP
+                    and abs(entry-signal.zone) <= max(4*tick,.65*signal.atr)):
+                family_conflict = True
             continue
         if snapshot.now-signal.signal_ts>STEP or snapshot.now<signal.signal_ts:
             continue
@@ -401,4 +552,4 @@ def assess(plan, snapshot, tick, *, setup_candidates=None, market_regime=None):
                 'playbook':signal.family,'zone':round(signal.zone,8),
                 'event_ts':signal.event_ts,'signal_ts':signal.signal_ts,
                 'evidence':signal.note, **regime_verdict}
-    return {'accepted':False,'reason':'NO_FRESH_CAUSAL_3M_OR_15M_PLAYBOOK','playbook':None}
+    return {'accepted':False,'reason':('PLAYBOOK_FAMILY_MISMATCH' if family_conflict else 'NO_FRESH_CAUSAL_3M_OR_15M_PLAYBOOK'),'playbook':None}

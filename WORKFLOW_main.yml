@@ -1,8 +1,8 @@
-name: BZU Auto Bot — ICT v12.18.1 — Direct Strategy Entries
+name: BZU Auto Bot — ICT v12.20.0 — 3m Causal Scan / 15m Reports
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   run-bot:
+    # Set repository variable BZU_EXECUTION_MODE=WORKER when the persistent
+    # 3m host starts. Running both writers would corrupt the paper ledger.
+    if: ${{ vars.BZU_EXECUTION_MODE != 'WORKER' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -26,17 +29,21 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.18.1-direct-strategy-entries'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.20.0-reviewed-short'
       INCLUDE_COMMISSION: 'true'
-      ANALYSIS_SCAN_MINUTES: '15'
-      ABS_MIN_STOP_PCT: '0.01'
-      MIN_TP1_DISTANCE_PCT: '0.015'
+      ANALYSIS_SCAN_MINUTES: '5'
+      LIMIT_MAX_STOP_ATR: '4.00'
+      ABS_MIN_STOP_PCT: '0.010'
+      MIN_TP1_DISTANCE_PCT: '0.020'
       MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
       TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
       PYTHONUNBUFFERED: '1'
       MARKET_FETCH_TIMING: 'true'
       BOT_STAGE_TIMING: 'true'
-      # One scheduled 15m cycle; real exchange execution is NOT enabled.
+      # GitHub Actions minimum cron spacing is 5m. Every scan can use the last
+      # CLOSED 3m event; exact every-3m wakeup requires continuous_worker.py
+      # on a persistent host. Reports remain one per 15m UTC bucket.
+      # Real exchange execution is NOT enabled (paper lifecycle).
       BZU_EDGE_MODE: 'SHADOW'
       BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'
 
@@ -55,8 +62,7 @@ jobs:
           python-version: '3.11'
 
       # v12 has a stdlib fallback; requirements.txt is not required.
-      # Run only cheap safety checks in live trading. The full regression suite
-      # runs separately in bzu-quality.yml when code changes or on demand.
+      # Run only cheap safety checks in live trading. The full regression suite can run offline with --self-test.
       - name: Fast preflight (version, detectors, imports and syntax)
         run: |
           python -m py_compile bot_oneshot.py full_limit_engine.py notification_report.py \
@@ -79,11 +85,13 @@ jobs:
           import bot_oneshot as core
           import full_limit_engine as engine
           import setup_paths
+          import entry_playbooks
+          entry_playbooks.validate_contracts(core.DETECTED_SETUP_TYPES)
           actual = (core.BOT_VERSION, engine.VERSION, len(core.DETECTORS))
           expected = os.environ['EXPECTED_BOT_VERSION']
           print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
           if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
-              raise SystemExit('Mismatched v12.18.1 files: update bot_oneshot.py and full_limit_engine.py together. '
+              raise SystemExit('Mismatched v12.20.0 files: update bot_oneshot.py and full_limit_engine.py together. '
                                f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
               raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
@@ -91,7 +99,7 @@ jobs:
           PY
 
       - name: Verify Telegram settings
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *' }}
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -102,14 +110,14 @@ jobs:
               raise SystemExit('Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in GitHub Actions secrets')
           PY
 
-      - name: Run full v12 signal cycle
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
+      - name: Fast scan (closed 3m) with 15m report gating
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *' }}
         id: bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_NOTIFY_EVERY_RUN: 'true'
-        run: python bot_oneshot.py --notify
+        run: python bot_oneshot.py --auto-report
 
       - name: Save signal memory and journal
         id: persist

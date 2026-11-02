@@ -56,7 +56,7 @@ class RegimeAndEntryTests(unittest.TestCase):
                 self.assertTrue(matched)
                 signal=matched[0]
                 self.assertGreater(signal.signal_ts,signal.event_ts)
-                plan={'entry':signal.zone, 'side':side,
+                plan={'setup_type':'RANGE_EDGE_REVERSAL','entry':signal.zone, 'side':side,
                       'stop':signal.invalidation-side*.3}
                 verdict=pb.assess(plan,snap,.01)
                 self.assertTrue(verdict['accepted'],verdict)
@@ -90,7 +90,7 @@ class RegimeAndEntryTests(unittest.TestCase):
     def test_FVG_requires_fresh_htf_context_to_admit_order(self):
         s=aligned_snapshot(1,'fvg')
         signal=next(z for z in pb.scenarios(s,.01) if z.family=='MICRO_HTF_FVG')
-        plan={'entry':signal.zone,'side':1,'stop':signal.invalidation-.3}
+        plan={'setup_type':'PULLBACK_CONTINUATION','entry':signal.zone,'side':1,'stop':signal.invalidation-.3}
         # 4H context absent: scanner can observe a potential FVG but the
         # regime classifier cannot certify continuation.
         decision=pb.assess(plan,s,.01)
@@ -116,16 +116,17 @@ class RegimeAndEntryTests(unittest.TestCase):
     def test_countertrend_reversal_does_not_require_trend_FVG(self):
         s=sweep_snapshot()
         x=next(z for z in pb.scenarios(s,.01) if z.family=='MICRO_SWEEP_MSS')
-        out=pb.assess({'entry':x.zone,'side':1,'stop':x.invalidation-.5},s,.01)
+        out=pb.assess({'setup_type':'SWEEP_RECLAIM','entry':x.zone,'side':1,'stop':x.invalidation-.5},s,.01)
         self.assertTrue(out['accepted'])
         self.assertEqual(out['strategy'],'LIQUIDITY_REVERSAL')
 
     def test_schedule_is_15_minutes_and_shadow_not_research_only(self):
         workflow=(Path(__file__).parent/'.github/workflows/main.yml').read_text()
-        self.assertIn("cron: '*/15 * * * *'",workflow)
+        self.assertIn("cron: '*/5 * * * *'",workflow)
+        self.assertIn('python bot_oneshot.py --auto-report',workflow)
         self.assertIn("BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'",workflow)
         self.assertNotIn("BZU_EDGE_MODE: 'RESEARCH_ONLY'",workflow)
-        self.assertNotIn('continuous_worker.py',workflow)
+        self.assertNotIn('run: python continuous_worker.py',workflow)
 
 
 if __name__ == '__main__':
