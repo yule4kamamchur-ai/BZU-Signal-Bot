@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.20.0 — GitHub-only Scan / 15m Telegram
+name: BZU Auto Bot — ICT v12.20.3 — GitHub-only Scan / 15m Telegram
 
 on:
   schedule:
@@ -118,7 +118,15 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Do not allow a normal scan to bypass the 15m report gate.
           TELEGRAM_NOTIFY_EVERY_RUN: 'false'
-        run: python bot_oneshot.py --auto-report
+        shell: bash
+        run: |
+          # Manual "Run workflow" must produce a Telegram report immediately.
+          # Scheduled scans remain silent unless their UTC 15m bucket is due.
+          if [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
+            python bot_oneshot.py --notify
+          else
+            python bot_oneshot.py --auto-report
+          fi
 
       - name: Save signal memory and journal
         id: persist

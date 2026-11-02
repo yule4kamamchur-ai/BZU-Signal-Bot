@@ -18,6 +18,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 from bisect import bisect_left, bisect_right
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace, fields
@@ -2720,14 +2721,28 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
             data = http_json("https://api.telegram.org/bot"+token+"/sendMessage",
                              {"chat_id": chat_id, "text": body})
             if not data.get("ok"):
-                print("Telegram rejected the message; queued for retry", file=sys.stderr)
+                description=str(data.get('description','Unknown Telegram rejection'))
+                print('::error::Telegram rejected message: '+description.replace(token,'[REDACTED]')[:250], file=sys.stderr)
                 return False
+        except urllib.error.HTTPError as exc:
+            # urllib HTTPError contains a URL with the bot token; never log the URL.
+            description=''
+            try:
+                response=json.loads(exc.read().decode('utf-8',errors='replace'))
+                description=str(response.get('description',''))
+            except (ValueError,TypeError,OSError):
+                pass
+            safe=description.replace(token,'[REDACTED]')[:200] if description else 'Check bot/chat permissions'
+            print(f'::error::Telegram API HTTP {exc.code}: {safe}; message queued for retry',file=sys.stderr)
+            return False
         except Exception:
-            # Never print URLs / request exceptions containing the bot token.
-            print("Telegram unavailable; message retained for retry", file=sys.stderr)
+            # Do not print exceptions; their URL could embed the secret token.
+            print('::error::Telegram network error: queued for retry; check outbound access',file=sys.stderr)
             return False
         state["notification_queue"].pop(0)
         atomic_write(path, state)
+        print('[TELEGRAM] Message delivered successfully; queued pages remaining: '
+              +str(len(state['notification_queue'])),flush=True)
     return True
 
 
@@ -3047,22 +3062,36 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             state['last_notified_event_count']=len(state['events'])
         if message:
             print(message)
-        if result['action']=='DUPLICATE_OR_OUT_OF_ORDER':
-            export_journal(journal_path,state,core)
-            return 0 if not notify or notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path) else 2
+        # A report is a notification event, not a trading event. A delayed or
+        # duplicate market snapshot must not silently skip a requested report.
         if notify:
+            if not message.strip():
+                print('::error::Telegram report is empty; refusing silent success',file=sys.stderr)
+                return 2
             import notification_report
+            report_ts=int(time.time()*1000)
             for page, part in enumerate(notification_report.split_message(message)):
-                state['notification_queue'].append({'id':ident(snap.now,page,part),'text':part,
-                                                    'version':VERSION,'ts':snap.now})
-            state['last_report_requested_ts']=snap.now
+                state['notification_queue'].append({'id':ident(report_ts,page,part),'text':part,
+                                                    'version':VERSION,'ts':report_ts})
+            state['last_report_requested_ts']=report_ts
+            print('[TELEGRAM] 15m report queued; pages: '
+                  +str(len(state['notification_queue'])),flush=True)
         atomic_write(state_path,state)
         stage('save_state')
         export_journal(journal_path,state,core)
         stage('save_journal')
-        if notify and not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):
-            stage('telegram_delivery_failed')
-            return 2
+        # Retry an unsent report on EVERY subsequent 5m scan, without composing
+        # a new 5m message. This also covers out-of-order/duplicate market data.
+        if state['notification_queue']:
+            if not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID:
+                print('::error::TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing; '
+                      'message retained for retry',file=sys.stderr)
+                return 2
+            if not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):
+                stage('telegram_delivery_failed')
+                return 2
+        else:
+            print('[TELEGRAM] No message scheduled in this 5m scan',flush=True)
         stage('telegram_delivery')
         if result['action']=='DATA_HOLD':
             print('DATA_HOLD: no new orders; Telegram summary/state were processed',file=sys.stderr)
