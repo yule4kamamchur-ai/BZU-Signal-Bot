@@ -74,7 +74,8 @@ def strategy_for(family):
     if family in ('MICRO_SWEEP_MSS', 'LIQUIDITY_MSS'):
         return 'LIQUIDITY_REVERSAL'
     if family in ('MICRO_HTF_FVG', 'HTF_FVG_RETEST',
-                  'MICRO_ACCEPTED_BREAK', 'ACCEPTED_BREAK_RETEST'):
+                  'MICRO_ACCEPTED_BREAK', 'ACCEPTED_BREAK_RETEST',
+                  'MICRO_BOS_FVG'):
         return 'TREND_CONTINUATION'
     if family == 'MICRO_RANGE_REJECTION':
         return 'RANGE_REJECTION'

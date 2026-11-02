@@ -80,7 +80,7 @@ class Config:
     slippage_bps: float = 2.0
     min_net_rr: float = 1.20
     max_target_r: float = 2.5
-    max_stop_atr: float = 2.0
+    max_stop_atr: float = 4.0  # same LIMIT cap as bot_oneshot; overridden by LIMIT_MAX_STOP_ATR
     min_stop_atr3: float = 0.65
     min_stop_pct: float = 0.010  # minimum 1.00%, structural stop may be wider
     min_target_pct: float = 0.020  # minimum 2.00%; net >=1.20R also required
@@ -118,7 +118,7 @@ class Config:
             raise ValueError("Invalid intraday boundaries")
         if not 0 <= self.min_score <= 100:
             raise ValueError("Invalid ranking")
-        if not 0.010 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or self.max_stop_atr <= 0:
+        if not 0.010 <= self.min_stop_pct < 0.10 or self.min_stop_atr3 <= 0 or not 0.80 <= self.max_stop_atr <= 6.0:
             raise ValueError("Invalid stop bounds")
         if not 0.020 <= self.min_target_pct < 0.50:
             raise ValueError("TP1 must be at least 2.0% from entry")
@@ -137,6 +137,7 @@ class Config:
             "max_target_r": ("MAX_TARGET_R", float), "ttl_minutes": ("LIMIT_TTL_MINUTES", int),
             "setup_age_minutes": ("SETUP_AGE_MINUTES", int),
             "max_hold_minutes": ("MAX_HOLD_MINUTES", int),
+            "max_stop_atr": ("LIMIT_MAX_STOP_ATR", float),
             "min_stop_pct": ("ABS_MIN_STOP_PCT", float),
             "min_target_pct": ("MIN_TP1_DISTANCE_PCT", float),
             "timezone": ("TRADING_TIMEZONE", str),
@@ -617,10 +618,16 @@ def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=N
     mark('FRESH_LEVEL',s.now<a.expires_ts and s.now-a.created_ts<=cfg.setup_age_minutes*scale*60_000)
     entry,stop,risk,floor,buffer=stop_geometry(a,ctx,cfg)
     diag.update(stop=stop,risk=risk)
-    mark('VALID_STOP',risk+1e-9>=floor and risk<=max(cfg.max_stop_atr*a15,1.25*floor))
-    if risk+1e-9 < floor:
+    # A 1% minimum SL must not silently override the SAME hard ATR cap used
+    # by the launcher. If ATR is too small, wait for a feasible fresh setup.
+    # The former 1.25*floor exception could admit a stop > LIMIT_MAX_STOP_ATR.
+    stop_cap = cfg.max_stop_atr * a15
+    mark('VALID_STOP', risk + 1e-9 >= floor and risk <= stop_cap + 1e-9)
+    if risk + 1e-9 < floor:
         return None, "STOP_INSIDE_NOISE"
-    if risk > max(cfg.max_stop_atr*a15, 1.25*floor):
+    if risk > stop_cap + 1e-9:
+        diag['atr_stop_cap'] = stop_cap
+        diag['minimum_stop_exceeds_cap'] = floor > stop_cap + 1e-9
         return None, "STRUCTURAL_STOP_TOO_WIDE"
     b1 = execution_atlas.snapshot_control(s,'1H',cfg,sys.modules[__name__])['side']
     b4 = execution_atlas.snapshot_control(s,'4H',cfg,sys.modules[__name__])['side']

@@ -16,7 +16,7 @@ def proxy_setup(family: str, side: int) -> Optional[str]:
         return 'SWEEP_RECLAIM' if side == 1 else 'MSS_REVERSAL_SHORT'
     if family in ('MICRO_RANGE_REJECTION',):
         return 'FAILED_AUCTION_REJECTION' if side == 1 else 'FAILED_BREAKOUT_SHORT'
-    if family in ('MICRO_HTF_FVG', 'HTF_FVG_RETEST'):
+    if family in ('MICRO_HTF_FVG', 'HTF_FVG_RETEST', 'MICRO_BOS_FVG'):
         return 'PULLBACK_CONTINUATION'
     if family in ('MICRO_ACCEPTED_BREAK', 'ACCEPTED_BREAK_RETEST'):
         return 'BREAKOUT_RETEST'
