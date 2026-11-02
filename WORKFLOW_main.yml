@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.20.0 — 3m Causal Scan / 15m Reports
+name: BZU Auto Bot — ICT v12.20.0 — GitHub-only Scan / 15m Telegram
 
 on:
   schedule:
@@ -15,9 +15,8 @@ concurrency:
 
 jobs:
   run-bot:
-    # Set repository variable BZU_EXECUTION_MODE=WORKER when the persistent
-    # 3m host starts. Running both writers would corrupt the paper ledger.
-    if: ${{ vars.BZU_EXECUTION_MODE != 'WORKER' }}
+    # GitHub Actions is the sole scheduled runner: no VPS, Docker, or worker.
+    # Each invocation is a finite one-shot execution (no persistent process).
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -40,9 +39,10 @@ jobs:
       PYTHONUNBUFFERED: '1'
       MARKET_FETCH_TIMING: 'true'
       BOT_STAGE_TIMING: 'true'
-      # GitHub Actions minimum cron spacing is 5m. Every scan can use the last
-      # CLOSED 3m event; exact every-3m wakeup requires continuous_worker.py
-      # on a persistent host. Reports remain one per 15m UTC bucket.
+      # Every 5 minutes: scan CLOSED 3m data without Telegram messages.
+      # Exactly one report per 15-minute UTC bucket, guarded by --auto-report
+      # and persisted last_report_requested_ts in the trading ledger. GitHub
+      # may start jobs late, so delivery at :00/:15/:30/:45 is best effort.
       # Real exchange execution is NOT enabled (paper lifecycle).
       BZU_EDGE_MODE: 'SHADOW'
       BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'
@@ -116,7 +116,8 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_NOTIFY_EVERY_RUN: 'true'
+          # Do not allow a normal scan to bypass the 15m report gate.
+          TELEGRAM_NOTIFY_EVERY_RUN: 'false'
         run: python bot_oneshot.py --auto-report
 
       - name: Save signal memory and journal
