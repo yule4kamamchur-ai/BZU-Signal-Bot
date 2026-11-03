@@ -6,8 +6,9 @@ projections. Called only with a point-in-time Snapshot, not historical labels.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import mean
+from types import SimpleNamespace
 from typing import Optional
 
 import strategy_organics as organic
@@ -28,6 +29,7 @@ class Setup:
     event_ts: int
     atr: float
     note: str
+    recovered_from_scan_gap: bool = False
 
 
 def bars(snapshot, tf, duration):
@@ -427,6 +429,73 @@ def scenarios(snapshot, tick):
 
 
 
+def freshness_ms(signal):
+    # A scan-gap recovery is never a license to revive an old or touched zone.
+    # Original live-confirmed playbooks retain their 15-minute freshness gate.
+    return 2 * STEP if signal.recovered_from_scan_gap else STEP
+
+
+def scenarios_since(snapshot, tick, previous_scan_ts):
+    """Recover CLOSED 3m events missed by delayed GitHub one-shot scans.
+
+    Re-evaluate each completed 3m boundary as it was knowable at that time;
+    then require the original limit to remain untouched through the PRESENT.
+    Never backdate orders/fills, infer a developing candle, change a signal's
+    first timestamp, or carry an event older than thirty minutes. This gives
+    scheduled scans (often 15m apart in the actual ledger) a fair opportunity
+    to see an independent BOS/FVG without opening on a past price touch.
+    """
+    current = scenarios(snapshot, tick)
+    if tick <= 0 or not previous_scan_ts or previous_scan_ts >= snapshot.now:
+        return current
+    # No reliance on mutable historical signals or fetched future bars.
+    earliest = max(previous_scan_ts, snapshot.now - 2 * STEP)
+    first = ((earliest // MICRO) + 1) * MICRO
+    last = (snapshot.now // MICRO) * MICRO
+    found = {(s.family, s.side, s.signal_ts, s.event_ts,
+              round(s.zone / tick)) for s in current}
+    recovered = []
+    for clock in range(first, last + 1, MICRO):
+        # Use the last close KNOWN at this boundary. Do not pass the latest
+        # ticker from the future into a reconstructed as-of snapshot.
+        micro_known = bars(SimpleNamespace(now=clock, candles=snapshot.candles),
+                           '3m', MICRO)
+        if not micro_known:
+            continue
+        view = SimpleNamespace(now=clock, candles=snapshot.candles,
+                               price=micro_known[-1].close)
+        for event in scenarios(view, tick):
+            if not (previous_scan_ts < event.signal_ts <= clock):
+                continue
+            if not (0 <= snapshot.now - event.signal_ts <= 2 * STEP):
+                continue
+            key = (event.family, event.side, event.signal_ts, event.event_ts,
+                   round(event.zone / tick))
+            if key in found:
+                continue
+            # Require unbroken evidence AFTER the signal as well. Missing
+            # candles can conceal an earlier touch; never assume no fill.
+            subsequent = [bar for bar in bars(snapshot, '3m', MICRO)
+                          if bar.ts >= event.signal_ts]
+            if (not subsequent
+                    or subsequent[0].ts != event.signal_ts
+                    or any(b.ts-a.ts != MICRO for a,b in zip(subsequent,subsequent[1:]))
+                    or snapshot.now-(subsequent[-1].ts+MICRO) > MICRO):
+                continue
+            # Every bar that could have hit the level is checked *after* the
+            # as-of confirmation, not just the newest candle. A market price
+            # that has crossed the limit cannot be treated as a new passive
+            # order either. The exchange BID/ASK gate still runs in full_plan.
+            if any((bar.low <= event.zone + tick if event.side == 1
+                    else bar.high >= event.zone - tick) for bar in subsequent):
+                continue
+            if event.side * (snapshot.price - event.zone) <= 2 * tick:
+                continue
+            found.add(key)
+            recovered.append(replace(event, recovered_from_scan_gap=True))
+    return current + recovered
+
+
 # Closed-event confirmations permitted by each of the 24 native ICT families.
 # An unknown native setup NEVER inherits a matching BOS/FVG just because price
 # and direction happen to coincide. Direct strategy events use their exact
@@ -529,11 +598,11 @@ def assess(plan, snapshot, tick, *, setup_candidates=None, market_regime=None):
         if signal.side!=side:
             continue
         if not contract_matches(setup_type,signal.family,direct=direct,proof=proof,side=side):
-            if (0 <= snapshot.now-signal.signal_ts <= STEP
+            if (0 <= snapshot.now-signal.signal_ts <= freshness_ms(signal)
                     and abs(entry-signal.zone) <= max(4*tick,.65*signal.atr)):
                 family_conflict = True
             continue
-        if snapshot.now-signal.signal_ts>STEP or snapshot.now<signal.signal_ts:
+        if snapshot.now-signal.signal_ts>freshness_ms(signal) or snapshot.now<signal.signal_ts:
             continue
         if abs(entry-signal.zone)>max(4*tick,.65*signal.atr):
             continue

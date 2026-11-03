@@ -82,6 +82,37 @@ def strategy_for(family):
     return None
 
 
+def _confirmed_mixed_continuation(signal, snapshot, tick, regime):
+    """Allow a 3m BOS/FVG when 15m and 1H agree but the 4H lags.
+
+    A generic bullish candle is NOT confirmation: the setup must be an
+    independently evidenced, CLOSED 3m BOS/FVG, backed by a directional,
+    contiguous 15m sequence and a fresh confirmed 1H trend. Opposing 1H+4H,
+    missing HTF data, and other strategy families stay blocked.
+    """
+    if (signal.family != 'MICRO_BOS_FVG' or regime.state != 'MIXED'
+            or regime.trend_1h != signal.side or regime.trend_4h != -signal.side
+            or tick <= 0 or not (0 <= snapshot.now - signal.signal_ts <= 2 * STEP['15m'])):
+        return False
+    # Distinct 15m confirmation, not the unfinished 15m candle or a future
+    # timestamp. An hour-old directional bias cannot justify a new limit.
+    bars15 = closed(snapshot, '15m')
+    if len(bars15) < 16 or snapshot.now - (bars15[-1].ts + STEP['15m']) > STEP['15m']:
+        return False
+    if any(b.ts - a.ts != STEP['15m']
+           for a, b in zip(bars15[-16:-1], bars15[-15:])):
+        return False
+    closes = [x.close for x in bars15[-13:]]
+    path = sum(abs(b-a) for a,b in zip(closes, closes[1:]))
+    move = closes[-1] - closes[0]
+    ranges = [max(b.high-b.low, abs(b.high-a.close), abs(b.low-a.close))
+              for a,b in zip(bars15[-13:-1], bars15[-12:])]
+    a15 = sum(ranges)/len(ranges) if ranges else 0.
+    return bool(a15 > 0 and signal.side * move >= 1.25 * a15
+                and signal.side * (bars15[-1].close-bars15[-1].open) > -0.35*a15
+                and abs(move)/max(path,tick) >= .31)
+
+
 def qualify(signal, snapshot, tick, regime=None):
     """Return independently attributable strategy rationale, or a veto.
 
@@ -93,10 +124,12 @@ def qualify(signal, snapshot, tick, regime=None):
     strategy = strategy_for(signal.family)
     reason = 'STRATEGY_UNKNOWN'
     if strategy == 'TREND_CONTINUATION':
-        if regime.state != ('TREND_LONG' if signal.side == 1 else 'TREND_SHORT'):
-            reason = 'STRATEGY_TREND_REGIME_NOT_CONFIRMED'
-        else:
+        if regime.state == ('TREND_LONG' if signal.side == 1 else 'TREND_SHORT'):
             reason = 'STRATEGY_TREND_CONFIRMED'
+        elif _confirmed_mixed_continuation(signal, snapshot, tick, regime):
+            reason = 'STRATEGY_MIXED_1H_15M_BOS_CONFIRMED'
+        else:
+            reason = 'STRATEGY_TREND_REGIME_NOT_CONFIRMED'
     elif strategy == 'RANGE_REJECTION':
         reason = ('STRATEGY_RANGE_CONFIRMED' if regime.state == 'RANGE'
                   else 'STRATEGY_RANGE_REGIME_NOT_CONFIRMED')
@@ -105,6 +138,7 @@ def qualify(signal, snapshot, tick, regime=None):
         # can still be a lower-timeframe liquidity continuation.
         reason = 'STRATEGY_SWEEP_MSS_CONFIRMED'
     allow = reason in ('STRATEGY_TREND_CONFIRMED',
+                       'STRATEGY_MIXED_1H_15M_BOS_CONFIRMED',
                        'STRATEGY_RANGE_CONFIRMED', 'STRATEGY_SWEEP_MSS_CONFIRMED')
     # Quality is a deterministic *evidence order*, not an empirical win rate.
     # More recent completed structure gets higher priority, never hindsight.

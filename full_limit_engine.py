@@ -917,10 +917,16 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         # price match with one of the legacy 24 location detectors. Use the
         # SAME shared geometry/target/order machinery, with explicit origin.
         organic_regime = strategy_organics.classify(s)
-        organic_setups = entry_playbooks.scenarios(s,cfg.tick)
+        organic_setups = entry_playbooks.scenarios_since(
+            s, cfg.tick, state.get('last_run_ts', 0))
         direct_anchors = []
         for signal in organic_setups:
-            a = strategy_direct_entries.from_signal(signal,s,cfg,early_context,
+            # Direct BOS/FVG confirms on CLOSED 3m candles, but its trade is
+            # planned on the TRUE 15m structure. The micro precursor context
+            # relabels 3m bars as 15m for legacy detectors: using it here
+            # erroneously applied the 4*ATR stop cap to 3m ATR and missed
+            # genuine 15m obstacles/targets. Keep these contracts separate.
+            a = strategy_direct_entries.from_signal(signal,s,cfg,tf_contexts['15m'],
                                                       core,organic_regime,entry_playbooks)
             if a is not None:
                 direct_anchors.append(a)
@@ -945,7 +951,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 refused[reason]=refused.get(reason,0)+1
         for a in anchors:
             tf=a.evidence.get('setup_timeframe','15m')
-            native=early_context if a.evidence.get('entry_route') in ('MICRO_PRECURSOR','STRATEGY_EVENT') else tf_contexts[tf]
+            route=a.evidence.get('entry_route')
+            native=early_context if route=='MICRO_PRECURSOR' else tf_contexts[tf]
             key = anchor_key(a,cfg)
             level_key = ident(a.side,round(a.level/cfg.tick))
             diagnostics={}
@@ -1006,7 +1013,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                                     if key not in ('weights','calibration_offset')}
     # Evaluate every scenario BEFORE combining nearby levels. A high-score
     # unconfirmed continuation must not suppress a valid reversal at that price.
-    assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route') in ('MICRO_PRECURSOR','STRATEGY_EVENT') else tf_contexts[scanner.timeframe(p)],cfg,
+    assessments = {p['id']:quality.assess(p,s,early_context if p.get('entry_route')=='MICRO_PRECURSOR' else tf_contexts[scanner.timeframe(p)],cfg,
                         sys.modules[__name__],ledger['observations']) for p in plans}
     # Three independent, regime-specific strategy hypotheses are calculated ONCE
     # per snapshot, not again for every legacy-detector candidate. No future bars.
@@ -1182,7 +1189,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         directional[label]={'evaluated_paths':len(subset),
             'accepted_paths':sum(path['reason']=='ACCEPTED' for path in subset),'rejections':reasons}
     direct_paths=[p for p in admission_paths if p.get('route')=='STRATEGY_EVENT']
-    direct_report={'observed':len(organic_setups),'regime_qualified':len(direct_anchors),
+    direct_report={'recovered_scan_gap':sum(x.recovered_from_scan_gap for x in organic_setups),
+                   'observed':len(organic_setups),'regime_qualified':len(direct_anchors),
                    'geometry_qualified':sum(1 for p in plans if p.get('entry_route')=='STRATEGY_EVENT'),
                    'admitted':sum(1 for p in accepted if p.get('entry_route')=='STRATEGY_EVENT'),
                    'rejections':dict(__import__('collections').Counter(

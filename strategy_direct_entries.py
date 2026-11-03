@@ -28,7 +28,7 @@ def from_signal(signal, snapshot, cfg, context, core, regime, playbooks):
     source = proxy_setup(signal.family, signal.side)
     if source is None or signal.side not in (1, -1):
         return None
-    if not (0 <= snapshot.now - signal.signal_ts <= playbooks.STEP):
+    if not (0 <= snapshot.now - signal.signal_ts <= playbooks.freshness_ms(signal)):
         return None
     checked = playbooks.organic.qualify(signal, snapshot, cfg.tick, regime)
     if not checked['accepted']:
