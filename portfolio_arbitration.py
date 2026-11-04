@@ -13,6 +13,24 @@ MIN_AGE_MS=9*60_000 # do not churn a freshly queued order
 COOLDOWN_MS=15*60_000
 
 
+def loss_cooldown(plan, trades, now):
+    """One hour after a same-side stop; only a NEW A+ raid can override."""
+    losses=[t for t in trades if t.get('side')==plan.get('side')
+            and t.get('close_reason') in ('STOP','STOP_GAP','SL','STOP_LOSS')
+            and t.get('net_r',0)<0 and 0<t.get('closed_ts',0)<=now]
+    last=max(losses,key=lambda t:t['closed_ts'],default=None)
+    if last is None or now>=last['closed_ts']+3_600_000:
+        return {'allowed':True,'reason':'COOLDOWN_CLEAR'}
+    proof=plan.get('ict_evidence',{})
+    raid=(proof.get('latest_sweep') or {}).get('known_ts',0)
+    raids=plan.get('confluence',{}).get('session_sweeps',[])
+    raid=max([raid]+[r.get('sweep_ts',0) for r in raids])
+    exception=plan.get('score',0)>=82 and last['closed_ts']<raid<=now
+    return {'allowed':exception,'reason':'NEW_A_PLUS_SWEEP' if exception else 'SAME_SIDE_LOSS_COOLDOWN',
+            'last_stop_ts':last['closed_ts'],'until_ts':last['closed_ts']+3_600_000,
+            'new_sweep_known_ts':raid}
+
+
 def directional_lock(pending, active, side, snapshot, cfg, engine):
     """An OPEN position cannot be cancelled as though it were an unfilled order."""
     import directional_policy

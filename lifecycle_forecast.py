@@ -90,7 +90,7 @@ def simulate(plan, rows, cfg, engine, review_ms=None):
 
 
 def forecast(plan, snapshot, cfg, engine, paths=PATHS):
-    if plan.get("policy")=="BZU_CHECKLIST_V12_21":
+    if engine.bzu_policy.is_new(plan):
         return {"status":"CHECKLIST_NO_MODEL_VETO","as_of_ts":snapshot.now,"calibrated":False,"entry_gate_enabled":False,"exit_policy":plan["exit_policy"]}
     rows = [c for c in snapshot.candles.get('3m',[]) if c.confirmed and c.ts+engine.TF['3m']<=snapshot.now][-LOOKBACK:]
     base = {'schema':SCHEMA,'calibrated':False,'target':'FULL_TRADE_NET_AFTER_COSTS',
@@ -191,9 +191,9 @@ def decision_adjustment(model):
 
 def select_full_exit(plan,snapshot,cfg,engine,paths=PATHS):
     """Prepare the TP1 gate; continuation is decided only AFTER TP1 is observed."""
-    if plan.get("policy")=="BZU_CHECKLIST_V12_21":
+    if engine.bzu_policy.is_new(plan):
         plan["outcome_forecast"]=forecast(plan,snapshot,cfg,engine,paths)
-        return {"selected":"TP1_60_BE_TP2_40","as_of_ts":snapshot.now}
+        return {"selected":plan["exit_policy"],"as_of_ts":snapshot.now}
     engine.use_full_exit(plan,snapshot.now)
     if plan.get('exit_selection'):
         return plan['exit_selection']

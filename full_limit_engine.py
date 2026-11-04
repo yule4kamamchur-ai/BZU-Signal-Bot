@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.21.0-bzu-checklist"
-REPORT_RELEASE = 'v12.21.0'
+VERSION = "full-ict-v12.22.0-precision-protection"
+REPORT_RELEASE = 'v12.22.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -86,12 +86,12 @@ class Config:
     max_target_r: float = 2.5
     max_stop_atr: float = 4.0  # same LIMIT cap as bot_oneshot; overridden by LIMIT_MAX_STOP_ATR
     min_stop_absolute: float = .20
-    max_stop_absolute: float = .80
+    max_stop_absolute: float = .75
     min_stop_atr3: float = 0.65
     min_stop_pct: float = 0.010  # legacy-plan metadata; new policy uses min_stop_absolute
-    min_target_pct: float = 0.020  # legacy-plan metadata; new TP1 is exactly 1R
+    min_target_pct: float = 0.020  # legacy-plan metadata; new TP1 is 1.4R
     max_entry_distance_atr: float = 3.5
-    min_score: float = 55.0
+    min_score: float = 65.0
     conflict_margin: float = 8.0
     ttl_minutes: int = 120
     setup_age_minutes: int = 180
@@ -132,10 +132,10 @@ class Config:
             raise ValueError("Invalid legacy setup statistic sample")
         if self.analysis_scan_minutes not in (3,5,15):
             raise ValueError('Analysis scan interval must be 3, 5 or 15 minutes')
-        if not .18 <= self.min_stop_absolute <= .22 or not .65 <= self.max_stop_absolute <= .80:
-            raise ValueError("Absolute BZU stop bounds must be .18..22 and .65..80")
-        if self.min_net_rr < 1.8 or self.max_entry_distance_atr > 3.5 or self.min_score != 55:
-            raise ValueError("Checklist requires final RR >=1.8, distance <=3.5 ATR, score 55")
+        if not .18 <= self.min_stop_absolute <= .22 or not .65 <= self.max_stop_absolute <= .75:
+            raise ValueError("Absolute BZU stop bounds must be .18..22 and .65..75")
+        if self.min_net_rr < 1.8 or self.max_entry_distance_atr > 3.5 or not 65 <= self.min_score <= 100:
+            raise ValueError("Checklist requires final RR >=1.8, distance <=3.5 ATR, score >=65")
         ZoneInfo(self.timezone)
 
     @classmethod
@@ -897,7 +897,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             p['rating']=points['rating']
             next(c for c in p['entry_checks'] if c['key']=='CONTEXT_SCORE')['met']=points['accepted']
             if q['accepted'] and not points['accepted']:
-                q={**q,'accepted':False,'reason':'CONFLUENCE_BELOW_55'}
+                q={**q,'accepted':False,'reason':points['reason']}
             assessments[p['id']]=q
         p['quality'] = q
         for path in admission_paths:
@@ -1108,7 +1108,7 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int =
     # A filled position owns the directional thesis: never fill another limit
     # before the next 15m review, even if it shares the same direction.
     new_book=all(bzu_policy.is_new(p) for p in open_plans(state))
-    capacity=max(0,2-occupied_slots(state)) if new_book else (0 if active else 1)
+    capacity=0 if active else (max(0,2-occupied_slots(state)) if new_book else 1)
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
@@ -1116,6 +1116,11 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int =
     for plan in ranked:
         if len(eligible)>=capacity:
             break
+        if bzu_policy.is_precision(plan):
+            if not bzu_policy.session_gate(now)['allowed']:
+                continue
+            if not arbitration.loss_cooldown(plan,state['trades'],now)['allowed']:
+                continue
         effective=plan.get('effective_ts',plan['placed_ts'])
         partial_legacy='effective_ts' not in plan and now<effective<now+step
         cancel=plan.get('cancel_effective_ts',plan.get('cancel_requested_ts',0))
@@ -1545,6 +1550,15 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         if cancel_ts and c.ts >= cancel_ts:
             end_order(state, p, "CANCELLED", p["cancel_reason"], cancel_ts)
             continue
+        if bzu_policy.is_precision(p):
+            # These windows are known BEFORE the candle opens. Cancel without
+            # consulting this candle's future high/low, even after a scan gap.
+            session=bzu_policy.session_gate(c.ts)
+            cooldown=arbitration.loss_cooldown(p,state['trades'],c.ts)
+            if not session['allowed'] or not cooldown['allowed']:
+                end_order(state,p,'CANCELLED',session['reason'] if not session['allowed']
+                          else cooldown['reason'],c.ts)
+                continue
         if c.ts >= p["expires_ts"]:
             end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
             continue
@@ -1637,6 +1651,14 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             if c.ts<=plan.get('last_bar',-1):
                 remaining.append(plan)
                 continue
+            if bzu_policy.is_precision(plan):
+                session=bzu_policy.session_gate(c.ts)
+                cooldown=arbitration.loss_cooldown(plan,state['trades'],c.ts)
+                if not session['allowed'] or not cooldown['allowed']:
+                    book={**state,'pending':plan,'active':None,'reconciliation':None}
+                    end_order(book,plan,'CANCELLED',session['reason'] if not session['allowed']
+                              else cooldown['reason'],c.ts)
+                    continue
             if plan.get('effective_ts',plan['placed_ts'])<=c.ts<plan['expires_ts'] and plan['id'] not in eligible:
                 plan['capacity_waited']=True
             if (plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
@@ -1737,6 +1759,21 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     """Shared causal cancellation policy for the book, learning and scenarios."""
     if bzu_policy.is_new(pending):
+        if bzu_policy.is_precision(pending):
+            session=bzu_policy.session_gate(snapshot.now)
+            approach=entry_adverse_selection.approach(snapshot,atr(policy.closed(snapshot,'15m')),
+                        pending['side'],pending.get('entry_zone'),cfg.tick)
+            cooldown=arbitration.loss_cooldown(pending,state['trades'],snapshot.now)
+            regime=policy.market_regime(snapshot,cfg.tick,sys.modules[__name__])
+            local_ok,local_reason=policy.regime_admission(pending['side'],pending['entry'],regime,
+                                   snapshot,cfg.tick,sys.modules[__name__],pending.get('entry_zone'))
+            reason=(session['reason'] if not session['allowed'] else
+                    'IMPULSE_CONFIRMATION_REQUIRED' if approach.get('blocked') else
+                    cooldown['reason'] if not cooldown['allowed'] else
+                    local_reason if not local_ok else None)
+            if reason:
+                request_cancel(state,pending,reason,snapshot.now)
+                return
         if pending['side']*(snapshot.price-pending['tp1'])<0:
             pending['target_cancel_armed']=True
         flip=policy.structural_flip(snapshot,-pending['side'],pending['placed_ts'],cfg.tick,sys.modules[__name__])
@@ -1790,7 +1827,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.9.0-anticipatory-execution-atlas',
                                        'full-ict-v12.10.0-causal-direction-control',
                                        'full-ict-v12.11.0-directional-ict-arbiter',
-                                       'full-ict-v12.20.0-reviewed-short') and not cadence_only:
+                                       'full-ict-v12.20.0-reviewed-short',
+                                       'full-ict-v12.21.0-bzu-checklist') and not cadence_only:
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1831,8 +1869,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'MICRO_PRECURSOR':analysis.get('early_context',analysis['full_context'])})
     ctx = analysis.get("contexts", {})
     for pending in list(pending_plans(state)):
-        if pending and ctx:
-            review_waiting_conditions(state,pending,s,cfg,ctx['1H']['side'],ctx['4H']['side'])
+        if pending and (ctx or bzu_policy.is_precision(pending)):
+            review_waiting_conditions(state,pending,s,cfg,ctx.get('1H',{}).get('side',0),
+                                      ctx.get('4H',{}).get('side',0))
     release_unconfirmed_paper(state,s.now,cfg)
     daily = day_stats(state, s.now, cfg)
     busy = open_plans(state)
@@ -1844,6 +1883,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     elif busy:
         action = "CANCEL_LIMIT" if any(p.get('cancel_requested_ts') for p in busy) else "WAIT_LIMIT"
     can_place = not manual_block
+    session=bzu_policy.session_gate(s.now)
+    analysis['session_gate']=session
+    if not session['allowed']:
+        can_place=False
+        if not busy:
+            action=session['reason']
     # Do not place a replacement in the very report that first discovers a
     # historical fill (even if it also closed by this report).
     if any(e.get('kind') == 'FILLED' for e in state['events'][start:]):
@@ -1902,6 +1947,20 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 if row.get('signal_id')==candidate.get('id'):
                     row.update(status='BLOCKED',reason=outcome['reason'])
     valid=surviving
+    cooled=[]
+    for candidate in valid:
+        cooldown=arbitration.loss_cooldown(candidate,state['trades'],s.now)
+        candidate['loss_cooldown']=cooldown
+        if not cooldown['allowed']:
+            analysis.setdefault('rejections',{})[cooldown['reason']]=analysis.setdefault('rejections',{}).get(cooldown['reason'],0)+1
+            analysis.setdefault('watch',[]).append({'setup':candidate['setup'],'side':candidate['side'],
+                 'level':candidate['entry'],'reason':cooldown['reason'],'score':candidate.get('score',0)})
+            for row in analysis.get('setup_matrix',[]):
+                if row.get('signal_id')==candidate['id']:
+                    row.update(status='BLOCKED',reason=cooldown['reason'])
+        else:
+            cooled.append(candidate)
+    valid=cooled
     valid.sort(key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
     active=active_plans(state)
     pending=pending_plans(state)
@@ -1984,7 +2043,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place=False
         direction_reason='ACTIVE_POSITION_MONITOR_ONLY'
         for old in pending:
-            if (old['side']!=selected_side or not bzu_policy.is_new(old)) and not old.get('cancel_requested_ts'):
+            if not old.get('cancel_requested_ts'):
                 request_cancel(state,old,'OPEN_POSITION_CANCEL_OTHER_LIMITS',s.now)
     else:
         proposed_side,ranked,direction_reason=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
@@ -2332,6 +2391,15 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'IMPULSE_CONFIRMATION_REQUIRED':'після імпульсу чекаємо закриту свічку гальмування або відкупу',
+    'ZONE_ORIGIN_BOS_REQUIRED':'імпульс із цієї зони не підтвердив злам структури',
+    'ZONE_ORIGIN_HISTORY_MISSING':'бракує історії для перевірки походження зони',
+    'ICT_SWEEP_OR_BOS_FVG_REQUIRED':'потрібне зняття ліквідності або імпульсний BOS зі свіжим FVG',
+    'CONFLUENCE_BELOW_THRESHOLD':'оцінка нижче 65 балів або 80 проти тренду',
+    'LOCAL_STRUCTURE_CONFLICT':'15m проти старшого тренду; чекаємо CHoCH або досягнення HTF зони',
+    'SAME_SIDE_LOSS_COOLDOWN':'після стопа цей напрямок на паузі до години або нового A+ sweep',
+    'OIL_OVERNIGHT_BLACKOUT':'нічне вікно ризику 21:30–03:00 UTC',
+    'US_OPEN_CONFIRMATION_REQUIRED':'чекаємо завершення перших 15 хвилин вікна Нью-Йорка',
     'EXECUTION_CONTROL_REVERSED':'підтверджена зміна локального напрямку після виставлення',
     'LEVEL_PASSED_WHILE_UNARMED':'ціна пройшла рівень, поки вхід був недоступний',
     'DAILY_RISK_LIMIT_REACHED':'історичне скасування за старим денним обмеженням',

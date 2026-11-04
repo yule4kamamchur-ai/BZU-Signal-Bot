@@ -107,7 +107,7 @@ def candidate_reason(row, cfg, engine):
 
 
 def build(state, snapshot, result, cfg, engine):
-    if engine.VERSION=='full-ict-v12.21.0-bzu-checklist':
+    if engine.VERSION in ('full-ict-v12.21.0-bzu-checklist','full-ict-v12.22.0-precision-protection'):
         return build_checklist(state,snapshot,result,cfg,engine)
     now = snapshot.now
     local = datetime.fromtimestamp(now/1000, ZoneInfo(cfg.timezone))
@@ -298,7 +298,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
     session=ict_methodology.session_liquidity(snapshot)
     regime=directional_policy.market_regime(snapshot,cfg.tick,engine)
     trend={'BULLISH_TREND':'BULLISH','BEARISH_TREND':'BEARISH',
-           'RANGE_LIQUIDITY_ROTATION':'RANGE'}[regime['state']]
+           'RANGE_LIQUIDITY_ROTATION':'RANGE','PULLBACK_PHASE':'CONFLICT / PULLBACK'}[regime['state']]
     price_ok=snapshot.trusted and 0<=now-snapshot.ticker_ts<=120_000
     price=f'{snapshot.price:.8g}' if price_ok else 'недоступна'
     pools=session['pools']
@@ -317,6 +317,9 @@ def build_checklist(state, snapshot, result, cfg, engine):
         lines += [f'Дані не оновлені. Збережений стан на {label}; виконання потребує перевірки.']
     if health:
         lines.append('Перевірка даних: '+', '.join(health_text(code) for code in dict.fromkeys(health)))
+    session_gate=result.get('analysis',{}).get('session_gate',{})
+    if session_gate and not session_gate.get('allowed',True):
+        lines.append('⏸ Нові входи: '+engine.REASON_UA.get(session_gate.get('reason'),'чекаємо робочу сесію'))
     precision=state.get('execution_audit',{}).get('timeframe',engine.execution_series(snapshot)[0])
     selected=[] if frozen else result.get('selected_plans',[])
     if selected:
@@ -329,14 +332,13 @@ def build_checklist(state, snapshot, result, cfg, engine):
         if active:
             lines += [f"Вхід за поточною ціною: {p['entry']:.8g} (без зарахування минулого дотику)"]
         else:
-            lines += [' • '.join(f"Limit {i+1} (50%): {leg['price']:.8g}" for i,leg in enumerate(p.get('entry_legs',[])))]
+            lines += [' • '.join(f"Limit {i+1} ({100*leg['fraction']:.0f}%): {leg['price']:.8g}" for i,leg in enumerate(p.get('entry_legs',[])))]
         lines += [f"SL: {p['stop']:.8g} (ризик до L1: {abs(p['entry']-p['stop']):.3f})",
-                  f"TP1 (60% + Б/У): {p['tp1']:.8g} • 1.0R | TP2 (40%): {p['tp2']:.8g} • {p['rr2']:.2f}R",
-                  f"{'🔥 A+' if p.get('rating')=='A+' else '⚡ B'} Setup • {p['score']:.0f}/100 • "+
-                  ('робочий обсяг' if p.get('rating')=='A+' else '0.5 робочого обсягу')]
+                  f"TP1 ({100*p['partials']['TP1']:.0f}%): {p['tp1']:.8g} • {p['rr1']:.2f}R | TP2 ({100*p['partials']['TP2']:.0f}%): {p['tp2']:.8g} • {p['rr2']:.2f}R",
+                  f"{'🔥 A+' if p.get('rating')=='A+' else '⚡ B'} Setup • {p['score']:.0f}/100"]
         parts=p.get('confluence',{}).get('components',{})
         labels={'fresh_ob_fvg':'свіжа OB/FVG','liquidity_sweep':'зняття ліквідності',
-                'htf_alignment':'HTF узгоджений','session_and_approach':'сесія та підхід',
+                'displacement_bos_fvg':'імпульсний BOS + свіжий FVG','htf_alignment':'HTF узгоджений','session_and_approach':'сесія та підхід',
                 'model_or_edge':'модель / edge'}
         lines += ['Причина: '+', '.join(labels.get(k,'підтвердження кількох зон') for k,v in parts.items() if v)]
     pending=engine.pending_plans(state);active=engine.active_plans(state)
@@ -355,8 +357,10 @@ def build_checklist(state, snapshot, result, cfg, engine):
             lines += [f"✅ ОРДЕР АКТИВОВАНО {label} @ {p.get('entry',ev.get('entry',0)):.8g} • хвилина {when}"]
         elif kind=='SECOND_LIMIT_FILLED':
             lines += [f"✅ Limit 2 {label}: середній вхід {ev['entry']:.8g} • {when}"]
+        elif kind=='BREAKEVEN_ARMED':
+            lines += [f"🛡️ +1R {label}: SL → {ev['stop']:.8g} з наступної свічки, без фіксації обсягу"]
         elif kind=='TP1_PARTIAL':
-            lines += [f"🎯 TP1 ВЗЯТО {label} (+1.0R на закритій частині). Фіксація 60%, SL решти → {ev['stop']:.8g}"]
+            lines += [f"🎯 TP1 ВЗЯТО {label} (+{ev.get('rr',1.):.2f}R на закритій частині). Фіксація {100*ev.get('fraction',.6):.0f}%, SL решти → {ev['stop']:.8g}"]
         elif kind in ('CANCELLED','EXPIRED','CANCEL_REQUESTED'):
             reasons={'TARGET_REACHED_WITHOUT_FILL':'TP1 відпрацьовано без входу',
                      'LIMIT_TTL':'минув час 2 год','SESSION_ENDED':'сесію завершено о 22:00',
@@ -371,7 +375,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
     for p in active:
         lines += [f"🔵 СУПРОВІД {engine.display_order(state,p['id'])} {'LONG' if p['side']==1 else 'SHORT'} @ {p['entry']:.8g}",
                   f"SL: {p['stop']:.8g} • TP1 {p.get('tp1',p['tp']):.8g} • TP2 {p.get('tp2',p['tp']):.8g}"+
-                  (' • TP1 зафіксовано, залишок 40%' if p.get('tp1_hit') and p.get('policy')=='BZU_CHECKLIST_V12_21' else '')]
+                  (f" • TP1 зафіксовано, залишок {100*p.get('remaining',1.):.0f}%" if p.get('tp1_hit') and engine.bzu_policy.is_new(p) else '')]
         if p.get('pending_stop'):
             amendment=p['pending_stop']
             lines += [f"Новий SL {amendment['price']:.8g} з {engine.local_time(amendment['effective_ts'],cfg)}"]
@@ -379,10 +383,10 @@ def build_checklist(state, snapshot, result, cfg, engine):
         left=max(0,(p['expires_ts']-now)//60_000)
         lines += [f"⏳ В ОЧІКУВАННІ {engine.display_order(state,p['id'])} {'LONG' if p['side']==1 else 'SHORT'} @ {p['entry']:.8g}",
                   f"Вхід: {p['entry']:.8g} • SL: {p['stop']:.8g} • до входу {abs(snapshot.price-p['entry']):.3f} • {left} хв"]
-    waiting=[p for p in state.get('watch',[]) if p.get('reason')=='WAIT_RETEST']
+    waiting=[p for p in state.get('watch',[]) if p.get('reason') in ('WAIT_RETEST','IMPULSE_CONFIRMATION_REQUIRED','LOCAL_STRUCTURE_CONFLICT','SAME_SIDE_LOSS_COOLDOWN','ZONE_ORIGIN_BOS_REQUIRED')]
     if waiting:
         p=waiting[0]
-        lines += [f"↩️ WAIT RETEST: {setup_text(p)} • рівень {p.get('level',0):.8g}"]
+        lines += [f"↩️ {engine.REASON_UA.get(p.get('reason'),'Чекаємо підтвердження')}: {setup_text(p)} • рівень {p.get('level',0):.8g}"]
     trades=[]
     for trade in state.get('trades',[]):
         closed=engine.timestamp(trade.get('closed_ts'),engine.timestamp(trade.get('closed_at'),0))

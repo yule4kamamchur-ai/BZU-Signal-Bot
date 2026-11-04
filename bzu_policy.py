@@ -15,13 +15,36 @@ import limit_structure as structure
 import research_zone_policy_1220 as zones
 import setup_scanner as scanner
 
-POLICY = 'BZU_CHECKLIST_V12_21'
-EXIT = 'TP1_60_BE_TP2_40'
+POLICY = 'BZU_PRECISION_V12_22'
+LEGACY_POLICY = 'BZU_CHECKLIST_V12_21'
+EXIT = 'BE_1R_TP1_50_AT_1_4R_TP2_50'
 MINUTE = 60_000
 
 
 def is_new(plan):
+    return plan.get('policy') in (POLICY,LEGACY_POLICY)
+
+
+def is_precision(plan):
     return plan.get('policy') == POLICY
+
+
+def session_gate(ts):
+    """Requested risk windows, not an exchange trading-hours calendar.
+
+    09:30 New York is an operator-selected US volatility window. Brent/OKX
+    hours are different; DST is resolved by the IANA New York timezone.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    utc=datetime.fromtimestamp(ts/1000,timezone.utc)
+    minute=utc.hour*60+utc.minute
+    night=minute>=21*60+30 or minute<3*60
+    ny=utc.astimezone(ZoneInfo('America/New_York'))
+    opening=ny.weekday()<5 and 9*60+30<=ny.hour*60+ny.minute<9*60+45
+    reason='OIL_OVERNIGHT_BLACKOUT' if night else 'US_OPEN_CONFIRMATION_REQUIRED' if opening else 'SESSION_ALLOWED'
+    return {'allowed':not (night or opening),'cancel_pending':night or opening,
+            'reason':reason,'as_of_ts':ts}
 
 
 def zone_for(anchor, snapshot, cfg, engine):
@@ -63,22 +86,18 @@ def zone_for(anchor, snapshot, cfg, engine):
 
 
 def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False):
-    front = structure.front_run_entry(low, high, side, a15, cfg.tick, engine.round_tick)
-    middle = engine.round_tick((low+high)/2, cfg.tick, up=side == -1)
-    first = middle if deep else front
-    stop = engine.round_tick(swing-side*.25*a15, cfg.tick, up=side == -1)
-    deepest = min(first,middle) if side==1 else max(first,middle)
-    stop = engine.round_tick(deepest-side*max(side*(deepest-stop), cfg.min_stop_absolute),
-                             cfg.tick, up=side == -1)
+    """One risk-bearing entry. Never move a structural stop toward the price."""
+    narrow=high-low<=.35*a15
+    first=(high+.02 if side==1 else low-.02) if narrow and not deep else (low+high)/2
+    first=engine.round_tick(first,cfg.tick,up=side==1)
+    stop = engine.round_tick(swing-side*.20*a15, cfg.tick, up=side == -1)
+    stop = engine.round_tick(first-side*max(side*(first-stop),cfg.min_stop_absolute),
+                             cfg.tick,up=side==-1)
     if side*(first-stop) > cfg.max_stop_absolute+1e-9:
-        first = middle  # Preserve the structural stop, reduce risk by deeper entry.
-        stop = engine.round_tick(swing-side*.25*a15, cfg.tick, up=side == -1)
-        stop = engine.round_tick(first-side*max(side*(first-stop), cfg.min_stop_absolute),
-                                 cfg.tick, up=side == -1)
+        # Deepen at most to equilibrium; a still-expensive setup is rejected.
+        first=engine.round_tick((low+high)/2,cfg.tick,up=side==1)
     risk = side*(first-stop)
-    legs = [{'name':'L1', 'price':first, 'fraction':.5, 'status':'PENDING'},
-            {'name':'L2', 'price':middle, 'fraction':.5, 'status':'PENDING'}]
-    # A deep approach uses one equilibrium price with the two intended halves.
+    legs = [{'name':'L1', 'price':first, 'fraction':1., 'status':'PENDING'}]
     return first, stop, risk, legs
 
 
@@ -95,10 +114,29 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'WAIT_CONFIRMED_BREAK_FOR_LIMIT'
     if snapshot.now >= anchor.expires_ts or anchor.cooldown_until_ts > snapshot.now:
         return None, 'ANCHOR_TOO_OLD_TO_PLACE'
+    session=session_gate(snapshot.now)
+    diag['session_gate']=session
+    if not session['allowed']:
+        return None,session['reason']
     zone = zone_for(anchor, snapshot, cfg, engine)
     low, high = zone['low'], zone['high']
-    approach = adverse.approach(snapshot, a15)
-    entry, stop, risk, legs = technical_geometry(low, high, anchor.invalidation,
+    origin=scanner.zone_origin(zone,snapshot,side,cfg.tick,engine)
+    diag['zone_origin']=origin
+    if not origin['confirmed']:
+        return None,origin['reason']
+    approach = adverse.approach(snapshot, a15,side,zone,cfg.tick)
+    diag['approach']=approach
+    if approach.get('blocked'):
+        diag['status']='WATCHING'
+        return None,'IMPULSE_CONFIRMATION_REQUIRED'
+    tf=zone['timeframe']
+    swings=[p for p in engine.pivots(structure.closed(snapshot,tf))
+            if p['kind']==('LOW' if side==1 else 'HIGH')
+            and p['known_ts']+engine.TF[tf]<=zone['known_ts']
+            and side*((low if side==1 else high)-p['level'])>=0]
+    structural=(min if side==1 else max)(anchor.invalidation,low if side==1 else high,
+                                        swings[-1]['level'] if swings else anchor.invalidation)
+    entry, stop, risk, legs = technical_geometry(low, high, structural,
         side, a15, cfg, engine, deep=approach['fast'])
     if side*(entry-anchor.invalidation)<=0:
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
@@ -134,9 +172,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if audit['mitigated']:
         return None, 'ZONE_MITIGATED'
     passive = scanner.passive_gate(entry, side, snapshot.bid, snapshot.ask, cfg.tick)['passive']
-    catchup = scanner.catch_up(snapshot, entry, stop, side, zone['known_ts'], cfg.tick)
+    catchup = scanner.catch_up(snapshot, entry, stop, side, zone['known_ts'], cfg.tick,zone)
     action = 'NEW_PENDING_LIMIT'
-    if audit['touched'] or not passive:
+    confirmed_retest=bool(passive and audit['touched'] and approach.get('confirmation_known_ts'))
+    if (audit['touched'] and not confirmed_retest) or not passive:
         if not catchup['allowed']:
             diag['catch_up'] = catchup
             return None, 'WAIT_RETEST'
@@ -150,25 +189,23 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         diag.update(entry=entry, level=entry, risk=risk, catch_up=catchup)
     mark('PASSIVE_LIMIT', passive or action == 'ACTIVE_ENTRY')
     regime = direction.market_regime(snapshot, cfg.tick, engine)
-    allowed, why = direction.regime_admission(side, entry, regime, snapshot, cfg.tick, engine)
+    allowed, why = direction.regime_admission(side, entry, regime, snapshot, cfg.tick, engine,zone)
     mark('HTF_ALIGNMENT', allowed)
     if not allowed:
         return None, why
     targets = engine.full_targets(context, snapshot, anchor.side, entry, cfg)
     buffer = max(2*cfg.tick, .06*a15)
-    eligible = [t for t in targets if side*(t['level']-entry)-buffer >= cfg.min_net_rr*risk]
-    # Aim for 2.5R at existing liquidity; accept actual structural headroom >=1.8R.
-    desired = next((t for t in eligible if t['distance']-buffer >= 2.2*risk), None)
-    chosen = desired or next(iter(eligible), None)
+    eligible = [t for t in targets if side*(t['level']-entry)-buffer >= max(2.5,cfg.min_net_rr)*risk]
+    chosen = min(eligible,key=lambda t:side*(t['level']-entry),default=None)
     if chosen is None:
         mark('TARGET_RR', False)
         return None, 'TARGET_RR_TOO_LOW'
     tp2 = engine.round_tick(entry+side*min(side*(chosen['level']-entry)-buffer, 3*risk),
                             cfg.tick, up=side == -1)
-    tp1 = engine.round_tick(entry+side*risk, cfg.tick, up=side == -1)
+    tp1 = engine.round_tick(entry+side*1.4*risk, cfg.tick, up=side == 1)
     rr2 = side*(tp2-entry)/risk
-    mark('TARGET_RR', rr2+1e-9 >= cfg.min_net_rr)
-    if rr2+1e-9 < cfg.min_net_rr:
+    mark('TARGET_RR', rr2+1e-9 >= max(2.5,cfg.min_net_rr))
+    if rr2+1e-9 < max(2.5,cfg.min_net_rr):
         return None, 'TARGET_RR_TOO_LOW'
     # Remaining models are evidence only. Their individual return values do
     # not veto the setup. All 24 named ICT confirmations are still validated.
@@ -194,17 +231,18 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'detector_confirmed':True, 'anchor_id':anchor.id, 'anchor_kind':anchor.kind,
          'anchor_proof':proof, 'pattern_proof':copy.deepcopy(proof.get('recovery_proof',{})),
          'anchor_known_ts':zone['known_ts'], 'zone_created_ts':zone['known_ts'],
-         'entry_zone':zone, 'zone_audit':audit, 'approach':approach,
+         'entry_zone':zone, 'zone_audit':audit, 'zone_origin':origin, 'approach':approach,
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
-         'stop':stop, 'initial_stop':stop, 'invalidation':anchor.invalidation,
+         'stop':stop, 'initial_stop':stop, 'invalidation':structural,
          'risk':risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
-         'rr1':1., 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
-         'partials':{'TP1':.6,'TP2':.4}, 'exit_policy':EXIT,
+         'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
+         'partials':{'TP1':.5,'TP2':.5}, 'exit_policy':EXIT,
+         'breakeven_trigger_r':1.,
          'target_management':EXIT, 'tp1_decision_gate':False,
          'exit_path_barriers':[], 'full_exit_candidates':[],
          'net_rr':rr2-engine.fees_r(entry,tp2,risk,cfg),
          'costs_r':engine.fees_r(entry,tp2,risk,cfg),
-         'stop_distance_pct':risk/entry*100, 'tp1_distance_pct':risk/entry*100,
+         'stop_distance_pct':risk/entry*100, 'tp1_distance_pct':abs(tp1-entry)/entry*100,
          'include_commission':cfg.include_commission,
          'entry_fee_rate':engine.fee_rate(cfg,'taker' if action=='ACTIVE_ENTRY' else 'maker'),
          'exit_fee_rate':engine.fee_rate(cfg,'taker'), 'slippage_bps':cfg.slippage_bps,
@@ -262,7 +300,17 @@ def fill_legs(p, c, engine, cfg, initial=False):
         p['entry'] = cost/p['filled_fraction']
         p['risk'] = p['side']*(p['entry']-p['initial_stop'])
         p['risk_budget'] = p['risk']*p['filled_fraction']
-        p['tp1'] = engine.round_tick(p['entry']+p['side']*p['risk'],cfg.tick,up=p['side']==-1)
+        p['tp1'] = engine.round_tick(p['entry']+p['side']*p['risk']*p.get('rr1',1.),
+                                    cfg.tick,up=p['side']==1 if is_precision(p) else p['side']==-1)
+
+
+def breakeven_price(p,cfg,engine):
+    """Cover stored entry/exit fees and configured exit slippage at the trigger."""
+    sign=p['side'];entry_fee=p['entry_fee_rate'] if cfg.include_commission else 0.
+    exit_fee=engine.fee_rate(cfg,'taker')
+    price=p['entry']*(1+sign*entry_fee)/(1-sign*exit_fee)
+    price/=1-sign*cfg.slippage_bps/10_000
+    return engine.round_tick(price,cfg.tick,up=sign==1)
 
 
 def close(state, p, price, ts, reason, cfg, engine, ambiguous=False):
@@ -313,8 +361,18 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
     # Favorable extremes in a fill bar can precede either fill. A close through
     # the target proves the favorable traversal after both entries.
     proved = lambda level: (not (fill_bar or added)) or side*(c.close-level)>=0
+    if is_precision(p) and not p.get('breakeven_armed'):
+        trigger=p['entry']+side*p['risk']*p.get('breakeven_trigger_r',1.)
+        reached=c.high>=trigger if side==1 else c.low<=trigger
+        if reached and proved(trigger):
+            be=breakeven_price(p,cfg,engine)
+            if side*(be-p['stop'])>0:
+                p['pending_stop']={'price':be,'effective_ts':ts}
+            p['breakeven_armed']=True
+            engine.emit(state,'BREAKEVEN_ARMED',ts,order_id=p['id'],stop=be)
     if not p.get('tp1_hit') and target_hit and proved(p['tp1']):
-        size = .6*p['filled_fraction']
+        fraction=p.get('partials',{}).get('TP1',.6)
+        size = fraction*p['filled_fraction']
         price = p['tp1']*(1-side*cfg.slippage_bps/10_000)
         p['realized_gross_r'] += size*side*(price-p['entry'])/p['risk_budget']
         p['realized_exit_fees_r'] += size*price*engine.fee_rate(cfg,'taker')/p['risk_budget']
@@ -324,9 +382,11 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
         # Never add the second half after taking profit from the first half.
         for leg in p['entry_legs']:
             if leg['status']=='PENDING': leg['status']='CANCELLED_AFTER_TP1'
-        be = engine.round_tick(p['entry']+side*.02,cfg.tick,up=side==1)
-        p['pending_stop'] = {'price':be,'effective_ts':ts}
-        engine.emit(state,'TP1_PARTIAL',ts,order_id=p['id'],price=p['tp1'],fraction=.6,stop=be)
+        be = breakeven_price(p,cfg,engine) if is_precision(p) else engine.round_tick(p['entry']+side*.02,cfg.tick,up=side==1)
+        if side*(be-p['stop'])>0:
+            p['pending_stop'] = {'price':be,'effective_ts':ts}
+        engine.emit(state,'TP1_PARTIAL',ts,order_id=p['id'],price=p['tp1'],fraction=fraction,
+                    rr=p.get('rr1',1.),stop=be)
         # TP1 is a realized milestone. Aggregate WR gets ONE label only when
         # the remaining position closes, including all fees and gap losses.
     second = c.high >= p['tp2'] if side==1 else c.low <= p['tp2']
@@ -360,41 +420,12 @@ def merge_plans(plans, snapshot, cfg, engine):
         best['supporting_families'] = sorted({p['canonical_setup_family'] for p in group})
         best['parent_keys'] = sorted({p['event_key'] for p in group if p['event_key']!=best['event_key']})
         best['alternative_scenarios'] = [{'id':p['id'],'setup':p['setup'],'reason':p['quality']['reason']} for p in group]
-        if len(group)>1 and best.get('action_type')=='NEW_PENDING_LIMIT':
-            low = min(p['entry_zone']['low'] for p in group)
-            high = max(p['entry_zone']['high'] for p in group)
-            side=best['side'];stop=(min if side==1 else max)(p['stop'] for p in group)
-            first=structure.front_run_entry(low,high,side,engine.atr(structure.closed(snapshot,'15m')),cfg.tick,engine.round_tick)
-            risk=side*(first-stop)
-            final_rr=side*(best['tp2']-first)/risk if risk>0 else 0
-            # Merging may widen SL or reduce reward: recheck all geometry.
-            if (cfg.min_stop_absolute-1e-9<=risk<=cfg.max_stop_absolute+1e-9 and
-                side*(((low+high)/2)-stop)>=cfg.min_stop_absolute-1e-9 and
-                final_rr+1e-9>=cfg.min_net_rr and
-                abs(snapshot.price-first)<=cfg.max_entry_distance_atr*engine.atr(structure.closed(snapshot,'15m')) and
-                scanner.passive_gate(first,side,snapshot.bid,snapshot.ask,cfg.tick)['passive'] and
-                not any((c.low<=first if side==1 else c.high>=first)
-                        for c in scanner.audit_rows(snapshot,after=max(p['zone_created_ts'] for p in group)))):
-                best.update(entry=first,limit_price=first,stop=stop,initial_stop=stop,risk=risk,
-                    tp1=engine.round_tick(first+side*risk,cfg.tick,up=side==-1),
-                    rr1=1.,rr2=final_rr,gross_rr=final_rr,zone_cluster_members=[p['id'] for p in group],
-                    entry_zone={**best['entry_zone'],'low':low,'high':high},
-                    entry_legs=[{'name':'L1','price':first,'fraction':.5,'status':'PENDING'},
-                        {'name':'L2','price':engine.round_tick((low+high)/2,cfg.tick,up=side==-1),'fraction':.5,'status':'PENDING'}])
-                # Sum distinct detector/strategy evidence, capped at 100.
-                votes={p.get('source_strategy') or p['setup']:p['score'] for p in group}
-                best['score']=min(100.,sum(votes.values()))
-                parts=copy.deepcopy(best.get('confluence',{}).get('components',{}))
-                parts['zone_cluster_support']=max(0.,best['score']-sum(parts.values()))
-                best['confluence']={**best.get('confluence',{}),'score':best['score'],'components':parts}
-                best['costs_r']=engine.fees_r(first,best['tp2'],risk,cfg)
-                best['net_rr']=final_rr-best['costs_r']
-                best['stop_distance_pct']=risk/first*100
-                best['tp1_distance_pct']=risk/first*100
-                best['rating']='A+' if best['score']>=75 else 'B'
-                best['direction_score']=best['decision_score']=best['score']
-            else:
-                best['cluster_geometry_status']='KEPT_BEST_VALID_ORIGINAL'
+        # Correlated detections are supporting descriptions, not independent
+        # evidence points. Preserve the best accepted zone's complete geometry
+        # and origin witness; merging must not recreate a second entry leg.
+        if len(group)>1:
+            best['zone_cluster_members']=[p['id'] for p in group]
+            best['cluster_geometry_status']='KEPT_BEST_VALID_ORIGINAL'
         result.append(best)
     return result
 

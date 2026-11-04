@@ -41,11 +41,15 @@ def replay(root, archive, progress=True):
             'placed':[{'id':p['id'],'side':p['side'],'entry':p['entry'],'score':p.get('score'),
                 'setup':p['setup'],'policy':p.get('policy'),'tf':p.get('setup_timeframe')}
                 for p in result.get('selected_plans',[])],
-            'admission':analysis.get('admission_by_side',{}),'funnel':analysis.get('funnel',{})})
+            'admission':analysis.get('admission_by_side',{}),'funnel':analysis.get('funnel',{}),
+            'rejections':analysis.get('rejections',{}),
+            'session_gate':analysis.get('session_gate',{})})
         if progress and len(rows)%25==0:
             print(f"{len(rows)} scans; {engine.iso(snap.now)}; trades {len(state['trades'])}",flush=True)
     counts=collections.Counter(reason for row in rows for reason in row['health'])
     minute=all(row['precision']=='1m' for row in rows) if rows else False
+    rejections=collections.Counter()
+    for row in rows: rejections.update(row['rejections'])
     return {'status':'EXPLORATORY_REPLAY_COMPLETED','version':engine.VERSION,
         'archive':archive.name,'archive_sha256':source_hash,'production_state_written':False,
         'mode':'FIRST_SEEN_15M_OBSERVED_QUOTES_NO_HOLDOUT','profitability_validated':False,
@@ -60,6 +64,7 @@ def replay(root, archive, progress=True):
         'statistics':engine.statistics(state['trades']),
         'dependencies':trade_dependencies.summary(state['trades'],cfg.tick),
         'health_counts':dict(counts),
+        'candidate_rejections':dict(rejections),
         'by_side':{str(side):engine.statistics([t for t in state['trades'] if t['side']==side]) for side in (-1,1)},
         'by_timeframe':{tf:engine.statistics([t for t in state['trades'] if t.get('setup_timeframe')==tf]) for tf in ('15m','1H','4H')},
         'orders':[{k:p.get(k) for k in ('id','side','entry','setup','placed_ts','resolved_ts','status','reason')} for p in state['orders']],
@@ -74,9 +79,17 @@ def main():
     parser.add_argument('root',nargs='?',type=Path,default=Path(__file__).parent)
     parser.add_argument('output',nargs='?',type=Path)
     parser.add_argument('--archive',type=Path)
+    parser.add_argument('--baseline',type=Path)
     args=parser.parse_args()
     archive=args.archive or args.root/'market_history_v12.json'
     result=replay(args.root,archive)
+    if args.baseline:
+        baseline=json.loads(args.baseline.read_text())
+        comparable=baseline.get('archive_sha256')==result.get('archive_sha256')
+        result['baseline_comparison']={'same_archive':comparable,
+            'baseline_version':baseline.get('version'),'before':baseline.get('statistics'),
+            'after':result.get('statistics'),'independent_validation':False,
+            'baseline_sha256':hashlib.sha256(args.baseline.read_bytes()).hexdigest()}
     if args.output:
         args.output.write_text(json.dumps(result,ensure_ascii=False,indent=2))
     print(json.dumps({k:v for k,v in result.items() if k not in ('rows','orders','trades','code_sha256','dependencies')},ensure_ascii=False,indent=2))

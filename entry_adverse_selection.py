@@ -19,14 +19,48 @@ MIN_REJECTIONS=2
 RECENT_HOURS=6
 
 
-def approach(snapshot, atr15):
-    """An impulse changes entry geometry instead of vetoing a limit."""
-    rows=[c for c in snapshot.candles.get('15m', [])
-          if c.confirmed and c.ts+900_000 <= snapshot.now]
+def approach(snapshot, atr15, side=0, zone=None, tick=.001):
+    """Brake only an adverse impulse; release on a later witnessed reclaim.
+
+    A favorable expansion must not block a continuation limit. An open candle
+    cannot release the brake. The shock candle itself is never its own proof
+    of a subsequent reaction, even if its range intersects the entry zone.
+    """
+    rows=sorted((c for c in snapshot.candles.get('15m', [])
+          if c.confirmed and c.ts+900_000 <= snapshot.now),key=lambda c:c.ts)
     ratio=max(((c.high-c.low)/atr15 for c in rows[-2:]),default=0.) if atr15>0 else 0.
-    return {'fast':ratio>1.8, 'range_atr15':ratio,
-            'action':'EQUILIBRIUM_ENTRY' if ratio>1.8 else 'FRONT_RUN_ENTRY',
-            'veto_enabled':False}
+    base={'fast':ratio>1.8,'range_atr15':ratio,'blocked':False,
+          'action':'PRECISION_ENTRY','veto_enabled':True,'shock_known_ts':None}
+    if side not in (-1,1) or atr15<=0:
+        return base
+    shocks=[]
+    for i in range(max(0,len(rows)-8),len(rows)):
+        c=rows[i];body=-side*(c.close-c.open)
+        pair=(rows[i-1] if i and c.ts-rows[i-1].ts==900_000 else None)
+        combined=body+(max(0.,-side*(pair.close-pair.open)) if pair else 0.)
+        wick=c.close-c.low if side==1 else c.high-c.close
+        if body>0 and max(body,combined)>1.8*atr15 and wick<=.10*max(c.high-c.low,tick):
+            shocks.append(c)
+    if not shocks:
+        return base
+    shock=shocks[-1];known=shock.ts+900_000
+    confirmation=None
+    if zone:
+        for c in rows:
+            if c.ts<known or c.low>zone['high'] or c.high<zone['low']:
+                continue
+            wick=min(c.open,c.close)-c.low if side==1 else c.high-max(c.open,c.close)
+            boundary=zone['high'] if side==1 else zone['low']
+            reclaim=side*(c.close-boundary)>0 and side*(c.close-c.open)>0
+            pin=wick>=.5*max(c.high-c.low,tick) and side*(c.close-(zone['low']+zone['high'])/2)>0
+            if reclaim or pin:
+                confirmation=c.ts+900_000
+        if confirmation and any(c.ts>=confirmation and
+                side*(c.close-(zone['low'] if side==1 else zone['high']))<0 for c in rows):
+            confirmation=None
+    return {**base,'fast':True,'blocked':confirmation is None,
+            'shock_known_ts':known,'confirmation_known_ts':confirmation,
+            'action':'CONFIRMED_RETEST' if confirmation else 'CONFIRMATION_REQUIRED'}
 
 
 def _number(value):

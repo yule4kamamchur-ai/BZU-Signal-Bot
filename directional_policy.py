@@ -29,7 +29,10 @@ def market_regime(snapshot, tick, engine):
     day=datetime.fromtimestamp(snapshot.now/1000,ZoneInfo('Europe/Kyiv')).date()
     today=[c for c in closed(snapshot,'15m') if datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/Kyiv')).date()==day]
     rows=today or closed(snapshot,'15m')[-32:]
-    return {'state':label,'side_1h':one,'side_4h':four,'as_of_ts':snapshot.now,
+    local=local_structure(snapshot,tick,engine)
+    conflict=local['side'] and (one or four)==-local['side']
+    return {'state':'PULLBACK_PHASE' if conflict else label,'trend_state':label,
+            'local_structure':local,'side_1h':one,'side_4h':four,'as_of_ts':snapshot.now,
             'range_low':min((c.low for c in rows),default=snapshot.price),
             'range_high':max((c.high for c in rows),default=snapshot.price)}
 
@@ -48,10 +51,42 @@ def structural_flip(snapshot, side, since, tick, engine):
     return {'confirmed':False,'side':side}
 
 
-def regime_admission(side, entry, regime, snapshot, tick, engine):
-    state=regime['state']
-    if state=='BULLISH_TREND' and side!=1: return False,'REGIME_LONG_ONLY'
-    if state=='BEARISH_TREND' and side!=-1: return False,'REGIME_SHORT_ONLY'
+def local_structure(snapshot, tick, engine):
+    rows=closed(snapshot,'15m')
+    if len(rows)<50:
+        return {'side':0,'ema50':None,'known_ts':None}
+    ema=rows[0].close
+    for c in rows[1:]: ema+=(c.close-ema)*2/51
+    points=engine.pivots(rows)
+    for sign,kind in ((-1,'LOW'),(1,'HIGH')):
+        swings=[p for p in points if p['kind']==kind and p['known_ts']+900_000<=snapshot.now][-3:]
+        if (len(swings)==3 and all(sign*(b['level']-a['level'])>tick for a,b in zip(swings,swings[1:]))
+                and sign*(rows[-1].close-ema)>tick):
+            since=swings[-1]['known_ts']+900_000
+            if not structural_flip(snapshot,-sign,since,tick,engine)['confirmed']:
+                return {'side':sign,'ema50':ema,'known_ts':since,'swing_levels':[p['level'] for p in swings]}
+    return {'side':0,'ema50':ema,'known_ts':rows[-1].ts+900_000}
+
+
+def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
+    state=regime.get('trend_state',regime['state'])
+    if regime['state']=='PULLBACK_PHASE' and side==-regime['local_structure']['side']:
+        reached_htf=bool(zone and zone.get('timeframe') in ('1H','4H')
+                         and zone['low']<=snapshot.price<=zone['high'])
+        if not reached_htf:
+            return False,'LOCAL_STRUCTURE_CONFLICT'
+    contrary=(state=='BULLISH_TREND' and side!=1) or (state=='BEARISH_TREND' and side!=-1)
+    if contrary:
+        # A high score alone cannot unlock a countertrend order. Require a
+        # real reversal on 1H, or a reached HTF POI with a 15m sweep then MSS.
+        template={'side':side,'entry':entry}
+        h1=evidence({**template,'formation_timeframe':'1H'},snapshot,tick)
+        m15=evidence({**template,'formation_timeframe':'15m'},snapshot,tick)
+        reached=bool(zone and zone.get('timeframe') in ('1H','4H')
+                     and zone['low']<=snapshot.price<=zone['high'])
+        reversal=(h1['structure_shift'] and (h1['sweep_then_shift'] or h1['displacement_bos_fvg']))
+        if not (reversal or (reached and m15['sweep_then_shift'])):
+            return False,'REGIME_LONG_ONLY' if state=='BULLISH_TREND' else 'REGIME_SHORT_ONLY'
     if state=='RANGE_LIQUIDITY_ROTATION':
         width=max(regime['range_high']-regime['range_low'],tick)
         location=(entry-regime['range_low'])/width
@@ -120,7 +155,9 @@ def evidence(plan, snapshot, tick):
         distance=0. if low<=entry<=high else min(abs(entry-low),abs(entry-high))
         if distance<=max(.70*vol,3*tick):
             gaps.append({'known_ts':right.ts+TF[tf], 'low':round(low,8),
-                         'high':round(high,8), 'distance':round(distance,8)})
+                         'high':round(high,8), 'distance':round(distance,8),
+                         'displacement_known_ts':mid.ts+TF[tf],
+                         'strong_displacement':middle_body>=.75*vol})
     impulse=False
     last_impulse_ts=0
     for c in rows[-6:]:
@@ -172,11 +209,15 @@ def evidence(plan, snapshot, tick):
     if len(rows)>=8 and any(side*(c.close-entry)<=0 for c in rows[-8:-2]) and \
             all(side*(c.close-entry)>tick for c in rows[-2:]):
         accepted.append(rows[-1].ts+TF[tf])
+    bos_fvg=any(g['strong_displacement'] and
+                g['displacement_known_ts']<=b['known_ts']<=g['known_ts']
+                for g in gaps for b in shifts)
     return {'timeframe':tf,'as_of_ts':snapshot.now,
             'sweep_reclaim':sweep,'latest_sweep':sweeps[-1] if sweep else None,
             'near_unmitigated_fvg':fvg,'nearest_fvg':min(gaps,key=lambda g:g['distance']) if fvg else None,
             'displacement':impulse,'latest_displacement_known_ts':last_impulse_ts,
             'structure_shift':bool(shifts),
+            'displacement_bos_fvg':bos_fvg,
             'latest_structure_shift':shifts[-1] if shifts else None,
             'sweep_then_shift':sequence,'level_rejection':bool(rejected),
             'reference_reclaim':bool(reclaimed),'break_acceptance':bool(accepted),

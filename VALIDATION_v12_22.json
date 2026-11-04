@@ -1,0 +1,93 @@
+{
+  "version": "full-ict-v12.22.0-precision-protection",
+  "tests": 53,
+  "failures": 0,
+  "errors": 0,
+  "new_behavioral_tests": 26,
+  "test_selections": [
+    "test_v12_22_precision",
+    "test_strategy_direct_entries",
+    "test_v12_20_3_telegram_delivery",
+    "test_v12_20_4_scan_gap_long",
+    "test_full_limit_engine.DataTests",
+    "test_v12_21_checklist.Admission.test_all_24_method_contracts_require_actual_confirmation",
+    "test_v12_20_github_cadence.GitHubOnlyFifteenMinuteCadence.test_reports_only_once_each_15m_bucket",
+    "test_v12_20_github_cadence.GitHubOnlyFifteenMinuteCadence.test_late_runs_do_not_send_duplicate_report"
+  ],
+  "python_compile": "PASS",
+  "workflow_yaml": "PASS",
+  "workflow_copies": "IDENTICAL",
+  "telegram_cron": "*/15 * * * *",
+  "matching_versions": "PASS",
+  "native_detectors": 24,
+  "playbook_contracts": "PASS",
+  "default_config": "PASS",
+  "production_code_sha256": {
+    "bot_oneshot.py": "a311859663e6e614cfe439259045a267489bb1c753aa7ec29c55dd5d2c488295",
+    "full_limit_engine.py": "3e6396cd5ac93eea1bcd2be7115d81ba0e26ad7f4c6e97ba703457d7f4889a45",
+    "bzu_policy.py": "c465dde2a2d1b283c1110205d81bab823871f27d81abf45bb1fb3c6259882fe2",
+    "entry_adverse_selection.py": "996074753050b5acbe23e96d79ea52e28477bbc38560dfb42aca5892c1964bcf",
+    "setup_scanner.py": "51331cd890fe71206e7a9c30d34dd04bd002f12d73733c8a00e64ee5c1fb2a29",
+    "signal_quality.py": "bf0f164454fe66291172bc1113bf1cc47413c4acdbaa094f44617f79255e779e",
+    "directional_policy.py": "cfa36fca2675c84702797604b486a3f25a132e00b70052bf76f31e82264f1595",
+    "ict_methodology.py": "d440ad8a34ad01f336650e854aa73cd50cf76eb4af56148c594afd30fcfaf849",
+    "portfolio_arbitration.py": "3836d5bcbcb1d10cf9b9603678806e2d16302ef2dcc30c26d6eee72f0b0d8c6f",
+    "lifecycle_forecast.py": "5a67ee1c9cb03657b4292a9d3d4cc994f973960cc36aa922c46a73aa27baa618",
+    "notification_report.py": "da959fde63a66ac8ff807f48291d3c312053bc3a9279fea21ebd617d8fd98bca",
+    "audit_replay_v12_9.py": "2709df165708163a9a55e14d38be152ec5cc4da749c33cd7ca2a6924a8ebe50a"
+  },
+  "historical_suite": {
+    "before": {
+      "tests": 593,
+      "failures": 342,
+      "errors": 5
+    },
+    "after": {
+      "tests": 619,
+      "failures": 403,
+      "errors": 5
+    },
+    "status": "NOT_GREEN",
+    "note": "Old tests include mutually incompatible historical entry, score, exit and schedule contracts. Counts include failing subtests. No full-suite success claimed."
+  },
+  "archive_sha256": "4ad0b41b1e3e63278721400c64f13e4f6868280c414eadb3e1c6da206b0235e9",
+  "replay": {
+    "status": "EXPLORATORY_REPLAY_COMPLETED",
+    "same_archive_baseline": true,
+    "comparability": {
+      "archive_sha256": true,
+      "observations": true,
+      "first": true,
+      "last": true,
+      "execution_timeframe": true,
+      "costs_equal": true
+    },
+    "before": {
+      "trades": 35,
+      "wins": 13,
+      "losses": 22,
+      "breakeven": 0,
+      "win_rate": 0.37142857142857144,
+      "wilson_lower_95": 0.2316560736889106,
+      "net_r": -19.999505382073238,
+      "expectancy_r": -0.5714144394878068,
+      "profit_factor": 0.31519979872654474,
+      "max_drawdown_r": 20.376853978532665
+    },
+    "after": {
+      "trades": 12,
+      "wins": 4,
+      "losses": 8,
+      "breakeven": 0,
+      "win_rate": 0.3333333333333333,
+      "wilson_lower_95": 0.13811783989736134,
+      "net_r": -9.08125158404734,
+      "expectancy_r": -0.7567709653372783,
+      "profit_factor": 0.1550734654944087,
+      "max_drawdown_r": 10.73074002606406
+    },
+    "minute_precision": false,
+    "profitability_validated": false,
+    "production_state_written": false
+  }
+}

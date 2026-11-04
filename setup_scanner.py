@@ -20,7 +20,7 @@ def audit_rows(snapshot, after=0):
                    if c.confirmed and c.ts >= after and c.ts+step <= snapshot.now), key=lambda c:c.ts)
 
 
-def catch_up(snapshot, entry, stop, side, known_ts, tick):
+def catch_up(snapshot, entry, stop, side, known_ts, tick, zone=None):
     """Authorize a new CURRENT entry, never a retroactive historic fill."""
     risk = side*(entry-stop)
     now = snapshot.now
@@ -37,11 +37,68 @@ def catch_up(snapshot, entry, stop, side, known_ts, tick):
     intact = touch is not None and all((c.low>stop if side==1 else c.high<stop) for c in rows[touch:])
     spent = touch is not None and any((c.high>=entry+side*.5*risk if side==1
         else c.low<=entry+side*.5*risk) for c in rows[touch+1:])
+    confirmation=closed_reaction(snapshot,side,zone or {'low':entry,'high':entry},
+                                 rows[touch].ts if touch is not None else now)
+    boundary=(zone or {}).get('high' if side==1 else 'low',entry)
+    returning=side*(price-boundary)<0
     allowed = bool(risk>0 and complete and touch is not None and intact and not spent and
+                   confirmation and not returning and
                    -tick/risk <= moved <= .25+1e-9)
     return {'allowed':allowed, 'move_r':moved, 'complete_1m':complete,
             'touch_ts':rows[touch].ts if touch is not None else None,
+            'confirmation':confirmation,'returning_against_entry':returning,
             'status':'ACTIVE_ENTRY' if allowed else 'WAIT_RETEST', 'never_backdated':True}
+
+
+def closed_reaction(snapshot, side, zone, touch_ts):
+    """Latest closed 5m/15m bar must reclaim the zone after its actual touch."""
+    for tf,step in (('5m',300_000),('15m',900_000)):
+        rows=sorted((c for c in snapshot.candles.get(tf,[]) if c.confirmed
+                     and c.ts+step<=snapshot.now),key=lambda c:c.ts)
+        if not rows:
+            continue
+        c=rows[-1];boundary=zone['high'] if side==1 else zone['low']
+        if (c.ts+step>touch_ts+60_000 and snapshot.now-(c.ts+step)<step
+                and side*(c.close-c.open)>0 and side*(c.close-boundary)>0):
+            return {'timeframe':tf,'known_ts':c.ts+step,'close':c.close}
+    return None
+
+
+def zone_origin(zone, snapshot, side, tick, engine):
+    """Prove departure from this zone broke a pre-existing local reference.
+
+    The reference is frozen before formation. Neither a later pivot nor an
+    unrelated break elsewhere can turn a weak historical bounce into an OB.
+    """
+    tf=zone.get('timeframe','15m');step=engine.TF.get(tf)
+    if not step or zone['high']<=zone['low']:
+        return {'confirmed':False,'reason':'ZONE_ORIGIN_BOS_REQUIRED'}
+    rows=sorted((c for c in snapshot.candles.get(tf,[]) if c.confirmed
+                 and c.ts+step<=snapshot.now),key=lambda c:c.ts)
+    origin=zone.get('origin_ts',zone['known_ts']-2*step)
+    before=[c for c in rows if c.ts<origin]
+    if len(before)<6:
+        return {'confirmed':False,'reason':'ZONE_ORIGIN_HISTORY_MISSING'}
+    refs=[p for p in engine.pivots(before) if p['kind']==('HIGH' if side==1 else 'LOW')
+          and p['known_ts']+step<=origin]
+    reference=refs[-1]['level'] if refs else (max(c.high for c in before[-6:])
+                                                     if side==1 else min(c.low for c in before[-6:]))
+    volatility=max(engine.atr(before),tick)
+    formation=[c for c in rows if origin<=c.ts<=zone['known_ts']+3*step]
+    departed=False
+    previous=before[-1]
+    for c in formation:
+        near=any(b.low<=zone['high'] and b.high>=zone['low'] for b in rows
+                 if origin<=b.ts<=c.ts)
+        crossed=side*(previous.close-reference)<=0 and side*(c.close-reference)>tick
+        displaced=side*(c.close-c.open)>=.6*volatility
+        departed=departed or (near and displaced)
+        if departed and crossed:
+            return {'confirmed':True,'timeframe':tf,'reference':reference,
+                    'reference_known_before_ts':origin,'break_known_ts':c.ts+step,
+                    'reason':'ZONE_ORIGIN_BOS_CONFIRMED'}
+        previous=c
+    return {'confirmed':False,'reason':'ZONE_ORIGIN_BOS_REQUIRED','reference':reference}
 
 
 def passive_gate(entry, side, bid, ask, tick):

@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'bzu-checklist-confluence-split-v10'
+STRATEGY = 'bzu-precision-confirmed-single-v11'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -270,24 +270,35 @@ def confluence(plan, snapshot, proof, cfg, engine):
     sweeps=ict_methodology.session_sweeps(snapshot,plan['side'],cfg.tick,engine)
     sweep=bool(proof.get('sweep_reclaim') or sweeps)
     aligned=(plan.get('htf_1h')==plan['side'] and plan.get('htf_4h') in (0,plan['side']))
-    active_normal=session['active'] and not plan.get('approach',{}).get('fast',False)
+    active_normal=session['active'] and not plan.get('approach',{}).get('blocked',False)
     model=plan.get('meta_decision',{})
     edge=plan.get('edge_intelligence',{})
     # An untrained meta model's default "accepted" is not a positive vote.
     positive=(model.get('validated') and model.get('accepted') and
               model.get('expected_net_r') is not None and model['expected_net_r']>0)
-    parts={'fresh_ob_fvg':40*int(fresh),'liquidity_sweep':20*int(sweep),
-           'htf_alignment':15*int(aligned),'session_and_approach':15*int(active_normal),
-           'model_or_edge':10*int(bool(positive or edge.get('status')=='ALLOW'))}
+    bos=bool(proof.get('displacement_bos_fvg'))
+    htf_opposite=any(plan.get(k)==-plan['side'] for k in ('htf_1h','htf_4h'))
+    local=plan.get('market_regime',{}).get('local_structure',{}).get('side',0)
+    countertrend=htf_opposite or local==-plan['side']
+    threshold=max(cfg.min_score,80 if countertrend else 65)
+    parts={'fresh_ob_fvg':25*int(fresh),'liquidity_sweep':30*int(sweep),
+           'displacement_bos_fvg':25*int(bos),'htf_alignment':10*int(aligned),
+           'session_and_approach':5*int(active_normal),
+           'model_or_edge':5*int(bool(positive or edge.get('status')=='ALLOW'))}
     score=sum(parts.values())
-    priority=bool(sweeps and fresh)
-    return {'score':score,'components':parts,'accepted':score>=55,
-            'rating':'A+' if score>=75 or priority else 'B',
-            'session_sweep_priority':priority,'session_sweeps':sweeps,
-            'threshold':55,'probability':None,'model_veto_enabled':False}
+    trigger=sweep or bos
+    return {'score':score,'components':parts,'accepted':trigger and score>=threshold,
+            'rating':'A+' if score>=82 else 'B','trigger_confirmed':trigger,
+            'reason':'ICT_SWEEP_OR_BOS_FVG_REQUIRED' if not trigger else
+                     'CONFIRMED' if score>=threshold else 'CONFLUENCE_BELOW_THRESHOLD',
+            'countertrend':countertrend,'session_sweep_priority':bool(sweeps and fresh),
+            'session_sweeps':sweeps,'threshold':threshold,'probability':None,'model_veto_enabled':False}
 
 
-PLAN_FIELDS=('policy','entry_zone','entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
+
+PLAN_FIELDS=('policy','entry_zone','zone_origin','breakeven_trigger_r','rr1','rr2','rr3',
+             'approach','market_regime','ict_evidence','confluence',
+             'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
@@ -299,7 +310,7 @@ PLAN_FIELDS=('policy','entry_zone','entry_legs','action_type','execution_timefra
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))

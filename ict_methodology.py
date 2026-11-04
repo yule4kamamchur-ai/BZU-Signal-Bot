@@ -115,6 +115,11 @@ CONTRACTS = {
 }
 
 
+def entry_trigger(plan,proof):
+    """A session/HTF score cannot substitute for a witnessed raid or BOS/FVG."""
+    return bool(proof.get('sweep_reclaim') or proof.get('displacement_bos_fvg'))
+
+
 def validate(plan, proof):
     """Return (allowed, code, diagnostics) using evidence known as-of decision.
 
@@ -218,4 +223,6 @@ def validate(plan, proof):
              'fvg':fvg,'rejection':rejection,'acceptance':accepted,'reclaim':reclaim,
              'evidence_as_of_ts':proof.get('as_of_ts'),'original_detector_proven':anchored,
              'break_retest_activated':activated}
+    if plan.get('policy')=='BZU_PRECISION_V12_22' and not entry_trigger(plan,proof):
+        ok=False;why='ICT_SWEEP_OR_BOS_FVG_REQUIRED'
     return bool(ok),'CONFIRMED' if ok else why,details
