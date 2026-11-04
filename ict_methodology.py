@@ -223,6 +223,6 @@ def validate(plan, proof):
              'fvg':fvg,'rejection':rejection,'acceptance':accepted,'reclaim':reclaim,
              'evidence_as_of_ts':proof.get('as_of_ts'),'original_detector_proven':anchored,
              'break_retest_activated':activated}
-    if plan.get('policy')=='BZU_PRECISION_V12_22' and not entry_trigger(plan,proof):
+    if plan.get('policy') in ('BZU_PRECISION_V12_22','BZU_MASTER_V12_23') and not entry_trigger(plan,proof):
         ok=False;why='ICT_SWEEP_OR_BOS_FVG_REQUIRED'
     return bool(ok),'CONFIRMED' if ok else why,details

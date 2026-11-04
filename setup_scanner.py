@@ -6,11 +6,63 @@ can confirm a setup. It is never a success probability or an execution signal.
 from __future__ import annotations
 
 from statistics import mean
+from dataclasses import replace
+from math import isfinite
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 PRIMARY = ('15m', '1H', '4H')
 MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
+
+
+def closed_five_minutes(snapshot):
+    """UTC-aligned 5m bars, requiring all five confirmed constituent minutes.
+
+    Live snapshots already fetch 1m. No new network request or worker is
+    needed. Explicit 5m data is useful for archived snapshots without 1m.
+    If minute data exists, a gap cannot be hidden by a coarser candle.
+    """
+    if not snapshot.candles.get('1m'):
+        return sorted({c.ts:c for c in snapshot.candles.get('5m', [])
+            if c.confirmed and c.ts % 300_000 == 0
+            and c.ts+300_000 <= snapshot.now}.values(), key=lambda c:c.ts)
+    groups={}
+    for c in snapshot.candles['1m']:
+        if c.confirmed and c.ts % 60_000 == 0 and c.ts+60_000 <= snapshot.now:
+            groups.setdefault(c.ts//300_000*300_000, {})[c.ts]=c
+    result=[]
+    for start,minutes in sorted(groups.items()):
+        if set(minutes) != {start+i*60_000 for i in range(5)}:
+            continue
+        bars=[minutes[start+i*60_000] for i in range(5)]
+        result.append(replace(bars[0], ts=start, high=max(c.high for c in bars),
+            low=min(c.low for c in bars), close=bars[-1].close,
+            volume=sum(c.volume for c in bars), confirmed=True))
+    return result
+
+
+def event_rvol(snapshot, timeframe, known_ts):
+    """Event volume / the preceding 20 volumes, excluding the event itself."""
+    step={'1m':60_000,'3m':180_000,'5m':300_000,
+          '15m':900_000,'1H':3_600_000,'4H':14_400_000}.get(timeframe)
+    result={'timeframe':timeframe,'known_ts':known_ts,'rvol':None,
+            'sma_volume_20':None,'status':'EVENT_OR_HISTORY_MISSING'}
+    if not step or not isinstance(known_ts,(int,float)) or known_ts>snapshot.now:
+        return result
+    rows={c.ts:c for c in snapshot.candles.get(timeframe,[])
+          if c.confirmed and c.ts+step<=known_ts}
+    event=rows.get(known_ts-step)
+    prior=[rows.get(known_ts-step-i*step) for i in range(20,0,-1)]
+    if event is None or any(c is None for c in prior):
+        return result
+    volumes=[c.volume for c in prior]
+    if not all(isfinite(v) and v>=0 for v in [event.volume,*volumes]):
+        return {**result,'status':'INVALID_VOLUME'}
+    average=sum(volumes)/20
+    if average<=0:
+        return {**result,'status':'NO_VOLUME_BASELINE'}
+    return {**result,'rvol':event.volume/average,'volume':event.volume,
+            'sma_volume_20':average,'status':'AVAILABLE'}
 
 
 def audit_rows(snapshot, after=0):
@@ -86,16 +138,20 @@ def zone_origin(zone, snapshot, side, tick, engine):
     volatility=max(engine.atr(before),tick)
     formation=[c for c in rows if origin<=c.ts<=zone['known_ts']+3*step]
     departed=False
+    departure_known=None
     previous=before[-1]
     for c in formation:
         near=any(b.low<=zone['high'] and b.high>=zone['low'] for b in rows
                  if origin<=b.ts<=c.ts)
         crossed=side*(previous.close-reference)<=0 and side*(c.close-reference)>tick
         displaced=side*(c.close-c.open)>=.6*volatility
+        if near and displaced and not departed:
+            departure_known=c.ts+step
         departed=departed or (near and displaced)
         if departed and crossed:
             return {'confirmed':True,'timeframe':tf,'reference':reference,
                     'reference_known_before_ts':origin,'break_known_ts':c.ts+step,
+                    'displacement_known_ts':departure_known,
                     'reason':'ZONE_ORIGIN_BOS_CONFIRMED'}
         previous=c
     return {'confirmed':False,'reason':'ZONE_ORIGIN_BOS_REQUIRED','reference':reference}

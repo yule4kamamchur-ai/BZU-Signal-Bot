@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import math
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 import directional_policy as direction
 import entry_adverse_selection as adverse
@@ -15,18 +16,57 @@ import limit_structure as structure
 import research_zone_policy_1220 as zones
 import setup_scanner as scanner
 
-POLICY = 'BZU_PRECISION_V12_22'
+POLICY = 'BZU_MASTER_V12_23'
+PRECISION_POLICY = 'BZU_PRECISION_V12_22'
 LEGACY_POLICY = 'BZU_CHECKLIST_V12_21'
-EXIT = 'BE_1R_TP1_50_AT_1_4R_TP2_50'
+EXIT = 'BE_1R_ROUND_TP1_50_TP2_50'
 MINUTE = 60_000
 
 
 def is_new(plan):
-    return plan.get('policy') in (POLICY,LEGACY_POLICY)
+    return plan.get('policy') in (POLICY,PRECISION_POLICY,LEGACY_POLICY)
 
 
 def is_precision(plan):
-    return plan.get('policy') == POLICY
+    return plan.get('policy') in (POLICY,PRECISION_POLICY)
+
+
+def round_target(entry, target, side, tick):
+    """Front-run the last .00/.50 barrier crossed by the original target.
+
+    Use the terminal crossed barrier (75.03 -> 74.97), rather than the first
+    barrier after entry (74.50). Never move a target further from entry.
+    Invalid/collapsed geometry is rejected by the planner, never repaired by
+    inventing a distant target.
+    """
+    e,t,grid=map(lambda x:Decimal(str(x)),(entry,target,tick))
+    half=Decimal('.50');buffer=Decimal('.03')
+    rounding=ROUND_FLOOR if side==1 else ROUND_CEILING
+    barrier=(t/half).to_integral_value(rounding=rounding)*half
+    value=t
+    if side*(barrier-e)>0 and side*(t-barrier)>=0:
+        value=barrier-side*buffer
+    value=(value/grid).to_integral_value(rounding=rounding)*grid
+    return float(value)
+
+
+def round_stop(stop, side, tick):
+    """Extend a stop within .01 of .00/.50 by another .05 outward.
+
+    A 73.99 LONG stop becomes 73.94; an exact 74.00 stop becomes 73.95.
+    Tick rounding always goes away from entry.
+    """
+    value,grid=Decimal(str(stop)),Decimal(str(tick))
+    half=Decimal('.50')
+    nearby=(value/half).to_integral_value()*half
+    if abs(value-nearby)<=Decimal('.01'):
+        value=min(value-Decimal('.05'),nearby-Decimal('.05')) if side==1 else max(value+Decimal('.05'),nearby+Decimal('.05'))
+    rounding=ROUND_FLOOR if side==1 else ROUND_CEILING
+    return float((value/grid).to_integral_value(rounding=rounding)*grid)
+
+
+def oil_round_protection(cfg):
+    return cfg.instrument.upper().startswith(('BZ-','BRENT','UKOIL'))
 
 
 def session_gate(ts):
@@ -138,6 +178,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                                         swings[-1]['level'] if swings else anchor.invalidation)
     entry, stop, risk, legs = technical_geometry(low, high, structural,
         side, a15, cfg, engine, deep=approach['fast'])
+    raw_stop=stop
+    if oil_round_protection(cfg):
+        stop=round_stop(stop,side,cfg.tick)
+        risk=side*(entry-stop)
     if side*(entry-anchor.invalidation)<=0:
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
@@ -203,10 +247,21 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     tp2 = engine.round_tick(entry+side*min(side*(chosen['level']-entry)-buffer, 3*risk),
                             cfg.tick, up=side == -1)
     tp1 = engine.round_tick(entry+side*1.4*risk, cfg.tick, up=side == 1)
+    raw_targets={'tp1':tp1,'tp2':tp2}
+    if oil_round_protection(cfg):
+        tp1=round_target(entry,tp1,side,cfg.tick)
+        tp2=round_target(entry,tp2,side,cfg.tick)
+    diag['round_level_protection']={'original_stop':raw_stop,'stop':stop,
+        'original_targets':raw_targets,'tp1':tp1,'tp2':tp2}
+    if side*(tp1-entry)<=0 or side*(tp2-tp1)<=0:
+        mark('TARGET_RR',False)
+        return None,'ROUND_LEVEL_TARGET_COLLAPSED'
     rr2 = side*(tp2-entry)/risk
     mark('TARGET_RR', rr2+1e-9 >= max(2.5,cfg.min_net_rr))
     if rr2+1e-9 < max(2.5,cfg.min_net_rr):
-        return None, 'TARGET_RR_TOO_LOW'
+        return None, 'ROUND_LEVEL_RR_TOO_LOW'
+    if rr2-engine.fees_r(entry,tp2,risk,cfg)+1e-9<cfg.min_net_rr:
+        return None,'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'
     # Remaining models are evidence only. Their individual return values do
     # not veto the setup. All 24 named ICT confirmations are still validated.
     effective = ((snapshot.now+MINUTE-1)//MINUTE)*MINUTE
@@ -232,6 +287,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'anchor_proof':proof, 'pattern_proof':copy.deepcopy(proof.get('recovery_proof',{})),
          'anchor_known_ts':zone['known_ts'], 'zone_created_ts':zone['known_ts'],
          'entry_zone':zone, 'zone_audit':audit, 'zone_origin':origin, 'approach':approach,
+         'round_level_protection':copy.deepcopy(diag['round_level_protection']),
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
          'risk':risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
@@ -300,6 +356,9 @@ def fill_legs(p, c, engine, cfg, initial=False):
         p['entry'] = cost/p['filled_fraction']
         p['risk'] = p['side']*(p['entry']-p['initial_stop'])
         p['risk_budget'] = p['risk']*p['filled_fraction']
+        if p.get('policy') == POLICY:
+            # One full-size leg: retain exact tick-aligned, protected targets.
+            return
         p['tp1'] = engine.round_tick(p['entry']+p['side']*p['risk']*p.get('rr1',1.),
                                     cfg.tick,up=p['side']==1 if is_precision(p) else p['side']==-1)
 
@@ -382,9 +441,13 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
         # Never add the second half after taking profit from the first half.
         for leg in p['entry_legs']:
             if leg['status']=='PENDING': leg['status']='CANCELLED_AFTER_TP1'
-        be = breakeven_price(p,cfg,engine) if is_precision(p) else engine.round_tick(p['entry']+side*.02,cfg.tick,up=side==1)
-        if side*(be-p['stop'])>0:
-            p['pending_stop'] = {'price':be,'effective_ts':ts}
+        be=p['stop']
+        # Snapping can bring TP1 below 1R. It must not silently lower the
+        # independent 1R breakeven trigger for new Master plans.
+        if p.get('policy')!=POLICY or p.get('breakeven_armed'):
+            be = breakeven_price(p,cfg,engine) if is_precision(p) else engine.round_tick(p['entry']+side*.02,cfg.tick,up=side==1)
+            if side*(be-p['stop'])>0:
+                p['pending_stop'] = {'price':be,'effective_ts':ts}
         engine.emit(state,'TP1_PARTIAL',ts,order_id=p['id'],price=p['tp1'],fraction=fraction,
                     rr=p.get('rr1',1.),stop=be)
         # TP1 is a realized milestone. Aggregate WR gets ONE label only when

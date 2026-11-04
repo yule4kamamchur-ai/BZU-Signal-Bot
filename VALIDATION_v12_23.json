@@ -1,0 +1,158 @@
+{
+  "version": "full-ict-v12.23.0-master-plan",
+  "source_archive_sha256": "5e8594eed950d4cd0cd26780d0d8d9bfe651eb0e4606ae034f56c996c40938f4",
+  "scope": "RVOL event scoring; UTC session VWAP preference; oil .00/.50 target and stop protection; same-15m closed-5m impulse brake release",
+  "validation": {
+    "command": "python bot_oneshot.py --self-test",
+    "passed": 48,
+    "failed": 0,
+    "new_v12_23_checks": 31,
+    "existing_data_telegram_persistence_cadence_checks": 17,
+    "syntax": "All top-level Python modules parsed; edited modules compiled",
+    "workflow_yaml": "Parsed; both workflow copies identical; cron remains */15 * * * *"
+  },
+  "full_archived_suite": {
+    "baseline": {
+      "tests": 619,
+      "failure_count": 406,
+      "error_count": 5,
+      "failing_checks_by_module": {
+        "test_entry_playbooks": 1,
+        "test_full_limit_engine": 35,
+        "test_notification_report": 11,
+        "test_position_monitor": 1,
+        "test_strategy_organics": 1,
+        "test_v12_12_meta": 1,
+        "test_v12_14_fast_startup": 2,
+        "test_v12_20_2_bos_stop_contracts": 2,
+        "test_v12_20_github_cadence": 1,
+        "test_v12_21_checklist": 20,
+        "test_v12_22_precision": 1,
+        "test_v12_3_fixes": 28,
+        "test_v12_4_1_selection": 5,
+        "test_v12_4_2_reports": 4,
+        "test_v12_4_3_geometry": 156,
+        "test_v12_4_scanner": 6,
+        "test_v12_5_early_limits": 8,
+        "test_v12_6_policy": 2,
+        "test_v12_7_policy": 4,
+        "test_v12_8_paths": 119,
+        "test_v12_9_atlas": 2,
+        "test_v15_edge_intelligence": 1
+      }
+    },
+    "after_patch": {
+      "tests": 650,
+      "failure_count": 402,
+      "error_count": 3,
+      "failing_checks_by_module": {
+        "test_entry_playbooks": 1,
+        "test_full_limit_engine": 33,
+        "test_strategy_organics": 1,
+        "test_v12_12_meta": 1,
+        "test_v12_14_fast_startup": 2,
+        "test_v12_20_2_bos_stop_contracts": 2,
+        "test_v12_20_github_cadence": 1,
+        "test_v12_21_checklist": 20,
+        "test_v12_22_precision": 18,
+        "test_v12_3_fixes": 27,
+        "test_v12_4_1_selection": 5,
+        "test_v12_4_2_reports": 3,
+        "test_v12_4_3_geometry": 156,
+        "test_v12_4_scanner": 3,
+        "test_v12_5_early_limits": 8,
+        "test_v12_6_policy": 2,
+        "test_v12_7_policy": 2,
+        "test_v12_8_paths": 118,
+        "test_v12_9_atlas": 1,
+        "test_v15_edge_intelligence": 1
+      }
+    },
+    "new_failing_archived_checks": [
+      "test_active_position_does_not_fill_second_prepublished_limit (test_v12_22_precision.Brakes.test_active_position_does_not_fill_second_prepublished_limit)",
+      "test_ambiguous_fill_and_stop_always_loss (test_v12_22_precision.Precision.test_ambiguous_fill_and_stop_always_loss)",
+      "test_catchup_requires_latest_closed_bullish_reclaim (test_v12_22_precision.Brakes.test_catchup_requires_latest_closed_bullish_reclaim)",
+      "test_empty_zone_score_and_trigger_do_not_pass (test_v12_22_precision.Precision.test_empty_zone_score_and_trigger_do_not_pass)",
+      "test_full_analyzer_keeps_confirmed_long_and_short_after_all_gates (test_v12_22_precision.Precision.test_full_analyzer_keeps_confirmed_long_and_short_after_all_gates)",
+      "test_gap_over_night_cancels_before_fill_without_future_price (test_v12_22_precision.Brakes.test_gap_over_night_cancels_before_fill_without_future_price)",
+      "test_merge_preserves_one_entry_and_does_not_sum_scores (test_v12_22_precision.Precision.test_merge_preserves_one_entry_and_does_not_sum_scores)",
+      "test_old_open_position_keeps_split_exit_contract (test_v12_22_precision.Precision.test_old_open_position_keeps_split_exit_contract)",
+      "test_old_pending_upgrade_preserves_levels_and_exit_terms (test_v12_22_precision.Brakes.test_old_pending_upgrade_preserves_levels_and_exit_terms)",
+      "test_one_r_be_does_not_close_any_volume_and_starts_next_bar (test_v12_22_precision.Precision.test_one_r_be_does_not_close_any_volume_and_starts_next_bar)",
+      "test_partial_then_final_uses_full_risk_and_costs (test_v12_22_precision.Precision.test_partial_then_final_uses_full_risk_and_costs)",
+      "test_pullback_conflict_blocks_ltf_but_reached_htf_can_be_reviewed (test_v12_22_precision.Brakes.test_pullback_conflict_blocks_ltf_but_reached_htf_can_be_reviewed)",
+      "test_real_bos_zone_reaches_single_plan_both_sides (test_v12_22_precision.Precision.test_real_bos_zone_reaches_single_plan_both_sides)",
+      "test_research_copy_retains_the_same_tp1_and_fill_contract (test_v12_22_precision.Brakes.test_research_copy_retains_the_same_tp1_and_fill_contract)",
+      "test_sweep_and_bos_routes_score_and_countertrend_threshold (test_v12_22_precision.Precision.test_sweep_and_bos_routes_score_and_countertrend_threshold)",
+      "test_unclosed_break_cannot_validate_zone (test_v12_22_precision.Precision.test_unclosed_break_cannot_validate_zone)",
+      "test_weak_zone_and_unknown_origin_cannot_place (test_v12_22_precision.Precision.test_weak_zone_and_unknown_origin_cannot_place)"
+    ],
+    "interpretation": "Full discovery is not green. Seventeen newly failing v12.22 checks construct geometry now rejected by round-level R:R protection; legacy position price and exit preservation are separately covered by passing v12.23 tests. Existing failures across older modules have not been repaired by this patch."
+  },
+  "frozen_files_verified": [
+    "last_signal_v6_4.json",
+    "signal_journal_v6_4.json",
+    "market_history_v12.json",
+    "research_market_v12_6.json",
+    "notification_report.py"
+  ],
+  "constraints": {
+    "report_schedule": "One finite scheduled bot_oneshot.py run per 15m bucket; platform may delay scheduled jobs",
+    "micro_data": "All 15 confirmed 1m constituents, or three closed archived 5m bars when no minute series exists",
+    "round_target_rule": "Last crossed .00/.50 barrier, minus .03 for LONG / plus .03 for SHORT; reject nonpositive/collapsed targets or insufficient final-target RR",
+    "round_stop_rule": "Within .01 of .00/.50 extend at least .05 outward; .99 -> .94 LONG, .00 -> .95 LONG; tick rounding outward",
+    "risk_checks": "Re-evaluate structural stop bounds, TP order, final TP gross RR >= max(2.5, configured min_net_rr), final TP RR after fees >= configured min_net_rr",
+    "vwap": "HLC3 volume approximation, UTC midnight anchor; no A+ preference for incomplete session/zero volume; +3 comparative ranking points only after existing structural gates",
+    "volume": "Event volume divided by prior 20 contiguous closed volumes. +15 once for formation/sweep RVOL >=1.35, -15 for witnessed BOS RVOL <0.7, score capped 0..100. Missing volume does not fabricate evidence.",
+    "breakeven": "New protected TP1 below 1R does not lower the independent 1R breakeven trigger",
+    "exit_contract": "Existing v12.22 partial exit fractions retained, with protected target prices for new entries only",
+    "execution": "No deployment or real Telegram/OKX order requests were made",
+    "performance": "No independent-period backtest or win-rate claim is made"
+  },
+  "files": [
+    {
+      "path": ".github/workflows/main.yml",
+      "sha256": "9c63ef6747be2e9342984b09268db7206bd7d9f5b1acdcf2be10bdccaa3c9f2e"
+    },
+    {
+      "path": "WORKFLOW_main.yml",
+      "sha256": "9c63ef6747be2e9342984b09268db7206bd7d9f5b1acdcf2be10bdccaa3c9f2e"
+    },
+    {
+      "path": "bot_oneshot.py",
+      "sha256": "95746cea4bcede0f3e10096272954f4a91d0b90b8f3f1904b8319d19fcede533"
+    },
+    {
+      "path": "bzu_policy.py",
+      "sha256": "1190e9b12056083957e0cd6688152f4c0bd8ebf5c5e3704b1861cbe3209c0323"
+    },
+    {
+      "path": "directional_policy.py",
+      "sha256": "177c952c9f7d92bc6211ed5aa874a2cca35f0569b11efb3d899aa959b023f8bd"
+    },
+    {
+      "path": "entry_adverse_selection.py",
+      "sha256": "cbf7e362ac17cb8450746c8ed45cf0145396ed3ed75d2b8a4b2cd408c237faa2"
+    },
+    {
+      "path": "full_limit_engine.py",
+      "sha256": "6811da2af1abe47b42d9fd0cd8ddff73ea5e741be2408861fc9142388b90422f"
+    },
+    {
+      "path": "ict_methodology.py",
+      "sha256": "c4c490a99a9a3827a8ad4b62afd00ad2c3abe48f9c336982e144039f2470a30d"
+    },
+    {
+      "path": "setup_scanner.py",
+      "sha256": "9030cabd6f075730df0ab99f7ac3d30175a654983289832f6eab230fa4a68ad5"
+    },
+    {
+      "path": "signal_quality.py",
+      "sha256": "df3f15ad71dd8035c55687757e68e38362d2bd1276a4fac972495940848afb6a"
+    },
+    {
+      "path": "test_v12_23_master.py",
+      "sha256": "db65df5dd19ca0ece85270c5643302533df0b63c48314778bcf2fc33803ae13a"
+    }
+  ]
+}

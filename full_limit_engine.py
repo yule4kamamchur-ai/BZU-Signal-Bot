@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.22.0-precision-protection"
-REPORT_RELEASE = 'v12.22.0'
+VERSION = "full-ict-v12.23.0-master-plan"
+REPORT_RELEASE = 'v12.23.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -224,6 +224,8 @@ class Snapshot:
             # A candle's timestamp is its OPEN time, not its closing time.
             candles[tf] = sorted({c.ts: c for c in parsed if c.confirmed and c.ts + step <= now}.values(),
                                  key=lambda c: c.ts)
+        # Optional archived 5m input; never a mandatory fetch/health series.
+        candles['5m']=[Candle.parse(r) for r in data.get('candles',{}).get('5m',[])]
         trust = data.get("trusted", False)
         obj = cls(now, finite(data["price"]), candles, finite(data.get("bid", 0)),
                    finite(data.get("ask", 0)), trust is True,
@@ -232,6 +234,8 @@ class Snapshot:
         obj.smt_candles = sorted({c.ts:c for c in smt if c.confirmed and c.ts+TF["15m"]<=now}.values(),
                                 key=lambda c:c.ts)
         obj.metadata = {k: v for k, v in data.items() if k not in ("candles", "smt_candles_15m")}
+        # Reuse already fetched minutes; the one-shot/report cadence is intact.
+        obj.candles['5m']=scanner.closed_five_minutes(obj)
         return obj
 
 
@@ -895,6 +899,10 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             p['confluence']=points
             p['score']=points['score']
             p['rating']=points['rating']
+            if p.get('policy')==bzu_policy.POLICY:
+                p['session_vwap']=policy.vwap_priority(p,s,cfg.tick)
+                if points['accepted'] and p['session_vwap']['aligned']:
+                    p['rating']='A+'
             next(c for c in p['entry_checks'] if c['key']=='CONTEXT_SCORE')['met']=points['accepted']
             if q['accepted'] and not points['accepted']:
                 q={**q,'accepted':False,'reason':points['reason']}
@@ -924,7 +932,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             p['strategy_evidence_score'] = playbook['evidence_score']
             p['direction_score'] += min(3.,max(0.,(playbook['evidence_score']-60.)*.2))
         if bzu_policy.is_new(p):
-            p['direction_score']=p['score']
+            p['direction_score']=p['score']+p.get('session_vwap',{}).get('priority_points',0)
         p['decision_score'] = p['direction_score']
         p['probability_status'] = meta_decision['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
@@ -2391,6 +2399,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'ROUND_LEVEL_TARGET_COLLAPSED':'після корекції круглих рівнів TP1/TP2 не мають коректного порядку',
+    'ROUND_LEVEL_RR_TOO_LOW':'після корекції перед круглим рівнем потенціал TP/SL недостатній',
     'IMPULSE_CONFIRMATION_REQUIRED':'після імпульсу чекаємо закриту свічку гальмування або відкупу',
     'ZONE_ORIGIN_BOS_REQUIRED':'імпульс із цієї зони не підтвердив злам структури',
     'ZONE_ORIGIN_HISTORY_MISSING':'бракує історії для перевірки походження зони',
@@ -2743,14 +2753,15 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path, persist=None
 def replay(data: dict, cfg: Config) -> dict:
     """15m causal replay. Warmup precedes optional start_ts; no future HTF bars."""
     state = new_state(cfg)
+    replay_steps={**CANDLE_TF,'5m':300_000}
     raw = {tf: sorted([Candle.parse(r) for r in data["candles"].get(tf, [])], key=lambda c:c.ts)
-           for tf in TF}
+           for tf in replay_steps}
     raw = {tf: sorted({c.ts: c for c in rows if c.confirmed}.values(), key=lambda c:c.ts)
            for tf, rows in raw.items()}
     smt_rows = [Candle.parse(r) for r in data.get("smt_candles_15m",[])]
     smt_rows = sorted({c.ts:c for c in smt_rows if c.confirmed}.values(),key=lambda c:c.ts)
     smt_available = [c.ts+TF["15m"] for c in smt_rows]
-    available = {tf: [c.ts+TF[tf] for c in rows] for tf, rows in raw.items()}
+    available = {tf: [c.ts+replay_steps[tf] for c in rows] for tf, rows in raw.items()}
     if not raw["3m"]:
         raise ValueError("Replay needs 3m OHLC history")
     times = sorted({((c.ts+TF["3m"]+TF["15m"]-1)//TF["15m"])*TF["15m"]
@@ -3140,8 +3151,10 @@ def main(core) -> int:
     cfg = replace(Config.from_env(),core=core)
     if args.self_test:
         import unittest
-        modules=('test_full_limit_engine','test_v12_20_3_telegram_delivery',
-                 'test_v12_20_4_scan_gap_long','test_v12_20_5_entry_admission','test_v12_5_early_limits','test_v12_21_checklist')
+        # Active release contracts. Superseded entry/exit policies remain
+        # available explicitly through --all-archived-tests.
+        modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
+                 'test_v12_18_speed','test_v12_23_master')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

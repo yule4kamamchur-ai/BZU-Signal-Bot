@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'bzu-precision-confirmed-single-v11'
+STRATEGY = 'bzu-master-rvol-vwap-round-5m-v12'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -285,9 +285,13 @@ def confluence(plan, snapshot, proof, cfg, engine):
            'displacement_bos_fvg':25*int(bos),'htf_alignment':10*int(aligned),
            'session_and_approach':5*int(active_normal),
            'model_or_edge':5*int(bool(positive or edge.get('status')=='ALLOW'))}
-    score=sum(parts.values())
+    volume=volume_footprint(plan,snapshot,proof,sweeps)
+    parts['institutional_volume_footprint']=volume['bonus']
+    parts['low_volume_bos']=volume['penalty']
+    score=max(0,min(100,sum(parts.values())))
     trigger=sweep or bos
-    return {'score':score,'components':parts,'accepted':trigger and score>=threshold,
+    return {'score':score,'components':parts,'volume_footprint':volume,
+            'accepted':trigger and score>=threshold,
             'rating':'A+' if score>=82 else 'B','trigger_confirmed':trigger,
             'reason':'ICT_SWEEP_OR_BOS_FVG_REQUIRED' if not trigger else
                      'CONFIRMED' if score>=threshold else 'CONFLUENCE_BELOW_THRESHOLD',
@@ -295,8 +299,35 @@ def confluence(plan, snapshot, proof, cfg, engine):
             'session_sweeps':sweeps,'threshold':threshold,'probability':None,'model_veto_enabled':False}
 
 
+def volume_footprint(plan, snapshot, proof, session_sweeps):
+    """Score event volumes only; several correlated events earn at most +15."""
+    import setup_scanner as scanner
+    events=[]
+    origin=plan.get('zone_origin',{})
+    tf=origin.get('timeframe',plan.get('formation_timeframe','15m'))
+    if origin.get('confirmed'):
+        for key,kind in (('displacement_known_ts','FORMATION'),('break_known_ts','BOS')):
+            if origin.get(key) is not None:
+                events.append((tf,origin[key],kind))
+    proof_tf=proof.get('timeframe',plan.get('formation_timeframe','15m'))
+    if proof.get('sweep_reclaim') and proof.get('latest_sweep'):
+        events.append((proof_tf,proof['latest_sweep']['known_ts'],'SWEEP'))
+    for event in session_sweeps:
+        events.append(('15m',event['sweep_ts'],'SWEEP'))
+    if not origin.get('confirmed') and proof.get('structure_shift') and proof.get('latest_structure_shift'):
+        events.append((proof_tf,proof['latest_structure_shift']['known_ts'],'BOS'))
+    evidence=[{**scanner.event_rvol(snapshot,timeframe,known),'kind':kind}
+              for timeframe,known,kind in dict.fromkeys(events)]
+    bonus=15 if any(e['rvol'] is not None and e['rvol']>=1.35 for e in evidence
+                    if e['kind'] in ('FORMATION','SWEEP')) else 0
+    penalty=-15 if any(e['rvol'] is not None and e['rvol']<.7 for e in evidence
+                       if e['kind']=='BOS') else 0
+    return {'bonus':bonus,'penalty':penalty,'events':evidence,
+            'status':'AVAILABLE' if any(e['rvol'] is not None for e in evidence) else 'NO_EVENT_VOLUME'}
 
-PLAN_FIELDS=('policy','entry_zone','zone_origin','breakeven_trigger_r','rr1','rr2','rr3',
+
+
+PLAN_FIELDS=('session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','rr1','rr2','rr3',
              'approach','market_regime','ict_evidence','confluence',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
@@ -310,7 +341,7 @@ PLAN_FIELDS=('policy','entry_zone','zone_origin','breakeven_trigger_r','rr1','rr
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))

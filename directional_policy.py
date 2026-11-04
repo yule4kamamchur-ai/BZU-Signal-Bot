@@ -16,6 +16,52 @@ SWEEP_REQUIRED = frozenset({'LIQUIDITY_LADDER', 'MSS_REVERSAL_SHORT'})
 RECLAIM_REQUIRED = frozenset({'SESSION_MEAN_RECLAIM', 'DAILY_WEEKLY_OPEN_RECLAIM'})
 
 
+def session_vwap(snapshot):
+    """HLC3 VWAP from 00:00 UTC, requiring non-overlapping day coverage.
+
+    Full 15m history plus available 1m tail avoids another network request.
+    Missing midnight/history/volume never creates a partial-day A+.
+    """
+    start=snapshot.now//86_400_000*86_400_000
+    end=snapshot.now//60_000*60_000
+    minutes={c.ts:c for c in snapshot.candles.get('1m',[])
+        if c.confirmed and start<=c.ts and c.ts%60_000==0 and c.ts+60_000<=end}
+    quarters={c.ts:c for c in snapshot.candles.get('15m',[])
+        if c.confirmed and start<=c.ts and c.ts%900_000==0 and c.ts+900_000<=end}
+    base={'value':None,'previous_value':None,'slope':None,'start_ts':start,
+          'known_ts':None,'status':'INCOMPLETE_SESSION','priority_points':0}
+    rows=[];cursor=start
+    while cursor<end:
+        stop=min(cursor+900_000,end)
+        fine=[minutes.get(ts) for ts in range(cursor,stop,60_000)]
+        if fine and all(c is not None for c in fine):
+            rows.extend(fine)
+        elif stop-cursor==900_000 and cursor in quarters:
+            rows.append(quarters[cursor])
+        else:
+            return base
+        cursor=stop
+    if not rows or not all(isfinite(c.volume) and c.volume>=0 for c in rows):
+        return base
+    volume=sum(c.volume for c in rows)
+    if volume<=0:
+        return {**base,'status':'NO_VOLUME'}
+    weighted=sum((c.high+c.low+c.close)/3*c.volume for c in rows)
+    value=weighted/volume
+    prior_volume=volume-rows[-1].volume
+    previous=(weighted-(rows[-1].high+rows[-1].low+rows[-1].close)/3*rows[-1].volume)/prior_volume if prior_volume>0 else value
+    return {**base,'value':value,'previous_value':previous,'slope':value-previous,
+            'known_ts':end,'status':'AVAILABLE','price_basis':'HLC3','volume':volume}
+
+
+def vwap_priority(plan, snapshot, tick):
+    result=session_vwap(snapshot)
+    aligned=(result['value'] is not None and
+             plan['side']*(plan['entry']-result['value'])>=-tick*.5)
+    return {**result,'aligned':aligned,'priority_points':3 if aligned else 0,
+            'rating':'A+' if aligned else None}
+
+
 def market_regime(snapshot, tick, engine):
     import strategy_organics
     r=strategy_organics.classify(snapshot)

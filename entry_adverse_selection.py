@@ -24,7 +24,8 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
 
     A favorable expansion must not block a continuation limit. An open candle
     cannot release the brake. The shock candle itself is never its own proof
-    of a subsequent reaction, even if its range intersects the entry zone.
+    of a subsequent reaction. An earlier impulse followed by a separate
+    closed 5m reaction inside that same 15m bar is valid ordered evidence.
     """
     rows=sorted((c for c in snapshot.candles.get('15m', [])
           if c.confirmed and c.ts+900_000 <= snapshot.now),key=lambda c:c.ts)
@@ -45,6 +46,7 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
         return base
     shock=shocks[-1];known=shock.ts+900_000
     confirmation=None
+    confirmation_tf=None
     if zone:
         for c in rows:
             if c.ts<known or c.low>zone['high'] or c.high<zone['low']:
@@ -55,12 +57,61 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
             pin=wick>=.5*max(c.high-c.low,tick) and side*(c.close-(zone['low']+zone['high'])/2)>0
             if reclaim or pin:
                 confirmation=c.ts+900_000
+                confirmation_tf='15m'
         if confirmation and any(c.ts>=confirmation and
                 side*(c.close-(zone['low'] if side==1 else zone['high']))<0 for c in rows):
             confirmation=None
+        if confirmation is None:
+            micro=intra_bar_reaction(snapshot,shock,side,zone,atr15,tick)
+            if micro:
+                confirmation=micro['known_ts']
+                confirmation_tf='5m'
     return {**base,'fast':True,'blocked':confirmation is None,
             'shock_known_ts':known,'confirmation_known_ts':confirmation,
+            'confirmation_timeframe':confirmation_tf,
             'action':'CONFIRMED_RETEST' if confirmation else 'CONFIRMATION_REQUIRED'}
+
+
+def intra_bar_reaction(snapshot, shock, side, zone, atr15, tick):
+    """Earlier adverse 5m impulse then final engulfing/pinbar at this zone.
+
+    Only the latest closed 15m interval can release its own brake. Require
+    complete, matching 5m OHLC; stale, missing or inconsistent bars abstain.
+    """
+    import setup_scanner as scanner
+    end=shock.ts+900_000
+    if end != snapshot.now//900_000*900_000:
+        return None
+    bars={c.ts:c for c in scanner.closed_five_minutes(snapshot)}
+    if any(shock.ts+i*300_000 not in bars for i in range(3)):
+        return None
+    first,previous,last=[bars[shock.ts+i*300_000] for i in range(3)]
+    combined=(first.open,max(c.high for c in (first,previous,last)),
+              min(c.low for c in (first,previous,last)),last.close)
+    if any(abs(a-b)>tick*.51 for a,b in zip(combined,
+                (shock.open,shock.high,shock.low,shock.close))):
+        return None
+    early=max(-side*(first.close-first.open),
+              -side*(previous.close-previous.open),
+              -side*(previous.close-first.open))
+    if early<=1.8*atr15 or last.low>zone['high'] or last.high<zone['low']:
+        return None
+    body=side*(last.close-last.open)
+    wick=min(last.open,last.close)-last.low if side==1 else last.high-max(last.open,last.close)
+    width=max(last.high-last.low,tick)
+    engulf=(side*(previous.close-previous.open)<0 and body>0
+            and side*(last.open-previous.close)<=tick*.5
+            and side*(last.close-previous.open)>=-tick*.5)
+    pin=body>0 and wick>=.5*width and wick>=2*max(body,tick)
+    defended=side*(last.close-(zone['low']+zone['high'])/2)>0
+    if not (defended and (engulf or pin)):
+        return None
+    # A later completed minute may already have invalidated the reaction.
+    if any(c.confirmed and c.ts>=end and c.ts+60_000<=snapshot.now
+           and side*(c.close-(zone['low'] if side==1 else zone['high']))<0
+           for c in snapshot.candles.get('1m',[])):
+        return None
+    return {'timeframe':'5m','known_ts':end,'pattern':'ENGULFING' if engulf else 'PINBAR'}
 
 
 def _number(value):
