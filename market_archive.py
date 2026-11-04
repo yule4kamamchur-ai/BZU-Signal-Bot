@@ -31,7 +31,7 @@ def record(path,snapshot,cfg,engine):
                 'closed_bars':{tf:len(rows) for tf,rows in data['candles'].items()}}
     data=copy.deepcopy(data)
     lower=snapshot.now-RETENTION_MS
-    for tf,step in engine.TF.items():
+    for tf,step in engine.CANDLE_TF.items():
         rows={}
         for raw in data.get('candles',{}).get(tf,[]):
             c=engine.Candle.parse(raw)

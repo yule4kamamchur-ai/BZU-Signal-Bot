@@ -14,12 +14,34 @@ from collections import defaultdict,Counter
 from dataclasses import replace
 from pathlib import Path
 
-import bot_oneshot as core
-import full_limit_engine as engine
-from research_short_continuations import evaluate,load_archive,snapshot_asof
+
+
+def first_test(zone, rows, side, entry, risk, now):
+    """A touch followed by >=0.5R departure permanently spends this zone.
+
+    Same-bar extrema cannot prove order, so require a subsequent candle for
+    the favorable departure. A known tombstone is retained by the engine.
+    """
+    known=zone.get('known_ts',0)
+    touched_ts=None
+    for c in rows:
+        if not c.confirmed or c.ts<known or c.ts>=now:
+            continue
+        if touched_ts is not None and c.ts>touched_ts:
+            favorable=c.high if side==1 else c.low
+            if side*(favorable-entry)>=.5*risk-1e-9:
+                return {'touched':True,'touch_ts':touched_ts,'mitigated':True,
+                        'mitigated_ts':c.ts,'state':'MITIGATED'}
+        if c.low<=zone['high'] and c.high>=zone['low'] and touched_ts is None:
+            touched_ts=c.ts
+    return {'touched':touched_ts is not None,'touch_ts':touched_ts,
+            'mitigated':False,'state':'TOUCHED' if touched_ts is not None else 'UNMITIGATED'}
 
 
 def study(path):
+    import bot_oneshot as core
+    import full_limit_engine as engine
+    from research_short_continuations import evaluate,load_archive,snapshot_asof
     history=evaluate(path)
     store=load_archive(path)
     cfg=replace(engine.Config(tick=.01,include_commission=True),core=core)

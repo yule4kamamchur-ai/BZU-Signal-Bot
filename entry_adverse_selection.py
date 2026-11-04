@@ -19,6 +19,16 @@ MIN_REJECTIONS=2
 RECENT_HOURS=6
 
 
+def approach(snapshot, atr15):
+    """An impulse changes entry geometry instead of vetoing a limit."""
+    rows=[c for c in snapshot.candles.get('15m', [])
+          if c.confirmed and c.ts+900_000 <= snapshot.now]
+    ratio=max(((c.high-c.low)/atr15 for c in rows[-2:]),default=0.) if atr15>0 else 0.
+    return {'fast':ratio>1.8, 'range_atr15':ratio,
+            'action':'EQUILIBRIUM_ENTRY' if ratio>1.8 else 'FRONT_RUN_ENTRY',
+            'veto_enabled':False}
+
+
 def _number(value):
     try:
         n=float(value)

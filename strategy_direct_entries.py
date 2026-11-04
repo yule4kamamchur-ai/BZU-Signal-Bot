@@ -49,6 +49,9 @@ def from_signal(signal, snapshot, cfg, context, core, regime, playbooks):
             {'condition': 'Ринковий режим відповідає стратегії', 'met': True},
         ],
     }
+    if signal.zone_high>signal.zone_low>0:
+        evidence['entry_zone']={'low':signal.zone_low,'high':signal.zone_high,
+            'known_ts':signal.signal_ts,'timeframe':signal.zone_timeframe,'kind':'CONFIRMED_FVG'}
     anchor = core.make_anchor(source, 'LONG' if signal.side == 1 else 'SHORT',
                               signal.zone, signal.invalidation, 'STRATEGY_EVENT',
                               'Незалежний ICT-сценарій: ' + signal.family,

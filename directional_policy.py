@@ -16,6 +16,55 @@ SWEEP_REQUIRED = frozenset({'LIQUIDITY_LADDER', 'MSS_REVERSAL_SHORT'})
 RECLAIM_REQUIRED = frozenset({'SESSION_MEAN_RECLAIM', 'DAILY_WEEKLY_OPEN_RECLAIM'})
 
 
+def market_regime(snapshot, tick, engine):
+    import strategy_organics
+    r=strategy_organics.classify(snapshot)
+    one=engine.bias(closed(snapshot,'1H'))['side'] or r.trend_1h
+    four=engine.bias(closed(snapshot,'4H'))['side'] or r.trend_4h
+    if one and four in (0,one): label='BULLISH_TREND' if one==1 else 'BEARISH_TREND'
+    elif one==0 and four: label='BULLISH_TREND' if four==1 else 'BEARISH_TREND'
+    else: label='RANGE_LIQUIDITY_ROTATION'
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    day=datetime.fromtimestamp(snapshot.now/1000,ZoneInfo('Europe/Kyiv')).date()
+    today=[c for c in closed(snapshot,'15m') if datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/Kyiv')).date()==day]
+    rows=today or closed(snapshot,'15m')[-32:]
+    return {'state':label,'side_1h':one,'side_4h':four,'as_of_ts':snapshot.now,
+            'range_low':min((c.low for c in rows),default=snapshot.price),
+            'range_high':max((c.high for c in rows),default=snapshot.price)}
+
+
+def structural_flip(snapshot, side, since, tick, engine):
+    """Only a newly observed CLOSED 15m/1H BOS authorizes a pending flip."""
+    for tf in ('15m','1H'):
+        rows=closed(snapshot,tf)
+        for i in range(max(7,len(rows)-3),len(rows)):
+            c=rows[i];known=c.ts+TF[tf]
+            if known<=since: continue
+            refs=[p for p in engine.pivots(rows[:i]) if p['kind']==('HIGH' if side==1 else 'LOW')
+                  and p['known_ts']+TF[tf]<=c.ts]
+            if refs and side*(rows[i-1].close-refs[-1]['level'])<=0 and side*(c.close-refs[-1]['level'])>tick:
+                return {'confirmed':True,'timeframe':tf,'known_ts':known,'side':side,'level':refs[-1]['level']}
+    return {'confirmed':False,'side':side}
+
+
+def regime_admission(side, entry, regime, snapshot, tick, engine):
+    state=regime['state']
+    if state=='BULLISH_TREND' and side!=1: return False,'REGIME_LONG_ONLY'
+    if state=='BEARISH_TREND' and side!=-1: return False,'REGIME_SHORT_ONLY'
+    if state=='RANGE_LIQUIDITY_ROTATION':
+        width=max(regime['range_high']-regime['range_low'],tick)
+        location=(entry-regime['range_low'])/width
+        if .30<=location<=.70: return False,'RANGE_MIDDLE_BLOCKED'
+        # Only the correct range edge, after a witnessed liquidity raid.
+        if (side==1 and location>.30) or (side==-1 and location<.70):
+            return False,'RANGE_WRONG_EDGE'
+        proof=evidence({'side':side,'entry':entry,'formation_timeframe':'15m'},snapshot,tick)
+        if not (proof['sweep_reclaim'] or ict_methodology.session_sweeps(snapshot,side,tick,engine)):
+            return False,'RANGE_SWEEP_REQUIRED'
+    return True,'CONFIRMED'
+
+
 def closed(snapshot, tf):
     now = snapshot.now
     return [c for c in snapshot.candles.get(tf, [])

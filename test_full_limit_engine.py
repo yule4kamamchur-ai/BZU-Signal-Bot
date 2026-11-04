@@ -339,8 +339,8 @@ class RouterTests(unittest.TestCase):
         self.assertNotIn("депозит", msg)
         self.assertNotIn("розмір позиції", msg)
         self.assertIn("Вхід:", msg)
-        self.assertNotIn("SL:", msg)
-        self.assertIn("ОЧІКУЄМО ЛІМІТ — 1", msg)
+        self.assertIn("SL:", msg)
+        self.assertIn("PENDING 1", msg)
         self.assertNotIn("не біржові ордери",msg)
 
 
@@ -396,6 +396,14 @@ def full_fixture(side="LONG"):
     return cfg, ctx, anchor, s
 
 
+def checklist_fixture(side="LONG"):
+    from test_v12_21_checklist import fixture
+    snap,cfg,ctx,anchor,plan=fixture(1 if side=="LONG" else -1)
+    ctx['session']['day_high']=102.
+    ctx['session']['day_low']=98.
+    return cfg,ctx,anchor,snap
+
+
 class LiveTickTests(unittest.TestCase):
     def metadata(self, **changes):
         record = {"instId":"BZ-USDT-SWAP", "state":"live", "tickSz":"0.01"}
@@ -425,13 +433,14 @@ class LiveTickTests(unittest.TestCase):
                     b.resolve_live_config(cfg)
 
     def test_live_initialization_and_restart_use_exchange_tick_for_pending_plan(self):
-        cfg, ctx, anchor, snap = full_fixture()
+        cfg, ctx, anchor, snap = checklist_fixture()
         later = copy.deepcopy(snap)
         later.now += 900_000
         later.ticker_ts = later.now
-        later.price, later.bid, later.ask = 70.02, 70.01, 70.03
-        later.candles['3m'] += [candle(NOW+i*180_000,70,70.05,69.98,70.02) for i in range(5)]
-        later.candles['15m'].append(candle(NOW,70,70.05,69.98,70.02))
+        later.price, later.bid, later.ask = snap.price, snap.bid, snap.ask
+        later.candles['3m'] += [candle(snap.now+i*180_000,100.5,100.6,100.4,100.5) for i in range(5)]
+        later.candles['1m'] += [candle(snap.now+i*60_000,100.5,100.6,100.4,100.5) for i in range(15)]
+        later.candles['15m'].append(candle(snap.now,100.5,100.6,100.4,100.5))
         def planning(s,c,st):
             proposed,_=b.full_plan(anchor,ctx,s,c,{})
             return analysis([proposed] if proposed else [])
@@ -486,15 +495,12 @@ class FullSetupTests(unittest.TestCase):
 
     def test_neutral_htf_matches_plan_and_report(self):
         cfg,ctx,a,s = full_fixture()
-        out = b.run_cycle(b.new_state(cfg),s,cfg)
-        # Stronger RR/cost geometry can veto every live candidate; use an
-        # independently viable anchor for this neutral-HTF serialization test.
-        p,reason = b.full_plan(a,ctx,s,cfg,{})
-        self.assertIsNotNone(p,reason)
-        self.assertEqual(p['htf_1h'],out['analysis']['contexts']['1H']['side'])
-        self.assertEqual(p['htf_4h'],out['analysis']['contexts']['4H']['side'])
-        self.assertEqual(p['htf_1h'],0)
-        self.assertEqual(p['htf_4h'],0)
+        out=b.run_cycle(b.new_state(cfg),s,cfg)
+        p,reason=b.full_plan(a,ctx,s,cfg,{})
+        self.assertIsNone(p)
+        self.assertIn(reason,('RANGE_SWEEP_REQUIRED','RANGE_MIDDLE_BLOCKED','RANGE_WRONG_EDGE'))
+        self.assertEqual(out['analysis']['contexts']['1H']['side'],0)
+        self.assertEqual(out['analysis']['contexts']['4H']['side'],0)
 
     def test_unknown_anchor_direction_cannot_make_short_limit(self):
         cfg,ctx,a,s = full_fixture()
@@ -566,63 +572,56 @@ class FullSetupTests(unittest.TestCase):
     def test_all_24_setup_types_can_reach_common_limit_planner(self):
         for setup in sorted(core.DETECTED_SETUP_TYPES):
             with self.subTest(setup=setup):
-                side = "SHORT" if setup.endswith("SHORT") else "LONG"
-                cfg,ctx,a,s = full_fixture(side)
-                a.setup_type = setup
-                a.setup_family = core.journal_setup_family(setup)
-                p,why = b.full_plan(a,ctx,s,cfg,{})
+                side="SHORT" if setup.endswith("SHORT") else "LONG"
+                cfg,ctx,a,s=checklist_fixture(side)
+                a.setup_type=setup
+                a.setup_family=core.journal_setup_family(setup)
+                p,why=b.full_plan(a,ctx,s,cfg,{})
                 self.assertIsNotNone(p,why)
-                self.assertEqual(p["setup_type"],setup)
-                self.assertEqual(p["execution_source"],"LIMIT_ARMED_AT_LEVEL")
-                self.assertEqual(p["entry_stage"],"CORE")
+                self.assertEqual(p['setup_type'],setup)
+                self.assertEqual(p['execution_source'],'NEW_PENDING_LIMIT')
+                self.assertEqual(p['entry_stage'],'CORE')
 
     def test_limit_geometry_is_anchor_not_ticker(self):
-        cfg,ctx,a,s = full_fixture()
-        p,why = b.full_plan(a,ctx,s,cfg,{})
-        self.assertEqual(p["entry"],b.round_tick(a.level,cfg.tick))
-        self.assertLess(p["stop"],a.invalidation)
-        self.assertGreaterEqual(p["net_rr"],cfg.min_net_rr)
-        self.assertLessEqual(p["rr1"],2+1e-8)
+        cfg,ctx,a,s=checklist_fixture()
+        p,why=b.full_plan(a,ctx,s,cfg,{})
+        self.assertIsNotNone(p,why)
+        self.assertAlmostEqual(p['entry'],a.evidence['entry_zone']['high']+.03)
+        self.assertLess(p['stop'],a.invalidation)
+        self.assertGreaterEqual(p['rr2'],cfg.min_net_rr)
+        self.assertAlmostEqual(p['rr1'],1.)
 
     def test_visited_level_and_crossing_spread_rejected(self):
-        cfg,ctx,a,s = full_fixture()
-        s.candles["3m"].append(candle(NOW,a.level+1,a.level+2,a.level-.01,a.level+1))
-        self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],"LEVEL_ALREADY_VISITED_AFTER_OBSERVATION")
-        a.level = s.ask
-        self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],"LIMIT_WOULD_CROSS_SPREAD")
+        cfg,ctx,a,s=checklist_fixture()
+        last=s.candles['1m'][-1]
+        s.candles['1m'][-1]=b.Candle(last.ts,100.4,100.6,100.1,100.5)
+        self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],'WAIT_RETEST')
+        s.ask=100.20;s.bid=100.19;s.price=100.20
+        self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],'WAIT_RETEST')
 
     def test_mixed_htf_is_not_blanket_veto(self):
-        cfg,ctx,a,s = full_fixture()
-        targets = [{"kind":"test","level":a.level+3,"distance":3}]
-        directions = iter(["LONG","SHORT"])
-        with patch.object(core,"structure_snapshot",side_effect=lambda *args:{"direction":next(directions)}), \
-                patch.object(b,"full_targets",return_value=targets):
-            p,why = b.full_plan(a,ctx,s,cfg,{})
-        self.assertIsNotNone(p,why)
+        cfg,ctx,a,s=checklist_fixture()
+        regime={'state':'RANGE_LIQUIDITY_ROTATION','range_low':99.,'range_high':102.,'side_1h':1,'side_4h':-1}
+        ok,reason=b.policy.regime_admission(1,100.5,regime,s,cfg.tick,b)
+        self.assertFalse(ok)
+        self.assertEqual(reason,'RANGE_MIDDLE_BLOCKED')
 
     def test_both_htf_against_requires_original_reversal_and_ltf_confirmation(self):
-        cfg,ctx,a,s = full_fixture()
-        a.setup_type = "BREAKOUT_RETEST"
-        with patch.object(core,"structure_snapshot",return_value={"direction":"SHORT"}):
-            self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],"BOTH_HTF_AGAINST_WITHOUT_CONFIRMED_REVERSAL")
-            a.setup_type = "SWEEP_RECLAIM"
-            ctx["structure15"]["direction"] = ctx["structure3m"]["direction"] = "LONG"
-            targets = [{"kind":"test","level":a.level+3,"distance":3}]
-            with patch.object(b,"full_targets",return_value=targets):
-                p,why = b.full_plan(a,ctx,s,cfg,{})
-            self.assertIsNotNone(p,why)
+        cfg,ctx,a,s=checklist_fixture()
+        regime={'state':'BEARISH_TREND','side_1h':-1,'side_4h':-1,'range_low':99.,'range_high':102.}
+        with patch.object(b.policy,'market_regime',return_value=regime):
+            self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],'REGIME_SHORT_ONLY')
+            a.setup_type='SWEEP_RECLAIM'
+            self.assertEqual(b.full_plan(a,ctx,s,cfg,{})[1],'REGIME_SHORT_ONLY')
 
     def test_position_allocation_absent_from_plan_and_message(self):
-        cfg,ctx,a,s = full_fixture()
-        state = b.new_state(cfg)
-        out = b.run_cycle(state,s,cfg)
-        p,reason = b.full_plan(a,ctx,s,cfg,{})
+        cfg,ctx,a,s=checklist_fixture()
+        p,reason=b.full_plan(a,ctx,s,cfg,{})
         self.assertIsNotNone(p,reason)
-        for key in ("qty","quantity","position_size","position_risk_pct","deposit","margin","leverage"):
+        for key in ('qty','quantity','position_size','position_risk_pct','deposit','margin','leverage'):
             self.assertNotIn(key,p)
-        msg = b.build_message(state,s,out,cfg).lower()
-        self.assertNotIn("розмір позиції",msg)
-        self.assertNotIn("депозит",msg)
+        msg=b.build_message(b.new_state(cfg),s,{'action':'WATCH','analysis':{}},cfg).lower()
+        self.assertNotIn('депозит',msg)
 
     def test_repeated_detection_cannot_refresh_anchor_age(self):
         cfg,ctx,a,s = full_fixture()
@@ -912,22 +911,20 @@ class TwoSlotTests(unittest.TestCase):
         self.assertEqual(b.occupied_slots(state),1)
         self.assertFalse(result['selected_plans'])  # Existing fill locks new placements
 
-    def test_legacy_partial_remainder_can_close_fully_under_current_review(self):
-        state = b.new_state(b.Config())
-        p = self.plan(1)
+    def test_existing_partial_contract_is_preserved_during_upgrade(self):
+        state=b.new_state(b.Config())
+        p=self.plan(1)
         p.update(tp1=102,tp2=103,tp3=104,partials={'TP1':.65,'TP2':.2,'TP3':.15})
-        second = self.plan(2,98)
-        second['tp'] = 104
+        second=self.plan(2,98);second['tp']=104
         self.seed_two(state,p,second)
-        bars = [candle(NOW,101,101.5,99.9,101),candle(NOW+180_000,101,102.2,100.5,102)]
+        bars=[candle(NOW,101,101.5,99.9,101),candle(NOW+180_000,101,102.2,100.5,102)]
         bars += [candle(NOW+i*180_000,102,102.2,101.5,102) for i in range(2,5)]
         self.report(state,[self.plan(3,97)],NOW+900_000,bars,price=102)
-        trade=state['trades'][0]
-        self.assertEqual(trade['close_reason'],'ADAPTIVE_FULL_EXIT')
-        self.assertAlmostEqual(trade['final_exit_fraction'],.35)
-        self.assertEqual(len(trade['realized_legs']),1)
-        self.assertEqual(b.occupied_slots(state),0)
-        self.assertFalse([e for e in state['events'] if e['kind']=='PLACED' and e['order_id']=='order-3'])
+        self.assertFalse(state['trades'])
+        self.assertAlmostEqual(state['active']['remaining'],.35)
+        self.assertEqual(len(state['active']['realized_legs']),1)
+        self.assertEqual(state['active']['partials'],{'TP1':.65,'TP2':.2,'TP3':.15})
+        self.assertFalse([ev for ev in state['events'] if ev['kind']=='PLACED'])
 
     def test_closed_position_frees_only_its_slot_for_one_replacement(self):
         state = b.new_state(b.Config())
@@ -980,14 +977,13 @@ class TwoSlotTests(unittest.TestCase):
         self.assertIsNotNone(state['active'])
 
     def test_production_plan_activation_and_expiry_are_on_whole_bars(self):
-        cfg,ctx,a,snap = full_fixture()
-        snap.now += 60_000
-        snap.ticker_ts = snap.now
-        plan,reason = b.full_plan(a,ctx,snap,cfg,{})
+        cfg,ctx,a,snap=checklist_fixture()
+        snap.now+=31_000;snap.ticker_ts=snap.now
+        plan,reason=b.full_plan(a,ctx,snap,cfg,{})
         self.assertIsNotNone(plan,reason)
-        self.assertEqual(plan['effective_ts'],NOW+180_000)
-        self.assertEqual(plan['expires_ts']%180_000,0)
-        self.assertGreaterEqual(plan['expires_ts']-plan['effective_ts'],900_000)
+        self.assertEqual(plan['effective_ts'],((snap.now+59_999)//60_000)*60_000)
+        self.assertEqual(plan['expires_ts']%60_000,0)
+        self.assertEqual(plan['expires_ts']-plan['effective_ts'],120*60_000)
 
     def test_aligned_cancellation_does_not_create_new_partial_bar_uncertainty(self):
         state = b.new_state(b.Config())

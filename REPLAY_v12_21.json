@@ -1,0 +1,2067 @@
+{
+  "status": "EXPLORATORY_REPLAY_COMPLETED",
+  "version": "full-ict-v12.21.0-bzu-checklist",
+  "archive": "research_market_v12_6.json",
+  "archive_sha256": "e58d3e242fb8eba056c70f5276e70b0259c91a17fd8139263e8eb7828bbd0559",
+  "production_state_written": false,
+  "mode": "FIRST_SEEN_15M_OBSERVED_QUOTES_NO_HOLDOUT",
+  "profitability_validated": false,
+  "minute_execution_validated": false,
+  "execution_timeframe": "3m_COARSE_FALLBACK",
+  "limitations": [
+    "Same historical window used for diagnosis; not independent holdout.",
+    "No 1m reconstruction: archives without minutes cannot validate minute ordering.",
+    "OHLC stop-first on ambiguous bars; no actual exchange fill verification.",
+    "Signals are observed at real quotes, never filled before publication."
+  ],
+  "configuration": {
+    "instrument": "BZ-USDT-SWAP",
+    "tick": 0.01,
+    "maker_fee": 0.0002,
+    "taker_fee": 0.0005,
+    "include_commission": true,
+    "slippage_bps": 2.0,
+    "min_net_rr": 1.8,
+    "max_target_r": 2.5,
+    "max_stop_atr": 4.0,
+    "min_stop_absolute": 0.2,
+    "max_stop_absolute": 0.8,
+    "min_stop_atr3": 0.65,
+    "min_stop_pct": 0.01,
+    "min_target_pct": 0.02,
+    "max_entry_distance_atr": 3.5,
+    "min_score": 55.0,
+    "conflict_margin": 8.0,
+    "ttl_minutes": 120,
+    "setup_age_minutes": 180,
+    "max_hold_minutes": 360,
+    "day_loss_cap_r": 0.0,
+    "max_daily_trades": 0,
+    "timezone": "Europe/Kyiv",
+    "session_end_hour": 22,
+    "break_even_trigger_r": 1.0,
+    "max_spread_atr": 0.15,
+    "cancel_on_bias_flip": true,
+    "setup_min_sample": 20,
+    "analysis_scan_minutes": 15
+  },
+  "observations": 1572,
+  "first": "2026-10-18T19:52:12.856000+00:00",
+  "last": "2026-11-04T07:01:22.391000+00:00",
+  "statistics": {
+    "trades": 33,
+    "wins": 13,
+    "losses": 20,
+    "breakeven": 0,
+    "win_rate": 0.3939393939393939,
+    "wilson_lower_95": 0.24682882231508205,
+    "net_r": -17.60281912974022,
+    "expectancy_r": -0.5334187615072793,
+    "profit_factor": 0.34337906089271547,
+    "max_drawdown_r": 20.376853978532665
+  },
+  "dependencies": {
+    "raw_trades": 33,
+    "dependency_episodes": 33,
+    "cluster_win_rate": 0.3939393939393939,
+    "cluster_expectancy_r": -0.5334187615072793,
+    "groups": [
+      {
+        "episode_id": "28d9d3c30828e18be6",
+        "members": [
+          "e0a33a4b63d0ecca95"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.4150930260869814,
+        "decision_ts": 1792362778933,
+        "closed_ts": 1792365120000
+      },
+      {
+        "episode_id": "78db4f268d34dccb12",
+        "members": [
+          "b94bc728fd9d036142"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.2140844808988687,
+        "decision_ts": 1792370052571,
+        "closed_ts": 1792372500000
+      },
+      {
+        "episode_id": "bc9dd50c3131de7ecc",
+        "members": [
+          "ba7b303efc311664d8"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.4116935869565506,
+        "decision_ts": 1792385297100,
+        "closed_ts": 1792387620000
+      },
+      {
+        "episode_id": "31f21a514c111f42e2",
+        "members": [
+          "e68e3baf4edfec4334"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.2682974361538397,
+        "decision_ts": 1792389877601,
+        "closed_ts": 1792398780000
+      },
+      {
+        "episode_id": "2a3f61a986ededa717",
+        "members": [
+          "2db5d7bab70a2ace69"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 1.2301283951219821,
+        "decision_ts": 1792448345602,
+        "closed_ts": 1792458360000
+      },
+      {
+        "episode_id": "07c0f8ff2bc3d9f7b4",
+        "members": [
+          "35822373d5b1a4663b"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.2560609027026985,
+        "decision_ts": 1792512307241,
+        "closed_ts": 1792515240000
+      },
+      {
+        "episode_id": "7f0ef989071d92a79a",
+        "members": [
+          "3adf5884cca4edc3f0"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.3993431458333143,
+        "decision_ts": 1792561754113,
+        "closed_ts": 1792566720000
+      },
+      {
+        "episode_id": "3681377f083da5058c",
+        "members": [
+          "a24adf0b4663c6ebd5"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.398780708333334,
+        "decision_ts": 1792581556867,
+        "closed_ts": 1792582020000
+      },
+      {
+        "episode_id": "35f71baebe4a2cf8a3",
+        "members": [
+          "0306369fdf6cbdc7b0"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.337795445614053,
+        "decision_ts": 1792637273449,
+        "closed_ts": 1792645560000
+      },
+      {
+        "episode_id": "cf23db33c8bbb8ca49",
+        "members": [
+          "5d6600b06f812a51e9"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 1.5120879447499982,
+        "decision_ts": 1792706674291,
+        "closed_ts": 1792720980000
+      },
+      {
+        "episode_id": "62db936080c538af9d",
+        "members": [
+          "8907cb1fa3ef51659b"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.27291969444442,
+        "decision_ts": 1792721969221,
+        "closed_ts": 1792723860000
+      },
+      {
+        "episode_id": "b469b18c991d59905b",
+        "members": [
+          "5d9d40046076d88d29"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.5007243799999455,
+        "decision_ts": 1792771523892,
+        "closed_ts": 1792774080000
+      },
+      {
+        "episode_id": "ba9bc9cbf15c568a05",
+        "members": [
+          "d7045e8748f1993fe3"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.3374748033898087,
+        "decision_ts": 1792955909619,
+        "closed_ts": 1792958580000
+      },
+      {
+        "episode_id": "ef0099bf298871d79d",
+        "members": [
+          "df3209b799bbf63467"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 1.3158155254902382,
+        "decision_ts": 1792971333393,
+        "closed_ts": 1792977120000
+      },
+      {
+        "episode_id": "6493cefdb158ea741c",
+        "members": [
+          "53e95c280d7510820f"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.416507646597947,
+        "decision_ts": 1792977602647,
+        "closed_ts": 1792997100000
+      },
+      {
+        "episode_id": "396d808ac31c287349",
+        "members": [
+          "f79d78f1520fe7483b"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.4296564521739104,
+        "decision_ts": 1793139569499,
+        "closed_ts": 1793145780000
+      },
+      {
+        "episode_id": "1b90eaa26cb29f05b4",
+        "members": [
+          "8a5eae1a2a04f46f93"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.132304194736836,
+        "decision_ts": 1793181030022,
+        "closed_ts": 1793198520000
+      },
+      {
+        "episode_id": "9bb795c07525d2952b",
+        "members": [
+          "ceebf39b0590c3dc37"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.2238751444444322,
+        "decision_ts": 1793203552759,
+        "closed_ts": 1793206620000
+      },
+      {
+        "episode_id": "4630378b55c5fcd513",
+        "members": [
+          "9996df0c193efae0bc"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.3460098482758827,
+        "decision_ts": 1793210882021,
+        "closed_ts": 1793212740000
+      },
+      {
+        "episode_id": "83d983b34d9dd4fc07",
+        "members": [
+          "62452684805595985d"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.20337469391300977,
+        "decision_ts": 1793248603503,
+        "closed_ts": 1793255400000
+      },
+      {
+        "episode_id": "fc461294fb231ef412",
+        "members": [
+          "4ff703f3ba0ee18bc5"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.2059281591836584,
+        "decision_ts": 1793325682051,
+        "closed_ts": 1793336220000
+      },
+      {
+        "episode_id": "9dac9e50f87e1b47d2",
+        "members": [
+          "b5b0a578eda499e525"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.258240556410233,
+        "decision_ts": 1793340080036,
+        "closed_ts": 1793341800000
+      },
+      {
+        "episode_id": "46be6184a133da1631",
+        "members": [
+          "691cf0c61b1ce0cae0"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.4152559183673272,
+        "decision_ts": 1793364347931,
+        "closed_ts": 1793365200000
+      },
+      {
+        "episode_id": "eeb2e6dd258e2dd6b0",
+        "members": [
+          "a441ef2560d34efe43"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.4404467304347657,
+        "decision_ts": 1793404879948,
+        "closed_ts": 1793420820000
+      },
+      {
+        "episode_id": "930d829bbca31b3b93",
+        "members": [
+          "de97be3e8c8743d7d1"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.17796272272730396,
+        "decision_ts": 1793538944658,
+        "closed_ts": 1793568600000
+      },
+      {
+        "episode_id": "8620496e0b0089d1e0",
+        "members": [
+          "04ea551b1323b58132"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.5053411649999644,
+        "decision_ts": 1793570474497,
+        "closed_ts": 1793572920000
+      },
+      {
+        "episode_id": "78cf5b2d68a17a4f41",
+        "members": [
+          "d661e265fdfef59782"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 1.2186090500000348,
+        "decision_ts": 1793581273532,
+        "closed_ts": 1793585700000
+      },
+      {
+        "episode_id": "1af30069b18db7d32b",
+        "members": [
+          "e3672446832cce8c40"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.3180534171428725,
+        "decision_ts": 1793592078567,
+        "closed_ts": 1793598660000
+      },
+      {
+        "episode_id": "cff3d7403d583cc97f",
+        "members": [
+          "d07f102a20fbc74395"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 1.3448991499130156,
+        "decision_ts": 1793638896359,
+        "closed_ts": 1793643120000
+      },
+      {
+        "episode_id": "1250ff32e334814b9a",
+        "members": [
+          "15f6c396d9b50e3c27"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.4533870104347954,
+        "decision_ts": 1793665867103,
+        "closed_ts": 1793667780000
+      },
+      {
+        "episode_id": "26b85889ea094f181d",
+        "members": [
+          "9d85e47046f4c4c771"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.3685622455000326,
+        "decision_ts": 1793664949048,
+        "closed_ts": 1793667780000
+      },
+      {
+        "episode_id": "25dc878e53a1a61857",
+        "members": [
+          "cbaa63898b84160553"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": 0.3776859921951443,
+        "decision_ts": 1793723475564,
+        "closed_ts": 1793726460000
+      },
+      {
+        "episode_id": "3819ed9475b0502cfd",
+        "members": [
+          "ba121a4f01cae77017"
+        ],
+        "trades": 1,
+        "net_r_equal_weight": -1.3071620163934479,
+        "decision_ts": 1793733363540,
+        "closed_ts": 1793735640000
+      }
+    ],
+    "method": "OVERLAPPING_SAME_SIDE_WITHIN_HALF_INITIAL_RISK",
+    "independence_guaranteed": false,
+    "pnl_weighting": "EQUAL_WEIGHT_WITHIN_EPISODE_NOT_DEPOSIT_RETURN"
+  },
+  "health_counts": {
+    "LIFECYCLE_HISTORY_GAP": 2
+  },
+  "by_side": {
+    "-1": {
+      "trades": 20,
+      "wins": 11,
+      "losses": 9,
+      "breakeven": 0,
+      "win_rate": 0.55,
+      "wilson_lower_95": 0.34208200830759966,
+      "net_r": -5.468418157797904,
+      "expectancy_r": -0.2734209078898952,
+      "profit_factor": 0.5416850623249644,
+      "max_drawdown_r": 8.24245300659035
+    },
+    "1": {
+      "trades": 13,
+      "wins": 2,
+      "losses": 11,
+      "breakeven": 0,
+      "win_rate": 0.15384615384615385,
+      "wilson_lower_95": 0.04325726318273798,
+      "net_r": -12.134400971942314,
+      "expectancy_r": -0.933415459380178,
+      "profit_factor": 0.18433063662222754,
+      "max_drawdown_r": 12.134400971942313
+    }
+  },
+  "by_timeframe": {
+    "15m": {
+      "trades": 30,
+      "wins": 10,
+      "losses": 20,
+      "breakeven": 0,
+      "win_rate": 0.3333333333333333,
+      "wilson_lower_95": 0.19230295526846194,
+      "net_r": -19.936856330425044,
+      "expectancy_r": -0.6645618776808349,
+      "profit_factor": 0.2563147283372729,
+      "max_drawdown_r": 21.888941923282665
+    },
+    "1H": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": 1.0,
+      "wilson_lower_95": 0.20654329147389294,
+      "net_r": 1.5120879447499982,
+      "expectancy_r": 1.5120879447499982,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0
+    },
+    "4H": {
+      "trades": 2,
+      "wins": 2,
+      "losses": 0,
+      "breakeven": 0,
+      "win_rate": 1.0,
+      "wilson_lower_95": 0.3423719528896193,
+      "net_r": 0.821949255934828,
+      "expectancy_r": 0.410974627967414,
+      "profit_factor": null,
+      "max_drawdown_r": 0.0
+    }
+  },
+  "orders": [
+    {
+      "id": "e0a33a4b63d0ecca95",
+      "side": 1,
+      "entry": 106.27,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792362778933,
+      "resolved_ts": 1792363140000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "c6d52e6c2a60b29fdb",
+      "side": -1,
+      "entry": 106.04,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792365502767,
+      "resolved_ts": 1792366560000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "c7db8c1cfcfabf79ed",
+      "side": -1,
+      "entry": 105.81,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792367299909,
+      "resolved_ts": 1792367640000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "57c8eabeca7134f3bd",
+      "side": -1,
+      "entry": 105.4,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792368202316,
+      "resolved_ts": 1792369260000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "b94bc728fd9d036142",
+      "side": -1,
+      "entry": 105.4,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792370052571,
+      "resolved_ts": 1792372140000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "4136078cdede99f29b",
+      "side": -1,
+      "entry": 105.38,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1792378997817,
+      "resolved_ts": 1792380960000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "ba7b303efc311664d8",
+      "side": -1,
+      "entry": 105.0,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792385297100,
+      "resolved_ts": 1792386000000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "e68e3baf4edfec4334",
+      "side": -1,
+      "entry": 104.78,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792389877601,
+      "resolved_ts": 1792390320000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "9bad0290efe6b6d0cd",
+      "side": -1,
+      "entry": 106.4,
+      "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
+      "placed_ts": 1792403356153,
+      "resolved_ts": 1792404180000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "700cb6fc0f7bff1db4",
+      "side": 1,
+      "entry": 104.68,
+      "setup": "SWEEP_RECLAIM",
+      "placed_ts": 1792404289728,
+      "resolved_ts": 1792406520000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "dcd820d6cd5b8b84fe",
+      "side": 1,
+      "entry": 104.61,
+      "setup": "CAPITULATION_RECOVERY",
+      "placed_ts": 1792406947201,
+      "resolved_ts": 1792414200000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "c1a04c02b8eec765d6",
+      "side": -1,
+      "entry": 106.61,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792434842874,
+      "resolved_ts": 1792436400000,
+      "status": "EXPIRED",
+      "reason": "SESSION_ENDED"
+    },
+    {
+      "id": "2db5d7bab70a2ace69",
+      "side": 1,
+      "entry": 105.82,
+      "setup": "SWEEP_RECLAIM",
+      "placed_ts": 1792448345602,
+      "resolved_ts": 1792454760000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "95429e87ce9cf8aee0",
+      "side": -1,
+      "entry": 107.01,
+      "setup": "MSS_REVERSAL_SHORT",
+      "placed_ts": 1792478946193,
+      "resolved_ts": 1792479420000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "d73673030c73e6d5d8",
+      "side": 1,
+      "entry": 106.2,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792502366963,
+      "resolved_ts": 1792503360000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "35822373d5b1a4663b",
+      "side": -1,
+      "entry": 104.95,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792512307241,
+      "resolved_ts": 1792512720000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "b5dbe83798bf3efa83",
+      "side": -1,
+      "entry": 106.21,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1792512307241,
+      "resolved_ts": 1792519560000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "ef6001ae2b517d59c2",
+      "side": 1,
+      "entry": 105.95,
+      "setup": "CAPITULATION_RECOVERY",
+      "placed_ts": 1792545554438,
+      "resolved_ts": 1792546740000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "42e8b70292a4029ae2",
+      "side": 1,
+      "entry": 106.71,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792555411809,
+      "resolved_ts": 1792555740000,
+      "status": "CANCELLED",
+      "reason": "LEVEL_PASSED_WHILE_UNARMED"
+    },
+    {
+      "id": "3adf5884cca4edc3f0",
+      "side": 1,
+      "entry": 106.73,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792561754113,
+      "resolved_ts": 1792562400000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "aeab69c3efef58fbea",
+      "side": 1,
+      "entry": 106.0,
+      "setup": "SWEEP_RECLAIM",
+      "placed_ts": 1792568045270,
+      "resolved_ts": 1792568340000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "7a45f20c2d1cd43094",
+      "side": 1,
+      "entry": 106.94,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792577963109,
+      "resolved_ts": 1792578240000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "279e728b4296ff6a79",
+      "side": 1,
+      "entry": 107.01,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792578896629,
+      "resolved_ts": 1792579320000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "a24adf0b4663c6ebd5",
+      "side": 1,
+      "entry": 106.58,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792581556867,
+      "resolved_ts": 1792581840000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "e272ad823043d0d18d",
+      "side": -1,
+      "entry": 105.58,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792592380680,
+      "resolved_ts": 1792593000000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "b53b1a5dd69370e8fe",
+      "side": -1,
+      "entry": 105.9,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1792586045074,
+      "resolved_ts": 1792593300000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "fe3b0894a3319cd5ae",
+      "side": -1,
+      "entry": 106.31,
+      "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
+      "placed_ts": 1792595113371,
+      "resolved_ts": 1792595340000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "c31dabfd8c41a65ef1",
+      "side": -1,
+      "entry": 106.31,
+      "setup": "DAILY_WEEKLY_OPEN_RECLAIM",
+      "placed_ts": 1792596769313,
+      "resolved_ts": 1792603980000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "de602569d533e1b7fd",
+      "side": 1,
+      "entry": 104.26,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792604005994,
+      "resolved_ts": 1792605960000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "d388d4988d086da4f0",
+      "side": -1,
+      "entry": 105.93,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1792606792775,
+      "resolved_ts": 1792608660000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "e5b1ead5780b858aab",
+      "side": -1,
+      "entry": 106.65,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792616628003,
+      "resolved_ts": 1792618560000,
+      "status": "CANCELLED",
+      "reason": "STRUCTURE_FLIPPED"
+    },
+    {
+      "id": "0306369fdf6cbdc7b0",
+      "side": -1,
+      "entry": 106.65,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792637273449,
+      "resolved_ts": 1792638180000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "766ef9083bde1d88de",
+      "side": 1,
+      "entry": 106.94,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792646314207,
+      "resolved_ts": 1792647180000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "9349fdb4cb255d2782",
+      "side": 1,
+      "entry": 107.37,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792649971952,
+      "resolved_ts": 1792650240000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "141d6b0a7a8890a75e",
+      "side": 1,
+      "entry": 107.31,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792652669404,
+      "resolved_ts": 1792653660000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "764854b48efc58ceb7",
+      "side": 1,
+      "entry": 107.17,
+      "setup": "BREAKOUT_RETEST",
+      "placed_ts": 1792671764958,
+      "resolved_ts": 1792673100000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "685d5aa2937938e84e",
+      "side": 1,
+      "entry": 107.14,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792680523155,
+      "resolved_ts": 1792680840000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "f9bae3308bfbdfeb42",
+      "side": 1,
+      "entry": 108.48,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792692130700,
+      "resolved_ts": 1792692720000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "5d6600b06f812a51e9",
+      "side": 1,
+      "entry": 108.25,
+      "setup": "BREAKOUT_RETEST",
+      "placed_ts": 1792706674291,
+      "resolved_ts": 1792708920000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "1709b72f0c5798e30c",
+      "side": 1,
+      "entry": 109.55,
+      "setup": "BREAKOUT_RETEST",
+      "placed_ts": 1792721105916,
+      "resolved_ts": 1792721700000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "8907cb1fa3ef51659b",
+      "side": 1,
+      "entry": 109.46,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792721969221,
+      "resolved_ts": 1792722780000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "b54e1e332009bfd2de",
+      "side": 1,
+      "entry": 108.57,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1792724705217,
+      "resolved_ts": 1792731960000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "f5ebfb20c2e16136cc",
+      "side": 1,
+      "entry": 108.92,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792732769408,
+      "resolved_ts": 1792733400000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "c3e2e0bc45378f650c",
+      "side": 1,
+      "entry": 108.92,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792734588788,
+      "resolved_ts": 1792734840000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "d6d3cd4baacce1d023",
+      "side": 1,
+      "entry": 109.47,
+      "setup": "FAILED_AUCTION_REJECTION",
+      "placed_ts": 1792748054829,
+      "resolved_ts": 1792748340000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "8fa5485900131ce5f6",
+      "side": 1,
+      "entry": 109.47,
+      "setup": "CAPITULATION_RECOVERY",
+      "placed_ts": 1792757985268,
+      "resolved_ts": 1792765200000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "17d1aecb4820a95f44",
+      "side": 1,
+      "entry": 110.81,
+      "setup": "BREAKOUT_RETEST",
+      "placed_ts": 1792763378101,
+      "resolved_ts": 1792766160000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "5d9d40046076d88d29",
+      "side": 1,
+      "entry": 111.44,
+      "setup": "CAPITULATION_RECOVERY",
+      "placed_ts": 1792771523892,
+      "resolved_ts": 1792773720000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "7109d5def1300cdec9",
+      "side": 1,
+      "entry": 110.81,
+      "setup": "ACCELERATION_PULLBACK_REENTRY",
+      "placed_ts": 1792775059643,
+      "resolved_ts": 1792776060000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "64b7dbf9dc34ebaf98",
+      "side": 1,
+      "entry": 110.81,
+      "setup": "ACCELERATION_PULLBACK_REENTRY",
+      "placed_ts": 1792796618959,
+      "resolved_ts": 1792803840000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "e5ba4bdae09ce4e8f5",
+      "side": -1,
+      "entry": 110.74,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1792947000591,
+      "resolved_ts": 1792949220000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "d7045e8748f1993fe3",
+      "side": -1,
+      "entry": 110.32,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792955909619,
+      "resolved_ts": 1792956420000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "df3209b799bbf63467",
+      "side": -1,
+      "entry": 110.81,
+      "setup": "FAILED_AUCTION_REJECTION",
+      "placed_ts": 1792971333393,
+      "resolved_ts": 1792971720000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "53e95c280d7510820f",
+      "side": -1,
+      "entry": 110.16,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1792977602647,
+      "resolved_ts": 1792978200000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "5b042bef8eb8b94056",
+      "side": 1,
+      "entry": 109.94,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793034343122,
+      "resolved_ts": 1793041560000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "e03db4a77fc0c059e9",
+      "side": 1,
+      "entry": 110.57,
+      "setup": "FAILED_AUCTION_REJECTION",
+      "placed_ts": 1793092018502,
+      "resolved_ts": 1793092680000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "848d4efed58e1a9780",
+      "side": 1,
+      "entry": 110.07,
+      "setup": "SESSION_MEAN_RECLAIM",
+      "placed_ts": 1793092816270,
+      "resolved_ts": 1793094660000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "24fa53093b751a4b3a",
+      "side": -1,
+      "entry": 110.89,
+      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+      "placed_ts": 1793100037510,
+      "resolved_ts": 1793104920000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "746c69be2b79c4bc00",
+      "side": 1,
+      "entry": 110.22,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1793109963909,
+      "resolved_ts": 1793110320000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "f79d78f1520fe7483b",
+      "side": -1,
+      "entry": 109.58,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793139569499,
+      "resolved_ts": 1793140560000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "c45e81ab9e4ed32275",
+      "side": -1,
+      "entry": 111.22,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793175631949,
+      "resolved_ts": 1793175840000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "0f9992c60a4a8d3b66",
+      "side": -1,
+      "entry": 111.63,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793174654175,
+      "resolved_ts": 1793180160000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "8a5eae1a2a04f46f93",
+      "side": -1,
+      "entry": 111.12,
+      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+      "placed_ts": 1793181030022,
+      "resolved_ts": 1793182140000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "ceebf39b0590c3dc37",
+      "side": 1,
+      "entry": 112.38,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793203552759,
+      "resolved_ts": 1793204460000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "9996df0c193efae0bc",
+      "side": 1,
+      "entry": 111.82,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793210882021,
+      "resolved_ts": 1793211660000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "4dd27f023a89c1002f",
+      "side": 1,
+      "entry": 111.37,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793215275113,
+      "resolved_ts": 1793216700000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "62452684805595985d",
+      "side": -1,
+      "entry": 110.32,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793248603503,
+      "resolved_ts": 1793249100000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "16bd71801ac5b7e416",
+      "side": 1,
+      "entry": 108.92,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793282488002,
+      "resolved_ts": 1793285280000,
+      "status": "CANCELLED",
+      "reason": "STRUCTURE_FLIPPED"
+    },
+    {
+      "id": "92e285a228c524453e",
+      "side": 1,
+      "entry": 109.08,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793291469910,
+      "resolved_ts": 1793298720000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "3d51152e6a5da0f76c",
+      "side": 1,
+      "entry": 110.42,
+      "setup": "SWEEP_RECLAIM",
+      "placed_ts": 1793295954345,
+      "resolved_ts": 1793301300000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "183e2abe99d793a4c4",
+      "side": 1,
+      "entry": 110.77,
+      "setup": "CAPITULATION_RECOVERY",
+      "placed_ts": 1793301348431,
+      "resolved_ts": 1793304000000,
+      "status": "EXPIRED",
+      "reason": "SESSION_ENDED"
+    },
+    {
+      "id": "4ff703f3ba0ee18bc5",
+      "side": 1,
+      "entry": 112.51,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793325682051,
+      "resolved_ts": 1793327580000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "e2fa0b604d40e4df2c",
+      "side": 1,
+      "entry": 112.3,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793339149641,
+      "resolved_ts": 1793339460000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "b5b0a578eda499e525",
+      "side": 1,
+      "entry": 112.22,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793340080036,
+      "resolved_ts": 1793341800000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "7e863f5c0f80838855",
+      "side": 1,
+      "entry": 111.44,
+      "setup": "FAILED_OPENING_RANGE_BREAKOUT",
+      "placed_ts": 1793336483389,
+      "resolved_ts": 1793341980000,
+      "status": "CANCELLED",
+      "reason": "STRUCTURE_FLIPPED"
+    },
+    {
+      "id": "ea52ce3582b0183f21",
+      "side": 1,
+      "entry": 112.09,
+      "setup": "SWEEP_RECLAIM",
+      "placed_ts": 1793342746522,
+      "resolved_ts": 1793343060000,
+      "status": "CANCELLED",
+      "reason": "LEVEL_PASSED_WHILE_UNARMED"
+    },
+    {
+      "id": "99920b3647693ceeca",
+      "side": 1,
+      "entry": 112.03,
+      "setup": "SESSION_MEAN_RECLAIM",
+      "placed_ts": 1793347284842,
+      "resolved_ts": 1793348640000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "c07496bd1b0de302c7",
+      "side": 1,
+      "entry": 111.52,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793343679822,
+      "resolved_ts": 1793350920000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "691cf0c61b1ce0cae0",
+      "side": 1,
+      "entry": 113.29,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793364347931,
+      "resolved_ts": 1793364840000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "cb693def926b0bb5bd",
+      "side": -1,
+      "entry": 113.9,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793383282193,
+      "resolved_ts": 1793385000000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "a441ef2560d34efe43",
+      "side": 1,
+      "entry": 112.78,
+      "setup": "SWEEP_RECLAIM",
+      "placed_ts": 1793404879948,
+      "resolved_ts": 1793405880000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "38e57012b10b9ffd22",
+      "side": -1,
+      "entry": 112.3,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793485860298,
+      "resolved_ts": 1793486160000,
+      "status": "CANCELLED",
+      "reason": "LEVEL_PASSED_WHILE_UNARMED"
+    },
+    {
+      "id": "de97be3e8c8743d7d1",
+      "side": -1,
+      "entry": 112.13,
+      "setup": "BUYER_EXHAUSTION_SHORT",
+      "placed_ts": 1793538944658,
+      "resolved_ts": 1793539440000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "04ea551b1323b58132",
+      "side": -1,
+      "entry": 112.13,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793570474497,
+      "resolved_ts": 1793571840000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "d661e265fdfef59782",
+      "side": -1,
+      "entry": 111.53,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793581273532,
+      "resolved_ts": 1793581560000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "df52c51ce97004ebe5",
+      "side": -1,
+      "entry": 110.93,
+      "setup": "BUYER_EXHAUSTION_SHORT",
+      "placed_ts": 1793585748217,
+      "resolved_ts": 1793588220000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "3d474f945e50a727d8",
+      "side": -1,
+      "entry": 110.46,
+      "setup": "BREAKOUT_RETEST",
+      "placed_ts": 1793588485827,
+      "resolved_ts": 1793588760000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "e3672446832cce8c40",
+      "side": -1,
+      "entry": 109.88,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793592078567,
+      "resolved_ts": 1793593800000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "d4abae22d0e6c08264",
+      "side": -1,
+      "entry": 110.26,
+      "setup": "BUYER_EXHAUSTION_SHORT",
+      "placed_ts": 1793607373980,
+      "resolved_ts": 1793608020000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "ea2ae724b1178a0595",
+      "side": -1,
+      "entry": 111.1,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793606492246,
+      "resolved_ts": 1793613720000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "ad36451d474286c671",
+      "side": -1,
+      "entry": 110.11,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793608266297,
+      "resolved_ts": 1793613780000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "3225d60da5a1273095",
+      "side": -1,
+      "entry": 109.98,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793614549971,
+      "resolved_ts": 1793615580000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "e7ffc6c1389f3fd4cd",
+      "side": -1,
+      "entry": 108.97,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793616347406,
+      "resolved_ts": 1793616660000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "997144830fdea0a818",
+      "side": -1,
+      "entry": 109.58,
+      "setup": "ACCELERATION_PULLBACK_REENTRY",
+      "placed_ts": 1793622680035,
+      "resolved_ts": 1793623500000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "1ab2f984da04271ca4",
+      "side": -1,
+      "entry": 109.04,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793623550335,
+      "resolved_ts": 1793624580000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "c503e95a1a2e51796b",
+      "side": -1,
+      "entry": 107.82,
+      "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
+      "placed_ts": 1793627150977,
+      "resolved_ts": 1793629080000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "c38296e660387e62c7",
+      "side": -1,
+      "entry": 107.82,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793629872553,
+      "resolved_ts": 1793637120000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    },
+    {
+      "id": "d07f102a20fbc74395",
+      "side": -1,
+      "entry": 104.71,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793638896359,
+      "resolved_ts": 1793639160000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "cdda1809dfeaac1216",
+      "side": -1,
+      "entry": 105.42,
+      "setup": "ACCELERATION_PULLBACK_REENTRY",
+      "placed_ts": 1793645153258,
+      "resolved_ts": 1793646000000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "2c85b58c06a44b3be3",
+      "side": -1,
+      "entry": 105.42,
+      "setup": "ACCELERATION_PULLBACK_REENTRY",
+      "placed_ts": 1793646082623,
+      "resolved_ts": 1793646360000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "362ccc5958dc1e0bce",
+      "side": -1,
+      "entry": 105.19,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793647868797,
+      "resolved_ts": 1793648160000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "aa6c315d1e947aaeb9",
+      "side": -1,
+      "entry": 105.26,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793664082348,
+      "resolved_ts": 1793664540000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "9d85e47046f4c4c771",
+      "side": -1,
+      "entry": 105.26,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793664949048,
+      "resolved_ts": 1793666700000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "15f6c396d9b50e3c27",
+      "side": -1,
+      "entry": 104.83,
+      "setup": "PULLBACK_CONTINUATION",
+      "placed_ts": 1793665867103,
+      "resolved_ts": 1793666700000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "1e87e044f8165deed4",
+      "side": -1,
+      "entry": 106.88,
+      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+      "placed_ts": 1793700081447,
+      "resolved_ts": 1793703780000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "38b9c4cba6eb098d09",
+      "side": -1,
+      "entry": 106.6,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793709070461,
+      "resolved_ts": 1793710980000,
+      "status": "CANCELLED",
+      "reason": "BETTER_SAME_DIRECTION_ICT_CANDIDATE"
+    },
+    {
+      "id": "23cde62a2852f726bd",
+      "side": -1,
+      "entry": 103.87,
+      "setup": "BREAKOUT_RETEST",
+      "placed_ts": 1793714483428,
+      "resolved_ts": 1793715300000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "71a963e4f470090ebf",
+      "side": -1,
+      "entry": 103.64,
+      "setup": "ACCELERATION_PULLBACK_REENTRY",
+      "placed_ts": 1793721688890,
+      "resolved_ts": 1793722320000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "cbaa63898b84160553",
+      "side": -1,
+      "entry": 103.68,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "placed_ts": 1793723475564,
+      "resolved_ts": 1793723940000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "ba121a4f01cae77017",
+      "side": -1,
+      "entry": 103.8,
+      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+      "placed_ts": 1793733363540,
+      "resolved_ts": 1793734200000,
+      "status": "FILLED",
+      "reason": "PAPER_ONE_TICK_PENETRATION"
+    },
+    {
+      "id": "8fe5dc5b9c7e92009e",
+      "side": -1,
+      "entry": 104.29,
+      "setup": "MSS_REVERSAL_SHORT",
+      "placed_ts": 1793755865203,
+      "resolved_ts": 1793756340000,
+      "status": "CANCELLED",
+      "reason": "TARGET_REACHED_WITHOUT_FILL"
+    },
+    {
+      "id": "e78d025df8f288f4f2",
+      "side": -1,
+      "entry": 104.19,
+      "setup": "BUYER_EXHAUSTION_SHORT",
+      "placed_ts": 1793756747729,
+      "resolved_ts": 1793763960000,
+      "status": "EXPIRED",
+      "reason": "LIMIT_TTL"
+    }
+  ],
+  "trades": [
+    {
+      "id": "e0a33a4b63d0ecca95",
+      "side": 1,
+      "entry": 106.27,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1792362960000,
+      "closed_ts": 1792365120000,
+      "net_r": -1.4150930260869814,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "b94bc728fd9d036142",
+      "side": -1,
+      "entry": 105.495,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792371960000,
+      "closed_ts": 1792372500000,
+      "net_r": -1.2140844808988687,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "ba7b303efc311664d8",
+      "side": -1,
+      "entry": 105.02000000000001,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792385820000,
+      "closed_ts": 1792387620000,
+      "net_r": -1.4116935869565506,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "e68e3baf4edfec4334",
+      "side": -1,
+      "entry": 104.83,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792390140000,
+      "closed_ts": 1792398780000,
+      "net_r": 0.2682974361538397,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": true
+    },
+    {
+      "id": "2db5d7bab70a2ace69",
+      "side": 1,
+      "entry": 105.82,
+      "setup": "SWEEP_RECLAIM",
+      "filled_ts": 1792454580000,
+      "closed_ts": 1792458360000,
+      "net_r": 1.2301283951219821,
+      "tp1_hit": true,
+      "close_reason": "TAKE_PROFIT",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "35822373d5b1a4663b",
+      "side": -1,
+      "entry": 104.97,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1792512540000,
+      "closed_ts": 1792515240000,
+      "net_r": -1.2560609027026985,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "3adf5884cca4edc3f0",
+      "side": 1,
+      "entry": 106.69,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792562220000,
+      "closed_ts": 1792566720000,
+      "net_r": -1.3993431458333143,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "a24adf0b4663c6ebd5",
+      "side": 1,
+      "entry": 106.53999999999999,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1792581660000,
+      "closed_ts": 1792582020000,
+      "net_r": -1.398780708333334,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "0306369fdf6cbdc7b0",
+      "side": -1,
+      "entry": 106.735,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1792638000000,
+      "closed_ts": 1792645560000,
+      "net_r": -1.337795445614053,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "5d6600b06f812a51e9",
+      "side": 1,
+      "entry": 108.25,
+      "setup": "BREAKOUT_RETEST",
+      "filled_ts": 1792708740000,
+      "closed_ts": 1792720980000,
+      "net_r": 1.5120879447499982,
+      "tp1_hit": true,
+      "close_reason": "TAKE_PROFIT",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "8907cb1fa3ef51659b",
+      "side": 1,
+      "entry": 109.46,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792722600000,
+      "closed_ts": 1792723860000,
+      "net_r": -1.27291969444442,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "5d9d40046076d88d29",
+      "side": 1,
+      "entry": 111.44,
+      "setup": "CAPITULATION_RECOVERY",
+      "filled_ts": 1792773540000,
+      "closed_ts": 1792774080000,
+      "net_r": -1.5007243799999455,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "d7045e8748f1993fe3",
+      "side": -1,
+      "entry": 110.375,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792956240000,
+      "closed_ts": 1792958580000,
+      "net_r": -1.3374748033898087,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "df3209b799bbf63467",
+      "side": -1,
+      "entry": 110.845,
+      "setup": "FAILED_AUCTION_REJECTION",
+      "filled_ts": 1792971540000,
+      "closed_ts": 1792977120000,
+      "net_r": 1.3158155254902382,
+      "tp1_hit": true,
+      "close_reason": "TAKE_PROFIT",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "53e95c280d7510820f",
+      "side": -1,
+      "entry": 110.215,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1792978020000,
+      "closed_ts": 1792997100000,
+      "net_r": 0.416507646597947,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "f79d78f1520fe7483b",
+      "side": -1,
+      "entry": 109.61,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793140380000,
+      "closed_ts": 1793145780000,
+      "net_r": -1.4296564521739104,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "8a5eae1a2a04f46f93",
+      "side": -1,
+      "entry": 111.12,
+      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+      "filled_ts": 1793181960000,
+      "closed_ts": 1793198520000,
+      "net_r": -1.132304194736836,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "ceebf39b0590c3dc37",
+      "side": 1,
+      "entry": 112.3,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793204280000,
+      "closed_ts": 1793206620000,
+      "net_r": -1.2238751444444322,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": true
+    },
+    {
+      "id": "9996df0c193efae0bc",
+      "side": 1,
+      "entry": 111.72999999999999,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1793211480000,
+      "closed_ts": 1793212740000,
+      "net_r": -1.3460098482758827,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "62452684805595985d",
+      "side": -1,
+      "entry": 110.35,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793248920000,
+      "closed_ts": 1793255400000,
+      "net_r": 0.20337469391300977,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "4ff703f3ba0ee18bc5",
+      "side": 1,
+      "entry": 112.51,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793327400000,
+      "closed_ts": 1793336220000,
+      "net_r": -1.2059281591836584,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "b5b0a578eda499e525",
+      "side": 1,
+      "entry": 112.22,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1793341620000,
+      "closed_ts": 1793341800000,
+      "net_r": -1.258240556410233,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": true
+    },
+    {
+      "id": "691cf0c61b1ce0cae0",
+      "side": 1,
+      "entry": 113.245,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1793364660000,
+      "closed_ts": 1793365200000,
+      "net_r": -1.4152559183673272,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "a441ef2560d34efe43",
+      "side": 1,
+      "entry": 112.75,
+      "setup": "SWEEP_RECLAIM",
+      "filled_ts": 1793405700000,
+      "closed_ts": 1793420820000,
+      "net_r": -1.4404467304347657,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "de97be3e8c8743d7d1",
+      "side": -1,
+      "entry": 112.15,
+      "setup": "BUYER_EXHAUSTION_SHORT",
+      "filled_ts": 1793539260000,
+      "closed_ts": 1793568600000,
+      "net_r": 0.17796272272730396,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "04ea551b1323b58132",
+      "side": -1,
+      "entry": 112.13,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1793571660000,
+      "closed_ts": 1793572920000,
+      "net_r": -1.5053411649999644,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "d661e265fdfef59782",
+      "side": -1,
+      "entry": 111.53,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793581380000,
+      "closed_ts": 1793585700000,
+      "net_r": 1.2186090500000348,
+      "tp1_hit": true,
+      "close_reason": "TAKE_PROFIT",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "e3672446832cce8c40",
+      "side": -1,
+      "entry": 109.935,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793593620000,
+      "closed_ts": 1793598660000,
+      "net_r": 0.3180534171428725,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "d07f102a20fbc74395",
+      "side": -1,
+      "entry": 104.755,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793638980000,
+      "closed_ts": 1793643120000,
+      "net_r": 1.3448991499130156,
+      "tp1_hit": true,
+      "close_reason": "TAKE_PROFIT",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "9d85e47046f4c4c771",
+      "side": -1,
+      "entry": 105.26,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793666520000,
+      "closed_ts": 1793667780000,
+      "net_r": 0.3685622455000326,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": true
+    },
+    {
+      "id": "15f6c396d9b50e3c27",
+      "side": -1,
+      "entry": 105.045,
+      "setup": "PULLBACK_CONTINUATION",
+      "filled_ts": 1793666520000,
+      "closed_ts": 1793667780000,
+      "net_r": 0.4533870104347954,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": true
+    },
+    {
+      "id": "cbaa63898b84160553",
+      "side": -1,
+      "entry": 103.68,
+      "setup": "RANGE_EDGE_REVERSAL",
+      "filled_ts": 1793723760000,
+      "closed_ts": 1793726460000,
+      "net_r": 0.3776859921951443,
+      "tp1_hit": true,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    },
+    {
+      "id": "ba121a4f01cae77017",
+      "side": -1,
+      "entry": 103.845,
+      "setup": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+      "filled_ts": 1793734020000,
+      "closed_ts": 1793735640000,
+      "net_r": -1.3071620163934479,
+      "tp1_hit": null,
+      "close_reason": "STOP",
+      "ambiguous_ohlc": false
+    }
+  ],
+  "open_at_end": [],
+  "code_sha256": {
+    "setup_scanner.py": "8b908b79b29a300c92a2c1e96b64318a3ad9d87e04583ab3e72bfed31fa393bf",
+    "bzu_policy.py": "f2f67f683c4a0a4ee8f87ebf7651083cea687ba2ac2dd2cc7a9701e517d938ac",
+    "test_v15_strategy_research.py": "3614254c3ad4054283b95069718a0f47822cedb66276c35bea2cdc39ca6a9ceb",
+    "test_v12_5_early_limits.py": "b7f20ab9cc07119dbd31d3c636cc447a07319bbc86a6f8614070d61ac4d4ac5e",
+    "directional_policy.py": "67c2a14373b22b2c228cc2e0740c4810cae0b2b7f2253ccd6e1635a772a9020c",
+    "bot_oneshot.py": "392e0d0bf9c013b237c13972ead8299021c41bf29dd3d558f29adbb6dacfa643",
+    "test_v12_4_scanner.py": "59a2e756fdd5be64e34cffb2ecac7e329442cc18cff832bca848185edcc532b2",
+    "test_position_monitor.py": "097f7661b73439fe652d223f52bf639e72fd44a1f32581c0c2c8c0409346289a",
+    "baseline_v12_1.py": "3795a12fafd8be26a854cc7e64145a1b5c05d0a19678a61c970979a9681680f6",
+    "test_v12_14_adverse_selection.py": "d94cad8a486b1baf44f19958637d49740cb96bbb090327d35b6349741b740615",
+    "lifecycle_forecast.py": "ec8109fe68a1af92545902177fb9128cda2aa547a6bf82c569908688f550c9a5",
+    "test_v12_20_5_entry_admission.py": "8055b9f06c5abdc18ddcd52775a3cbd22325ae7fb03162911662ff7fa396fba5",
+    "test_v12_3_fixes.py": "0070fef2856900ebdc4f0d55528d595437490df0af5f44028b53e30bc8c944fa",
+    "trade_meta_model.py": "084c3063d692960088dc3f1b1ae2f35c3397f095d9fa99cabc7df61bffe20ad3",
+    "test_v12_18_speed.py": "b52e522f94337c2fd707a4e40af75f39621391bbc60bc716a11be118f0c865cf",
+    "test_full_limit_engine.py": "1e8b80704f8d88ea5d80e12a649984909af03c4dd5facd5265c5d5c043e3b1ce",
+    "strategy_organics.py": "1dfb2b597fcfea914bc26acb9b9e4dc87a55611e0940e64307bee410e19beb80",
+    "test_signal_quality.py": "423a4a4f785d65f4822bdb91947c3fe0e9474efd501e55d15a76ceea3733af42",
+    "test_v12_20_2_bos_stop_contracts.py": "2977ed2ad04c6e97364b73da8710fce8fac52e93a69de132e7ba20e7eca73062",
+    "test_v12_10_control.py": "f1cc35b2c4254600a0279211f71c2680225fa8fba2b87ba1b743389efb4f5014",
+    "test_v12_4_3_geometry.py": "f63786916d777cf5764f647587332516e4dc006117cb6469996afd91bee9b026",
+    "test_v12_20_github_cadence.py": "95f7178177b6a741b007ab94c2eeb883d72d14e6762e2110d4368bac7449dbbe",
+    "research_zone_policy_1220.py": "c6e1ff0cd9c344b56bc32394083cba5a0670040fef540bfac786fc874fdc3cdd",
+    "test_v12_20_research.py": "1d9f02cb3b808c3f5ed3727bc709dd1a2cc6091457077b29d514f4da8c219d2c",
+    "strategy_research.py": "490d653885efacb44f6c8d674c281c730d1e345236cc519cc21baea59e04f138",
+    "execution_atlas.py": "7138724f7a76d2b83eb0261006d478de906476242aace47ddda503de0d7d29fa",
+    "continuous_worker.py": "aed13e8fce4534ac44d92a850eddd1a855378652566d01eef68daaed9bde8e09",
+    "test_v12_8_paths.py": "606fbdf9d8cdf4deda8ec9f3ca3a11a0b68ef505fa8ee754cbdb23b156b1bb23",
+    "market_archive.py": "68e39639ed65f7b5b9b19c4daf39c2445a2ce2ec94f466ab0c8943638057cd39",
+    "test_v12_9_atlas.py": "0dab6d18a2037f57b455b4c3b0af92c7cb73d592b348463a700acb9e67597e3a",
+    "test_v12_7_policy.py": "eab169f5724caa745313acb72595b06ba61304323cecc8b490baf3f140b9761b",
+    "research_short_continuations.py": "f09a3d3378461604ee35795b1778a6ff97c005aa23337e8c5821a8765797b6d3",
+    "research_history.py": "d763394876ba69f032b2066d9ebfb05b8ca12d0678e447af48e1c4330bd6b466",
+    "test_v15_edge_intelligence.py": "18ccc3afeedfdd301a28924762e61306cca546966bf688f4915575da7e01dff0",
+    "test_v12_20_4_scan_gap_long.py": "e4bc3c721378bbb3ce5c46a9391af1ce8f7dd4276d27a77bce7fcc692ea894e7",
+    "test_v12_20_contracts.py": "6d2e589e0cbf4a0fe8ffd2254312256e85a2d5265cadd38f2bc32c231c74fbfe",
+    "strategy_observed_audit.py": "34f685e9428ccb9fd3a65a1e5569109e6c0eb409b9ecda926cb1bbffee283212",
+    "test_v12_14_fast_startup.py": "8216ccab761f2b243c54d8a94fdf2028d9f20bd94ccc91a3e439ed0972c0ba4b",
+    "test_v12_11_directional.py": "e7b540b900ead56fa45c5d139ba6bcf1a9bf5bf9ffbe50295571be9d8f563e7f",
+    "price_forecast.py": "0a4b47f74ac588a122b6e2c6ba1908aedf1ded07c3eddae94f85c24955e39de5",
+    "entry_playbooks.py": "00d0f74a956d252f9dfd8b209ae23ae96c3f42b373dfb3ba9e48988c72a83b64",
+    "research_validate.py": "7f4d85590996e99afd98e158096b230370a87d8addfa6a0c3c4ebdc35d64e6eb",
+    "signal_quality.py": "d26cfe1fa009f33741b7abc01c800d86022297f891fe328e27a0ca361433ccfb",
+    "test_v12_13_ict_rotation.py": "8a7b6530e242166d73af0f325689c66145ad72b7c4f871df8be39180c25b1c2e",
+    "test_v12_6_policy.py": "ddbeef24e892851a246f37c11e091351abb6641fc56d8c964840ec4a8b3ffd35",
+    "test_strategy_direct_entries.py": "79a150aeeaf2e0783699348b3d753f674ea542527ecaef1c035f1c36e5ca0aff",
+    "notification_report.py": "d16eab0c37efb843008504a7499bd54e76ba315aea2b55a068526cb63a8b83d4",
+    "test_v12_19_fast_short.py": "157dc83c165205e2d98b0c110a0f39f86fd1cecf11c5a80c9755fc6768d3bfec",
+    "test_v12_4_2_reports.py": "722b08c823f9ef644839fc9726d06058bbea77c5b22ae9d9107b8c3501024019",
+    "test_notification_report.py": "797f232847b26ec4e3eee79d54580a9f64df4708cae8ac8b4e87fd9cb8929810",
+    "setup_paths.py": "017f125af97c3c70d98bfec561db7cc4081ce623e452d08ecc135b3ee158ec6a",
+    "research_evidence.py": "9239837669f82492e1dbd83fd2f90b37021e2315daf45405343e4c3575b3d3b8",
+    "position_monitor.py": "e3ad08f72df92e1b8ad478f1f9ea10cd5290d6a9702309a3fd8d1412534e3b5c",
+    "edge_intelligence.py": "f0362517738acdd07afbb51faca7c408a926f375d0e280b84e9b299a03ea85c1",
+    "entry_adverse_selection.py": "b55ed2cbab71bb471078a5422dea5e87b13c9d0ebdd46f0d67a03b357826d239",
+    "audit_replay_v12_9.py": "8104681cbc55aed1f0dad621ff30e93bf3571b94811fa22654bef8b019e56ad7",
+    "full_limit_engine.py": "d97f55cf5a49662294caffc165b4d68deb9ec5d30f2b5756a3ace502dec4737c",
+    "test_entry_playbooks.py": "af22afe904b979f6a4553e0bf8f8c101aad67d2defb199a422c847d25c65d917",
+    "test_v12_20_3_telegram_delivery.py": "a645eb8e33aed9efaba6a306334fdb1d1d73d725661af2d4684d418d97ea57c9",
+    "limit_structure.py": "65a3d482561f2a3d6bbc0adac4603cb4ec115a14677b7e5db86261314ba7925d",
+    "research_v12_6.py": "85e624be5801f880d0ca78010f7173f93660db595b7ad9b326a1f59a98ca98f0",
+    "test_v12_4_1_selection.py": "d5196ded4002609253bf8c15f03ef2bca05452b3c701b10fe9f2e493b089ebe0",
+    "edge_research.py": "c91eb6372917346117155d2bade1bca12db1bd81467ccf9e7784db03c33b23bf",
+    "portfolio_arbitration.py": "5920bfe95d98e39679ef729731338fd4196a5ded1518b387f9d1a3de60f3a8c1",
+    "test_v12_12_meta.py": "b6f5185c079fc46b3caf3a2950baa9f018c6c53e1cec664afb7b650fa97f0a74",
+    "strategy_direct_entries.py": "1a0800f462e038edd8316bcb26f29616f961d3b56b2c79d497855d4f09c2cb6c",
+    "test_strategy_organics.py": "d3c985042fb94aa0708d427a5baa4c4b087c7107c15deb3d16b9f00cf682c6f4",
+    "analyze_bot.py": "1c86b91ed25482175f4b75506e6f48397c1cf6594fe7195bd68a6d9317733f67",
+    "test_v12_21_checklist.py": "b3d88d95adbcb59d81053f6f366d27a2e56ea8e99c6881bc08f64c64bd742508",
+    "trade_dependencies.py": "306e5c3beba59fb2637098d58838f793d4082b57c90762474fb837e95dfe3b6f",
+    "test_v12_18_2_second_entry.py": "8e4418ae0c3241f4bea623883c02abb4fc0edbfd9c01d6f30a42757a8ec04c94",
+    "ict_methodology.py": "b75ee188d47bbc512bae3a52f650d4df1f277848ac6d7e9e121c72ba5d6db0ee"
+  },
+  "elapsed_seconds": 1010.8494405420001
+}

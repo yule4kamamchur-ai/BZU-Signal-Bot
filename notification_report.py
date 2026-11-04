@@ -107,6 +107,8 @@ def candidate_reason(row, cfg, engine):
 
 
 def build(state, snapshot, result, cfg, engine):
+    if engine.VERSION=='full-ict-v12.21.0-bzu-checklist':
+        return build_checklist(state,snapshot,result,cfg,engine)
     now = snapshot.now
     local = datetime.fromtimestamp(now/1000, ZoneInfo(cfg.timezone))
     price_ok = snapshot.trusted and snapshot.price > 0 and 0 <= now-snapshot.ticker_ts <= 120_000
@@ -285,6 +287,115 @@ def build(state, snapshot, result, cfg, engine):
             else 'закриті угоди' if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14)
             else 'закритих угод')
     lines += ['', f'Сьогодні (Київ): {count} {noun} • результат {result_r}']
+    return '\n'.join(lines)
+
+
+def build_checklist(state, snapshot, result, cfg, engine):
+    import directional_policy
+    import ict_methodology
+    now=snapshot.now
+    local=datetime.fromtimestamp(now/1000,ZoneInfo(cfg.timezone))
+    session=ict_methodology.session_liquidity(snapshot)
+    regime=directional_policy.market_regime(snapshot,cfg.tick,engine)
+    trend={'BULLISH_TREND':'BULLISH','BEARISH_TREND':'BEARISH',
+           'RANGE_LIQUIDITY_ROTATION':'RANGE'}[regime['state']]
+    price_ok=snapshot.trusted and 0<=now-snapshot.ticker_ts<=120_000
+    price=f'{snapshot.price:.8g}' if price_ok else 'недоступна'
+    pools=session['pools']
+    above=sorted((p for p in pools if p['level']>snapshot.price),key=lambda p:p['level'])
+    below=sorted((p for p in pools if p['level']<snapshot.price),key=lambda p:-p['level'])
+    pool=lambda rows: f"{rows[0]['name']} {rows[0]['level']:.8g}" if rows else '—'
+    lines=[f'🛢 BZU РИНКОВИЙ КОНТЕКСТ • {local:%d.%m %H:%M} (Київ) • {engine.REPORT_RELEASE}',
+           f'Ціна: {price} • {session["session"]} • 1H/4H: {trend}',
+           f'ATR 15m: {engine.atr(snapshot.candles.get("15m",[])):.3f}',
+           f'Ліквідність ↑ {pool(above)} • ↓ {pool(below)}']
+    health=result.get('analysis',{}).get('health',[])
+    frozen=result.get('action') in ('DATA_HOLD','DUPLICATE_OR_OUT_OF_ORDER')
+    if frozen:
+        checkpoint=state.get('last_run_ts',0)
+        label=engine.local_time(checkpoint,cfg) if checkpoint else 'попередній цикл'
+        lines += [f'Дані не оновлені. Збережений стан на {label}; виконання потребує перевірки.']
+    if health:
+        lines.append('Перевірка даних: '+', '.join(health_text(code) for code in dict.fromkeys(health)))
+    precision=state.get('execution_audit',{}).get('timeframe',engine.execution_series(snapshot)[0])
+    selected=[] if frozen else result.get('selected_plans',[])
+    if selected:
+        lines += ['', '🚨 НОВИЙ СИГНАЛ']
+    for p in selected:
+        active=p.get('action_type')=='ACTIVE_ENTRY'
+        lines += [('🔥 АКТИВНИЙ ВХІД ЗАРАЗ — ACTIVE ENTRY' if active else
+                   '🟢 ВИСТАВИТИ ЛІМІТНИЙ ОРДЕР — NEW PENDING LIMIT'),
+                  f"{engine.display_order(state,p['id'])} {'LONG' if p['side']==1 else 'SHORT'} • {setup_text(p)} • {p.get('setup_timeframe','15m')}"]
+        if active:
+            lines += [f"Вхід за поточною ціною: {p['entry']:.8g} (без зарахування минулого дотику)"]
+        else:
+            lines += [' • '.join(f"Limit {i+1} (50%): {leg['price']:.8g}" for i,leg in enumerate(p.get('entry_legs',[])))]
+        lines += [f"SL: {p['stop']:.8g} (ризик до L1: {abs(p['entry']-p['stop']):.3f})",
+                  f"TP1 (60% + Б/У): {p['tp1']:.8g} • 1.0R | TP2 (40%): {p['tp2']:.8g} • {p['rr2']:.2f}R",
+                  f"{'🔥 A+' if p.get('rating')=='A+' else '⚡ B'} Setup • {p['score']:.0f}/100 • "+
+                  ('робочий обсяг' if p.get('rating')=='A+' else '0.5 робочого обсягу')]
+        parts=p.get('confluence',{}).get('components',{})
+        labels={'fresh_ob_fvg':'свіжа OB/FVG','liquidity_sweep':'зняття ліквідності',
+                'htf_alignment':'HTF узгоджений','session_and_approach':'сесія та підхід',
+                'model_or_edge':'модель / edge'}
+        lines += ['Причина: '+', '.join(labels.get(k,'підтвердження кількох зон') for k,v in parts.items() if v)]
+    pending=engine.pending_plans(state);active=engine.active_plans(state)
+    uncertain=[view['reconciliation'] for _,view in engine.slot_views(state) if view.get('reconciliation')]
+    lines += ['',f'⚡ СТАТУС УГОД ТА ОРДЕРІВ • аудит {precision}',
+              f'Зони зайнято: {len(pending)+len(active)+len(uncertain)}/2 • OPEN {len(active)} • PENDING {len(pending)}']
+    lines += [f'Відкриті угоди: {len(active)} • Ліміти в очікуванні: {len(pending)}']
+    if uncertain:
+        lines += [f'⚠️ Перевірити виконання: {len(uncertain)} • місце зарезервоване, результат не включено у WR']
+    records={p['id']:p for p in state.get('orders',[])+state.get('trades',[])+pending+active}
+    for ev in ([] if frozen else result.get('events',[])):
+        kind=ev.get('kind');p=records.get(ev.get('order_id'),{})
+        label=engine.display_order(state,ev.get('order_id',''))
+        when=engine.local_time(ev['ts'],cfg)
+        if kind=='FILLED':
+            lines += [f"✅ ОРДЕР АКТИВОВАНО {label} @ {p.get('entry',ev.get('entry',0)):.8g} • хвилина {when}"]
+        elif kind=='SECOND_LIMIT_FILLED':
+            lines += [f"✅ Limit 2 {label}: середній вхід {ev['entry']:.8g} • {when}"]
+        elif kind=='TP1_PARTIAL':
+            lines += [f"🎯 TP1 ВЗЯТО {label} (+1.0R на закритій частині). Фіксація 60%, SL решти → {ev['stop']:.8g}"]
+        elif kind in ('CANCELLED','EXPIRED','CANCEL_REQUESTED'):
+            reasons={'TARGET_REACHED_WITHOUT_FILL':'TP1 відпрацьовано без входу',
+                     'LIMIT_TTL':'минув час 2 год','SESSION_ENDED':'сесію завершено о 22:00',
+                     'STRUCTURE_FLIPPED':'Structure Flipped — підтверджено BOS / CHoCH',
+                     'LEVEL_PASSED_WHILE_UNARMED':'рівень пройдено до активації'}
+            reason=reasons.get(ev.get('reason'),engine.REASON_UA.get(ev.get('reason'),'сценарій скасовано'))
+            lines += [f"❌ ЗНЯТИ ЛІМІТКУ {label} @ {p.get('limit_price',p.get('entry',0)):.8g} • {reason}"]
+        elif kind=='CLOSED':
+            net=ev.get('net_r',0)
+            label_result='прибуток' if net>0 else 'збиток' if net<0 else 'беззбиток'
+            lines += [f"{'✅' if net>0 else '🔴'} {label} ЗАКРИТО: {net:+.2f}R — {label_result} • {close_reason({**p,'close_reason':ev.get('reason')})}"]
+    for p in active:
+        lines += [f"🔵 СУПРОВІД {engine.display_order(state,p['id'])} {'LONG' if p['side']==1 else 'SHORT'} @ {p['entry']:.8g}",
+                  f"SL: {p['stop']:.8g} • TP1 {p.get('tp1',p['tp']):.8g} • TP2 {p.get('tp2',p['tp']):.8g}"+
+                  (' • TP1 зафіксовано, залишок 40%' if p.get('tp1_hit') and p.get('policy')=='BZU_CHECKLIST_V12_21' else '')]
+        if p.get('pending_stop'):
+            amendment=p['pending_stop']
+            lines += [f"Новий SL {amendment['price']:.8g} з {engine.local_time(amendment['effective_ts'],cfg)}"]
+    for p in pending:
+        left=max(0,(p['expires_ts']-now)//60_000)
+        lines += [f"⏳ В ОЧІКУВАННІ {engine.display_order(state,p['id'])} {'LONG' if p['side']==1 else 'SHORT'} @ {p['entry']:.8g}",
+                  f"Вхід: {p['entry']:.8g} • SL: {p['stop']:.8g} • до входу {abs(snapshot.price-p['entry']):.3f} • {left} хв"]
+    waiting=[p for p in state.get('watch',[]) if p.get('reason')=='WAIT_RETEST']
+    if waiting:
+        p=waiting[0]
+        lines += [f"↩️ WAIT RETEST: {setup_text(p)} • рівень {p.get('level',0):.8g}"]
+    trades=[]
+    for trade in state.get('trades',[]):
+        closed=engine.timestamp(trade.get('closed_ts'),engine.timestamp(trade.get('closed_at'),0))
+        if closed and closed<=now and not trade.get('excluded_from_win_rate'):
+            trades.append({**trade,'closed_ts':closed})
+    def dated(t): return datetime.fromtimestamp(t['closed_ts']/1000,ZoneInfo(cfg.timezone))
+    daily=[t for t in trades if dated(t).date()==local.date()]
+    weekly=[t for t in trades if dated(t).isocalendar()[:2]==local.isocalendar()[:2]]
+    lines += ['', '📊 СТАТИСТИКА BZU']
+    for label,rows in (('День',daily),('Тиждень',weekly)):
+        stat=engine.statistics(rows)
+        wr=f"{100*stat['win_rate']:.1f}%" if rows else '—'
+        lines += [f"{label}: закрито {len(rows)} • WR {wr} • {sum(t['net_r'] for t in rows):+.2f}R"]
     return '\n'.join(lines)
 
 

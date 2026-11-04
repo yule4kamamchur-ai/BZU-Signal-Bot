@@ -39,7 +39,7 @@ def verify(data, engine):
         if batch['origin'] != ORIGIN or batch['instrument'] != data['instrument']:
             raise ValueError('Mixed instrument or source in research batch')
     for tf, rows in data['candles'].items():
-        if tf not in engine.TF:
+        if tf not in engine.CANDLE_TF:
             raise ValueError('Unknown research timeframe')
         previous = -1
         for raw in rows:
@@ -48,8 +48,8 @@ def verify(data, engine):
             if not stamp or stamp['batch_id'] not in batch_map:
                 raise ValueError('Missing candle provenance')
             batch = batch_map[stamp['batch_id']]
-            if (not candle.confirmed or candle.ts % engine.TF[tf] or candle.ts <= previous
-                    or candle.ts+engine.TF[tf] > stamp['observed_ts']
+            if (not candle.confirmed or candle.ts % engine.CANDLE_TF[tf] or candle.ts <= previous
+                    or candle.ts+engine.CANDLE_TF[tf] > stamp['observed_ts']
                     or stamp['observed_ts'] != batch['observed_ts']):
                 raise ValueError('Noncausal or duplicate research candle')
             previous = candle.ts
@@ -65,7 +65,7 @@ def verify(data, engine):
         c=engine.Candle.parse(revision['bar'])
         batch=batch_map.get(revision['batch_id'])
         if (not batch or c.ts!=revision['ts'] or not c.confirmed
-                or c.ts+engine.TF[revision['timeframe']]>revision['observed_ts']
+                or c.ts+engine.CANDLE_TF[revision['timeframe']]>revision['observed_ts']
                 or revision['observed_ts']!=batch['observed_ts']
                 or revision['revised_sha256']!=digest(revision['bar'])):
             raise ValueError('Invalid revision provenance')
@@ -110,7 +110,7 @@ def record(path, snapshot, cfg, engine):
                  'smt_candles':[vars(c) for c in snapshot.smt_candles]})}
     payload['id'] = digest(payload)
     data['batches'].append(payload)
-    for tf, step in engine.TF.items():
+    for tf, step in engine.CANDLE_TF.items():
         rows = {engine.Candle.parse(raw).ts: raw for raw in data['candles'].get(tf, [])}
         current_versions=dict(rows)
         for revision in data['revisions']:

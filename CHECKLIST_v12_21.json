@@ -1,0 +1,151 @@
+{
+  "version": "full-ict-v12.21.0-bzu-checklist",
+  "source_zip_sha256": "16ca95bb84f51e8a61d8b25938fbc319503e42889d70d724a6b2843b5e644d09",
+  "checklist_sha256": "123fb02b3aab4bbcbea5f3a2f12c12510fcfd0a1bb0734632423588c000ed48e",
+  "implemented": {
+    "1_timing": [
+      "1m closed High/Low audit with checkpoint coverage",
+      "prepositioned split limits",
+      "current-quote catch-up <=0.25R, never backdated",
+      "Telegram delivery before heavy archives with durable recovery"
+    ],
+    "2_admission": [
+      "40/20/15/15/10 confluence, threshold 55",
+      "secondary models advisory",
+      "final structural gross RR >=1.8",
+      "distance <=3.5 true 15m ATR",
+      "front-run max(.03,.06*ATR15)",
+      "fast approach equilibrium",
+      "two halves, one zone, one stop"
+    ],
+    "3_portfolio": [
+      "one market regime",
+      "range middle 30-70 blocked",
+      "near-zone clustering <.5 ATR15 with geometry recheck",
+      "direction locked by OPEN or pending thesis",
+      "pending reversal requires BOS/CHoCH then cancellation",
+      "max two zones, no new zones while OPEN"
+    ],
+    "4_lifecycle": [
+      "Asian/London/previous-day pools and causal sweep/MSS",
+      "first-test mitigation tombstones",
+      "swing +/- .25 ATR15; SL .20-.80, including L2",
+      "TP1 60%, BE +/-.02, TP2 remaining 40%",
+      "TP1 milestone separated from final net WR",
+      "120 minute pending TTL and Kyiv 22:00 cancellation",
+      "deep limits not cancelled for TP1 already behind price at placement"
+    ],
+    "5_report": [
+      "context, new signal, statuses, daily/weekly statistics",
+      "A+/B, split prices, actual average fills, TP1 and stop changes",
+      "15m GitHub-only schedule"
+    ],
+    "6_checks": [
+      "release self-test",
+      "preserved 24 detector ASTs",
+      "workflow syntax and version agreement",
+      "uploaded-state migration",
+      "read-only archive replay"
+    ]
+  },
+  "confluence": {
+    "threshold": 55,
+    "fresh_ob_fvg": 40,
+    "liquidity_sweep": 20,
+    "htf_alignment": 15,
+    "session_and_approach": 15,
+    "model_or_edge": 10
+  },
+  "clarifications": [
+    "100% tick-order accuracy cannot be established from OHLC.",
+    "TP1 is a provisional successful milestone, not a duplicate closed-trade WIN.",
+    "Existing open trades retain their frozen exit terms.",
+    "Up to two zones means up to four entry halves, not four independent positions.",
+    "Signal generation and modeled lifecycle do not submit authenticated exchange orders.",
+    "Score does not bypass actual confirmation, freshness, valid data, regime, geometry, TTL or portfolio constraints."
+  ],
+  "profitability_validated": false,
+  "independent_holdout_validated": false,
+  "active_tests": {
+    "tests": 175,
+    "failures": 0,
+    "errors": 0
+  },
+  "baseline_discovery": {
+    "tests": 568,
+    "failures": 21,
+    "errors": 1
+  },
+  "state_migration": {
+    "trades_before": 33,
+    "trades_after": 33,
+    "orders_before": 163,
+    "orders_after": 163,
+    "detector_errors": 0,
+    "live_state_written": false
+  },
+  "history_precision": "Original archives contain 3m/15m/1H/4H but no 1m candles.",
+  "requested_archive_status": "BLOCKED_CONTAMINATED_ARCHIVE: two known synthetic quotes; original preserved.",
+  "archived_discovery": {
+    "tests": 593,
+    "failures": 342,
+    "errors": 5,
+    "passed": false,
+    "scope": "includes superseded policy tests, not the active release suite"
+  },
+  "replay_summary": {
+    "observations": 1572,
+    "first": "2026-10-18T19:52:12.856000+00:00",
+    "last": "2026-11-04T07:01:22.391000+00:00",
+    "statistics": {
+      "trades": 33,
+      "wins": 13,
+      "losses": 20,
+      "breakeven": 0,
+      "win_rate": 0.3939393939393939,
+      "wilson_lower_95": 0.24682882231508205,
+      "net_r": -17.60281912974022,
+      "expectancy_r": -0.5334187615072793,
+      "profit_factor": 0.34337906089271547,
+      "max_drawdown_r": 20.376853978532665
+    },
+    "by_side": {
+      "-1": {
+        "trades": 20,
+        "wins": 11,
+        "losses": 9,
+        "breakeven": 0,
+        "win_rate": 0.55,
+        "wilson_lower_95": 0.34208200830759966,
+        "net_r": -5.468418157797904,
+        "expectancy_r": -0.2734209078898952,
+        "profit_factor": 0.5416850623249644,
+        "max_drawdown_r": 8.24245300659035
+      },
+      "1": {
+        "trades": 13,
+        "wins": 2,
+        "losses": 11,
+        "breakeven": 0,
+        "win_rate": 0.15384615384615385,
+        "wilson_lower_95": 0.04325726318273798,
+        "net_r": -12.134400971942314,
+        "expectancy_r": -0.933415459380178,
+        "profit_factor": 0.18433063662222754,
+        "max_drawdown_r": 12.134400971942313
+      }
+    },
+    "execution_timeframe": "3m_COARSE_FALLBACK",
+    "minute_execution_validated": false,
+    "profitability_validated": false,
+    "health_counts": {
+      "LIFECYCLE_HISTORY_GAP": 2
+    }
+  },
+  "target_win_rate_achieved": false,
+  "package_overlay_tests": {
+    "tests": 175,
+    "failures": 0,
+    "errors": 0
+  }
+}

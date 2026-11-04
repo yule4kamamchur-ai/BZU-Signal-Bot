@@ -13,6 +13,18 @@ MIN_AGE_MS=9*60_000 # do not churn a freshly queued order
 COOLDOWN_MS=15*60_000
 
 
+def directional_lock(pending, active, side, snapshot, cfg, engine):
+    """An OPEN position cannot be cancelled as though it were an unfilled order."""
+    import directional_policy
+    if any(p['side']!=side for p in active):
+        return {'allowed':False,'reason':'OPEN_POSITION_DIRECTION_LOCK'}
+    opposing=[p for p in pending if p['side']!=side]
+    if not opposing: return {'allowed':True,'reason':'SAME_DIRECTION'}
+    flip=directional_policy.structural_flip(snapshot,side,min(p['placed_ts'] for p in opposing),cfg.tick,engine)
+    return {'allowed':False,'cancel_old_first':flip['confirmed'],
+            'reason':'STRUCTURE_FLIPPED' if flip['confirmed'] else 'PENDING_DIRECTION_LOCK','proof':flip}
+
+
 def _finite(value, fallback=0.0):
     try:
         number=float(value)

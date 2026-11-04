@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'native-mtf-causal-direction-control-v9'
+STRATEGY = 'bzu-checklist-confluence-split-v10'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -170,6 +170,8 @@ def early_reversal_control(setup,side,snapshot,context,cfg,engine):
 
 
 def structural_reason(f: dict, settings: Settings=Settings()) -> str:
+    if f.get('entry_policy')=='CHECKLIST_CONFIRMED':
+        return 'CONFIRMED' if f.get('detector_confirmed') else 'SETUP_CONDITIONS_INCOMPLETE'
     if f.get('setup')=='CAPITULATION_RECOVERY' and not f.get('recovery_confirmed',True):
         return 'CAPITULATION_RECOVERY_NOT_CONFIRMED'
     if f['shock']:
@@ -257,7 +259,35 @@ def assess(plan, snapshot, context, cfg, engine, rows, settings: Settings=Settin
             'ranking_adjustment':stat['ranking_adjustment']}
 
 
-PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
+def confluence(plan, snapshot, proof, cfg, engine):
+    """100 evidence points, never an estimated win probability."""
+    import ict_methodology
+    zone=plan.get('entry_zone',{})
+    fresh=(zone.get('high',0)>zone.get('low',0) and
+           ('FVG' in zone.get('kind','') or 'OB' in zone.get('kind','')) and
+           not plan.get('zone_audit',{}).get('mitigated'))
+    session=ict_methodology.session_liquidity(snapshot)
+    sweeps=ict_methodology.session_sweeps(snapshot,plan['side'],cfg.tick,engine)
+    sweep=bool(proof.get('sweep_reclaim') or sweeps)
+    aligned=(plan.get('htf_1h')==plan['side'] and plan.get('htf_4h') in (0,plan['side']))
+    active_normal=session['active'] and not plan.get('approach',{}).get('fast',False)
+    model=plan.get('meta_decision',{})
+    edge=plan.get('edge_intelligence',{})
+    # An untrained meta model's default "accepted" is not a positive vote.
+    positive=(model.get('validated') and model.get('accepted') and
+              model.get('expected_net_r') is not None and model['expected_net_r']>0)
+    parts={'fresh_ob_fvg':40*int(fresh),'liquidity_sweep':20*int(sweep),
+           'htf_alignment':15*int(aligned),'session_and_approach':15*int(active_normal),
+           'model_or_edge':10*int(bool(positive or edge.get('status')=='ALLOW'))}
+    score=sum(parts.values())
+    priority=bool(sweeps and fresh)
+    return {'score':score,'components':parts,'accepted':score>=55,
+            'rating':'A+' if score>=75 or priority else 'B',
+            'session_sweep_priority':priority,'session_sweeps':sweeps,
+            'threshold':55,'probability':None,'model_veto_enabled':False}
+
+
+PLAN_FIELDS=('policy','entry_zone','entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
@@ -269,7 +299,7 @@ PLAN_FIELDS=('id','order_id','event_key','zone_key','side','instrument','setup',
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))
@@ -390,9 +420,10 @@ def advance(state: dict, snapshot, cfg, engine) -> None:
         import execution_atlas
         b1=direction(execution_atlas.snapshot_control(snapshot,'1H',cfg,engine)['side'])
         b4=direction(execution_atlas.snapshot_control(snapshot,'4H',cfg,engine)['side'])
-    checkpoint=(q['last_run_ts']//TF['3m'])*TF['3m']
+    tf,step=engine.execution_series(snapshot)
+    checkpoint=(q['last_run_ts']//step)*step
     from dataclasses import replace
-    lifecycle=replace(snapshot,candles={**snapshot.candles,'3m':[c for c in closed_rows(snapshot,'3m') if c.ts>=checkpoint]})
+    lifecycle=replace(snapshot,candles={**snapshot.candles,tf:[c for c in snapshot.candles.get(tf,[]) if c.confirmed and c.ts>=checkpoint and c.ts+step<=snapshot.now]})
     for item in q['pending']:
         book={'pending':item.get('pending'),'active':item.get('active'),'reconciliation':None,
               'orders':[],'trades':[],'events':[],'used_events':{},'last_run_ts':q['last_run_ts']}

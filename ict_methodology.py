@@ -8,6 +8,76 @@ Unconfirmed locations cannot masquerade as completed market-structure events.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+
+def session_liquidity(snapshot):
+    """As-of pools. Session clocks follow London/NY DST, day follows Kyiv."""
+    cache=vars(snapshot).setdefault('_session_cache',{})
+    key=('pools',snapshot.now)
+    if key in cache: return cache[key]
+    now=datetime.fromtimestamp(snapshot.now/1000,ZoneInfo('Europe/Kyiv'))
+    day=now.date()
+    rows=sorted((c for c in snapshot.candles.get('15m', [])
+                 if c.confirmed and c.ts+900_000<=snapshot.now),key=lambda c:c.ts)
+    pools=[]
+    def add(label,bars):
+        if bars:
+            for suffix,level in (('HIGH',max(c.high for c in bars)),('LOW',min(c.low for c in bars))):
+                pools.append({'name':label+'_'+suffix,'level':level,
+                              'known_ts':max(c.ts+900_000 for c in bars)})
+    previous=[c for c in rows if datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/Kyiv')).date()==day-timedelta(days=1)]
+    add('PD',previous)
+    today=[c for c in rows if datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/Kyiv')).date()==day]
+    asia=[c for c in today if datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/Kyiv')).hour<9]
+    # Do not publish an incomplete Asian reference as a finished session pool.
+    if now.hour>=9: add('ASIA',asia)
+    london=[]
+    for c in today:
+        d=datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/London'))
+        if 8*60<=d.hour*60+d.minute<16*60+30: london.append(c)
+    add('LONDON',london)
+    lon=now.astimezone(ZoneInfo('Europe/London'));ny=now.astimezone(ZoneInfo('America/New_York'))
+    active_ny=9*60+30<=ny.hour*60+ny.minute<17*60
+    active_lon=8*60<=lon.hour*60+lon.minute<16*60+30
+    result={'session':'Нью-Йорк' if active_ny else 'Лондон' if active_lon else 'Азія / поза сесією',
+            'active':active_ny or active_lon,'pools':pools,'as_of_ts':snapshot.now}
+    cache[key]=result
+    return result
+
+
+def session_sweeps(snapshot, side, tick, engine):
+    """A pool must be known before its raid; later CLOSED 15m MSS is mandatory."""
+    from dataclasses import replace
+    cache=vars(snapshot).setdefault('_session_cache',{})
+    key=('sweeps',snapshot.now,side,tick)
+    if key in cache: return cache[key]
+    rows=[c for c in snapshot.candles.get('15m', []) if c.confirmed and c.ts+900_000<=snapshot.now]
+    results=[]
+    for i in range(max(12,len(rows)-8),len(rows)-1):
+        raid=rows[i]
+        prior=replace(snapshot,now=raid.ts,candles={**snapshot.candles,'15m':rows[:i]})
+        pools=session_liquidity(prior)['pools']
+        for pool in pools:
+            if not pool['name'].endswith('LOW' if side==1 else 'HIGH'): continue
+            level=pool['level']
+            swept=(raid.low<level-tick and raid.close>level if side==1
+                   else raid.high>level+tick and raid.close<level)
+            if not swept: continue
+            pivots=[p for p in engine.pivots(rows[:i]) if p['kind']==('HIGH' if side==1 else 'LOW')
+                    and p['known_ts']+900_000<=raid.ts]
+            if not pivots: continue
+            broken=pivots[-1]['level']
+            for j in range(i+1,len(rows)):
+                if side*(rows[j-1].close-broken)<=0 and side*(rows[j].close-broken)>tick:
+                    results.append({'pool':pool['name'],'level':level,
+                        'sweep_ts':raid.ts+900_000,'shift_ts':rows[j].ts+900_000,
+                        'broken_level':broken,'extreme':raid.low if side==1 else raid.high,
+                        'side':side,'raid_index':i,'shift_index':j})
+                    break
+    cache[key]=results
+    return results
 
 @dataclass(frozen=True)
 class Contract:

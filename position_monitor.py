@@ -12,6 +12,16 @@ import strategy_organics
 STEPS = {'3m': 180_000, '15m': 900_000, '1H': 3_600_000, '4H': 14_400_000}
 
 
+def audit(position, snapshot, cfg, engine):
+    """Use the actual engine lifecycle, without changing the supplied ledger."""
+    import copy
+    book={'active':copy.deepcopy(position),'pending':None,'reconciliation':None,
+          'orders':[],'trades':[],'events':[],'used_events':{}}
+    engine._advance_slot_lifecycle(book,snapshot,cfg,allow_fill=False)
+    return {'active':book['active'],'closed':book['trades'],'events':book['events'],
+            'timeframe':engine.execution_series(snapshot)[0]}
+
+
 def _recent(snapshot, tf, minimum):
     step = STEPS[tf]
     bars = sorted((b for b in snapshot.candles.get(tf, [])

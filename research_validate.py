@@ -91,7 +91,7 @@ def download(instrument: str, days: int, end: int, fetch=request_json) -> dict:
     end=(end//engine.TF['15m'])*engine.TF['15m'];start=end-days*DAY
     # 60 x 4H structural lookback plus one extra day, excluded from evaluation.
     begin=start-11*DAY
-    candles={tf:fetch_rows(instrument,tf,begin,end,fetch) for tf in engine.TF}
+    candles={tf:fetch_rows(instrument,tf,begin,end,fetch) for tf in engine.CANDLE_TF}
     smt=[]
     peer=core.resolve_smt_asset_id()
     if peer and peer!=instrument:
@@ -111,16 +111,19 @@ def download(instrument: str, days: int, end: int, fetch=request_json) -> dict:
 def audit_data(data: dict) -> dict:
     """Reject incomplete histories instead of measuring only convenient bars."""
     start,end=int(data['start_ts']),int(data['end_ts']);result={}
-    for tf,step in engine.TF.items():
+    for tf,step in engine.CANDLE_TF.items():
+        if tf=='1m' and not data['candles'].get(tf):
+            result[tf]={'status':'UNAVAILABLE_COARSE_3M_ONLY'}
+            continue
         rows=sorted({c.ts:c for row in data['candles'].get(tf,[]) for c in [engine.Candle.parse(row)]
                      if c.confirmed and c.ts+step<=end}.values(),key=lambda c:c.ts)
         warmup=[c for c in rows if c.ts+step<=start]
         if data.get('first_seen'):
             seen=data['first_seen'].get(tf,{})
             warmup=[c for c in warmup if seen.get(str(c.ts),{}).get('observed_ts',2**63-1)<=start]
-        if len(warmup)<engine.MIN_BARS[tf]:
+        if len(warmup)<engine.MIN_BARS.get(tf,15):
             raise ValueError(f'Insufficient {tf} warmup history')
-        needed=[c for c in rows if c.ts>=warmup[-engine.MIN_BARS[tf]].ts]
+        needed=[c for c in rows if c.ts>=warmup[-engine.MIN_BARS.get(tf,15)].ts]
         if any(c.ts%step for c in needed) or any(b.ts-a.ts!=step for a,b in zip(needed,needed[1:])):
             raise ValueError(f'Incomplete or misaligned {tf} history; no result can be certified')
         if not needed or end-(needed[-1].ts+step)>=step:
@@ -147,7 +150,7 @@ def archive_dataset(archive: dict) -> dict:
         rows=sorted((engine.Candle.parse(r) for r in archive.get('candles',{}).get(tf,[])),key=lambda c:c.ts)
         if len(rows)<=count:
             raise ValueError(f'Archive needs more closed {tf} history')
-        warmup.append(rows[count-1].ts+engine.TF[tf])
+        warmup.append(rows[count-1].ts+engine.CANDLE_TF[tf])
     start=max(quotes[0]['now'],*warmup);end=quotes[-1]['now']
     if start>=end:
         raise ValueError('No archived evaluation interval after warmup')
@@ -162,10 +165,10 @@ def archive_dataset(archive: dict) -> dict:
 
 def snapshots(data: dict):
     raw={tf:sorted({c.ts:c for row in data['candles'].get(tf,[]) for c in [engine.Candle.parse(row)] if c.confirmed}.values(),
-                   key=lambda c:c.ts) for tf in engine.TF}
+                   key=lambda c:c.ts) for tf in engine.CANDLE_TF}
     if not raw['3m']:
         raise ValueError('3m history is required')
-    available={tf:[c.ts+engine.TF[tf] for c in rows] for tf,rows in raw.items()}
+    available={tf:[c.ts+engine.CANDLE_TF[tf] for c in rows] for tf,rows in raw.items()}
     peer=sorted({c.ts:c for row in data.get('smt_candles_15m',[]) for c in [engine.Candle.parse(row)] if c.confirmed}.values(),key=lambda c:c.ts)
     peer_closed=[c.ts+engine.TF['15m'] for c in peer]
     delay=int(data.get('report_delay_ms',180_000))

@@ -27,7 +27,7 @@ class TelegramCadenceRecoveryTests(unittest.TestCase):
                 state['notification_queue']=[{'id':'old', 'text':'Звіт із черги', 'ts':now-900_000}]
             engine.atomic_write(Path(core.STATE_FILE),state)
             delivered=[]
-            def fake_delivery(updated, token, chat_id, state_path):
+            def fake_delivery(updated, token, chat_id, state_path, persist=None):
                 delivered.extend(entry['text'] for entry in updated['notification_queue'])
                 updated['notification_queue'].clear()
                 engine.atomic_write(state_path,updated)

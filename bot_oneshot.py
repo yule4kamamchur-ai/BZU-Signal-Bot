@@ -85,7 +85,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v12.20.0-reviewed-short"
+BOT_VERSION = "full-ict-v12.21.0-bzu-checklist"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -1401,13 +1401,15 @@ def collect_market_data() -> dict[str, Any]:
     # parsed. HTF resampling still requires confirmed source candles.
     started = time.monotonic()
     smt_id = resolve_smt_asset_id()
-    with ThreadPoolExecutor(max_workers=6, thread_name_prefix='bzu-market') as pool:
+    with ThreadPoolExecutor(max_workers=7, thread_name_prefix='bzu-market') as pool:
+        fminute = pool.submit(get_okx_candles, OKX_INST_ID, '1m', 300)
         f3 = pool.submit(get_okx_candles, OKX_INST_ID, '3m', CANDLES_3M_LIMIT)
         f15 = pool.submit(get_okx_candles, OKX_INST_ID, '15m', CANDLES_15M_LIMIT)
         f1 = pool.submit(fetch_timeframe, '1H', CANDLES_1H_LIMIT, 60)
         f4 = pool.submit(fetch_timeframe, '4H', CANDLES_4H_LIMIT, 240)
         fticker = pool.submit(get_okx_ticker, OKX_INST_ID)
         fsmt = pool.submit(get_okx_candles, smt_id, '15m', SMT_CANDLES_15M_LIMIT) if smt_id else None
+        cminute = fminute.result()
         c3m = f3.result()
         c15m = f15.result()
         c1h, src1h = f1.result()
@@ -1453,7 +1455,7 @@ def collect_market_data() -> dict[str, Any]:
         "spread": spread,
         "bid": bid,
         "ask": ask,
-        "candles": {"3m": c3m, "15m": c15m, "1H": c1h, "4H": c4h},
+        "candles": {"1m": cminute, "3m": c3m, "15m": c15m, "1H": c1h, "4H": c4h},
         "htf_source": {"1H": src1h, "4H": src4h},
         "smt_candles_15m": smt,
         "smt_asset_id": smt_id,
@@ -2296,8 +2298,8 @@ def make_anchor(
         return None
     # The falsifier must sit on the wrong side of the level, at least a quarter
     # ATR away. An anchor with a degenerate invalidation cannot be risk-managed.
-    if sign * (invalidation - level) > -0.25 * atr15:
-        invalidation = round_price(level - sign * max(0.75 * atr15, min_stop_distance(price)))
+    if sign * (invalidation - level) >= 0:
+        invalidation = round_price(level - sign * max(0.25 * atr15, 2*PRICE_TICK_SIZE))
     ttl = ttl_minutes or ANCHOR_MAX_AGE_MIN
     now_ms = int(now_utc().timestamp() * 1000)
     return Anchor(

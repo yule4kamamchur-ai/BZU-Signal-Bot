@@ -13,6 +13,37 @@ MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
 
 
+def audit_rows(snapshot, after=0):
+    """Prefer closed minutes; explicitly retain coarse history for old archives."""
+    tf, step = ('1m', 60_000) if snapshot.candles.get('1m') else ('3m', 180_000)
+    return sorted((c for c in snapshot.candles.get(tf, [])
+                   if c.confirmed and c.ts >= after and c.ts+step <= snapshot.now), key=lambda c:c.ts)
+
+
+def catch_up(snapshot, entry, stop, side, known_ts, tick):
+    """Authorize a new CURRENT entry, never a retroactive historic fill."""
+    risk = side*(entry-stop)
+    now = snapshot.now
+    start = max(known_ts, (now//60_000)*60_000-15*60_000)
+    rows = [c for c in snapshot.candles.get('1m', [])
+            if c.confirmed and start <= c.ts and c.ts+60_000 <= now]
+    rows.sort(key=lambda c:c.ts)
+    complete = bool(rows and rows[0].ts <= ((start+59999)//60_000)*60_000 and
+        rows[-1].ts+60_000 == (now//60_000)*60_000 and
+        all(b.ts-a.ts==60_000 for a,b in zip(rows,rows[1:])))
+    touch = next((i for i,c in enumerate(rows) if c.low<=entry<=c.high), None)
+    price = snapshot.ask if side==1 else snapshot.bid
+    moved = side*(price-entry)/risk if risk>0 else float('inf')
+    intact = touch is not None and all((c.low>stop if side==1 else c.high<stop) for c in rows[touch:])
+    spent = touch is not None and any((c.high>=entry+side*.5*risk if side==1
+        else c.low<=entry+side*.5*risk) for c in rows[touch+1:])
+    allowed = bool(risk>0 and complete and touch is not None and intact and not spent and
+                   -tick/risk <= moved <= .25+1e-9)
+    return {'allowed':allowed, 'move_r':moved, 'complete_1m':complete,
+            'touch_ts':rows[touch].ts if touch is not None else None,
+            'status':'ACTIVE_ENTRY' if allowed else 'WAIT_RETEST', 'never_backdated':True}
+
+
 def passive_gate(entry, side, bid, ask, tick):
     """Marketable limits cross the opposite quote, not the last trade price."""
     e=Decimal(str(entry));t=Decimal(str(tick))

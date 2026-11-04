@@ -30,6 +30,9 @@ class Setup:
     atr: float
     note: str
     recovered_from_scan_gap: bool = False
+    zone_low: float = 0.
+    zone_high: float = 0.
+    zone_timeframe: str = "3m"
 
 
 def bars(snapshot, tf, duration):
@@ -244,7 +247,8 @@ def bos_fvg_continuations(snapshot, tick):
             output.append(Setup('MICRO_BOS_FVG',side,entry,stop,
                                 z.ts+MICRO,y.ts+MICRO,a,
                                 'preknown 3m swing BOS -> closed displacement -> '
-                                'confirmed unretouched FVG -> first passive retest'))
+                                'confirmed unretouched FVG -> first passive retest',
+                                zone_low=low,zone_high=high))
     return sorted(output,key=lambda e:e.signal_ts,reverse=True)
 
 
@@ -488,9 +492,15 @@ def scenarios_since(snapshot, tick, previous_scan_ts):
             # order either. The exchange BID/ASK gate still runs in full_plan.
             if any((bar.low <= event.zone + tick if event.side == 1
                     else bar.high >= event.zone - tick) for bar in subsequent):
-                continue
+                import setup_scanner
+                if not hasattr(snapshot,'bid') or not setup_scanner.catch_up(
+                    snapshot,event.zone,event.invalidation,event.side,event.signal_ts,tick)['allowed']:
+                    continue
             if event.side * (snapshot.price - event.zone) <= 2 * tick:
-                continue
+                import setup_scanner
+                if not hasattr(snapshot,'bid') or not setup_scanner.catch_up(
+                    snapshot,event.zone,event.invalidation,event.side,event.signal_ts,tick)['allowed']:
+                    continue
             found.add(key)
             recovered.append(replace(event, recovered_from_scan_gap=True))
     return current + recovered

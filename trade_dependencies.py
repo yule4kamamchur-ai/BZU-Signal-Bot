@@ -5,6 +5,16 @@ import hashlib
 from statistics import mean
 
 
+def zone_related(first, second, atr15):
+    """Zone clustering is geometric; it is separate from statistical episodes."""
+    if first.get('instrument')!=second.get('instrument') or first.get('side')!=second.get('side'):
+        return False
+    a=first.get('entry_zone') or {'low':first['entry'],'high':first['entry']}
+    b=second.get('entry_zone') or {'low':second['entry'],'high':second['entry']}
+    gap=max(a['low']-b['high'],b['low']-a['high'],0.)
+    return gap<.5*atr15
+
+
 def related(first, second, tick=.001):
     if first.get('instrument', '') != second.get('instrument', '') or first.get('side') != second.get('side'):
         return False

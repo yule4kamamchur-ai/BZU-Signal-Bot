@@ -19,7 +19,7 @@ import market_archive
 import setup_scanner as scanner
 import signal_quality as quality
 import research_validate as research
-from test_full_limit_engine import NOW, candle, full_fixture, order, snapshot, analysis
+from test_full_limit_engine import NOW, candle, full_fixture, checklist_fixture, order, snapshot, analysis
 from test_signal_quality import quality_snapshot
 import test_v12_4_3_geometry as geometry_fixtures
 
@@ -29,15 +29,15 @@ REPORTED=json.loads((ROOT/'testdata/reported_20261014.json').read_text())
 
 class CausalTargetTests(unittest.TestCase):
     def test_reported_close_liquidity_does_not_force_a_tight_tp_when_a_real_far_target_exists(self):
-        cfg=replace(engine.Config(),core=core,tick=.01)
-        w=REPORTED['best_scenario'];entry=w['entry'];stop=w['stop'];risk=w['risk']
-        near={'kind':'1H_LIQUIDITY','level':103.31,'distance':.22,'hard_barrier':False}
-        far={'kind':'4H_LIQUIDITY','level':101.5,'distance':2.03,'hard_barrier':False}
-        g=engine.target_geometry(entry,stop,risk,.05,-1,[near,far],cfg)
-        self.assertTrue(g['path_clear']);self.assertTrue(g['target_distance_met'])
-        self.assertLessEqual(g['tp1'],w['required_tp'])
-        self.assertEqual(g['intermediate_levels'],[near])
-        self.assertEqual(g['target_source'],'4H_LIQUIDITY')
+        cfg,ctx,a,s=checklist_fixture('SHORT')
+        targets=[{'kind':'1H_LIQUIDITY','level':99.55,'distance':.22,'hard_barrier':False},
+                 {'kind':'4H_LIQUIDITY','level':98.,'distance':1.77,'hard_barrier':False}]
+        with patch.object(engine,'full_targets',return_value=targets):
+            p,reason=engine.full_plan(a,ctx,s,cfg,{})
+        self.assertIsNotNone(p,reason)
+        self.assertGreaterEqual(p['rr2'],1.8)
+        self.assertAlmostEqual(p['rr1'],1.)
+        self.assertLess(p['tp2'],99.55)
 
     def test_missing_distant_structure_is_still_blocked_not_replaced_by_a_fake_tp(self):
         cfg=engine.Config()
@@ -46,13 +46,15 @@ class CausalTargetTests(unittest.TestCase):
         self.assertNotIn('tp1',g)
         self.assertFalse(g['target_distance_met'])
 
-    def test_strong_fresh_opposing_zone_still_blocks_far_tp(self):
-        cfg,ctx,a,s=geometry_fixtures.MinimumDistanceTests().fixture('LONG')
-        targets=[{'kind':'SUPPLY_OB','level':101,'distance':1,'hard_barrier':True},
-                 {'kind':'4H_LIQUIDITY','level':104,'distance':4,'hard_barrier':False}]
+    def test_opposing_zone_is_advisory_when_final_structural_rr_is_valid(self):
+        cfg,ctx,a,s=checklist_fixture('LONG')
+        targets=[{'kind':'SUPPLY_OB','level':100.6,'distance':.37,'hard_barrier':True},
+                 {'kind':'4H_LIQUIDITY','level':102.,'distance':1.77,'hard_barrier':False}]
         with patch.object(engine,'full_targets',return_value=targets):
             p,why=engine.full_plan(a,ctx,s,cfg,{})
-        self.assertIsNone(p);self.assertEqual(why,'STRONG_OPPOSING_ZONE_BEFORE_TP')
+        self.assertIsNotNone(p,why)
+        self.assertGreaterEqual(p['rr2'],1.8)
+        self.assertEqual(p['policy'],'BZU_CHECKLIST_V12_21')
 
     def test_untyped_legacy_levels_are_conservatively_treated_as_barriers(self):
         cfg=engine.Config()
@@ -97,17 +99,17 @@ class CausalTargetTests(unittest.TestCase):
         for tf in scanner.PRIMARY:
             for side in ('LONG','SHORT'):
                 with self.subTest(tf=tf,side=side):
-                    cfg,ctx,a,s=geometry_fixtures.MinimumDistanceTests().fixture(side,tf=tf)
-                    sign=core.side_sign(side)
-                    targets=[{'kind':'minor_liquidity','level':100+sign*.3,'distance':.3,'hard_barrier':False},
-                             {'kind':'major_liquidity','level':100+sign*3,'distance':3,'hard_barrier':False}]
-                    with patch.object(engine,'full_targets',return_value=targets):
-                        p,why=engine.full_plan(a,ctx,s,cfg,{})
-                    self.assertIsNotNone(p,why);self.assertEqual(p['entry_policy'],'PRETOUCH_LIMIT')
+                    cfg,ctx,a,s=checklist_fixture(side)
+                    a.evidence['setup_timeframe']=tf
+                    p,why=engine.full_plan(a,ctx,s,cfg,{})
+                    self.assertIsNotNone(p,why)
+                    self.assertEqual(p['entry_policy'],'CHECKLIST_CONFIRMED')
                     self.assertNotEqual(s.price,p['entry'])
-                    self.assertGreaterEqual(p['stop_distance_pct']+1e-8,1.)
-                    self.assertGreaterEqual(p['tp1_distance_pct']+1e-8,1.5)
+                    self.assertTrue(.20-1e-9<=p['risk']<=.80+1e-9)
+                    self.assertAlmostEqual(p['rr1'],1.)
+                    self.assertGreaterEqual(p['rr2'],1.8)
                     self.assertGreaterEqual(p['effective_ts'],s.now)
+                    self.assertEqual(p['expires_ts']-p['effective_ts'],120*60_000)
 
 
 class DistinctEpisodeTests(unittest.TestCase):
@@ -282,14 +284,13 @@ class EvidenceAndRuntimeTests(unittest.TestCase):
     def test_workflow_has_single_15_minute_trade_and_report_cycle(self):
         workflow=(ROOT/'.github/workflows/main.yml').read_text()
         self.assertIn("cron: '*/15 * * * *'",workflow)
-        self.assertNotIn("cron: '5,10,20,25,35,40,50,55 * * * *'",workflow)
-        self.assertIn('run: python bot_oneshot.py --notify',workflow)
-        self.assertNotIn('steps.silent_scan.outcome',workflow)
+        self.assertNotIn("cron: '*/5 * * * *'",workflow)
+        self.assertIn('python bot_oneshot.py --auto-report',workflow)
+        self.assertIn('python bot_oneshot.py --notify',workflow)
         self.assertIn('market_history_v12.json',workflow)
         self.assertIn(engine.VERSION,workflow)
-        quality=(ROOT/'.github/workflows/bzu-quality.yml').read_text()
-        self.assertNotIn('python bot_oneshot.py --legacy-self-test', workflow)
-        self.assertIn('python bot_oneshot.py --legacy-self-test',quality)
+        self.assertNotIn('python bot_oneshot.py --legacy-self-test',workflow)
+        self.assertNotIn('python -m unittest discover',workflow)
 
     def test_version_upgrade_preserves_live_orders_and_archives_old_quality_evidence(self):
         cfg=replace(engine.Config(),core=core);state=engine.new_state(cfg);state['pending']=order()

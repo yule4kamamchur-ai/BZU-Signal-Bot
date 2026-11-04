@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.20.0-reviewed-short"
-REPORT_RELEASE = 'v12.20.0'
+VERSION = "full-ict-v12.21.0-bzu-checklist"
+REPORT_RELEASE = 'v12.21.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -50,8 +50,11 @@ import strategy_direct_entries
 import trade_meta_model as meta
 import portfolio_arbitration as arbitration
 import position_monitor
+import bzu_policy
+import ict_methodology
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
+CANDLE_TF = {"1m":60_000, **TF}
 MIN_BARS = {"3m": 50, "15m": 50, "1H": 30, "4H": 30}
 ROOT = Path(__file__).resolve().parent
 
@@ -79,14 +82,16 @@ class Config:
     taker_fee: float = 0.0005
     include_commission: bool = False
     slippage_bps: float = 2.0
-    min_net_rr: float = 1.20
+    min_net_rr: float = 1.80
     max_target_r: float = 2.5
     max_stop_atr: float = 4.0  # same LIMIT cap as bot_oneshot; overridden by LIMIT_MAX_STOP_ATR
+    min_stop_absolute: float = .20
+    max_stop_absolute: float = .80
     min_stop_atr3: float = 0.65
-    min_stop_pct: float = 0.010  # minimum 1.00%, structural stop may be wider
-    min_target_pct: float = 0.020  # minimum 2.00%; net >=1.20R also required
-    max_entry_distance_atr: float = 3.0
-    min_score: float = 60.0
+    min_stop_pct: float = 0.010  # legacy-plan metadata; new policy uses min_stop_absolute
+    min_target_pct: float = 0.020  # legacy-plan metadata; new TP1 is exactly 1R
+    max_entry_distance_atr: float = 3.5
+    min_score: float = 55.0
     conflict_margin: float = 8.0
     ttl_minutes: int = 120
     setup_age_minutes: int = 180
@@ -96,7 +101,7 @@ class Config:
     day_loss_cap_r: float = 0.0
     max_daily_trades: int = 0
     timezone: str = "Europe/Kyiv"
-    session_end_hour: int = 23
+    session_end_hour: int = 22
     break_even_trigger_r: float = 1.0
     max_spread_atr: float = 0.15
     cancel_on_bias_flip: bool = True
@@ -127,6 +132,10 @@ class Config:
             raise ValueError("Invalid legacy setup statistic sample")
         if self.analysis_scan_minutes not in (3,5,15):
             raise ValueError('Analysis scan interval must be 3, 5 or 15 minutes')
+        if not .18 <= self.min_stop_absolute <= .22 or not .65 <= self.max_stop_absolute <= .80:
+            raise ValueError("Absolute BZU stop bounds must be .18..22 and .65..80")
+        if self.min_net_rr < 1.8 or self.max_entry_distance_atr > 3.5 or self.min_score != 55:
+            raise ValueError("Checklist requires final RR >=1.8, distance <=3.5 ATR, score 55")
         ZoneInfo(self.timezone)
 
     @classmethod
@@ -138,6 +147,8 @@ class Config:
             "max_target_r": ("MAX_TARGET_R", float), "ttl_minutes": ("LIMIT_TTL_MINUTES", int),
             "setup_age_minutes": ("SETUP_AGE_MINUTES", int),
             "max_hold_minutes": ("MAX_HOLD_MINUTES", int),
+            "min_stop_absolute": ("BZU_MIN_STOP_ABSOLUTE", float),
+            "max_stop_absolute": ("BZU_MAX_STOP_ABSOLUTE", float),
             "max_stop_atr": ("LIMIT_MAX_STOP_ATR", float),
             "min_stop_pct": ("ABS_MIN_STOP_PCT", float),
             "min_target_pct": ("MIN_TP1_DISTANCE_PCT", float),
@@ -207,7 +218,7 @@ class Snapshot:
         if now <= 0:
             raise ValueError("Snapshot requires now in Unix milliseconds")
         candles = {}
-        for tf, step in TF.items():
+        for tf, step in CANDLE_TF.items():
             rows = data.get("candles", {}).get(tf, [])
             parsed = [Candle.parse(r) for r in rows]
             # A candle's timestamp is its OPEN time, not its closing time.
@@ -306,8 +317,14 @@ def health(s: Snapshot, cfg: Config) -> list[str]:
         errors.append("WRONG_INSTRUMENT")
     if s.ticker_ts > s.now or s.now - s.ticker_ts > 120_000:
         errors.append("STALE_TICKER")
-    for tf, step in TF.items():
+    for tf, step in CANDLE_TF.items():
         rows = s.candles.get(tf, [])
+        if tf == "1m":
+            if s.metadata.get("require_1m") and (len(rows)<15 or s.now-(rows[-1].ts+step)>120_000):
+                errors.append("INSUFFICIENT_1m")
+            if any(b.ts-a.ts!=step for a,b in zip(rows[-15:-1],rows[-14:])):
+                errors.append("GAP_1m")
+            continue
         if len(rows) < MIN_BARS[tf]:
             errors.append(f"INSUFFICIENT_{tf}")
             continue
@@ -319,7 +336,7 @@ def health(s: Snapshot, cfg: Config) -> list[str]:
         errors.append("MISSING_OR_INVALID_SPREAD")
     elif atr(s.candles.get("15m", [])) > 0:
         if (s.ask-s.bid)/atr(s.candles["15m"]) > cfg.max_spread_atr:
-            errors.append("SPREAD_TOO_WIDE")
+            pass  # Confluence/fees diagnostics; no separate spread veto.
     return errors
 
 
@@ -579,218 +596,8 @@ def preview_geometry(a, ctx, s, cfg):
     return geometry
 
 
-def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=None) -> tuple[Optional[dict], str]:
-    core = cfg.core
-    diag=diagnostics if diagnostics is not None else {}
-    diag['entry_checks']=scanner.entry_checks()
-    def mark(key,passed):
-        next(c for c in diag['entry_checks'] if c['key']==key)['met']=bool(passed)
-    side = str(a.side)
-    source_tf = a.evidence.get('setup_timeframe', '15m')
-    scale = scanner.MINUTES[source_tf] // 15
-    sign = core.side_sign(side)
-    a15, a3 = ctx["atr15"], ctx["atr3"]
-    if not sign or min(a15, a3) <= 0:
-        return None, "INVALID_DIRECTION_OR_VOLATILITY"
-    if a.evidence.get('activation_phase')=='WAIT_BREAK':
-        return None, 'WAIT_CONFIRMED_BREAK_FOR_LIMIT'
-    if a.cooldown_until_ts > s.now:
-        return None, "ANCHOR_COOLDOWN"
-    entry = round_tick(a.level, cfg.tick, up=sign == -1)
-    diag.update(entry=entry,level=entry)
-    quote_gate=scanner.passive_gate(entry,sign,s.bid,s.ask,cfg.tick)
-    diag['quote_gate']=quote_gate
-    mark('PASSIVE_LIMIT',quote_gate['passive'])
-    if not quote_gate['passive']:
-        return None, "LIMIT_WOULD_CROSS_SPREAD"
-    distance = abs(s.price-entry)/a15
-    if not 0 <= distance <= cfg.max_entry_distance_atr:
-        # A distant level is not permission to chase. Independently confirmed
-        # 3m BOS/FVG events can create a NEW zone with a NEW episode key.
-        diag['needs_new_structural_event']=True
-        return None, "LIMIT_UNREACHABLE"
-    if sign*(entry-a.invalidation) <= 0:
-        return None, "INVALID_STRUCTURAL_FALSIFIER"
-    observed = [c for c in s.candles["3m"] if c.ts >= a.created_ts]
-    if any(sign*(c.close-a.invalidation) <= 0 for c in observed) or sign*(s.price-a.invalidation) <= 0:
-        return None, "ANCHOR_INVALIDATED"
-    if any(c.low <= entry if sign == 1 else c.high >= entry for c in observed):
-        return None, "LEVEL_ALREADY_VISITED_AFTER_OBSERVATION"
-    mark('FRESH_LEVEL',s.now<a.expires_ts and s.now-a.created_ts<=cfg.setup_age_minutes*scale*60_000)
-    entry,stop,risk,floor,buffer=stop_geometry(a,ctx,cfg)
-    diag.update(stop=stop,risk=risk)
-    # A 1% minimum SL must not silently override the SAME hard ATR cap used
-    # by the launcher. If ATR is too small, wait for a feasible fresh setup.
-    # The former 1.25*floor exception could admit a stop > LIMIT_MAX_STOP_ATR.
-    stop_cap = cfg.max_stop_atr * a15
-    mark('VALID_STOP', risk + 1e-9 >= floor and risk <= stop_cap + 1e-9)
-    if risk + 1e-9 < floor:
-        return None, "STOP_INSIDE_NOISE"
-    if risk > stop_cap + 1e-9:
-        diag['atr_stop_cap'] = stop_cap
-        diag['minimum_stop_exceeds_cap'] = floor > stop_cap + 1e-9
-        return None, "STRUCTURAL_STOP_TOO_WIDE"
-    b1 = execution_atlas.snapshot_control(s,'1H',cfg,sys.modules[__name__])['side']
-    b4 = execution_atlas.snapshot_control(s,'4H',cfg,sys.modules[__name__])['side']
-    b15, b3 = ctx["structure15"]["direction"], ctx["structure3m"]["direction"]
-    opposite = "SHORT" if sign == 1 else "LONG"
-    both_against = b1 == opposite and b4 == opposite
-    early_control=both_against and quality.early_reversal_control(a.setup_type,sign,s,ctx,cfg,sys.modules[__name__])
-    reversal_confirmed = quality.pretouch_countertrend_allowed(a.setup_type,sign,core.side_sign(b15),core.side_sign(b3),early_control)
-    mark('HTF_ALIGNMENT',not both_against or reversal_confirmed)
-    if both_against and not reversal_confirmed:
-        return None, "BOTH_HTF_AGAINST_WITHOUT_CONFIRMED_REVERSAL"
-    # Mixed HTF is assessed per side; it is not a blanket rejection of all setups.
-    support = 50 + 15*int(b1 == side)+15*int(b4 == side)-12*int(b1 == opposite)-8*int(b4 == opposite)
-    support += 10*int(b15 == side)+5*int(b3 == side)
-    smt = ctx.get("smt", {})
-    support_key = "supports_long" if sign == 1 else "supports_short"
-    against_key = "supports_short" if sign == 1 else "supports_long"
-    smt_score = 50
-    if smt.get("available"):
-        smt_score += 25*int(bool(smt.get(support_key)))-25*int(bool(smt.get(against_key)))
-    cvd = ctx.get("cvd", {})
-    cvd_direction = str(cvd.get("direction", cvd.get("bias", "NEUTRAL"))).upper()
-    cvd_score = 70 if cvd_direction == side else (30 if cvd_direction == opposite else 50)
-    regime = str(ctx.get("regime"))
-    continuation = core.canonical_setup_family(a.setup_type) in {"TREND_CONTINUATION", "STRUCTURAL_EXPANSION", "SESSION_EXPANSION"}
-    regime_score = 75 if regime == "TREND" and continuation else (65 if regime in {"RANGE", "TRANSITION"} else 50)
-    targets = full_targets(ctx, s, side, entry, cfg)
-    # A passive continuation fill immediately below repeatedly rejected 1H
-    # buy-side liquidity (or above sell-side liquidity for SHORT) is an adverse
-    # selection trap. Check only closed, as-of observations; do not assume
-    # that every nearby pivot is a strong barrier.
-    trap=entry_adverse_selection.admission(a,s,targets,entry,risk,cfg.tick)
-    if trap:
-        diag['adverse_selection']=trap
-        return None,trap['risk']
-    diag.update(target_geometry(entry,stop,risk,buffer,sign,targets,cfg))
-    if any(t.get('entry_inside_zone') and t.get('hard_barrier') for t in targets):
-        return None, "ENTRY_INSIDE_STRONG_OPPOSING_ZONE"
-    if not targets:
-        return None, "NO_STRUCTURAL_TARGET"
-    nearest = diag['path_barrier'] or diag['chosen_target']
-    tp1 = diag['available_tp1']
-    rr1 = sign*(tp1-entry)/risk
-    costs = (fees_r(entry, tp1, risk, cfg)+tp1*cfg.slippage_bps/10_000/risk) if cfg.include_commission else 0.
-    net_rr = rr1-costs
-    diag['net_rr']=net_rr
-    mark('TARGET_RR',diag['path_clear'] and diag['target_distance_met'] and rr1>0 and net_rr>=cfg.min_net_rr)
-    location = max(0, 100-22*distance)+min(15, 5*net_rr)
-    score = .35*a.score+.25*min(100,max(0,support))+.20*min(100,location)+.10*regime_score+.05*smt_score+.05*cvd_score
-    score-=min(8,2*len(diag.get('intermediate_levels',[])))
-    prior = stats.get(a.setup_type, {})
-    prior = prior.get('timeframes',{}).get(source_tf,prior)
-    # Historical outcomes affect comparative ranking after structural admission,
-    # never the minimum context score or a fixed sample-triggered veto.
-    score = round(min(100,max(0,score)), 2)
-    diag['score']=score
-    mark('CONTEXT_SCORE',score>=cfg.min_score)
-    if not diag['path_clear']:
-        return None, "STRONG_OPPOSING_ZONE_BEFORE_TP"
-    if not diag['target_distance_met']:
-        return None, "TARGET_DISTANCE_TOO_SMALL"
-    if rr1 <= 0 or net_rr < cfg.min_net_rr:
-        return None, "TARGET_RR_TOO_LOW" if not cfg.include_commission else "NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS"
-    if cfg.include_commission and costs > .25*rr1:
-        return None, "COSTS_CONSUME_EDGE"
-    # The remaining targets also respect real obstacles, never synthetic 5R promises.
-    later = [t for t in targets if t["distance"]-buffer > sign*(tp1-entry)+.25*risk]
-    tp2 = round_tick(entry+sign*min(later[0]["distance"]-buffer if later else sign*(tp1-entry), 3*risk),
-                     cfg.tick, up=sign == -1)
-    further = [t for t in later if t["distance"]-buffer > sign*(tp2-entry)+.25*risk]
-    tp3 = round_tick(entry+sign*min(further[0]["distance"]-buffer if further else sign*(tp2-entry), 4*risk),
-                     cfg.tick, up=sign == -1)
-    # Every candidate full exit must be before ALL strong intervening zones.
-    previous=tp1
-    bounded=[]
-    for target in (tp2,tp3):
-        barriers=[t for t in targets if t.get('hard_barrier',True)
-                  and 0<t['distance']<=sign*(target-entry)+buffer]
-        if barriers:
-            target=entry+sign*max(sign*(previous-entry),min(t['distance'] for t in barriers)-buffer)
-        target=round_tick(target,cfg.tick,up=sign==-1)
-        bounded.append(target);previous=target
-    tp2,tp3=bounded
-    partials = {"TP1": 1.0}
-    exit_candidates=[]
-    for name,level in (('TP1',tp1),('TP2',tp2),('TP3',tp3)):
-        if not any(abs(level-option['price'])<cfg.tick/2 for option in exit_candidates):
-            exit_candidates.append({'name':name,'price':level})
-    if score < cfg.min_score:
-        return None, "COMBINED_CONTEXT_SCORE_LOW"
-    # A 15m report usually arrives inside a 3m candle. Start PAPER observation
-    # on the next whole candle, so its pre-report extremes cannot invent a fill.
-    effective = ((s.now+TF["3m"]-1)//TF["3m"])*TF["3m"]
-    # Anchor age limits NEW placements; once placed, a fresh full TTL applies.
-    # An old 135-minute anchor no longer truncates a 120-minute waiting order.
-    if s.now >= a.expires_ts or s.now-a.created_ts > cfg.setup_age_minutes*scale*60_000:
-        return None, "ANCHOR_TOO_OLD_TO_PLACE"
-    expires = effective+cfg.ttl_minutes*scale*60_000
-    if source_tf == '15m':
-        expires = min(expires, session_cutoff(s.now,cfg))
-    expires = (expires//TF["3m"])*TF["3m"]
-    if expires-effective < TF["15m"]:
-        return None, "ORDER_LIFETIME_BELOW_REPORT_CADENCE"
-    arming = {"distance_atr": distance, "age_minutes": (s.now-a.created_ts)/60_000,
-              "runway_r": rr1, "runway": {"targets": targets, "nearest": nearest}, "armable": True}
-    candidate = core._arming_candidate(ctx,a,arming,{"setups": {a.setup_type: {"executable": True, "risk_multiplier": 1}}})
-    if candidate is None:
-        return None, "CANDIDATE_SERIALIZATION_FAILED"
-    candidate.final_score = round(score)
-    candidate.entry_stage = "CORE"
-    candidate.confirmations = [f"Anchor {a.kind} {entry}; {a.reason}",
-                               f"HTF 1h={b1}, 4h={b4}; 15m={b15}, 3m={b3}",
-                               f"Nearest structural target {nearest['kind']}; net RR {net_rr:.2f}"]
-    candidate.score_components["full_v12"] = {"htf": support, "location": location, "regime": regime_score,
-                                               "smt": smt_score, "cvd_candle_proxy": cvd_score, "statistic": prior}
-    event = anchor_key(a,cfg)
-    return {"id": ident(event,s.now), "order_id": ident(event,s.now), "event_key": event,
-            "zone_key": anchor_zone_key(a,cfg), "instrument": cfg.instrument, "side": sign, "setup": a.setup_type,
-            "setup_type": a.setup_type, "setup_family": core.journal_setup_family(a.setup_type),
-            "canonical_setup_family": core.canonical_setup_family(a.setup_type), "timeframe": source_tf,
-            "setup_timeframe": source_tf, "micro_timeframe": scanner.MICRO[source_tf],
-            "formation_timeframe":a.evidence.get('formation_timeframe',source_tf),
-            "formation_micro_timeframe":a.evidence.get('formation_micro_timeframe',scanner.MICRO[source_tf]),
-            "entry_route":a.evidence.get('entry_route','NATIVE_PATTERN'),
-            "planning_policy":a.evidence.get('planning_policy','CONFIRMED_PATTERN_LIMIT'),
-            "entry_policy": "PRETOUCH_LIMIT", "detector_confirmed": True,
-            "pattern_proof":copy.deepcopy(a.evidence.get('recovery_proof',{})),
-            # Original native detector's observed event, not a forecast or a
-            # claim invented by the portfolio router. Required by the ICT
-            # contracts when an event predates the short confluence window.
-            "anchor_proof":copy.deepcopy(a.evidence),
-            "anchor_known_ts":min(s.now,a.created_ts),
-            "max_hold_minutes": cfg.max_hold_minutes*scale, "intraday": source_tf == '15m',
-            "readiness_pct": 100.0,
-            "include_commission":cfg.include_commission,
-            "entry_fee_rate":fee_rate(cfg,'maker'),"exit_fee_rate":fee_rate(cfg,'taker'),
-            "slippage_bps":cfg.slippage_bps,
-            "entry_checks":copy.deepcopy(diag['entry_checks']),
-            "anchor_id": a.id, "anchor_kind": a.kind, "entry": entry, "limit_price": entry,
-            "stop": stop, "initial_stop": stop, "tp": tp1, "tp0": entry+sign*.6*risk,
-            "tp1": tp1, "tp2": tp2, "tp3": tp3, "partials": partials,
-            "exit_policy": "SINGLE_FULL_EXIT", "full_exit_target": "TP1",
-            "full_exit_candidates": exit_candidates, "target_management":"ADAPTIVE_FULL_VOLUME", "tp1_decision_gate":True,
-            "exit_path_barriers":[copy.deepcopy(t) for t in targets if t.get("hard_barrier",True)],
-            "rr1": rr1, "rr2": sign*(tp2-entry)/risk, "rr3": sign*(tp3-entry)/risk,
-            "risk": risk, "gross_rr": rr1, "net_rr": net_rr, "costs_r": costs,
-            "placement_price": s.price, "target_cancel_armed": sign*(s.price-tp1)<0,
-            "score": score, "stop_distance_pct": risk/entry*100,
-            "tp1_distance_pct":sign*(tp1-entry)/entry*100,
-            "placed_ts": s.now, "effective_ts": effective, "expires_ts": expires, "zone_created_ts": a.created_ts,
-            "queue_execution_policy":"PASSIVE_ARM_V2",
-            "invalidation": a.invalidation, "target_source": nearest["kind"],
-            "target_timeframe":nearest.get('timeframe',source_tf),
-            "intermediate_levels":copy.deepcopy(diag.get('intermediate_levels',[])),
-            "episode_ts":a.evidence.get('episode_ts'),
-            "evidence": [a.reason]+candidate.confirmations, "candidate": core.candidate_to_dict(candidate),
-            "htf_1h": core.side_sign(b1), "htf_4h": core.side_sign(b4),
-            "forecast": f"Return to {entry}; defend {a.invalidation}; structural targets {tp1}, {tp2}, {tp3}; select one full exit before entry",
-            "probability": None, "probability_status": "REQUIRES_OUT_OF_SAMPLE_VALIDATION",
-            "entry_stage": "CORE", "execution_source": "LIMIT_ARMED_AT_LEVEL",
-            "execution": "PAPER_SIGNAL", "status": "PENDING", "last_bar": 0,
-            "parent_keys": [], "version": VERSION}, "ACCEPTED"
+def full_plan(a, ctx: dict, s: Snapshot, cfg: Config, stats: dict, diagnostics=None):
+    return bzu_policy.plan(a,ctx,s,cfg,stats,sys.modules[__name__],diagnostics)
 
 
 def _historical_anchor_index(memory: dict) -> tuple[set[str], dict[tuple, list[float]]]:
@@ -931,6 +738,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             if a is not None:
                 direct_anchors.append(a)
         fresh.extend(direct_anchors)
+        fresh.extend(bzu_policy.session_anchors(s,tf_contexts["15m"],cfg,sys.modules[__name__]))
         anchors = merge_full_anchors(fresh,state,s,cfg,{**tf_contexts,'MICRO_PRECURSOR':early_context})
         stats = setup_statistics(state,cfg)
         plans, watch, refused = [], [], {}
@@ -965,6 +773,15 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 if a.setup_type=='CAPITULATION_RECOVERY':
                     a.evidence['recovery_proof']=setup_paths.capitulation_recovery(native,core)
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
+                zone=diagnostics.get('entry_zone')
+                if zone:
+                    zone_id=ident(a.side,zone['low'],zone['high'],zone['known_ts'],zone['timeframe'])
+                    spent=state.setdefault('mitigated_zones',{})
+                    if reason=='ZONE_MITIGATED':
+                        spent[zone_id]={'known_ts':zone['known_ts'],'observed_ts':s.now,'state':'MITIGATED'}
+                    if zone_id in spent:
+                        p,reason=None,'ZONE_MITIGATED'
+
                 if not p and reason == 'LIMIT_UNREACHABLE':
                     retire_distant_anchor(state, a, key, s, cfg)
                     diagnostics['refresh_policy'] = 'NEW_CONFIRMED_STRUCTURE_ONLY'
@@ -1053,7 +870,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         if q['accepted'] and edge_mode=='RESEARCH_ONLY':
             q={**q,'accepted':False,'reason':'EDGE_RESEARCH_NOT_VALIDATED'}
             assessments[p['id']]=q
-        if q['accepted'] and edge_mode=='ENFORCE' and edge_verdict['status']!='ALLOW':
+        if q['accepted'] and not bzu_policy.is_new(p) and edge_mode=='ENFORCE' and edge_verdict['status']!='ALLOW':
             q={**q,'accepted':False,'reason':edge_verdict['reason']}
             assessments[p['id']]=q
         # v12.17: original 24 detectors locate zones; a separate, ordered
@@ -1064,14 +881,23 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             raise ValueError('BZU_ENTRY_PLAYBOOK_MODE must be SHADOW or STRICT')
         playbook=entry_playbooks.assess(p,s,cfg.tick,setup_candidates=organic_setups,market_regime=organic_regime)
         p['entry_playbook']=playbook
-        if p.get('entry_route')=='STRATEGY_EVENT' and not playbook['accepted']:
+        if not bzu_policy.is_new(p) and p.get('entry_route')=='STRATEGY_EVENT' and not playbook['accepted']:
             q={**q,'accepted':False,'reason':playbook['reason']}
             assessments[p['id']]=q
-        if q['accepted'] and playbook_mode=='STRICT' and not playbook['accepted']:
+        if q['accepted'] and not bzu_policy.is_new(p) and playbook_mode=='STRICT' and not playbook['accepted']:
             q={**q,'accepted':False,'reason':playbook['reason']}
             assessments[p['id']]=q
-        if q['accepted'] and not meta_decision['accepted']:
+        if q['accepted'] and not bzu_policy.is_new(p) and not meta_decision['accepted']:
             q={**q,'accepted':False,'reason':meta_decision['reason']}
+            assessments[p['id']]=q
+        if bzu_policy.is_new(p):
+            points=quality.confluence(p,s,proof,cfg,sys.modules[__name__])
+            p['confluence']=points
+            p['score']=points['score']
+            p['rating']=points['rating']
+            next(c for c in p['entry_checks'] if c['key']=='CONTEXT_SCORE')['met']=points['accepted']
+            if q['accepted'] and not points['accepted']:
+                q={**q,'accepted':False,'reason':'CONFLUENCE_BELOW_55'}
             assessments[p['id']]=q
         p['quality'] = q
         for path in admission_paths:
@@ -1097,6 +923,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             p['strategy_regime'] = playbook['regime']
             p['strategy_evidence_score'] = playbook['evidence_score']
             p['direction_score'] += min(3.,max(0.,(playbook['evidence_score']-60.)*.2))
+        if bzu_policy.is_new(p):
+            p['direction_score']=p['score']
         p['decision_score'] = p['direction_score']
         p['probability_status'] = meta_decision['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'
@@ -1125,23 +953,12 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         structural=quality.structural_reason(q['features'])=='CONFIRMED'
         return (q['accepted'],*scanner.selection_key(p,s.price))
     plans.sort(key=priority,reverse=True)
-    clusters = []
-    for p in plans:
-        cluster = next((q for q in clusters if q["side"] == p["side"]
-                        and abs(q["entry"]-p["entry"]) <= max(3*cfg.tick,.15*ctx["atr3"])),None)
-        if cluster is None:
-            p["supporting_setups"] = [p["setup"]] if p['quality']['accepted'] else []
-            p["supporting_families"] = [p["canonical_setup_family"]] if p['quality']['accepted'] else []
-            p['alternative_scenarios'] = [{'id':p['id'],'setup':p['setup'],'reason':p['quality']['reason']}]
-            p["parent_keys"] = []
-            clusters.append(p)
-        else:
-            cluster['alternative_scenarios'].append({'id':p['id'],'setup':p['setup'],'reason':p['quality']['reason']})
-            if p['quality']['accepted'] and p["setup"] not in cluster["supporting_setups"]:
-                cluster["supporting_setups"].append(p["setup"])
-            cluster["parent_keys"].append(p["event_key"])
-            if p['quality']['accepted'] and p["canonical_setup_family"] not in cluster["supporting_families"]:
-                cluster["supporting_families"].append(p["canonical_setup_family"])
+    eligible_clusters=[p for p in plans if p['quality']['accepted']]
+    clusters=bzu_policy.merge_plans(eligible_clusters,s,cfg,sys.modules[__name__])
+    clusters += [p for p in plans if not p['quality']['accepted']]
+    for p in clusters:
+        p.setdefault('supporting_setups',[p['setup']])
+        p.setdefault('supporting_families',[p['canonical_setup_family']])
     # Correlated votes do not manufacture a higher success probability or score.
     clusters.sort(key=priority,reverse=True)
     # Freeze the same target-selection policy for shadow labels and actual
@@ -1153,7 +970,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     ledger['unobserved_due_policy_budget']=ledger.get('unobserved_due_policy_budget',0)+max(0,len(clusters)-len(modeled))
     accepted = []
     for p in clusters:
-        q = assessments[p['id']]
+        q = p['quality']
         if q['accepted']:
             accepted.append(p)
         else:
@@ -1179,7 +996,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 ('LEVEL_OR_EVENT_COOLDOWN','ANCHOR_INVALIDATED','LEVEL_ALREADY_VISITED_AFTER_OBSERVATION',
                  'ANCHOR_EXPIRED_AWAITING_NEW_EVENT')]
     actionable.sort(key=lambda r:scanner.selection_key(r,s.price),reverse=True)
-    watch=actionable[:24]
+    direct_waiting=[p for p in watch if p.get("reason")=="WAIT_RETEST"]
+    watch=actionable[:24]+direct_waiting[:4]
     directional={}
     for label,side in (('LONG',1),('SHORT',-1)):
         subset=[path for path in admission_paths if path['side']==side]
@@ -1278,7 +1096,7 @@ def park_pending(state: dict, waiting: list[dict]) -> None:
     state['pending_orders']=remaining
 
 
-def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dict]:
+def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int = 180_000) -> list[dict]:
     """Decide BEFORE observing candle extremes; never pick fills in hindsight."""
     active=active_plans(state)
     # The old dependency test deliberately ignored opposite sides. That allowed
@@ -1289,7 +1107,8 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
     locked_side=next(iter(active_sides),0)
     # A filled position owns the directional thesis: never fill another limit
     # before the next 15m review, even if it shares the same direction.
-    capacity=0 if active else 1
+    new_book=all(bzu_policy.is_new(p) for p in open_plans(state))
+    capacity=max(0,2-occupied_slots(state)) if new_book else (0 if active else 1)
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
@@ -1298,13 +1117,13 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config) -> list[dic
         if len(eligible)>=capacity:
             break
         effective=plan.get('effective_ts',plan['placed_ts'])
-        partial_legacy='effective_ts' not in plan and now<effective<now+TF['3m']
+        partial_legacy='effective_ts' not in plan and now<effective<now+step
         cancel=plan.get('cancel_effective_ts',plan.get('cancel_requested_ts',0))
         if (effective>now and not partial_legacy) or plan['expires_ts']<=now or (cancel and cancel<=now):
             continue
         if (plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
                 and now>=plan.get('queue_policy_effective_ts',effective)):
-            continuous=plan.get('entry_armed_bar')==now-TF['3m']
+            continuous=plan.get('entry_armed_bar')==now-step
             if not continuous and not execution_atlas.passive_at_open(plan,price,cfg.tick):
                 continue
         if locked_side and plan['side']!=locked_side:
@@ -1351,6 +1170,8 @@ def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
         order = next((o for o in reversed(state['orders']) if o['id']==r['order_id']),None)
         if not order or order.get('execution') != 'PAPER_SIGNAL':
             continue
+        if bzu_policy.is_new(order):
+            continue  # No automatic time exit can prove this possible position closed.
         if order.get('tp1_decision_gate'):
             continue  # No finite automatic holding exit to justify erasing a possible fill.
         # Unknown fill can occur anywhere before expiry. Retain its slot until
@@ -1378,19 +1199,27 @@ def emit(state: dict, kind: str, ts: int, **fields: Any) -> None:
                             "kind": kind, "ts": ts, "time": iso(ts), **fields})
 
 
+def execution_series(s):
+    return ('1m',60_000) if s.candles.get('1m') else ('3m',180_000)
+
+
 def execution_health(s: Snapshot, state: dict) -> list[str]:
-    """Lifecycle needs ALL 3m bars since checkpoint, not only a recent window."""
-    checkpoint = state.get("last_run_ts", 0)
-    rows = s.candles.get("3m", [])
+    tf,step=execution_series(s)
+    rows=s.candles.get(tf,[])
+    if s.metadata.get('require_1m') and tf!='1m':
+        return ['MISSING_1M_FOR_LIFECYCLE']
     if not rows:
-        return ["NO_3M_FOR_LIFECYCLE"]
+        return ['NO_3M_FOR_LIFECYCLE']
+    checkpoint=state.get('last_run_ts',0)
     if checkpoint:
-        first = (checkpoint//TF["3m"])*TF["3m"]
-        needed = [c for c in rows if c.ts >= first]
-        if first+TF["3m"] <= s.now and (not needed or needed[0].ts != first):
-            return ["LIFECYCLE_HISTORY_GAP"]
-        if any(b.ts-a.ts != TF["3m"] for a, b in zip(needed, needed[1:])):
-            return ["LIFECYCLE_HISTORY_GAP"]
+        first=(checkpoint//step)*step
+        needed=[c for c in rows if c.ts>=first]
+        if first+step<=s.now and (not needed or needed[0].ts!=first):
+            return ['LIFECYCLE_HISTORY_GAP']
+        if any(b.ts-a.ts!=step for a,b in zip(needed,needed[1:])):
+            return ['LIFECYCLE_HISTORY_GAP']
+        if needed and (s.now//step)*step>needed[-1].ts+step:
+            return ['LIFECYCLE_HISTORY_GAP']
     return []
 
 
@@ -1410,6 +1239,8 @@ def end_order(state: dict, order: dict, status: str, reason: str, ts: int) -> No
 
 def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: Config,
                 ambiguous: bool = False) -> None:
+    if bzu_policy.is_new(p):
+        return bzu_policy.close(state,p,price,ts,reason,cfg,sys.modules[__name__],ambiguous)
     cfg = execution_config(p,cfg)
     side, risk = p["side"], p["risk"]
     remaining = p.get("remaining",1.0)
@@ -1438,6 +1269,8 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
 
 def use_full_exit(plan: dict, ts: int) -> bool:
     """Keep all targets; change future sizing without restoring realized volume."""
+    if bzu_policy.is_new(plan):
+        return False
     if plan.get('exit_policy') == 'SINGLE_FULL_EXIT':
         return False
     active = plan.get('status') == 'OPEN' or 'filled_ts' in plan
@@ -1486,13 +1319,15 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
     emit(state,name,ts,order_id=p["id"],price=exit_price,fraction=size)
 
 
-def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False) -> None:
+def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step: int = 180_000) -> None:
     p = state["active"]
     if not p:
         return
+    if bzu_policy.is_new(p):
+        return bzu_policy.manage(state,c,cfg,sys.modules[__name__],step,fill_bar)
     cfg = execution_config(p,cfg)
     side, entry, risk = p["side"], p["entry"], p["risk"]
-    ts = c.ts+TF["3m"]
+    ts = c.ts+step
     if c.ts <= p.get("last_bar", -1):
         return
     target_amend=p.get('pending_target')
@@ -1647,6 +1482,8 @@ def review_full_exit(state: dict, s: Snapshot, cfg: Config) -> None:
 
 def _amend_slot_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
     """Current review in each 5m scan; amendments start at the next whole bar."""
+    if state.get("active") and bzu_policy.is_new(state["active"]):
+        return
     review_full_exit(state,s,cfg)
     p = state.get("active")
     if p and p.get('tp1_decision_gate') and not p.get('tp1_hit'):
@@ -1681,16 +1518,24 @@ def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
 
 def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
-    for c in s.candles.get("3m", []):
+    tf, step = execution_series(s)
+    for c in s.candles.get(tf, []):
+        if not c.confirmed or c.ts+step>s.now:
+            continue
         if state["active"]:
-            manage_bar(state, c, cfg)
+            manage_bar(state, c, cfg, step=step)
             continue
         p = state["pending"]
         if not p or c.ts <= p.get("last_bar", -1):
             continue
-        end = c.ts+TF["3m"]
+        end = c.ts+step
         effective = p.get('effective_ts',p['placed_ts'])
         if c.ts < effective:
+            if bzu_policy.is_new(p) and step==60_000 and c.ts<p['placed_ts']<end:
+                touched=c.low<=p['entry'] if p['side']==1 else c.high>=p['entry']
+                if touched:
+                    end_order(state,p,'UNRESOLVED','PLACEMENT_INSIDE_TOUCHED_BAR',end)
+                    continue
             if 'effective_ts' not in p and end > p["placed_ts"]:
                 possible_fill = allow_fill and (c.low < p["entry"]-cfg.tick/2 if p["side"] == 1 else c.high > p["entry"]+cfg.tick/2)
                 if possible_fill:
@@ -1701,9 +1546,11 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             end_order(state, p, "CANCELLED", p["cancel_reason"], cancel_ts)
             continue
         if c.ts >= p["expires_ts"]:
-            end_order(state, p, "EXPIRED", "LIMIT_TTL", p["expires_ts"])
+            end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
             continue
         fill = allow_fill and (c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8)
+        if bzu_policy.is_new(p):
+            fill=allow_fill and (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry'])
         if cancel_ts and c.ts < cancel_ts < end:
             end_order(state, p, "UNRESOLVED" if fill else "CANCELLED",
                       "CANCEL_INSIDE_TOUCHED_BAR" if fill else p["cancel_reason"], cancel_ts)
@@ -1713,8 +1560,26 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             end_order(state, p, "UNRESOLVED" if fill else "EXPIRED",
                       "EXPIRY_INSIDE_BAR" if fill else "LIMIT_TTL", p["expires_ts"])
             continue
+        if bzu_policy.is_new(p):
+            fill = allow_fill and (p.get('action_type')=='ACTIVE_ENTRY' or
+                (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry']))
+            target = p['tp1']
+            target_hit = c.high>=target if p['side']==1 else c.low<=target
+            before_fill = p['side']*(c.open-target)>=0
+            armed=p.get('target_cancel_armed',True)
+            if p['side']*(c.open-target)<0:
+                armed=True
+            if target_hit and armed and (not fill or before_fill):
+                end_order(state,p,'CANCELLED','TARGET_REACHED_WITHOUT_FILL',end)
+                continue
+            p['target_cancel_armed']=armed or p['side']*(c.close-target)<0
         if fill:
             end_order(state, p, "FILLED", "PAPER_ONE_TICK_PENETRATION", end)
+            if bzu_policy.is_new(p):
+                p=bzu_policy.first_fill(p,c,sys.modules[__name__],cfg,step)
+                state['active']=p
+                manage_bar(state,c,cfg,fill_bar=True,step=step)
+                continue
             p = copy.deepcopy(p)
             p.update(status="OPEN", filled_ts=c.ts, opened_at=iso(c.ts), last_bar=-1,
                      mfe_r=0.0, mae_r=0.0, strong_closes=0,remaining=1.0,
@@ -1726,19 +1591,26 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             if p.get('intraday',True):
                 p['exit_deadline'] = min(p['exit_deadline'], session_cutoff(c.ts, cfg))
             state["active"] = p
-            manage_bar(state, c, cfg, fill_bar=True)
+            manage_bar(state, c, cfg, fill_bar=True, step=step)
         else:
             p["last_bar"] = c.ts
     p = state.get("pending")
     if p and s.now >= p["expires_ts"]:
         # An unfinished bar crossing expiry is not observable yet. Defer until
         # it closes; guessing an expiry could erase a fill before the deadline.
-        expiry_bar = (p["expires_ts"]//TF["3m"])*TF["3m"]
-        if p["expires_ts"] % TF["3m"] == 0 or s.now >= expiry_bar+TF["3m"]:
-            end_order(state, p, "EXPIRED", "LIMIT_TTL", p["expires_ts"])
+        expiry_bar = (p["expires_ts"]//step)*step
+        if p["expires_ts"] % step == 0 or s.now >= expiry_bar+step:
+            end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
 
 
 def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
+    tf, step = execution_series(s)
+    state['execution_step_ms']=step
+    for p in open_plans(state):
+        old_step=p.get('last_execution_step_ms',180_000)
+        if p.get('last_bar',-1)>=0 and old_step!=step:
+            p['last_bar'] += old_step-step
+        p['last_execution_step_ms']=step
     if state.get('pending_policy') not in ('UNBOUNDED_QUEUE_ACTIVE_CAP_2','ONE_DIRECTION_TWO_PENDING_MAX'):
         # Catch up the old contract before changing future queue behavior.
         for number,view in slot_views(state):
@@ -1746,18 +1618,19 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             store_slot(state,number,view)
         return
     followed=open_plans(state)
-    cursor=min((max(p.get('effective_ts',p.get('filled_ts',p['placed_ts']//TF['3m']*TF['3m'])),p.get('last_bar',0)+TF['3m'])
+    cursor=min((max((p['placed_ts']//step*step if bzu_policy.is_new(p) and step==60_000
+                    else p.get('effective_ts',p.get('filled_ts',p['placed_ts']//step*step))),p.get('last_bar',0)+step)
                 for p in followed),default=s.now)
-    rows=[c for c in s.candles.get('3m',[]) if c.confirmed and c.ts+TF['3m']<=s.now and c.ts>=cursor]
+    rows=[c for c in s.candles.get(tf,[]) if c.confirmed and c.ts+step<=s.now and c.ts>=cursor]
     for c in rows:
         # Freeze priorities using only the bar OPEN and earlier decisions.
         # A close in this bar frees capacity from the NEXT bar, not retroactively.
-        eligible={p['id'] for p in entry_priority(state,c.ts,c.open,cfg)}
+        eligible={p['id'] for p in entry_priority(state,c.ts,c.open,cfg,step)}
         waiting=pending_plans(state)
         park_pending(state,[])
         for number,view in slot_views(state):
             if view.get('active'):
-                manage_bar(view,c,cfg)
+                manage_bar(view,c,cfg,step=step)
                 store_slot(state,number,view)
         remaining=[]
         for plan in waiting:
@@ -1775,10 +1648,10 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
                     visited=c.low<=plan['entry'] if plan['side']==1 else c.high>=plan['entry']
                     if visited and c.ts<plan['expires_ts'] and not plan.get('cancel_requested_ts'):
                         book={**state,'pending':plan,'active':None,'reconciliation':None}
-                        end_order(book,plan,'CANCELLED','LEVEL_PASSED_WHILE_UNARMED',c.ts+TF['3m'])
+                        end_order(book,plan,'CANCELLED','LEVEL_PASSED_WHILE_UNARMED',c.ts+step)
                         continue
             book={**state,'pending':plan,'active':None,'reconciliation':None}
-            _advance_slot_lifecycle(book,Snapshot(c.ts+TF['3m'],c.close,{'3m':[c]}),cfg,
+            _advance_slot_lifecycle(book,Snapshot(c.ts+step,c.close,{tf:[c]}),cfg,
                                     allow_fill=plan['id'] in eligible)
             if book.get('pending'):
                 remaining.append(book['pending'])
@@ -1798,7 +1671,7 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
     waiting=[]
     for plan in pending_plans(state):
         book={**state,'pending':plan,'active':None,'reconciliation':None}
-        _advance_slot_lifecycle(book,Snapshot(s.now,s.price,{'3m':[]}),cfg,allow_fill=False)
+        _advance_slot_lifecycle(book,Snapshot(s.now,s.price,{tf:[]}),cfg,allow_fill=False)
         if book.get('pending'):
             waiting.append(book['pending'])
     park_pending(state,waiting)
@@ -1812,13 +1685,14 @@ def reconcile_cancellations_at_closed_boundary(state: dict, s: Snapshot) -> None
     last_bar plus a matching CLOSED bar are required to prove no fill. An
     unknown interval remains reserved and cannot silently become a vacancy.
     """
+    tf, step=execution_series(s)
     waiting = []
     for plan in pending_plans(state):
         effective = plan.get('cancel_effective_ts',0)
         if (effective and s.now >= effective and
-                plan.get('last_bar',-1) >= effective-TF['3m'] and
-                any(c.confirmed and c.ts+TF['3m']==effective
-                    for c in s.candles.get('3m',[]))):
+                plan.get('last_bar',-1) >= effective-step and
+                any(c.confirmed and c.ts+step==effective
+                    for c in s.candles.get(tf,[]))):
             book={**state,'pending':plan,'active':None,'reconciliation':None}
             end_order(book,plan,'CANCELLED',
                       plan.get('cancel_reason','PORTFOLIO_REPLACEMENT'),effective)
@@ -1840,9 +1714,10 @@ def day_stats(state: dict, now: int, cfg: Config) -> dict:
 
 
 def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
+    step=state.get('execution_step_ms',180_000)
     if p.get("cancel_requested_ts"):
         return
-    if now % TF["3m"] == 0:
+    if now % step == 0:
         if 'pending_orders' in state:
             waiting=[other for other in pending_plans(state) if other['id']!=p['id']]
             book={**state,'pending':p,'active':None,'reconciliation':None}
@@ -1855,12 +1730,23 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
         # Reserve the slot until that candle closes; do not erase that interval.
         p.update(cancel_requested_ts=now, cancel_reason=reason)
         if 'effective_ts' in p:
-            p['cancel_effective_ts'] = ((now+TF['3m']-1)//TF['3m'])*TF['3m']
+            p['cancel_effective_ts'] = ((now+step-1)//step)*step
         emit(state, "CANCEL_REQUESTED", now, order_id=p["id"], reason=reason)
 
 
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     """Shared causal cancellation policy for the book, learning and scenarios."""
+    if bzu_policy.is_new(pending):
+        if pending['side']*(snapshot.price-pending['tp1'])<0:
+            pending['target_cancel_armed']=True
+        flip=policy.structural_flip(snapshot,-pending['side'],pending['placed_ts'],cfg.tick,sys.modules[__name__])
+        if flip['confirmed']:
+            request_cancel(state,pending,'STRUCTURE_FLIPPED',snapshot.now)
+        elif snapshot.now>=session_cutoff(snapshot.now,cfg):
+            request_cancel(state,pending,'SESSION_ENDED',snapshot.now)
+        elif pending.get('target_cancel_armed',True) and pending['side']*(snapshot.price-pending['tp1'])>=0:
+            request_cancel(state,pending,'TARGET_REACHED_WITHOUT_FILL',snapshot.now)
+        return
     if cfg.core is not None and setup_paths.recovery_failed(pending,snapshot,cfg,sys.modules[__name__]):
         request_cancel(state,pending,'CAPITULATION_RECOVERY_LOST',snapshot.now)
         return
@@ -1903,7 +1789,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.8.0-directional-limit-paths',
                                        'full-ict-v12.9.0-anticipatory-execution-atlas',
                                        'full-ict-v12.10.0-causal-direction-control',
-                                       'full-ict-v12.11.0-directional-ict-arbiter') and not cadence_only:
+                                       'full-ict-v12.11.0-directional-ict-arbiter',
+                                       'full-ict-v12.20.0-reviewed-short') and not cadence_only:
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1912,6 +1799,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     lifecycle_faults = execution_health(s, state) if open_plans(state) else []
     if lifecycle_faults or any(x in faults for x in ("UNTRUSTED_PRICE", "WRONG_INSTRUMENT", "STALE_TICKER", "STALE_3m")):
         return {"action": "DATA_HOLD", "events": [], "analysis": {"health": faults+lifecycle_faults}}
+    state["execution_audit"]={"timeframe":execution_series(s)[0],"minute_precision":bool(s.candles.get("1m")),"as_of_ts":s.now}
     release_unconfirmed_paper(state,s.now,cfg)
     bind_order_numbers(state)
     advance_lifecycle(state, s, cfg)
@@ -1921,7 +1809,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             pending['queue_execution_policy']='PASSIVE_ARM_V2'
             pending['entry_policy_migrated_ts']=s.now
             pending['queue_policy_effective_ts']=((s.now+TF['3m']-1)//TF['3m'])*TF['3m']
-    upgrade_open_exits(state, s.now)
+    # Preserve existing positions' frozen exit terms; new plans carry v12.21 terms.
     state['pending_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
     state.setdefault('pending_orders',[])
     amend_at_report(state, s, cfg)
@@ -1931,7 +1819,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     unresolved = [view['reconciliation'] for _,view in slot_views(state) if view.get('reconciliation')]
     def needs_manual_check(r):
         record = next((o for o in reversed(state['orders']) if o['id']==r['order_id']),{})
-        return r.get('reason') not in PAPER_UNCERTAINTY or record.get('execution')!='PAPER_SIGNAL'
+        return (bzu_policy.is_new(record) or r.get('reason') not in PAPER_UNCERTAINTY
+                or record.get('execution')!='PAPER_SIGNAL')
     manual_block = any(needs_manual_check(r) for r in unresolved)
     analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
     analysis['edge_mode']=os.environ.get('BZU_EDGE_MODE','SHADOW').strip().upper()
@@ -1987,6 +1876,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         use_full_exit(candidate,s.now)
         lifecycle_forecast.select_full_exit(candidate,s,cfg,sys.modules[__name__])
         adjustment=lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
+        if bzu_policy.is_new(candidate):
+            adjustment=0.
         candidate['direction_score']=round(candidate.get('direction_score',
             candidate.get('decision_score',candidate.get('score',0)))+adjustment,4)
     # The target may have changed since initial analysis; re-evaluate the
@@ -2001,7 +1892,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         candidate['meta_decision']=outcome
         candidate['probability']=outcome['probability']
         candidate['probability_status']=outcome['status']
-        if outcome['accepted']:
+        if bzu_policy.is_new(candidate) or outcome['accepted']:
             surviving.append(candidate)
         else:
             meta_rejected+=1
@@ -2051,8 +1942,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if arbitration_audit['decision']=='REQUEST_REPLACEMENT':
             obsolete=next(p for p in pending if p['id']==arbitration_audit['replace_id'])
             challenger=next(p for p in valid if p['id']==arbitration_audit['candidate_id'])
-            at_boundary=(s.now%TF['3m']==0 and any(
-                c.confirmed and c.ts+TF['3m']==s.now for c in s.candles.get('3m',[])))
+            execution_tf,execution_step=execution_series(s)
+            at_boundary=(s.now%execution_step==0 and any(
+                c.confirmed and c.ts+execution_step==s.now for c in s.candles.get(execution_tf,[])))
             request_cancel(state,obsolete,'BETTER_SAME_DIRECTION_ICT_CANDIDATE',s.now)
             state['last_portfolio_swap_ts']=s.now
             intent={'candidate_event_key':challenger.get('event_key'),
@@ -2092,7 +1984,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place=False
         direction_reason='ACTIVE_POSITION_MONITOR_ONLY'
         for old in pending:
-            if not old.get('cancel_requested_ts'):
+            if (old['side']!=selected_side or not bzu_policy.is_new(old)) and not old.get('cancel_requested_ts'):
                 request_cancel(state,old,'OPEN_POSITION_CANCEL_OTHER_LIMITS',s.now)
     else:
         proposed_side,ranked,direction_reason=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
@@ -2111,7 +2003,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             current=next(iter(pending_sides))
             incumbent=max((p for p in pending if p['side']==current and not p.get('cancel_requested_ts')),
                            key=lambda p:policy.ranking(p,s.price,cfg.tick))
-            if direction_reason=='DIRECTION_AMBIGUOUS_NO_TRADE':
+            if False and direction_reason=='DIRECTION_AMBIGUOUS_NO_TRADE':
                 # A newly ambiguous two-way thesis should not leave a stale
                 # limit waiting to fill. Cancel causally on the next boundary.
                 for stale in pending:
@@ -2123,12 +2015,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             challenger=next((p for p in valid if p['side']==proposed_side),None)
             improvement=(policy.ranking(challenger,s.price,cfg.tick)[0]
                          -policy.ranking(incumbent,s.price,cfg.tick)[0]) if challenger else 0.
-            if can_place and proposed_side in (-1,1) and proposed_side!=current and improvement>=cfg.conflict_margin:
+            if (can_place and proposed_side in (-1,1) and proposed_side!=current and
+                arbitration.directional_lock(pending,active,proposed_side,s,cfg,sys.modules[__name__]).get('cancel_old_first')):
                 # Switch to a materially stronger thesis ONLY after the
                 # old limit cancellation has become effective on a 3m boundary.
                 for p in pending:
                     if p['side']!=proposed_side and not p.get('cancel_requested_ts'):
-                        request_cancel(state,p,'BETTER_OPPOSING_SCENARIO',s.now)
+                        request_cancel(state,p,'STRUCTURE_FLIPPED',s.now)
                 direction_reason='DIRECTION_SWITCH_AWAITING_CANCEL'
                 can_place=False
                 selected_side=current
@@ -2218,6 +2111,22 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 state.pop('portfolio_rotation_intent',None)
             emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
                  stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
+            if plan.get('action_type')=='ACTIVE_ENTRY':
+                park_pending(state,[p for p in pending_plans(state) if p['id']!=plan['id']])
+                book={**state,'pending':plan,'active':None,'reconciliation':None}
+                end_order(book,plan,'FILLED','CURRENT_QUOTE_CATCH_UP',s.now)
+                quote=Candle(s.now,plan['entry'],plan['entry'],plan['entry'],plan['entry'])
+                filled=bzu_policy.first_fill(plan,quote,sys.modules[__name__],cfg,60_000)
+                filled['fill_time_status']='CURRENT_QUOTE_AT_REPORT'
+                filled['last_bar']=(s.now//60_000)*60_000
+                filled['last_execution_step_ms']=60_000
+                for number,view in slot_views(state):
+                    if not view.get('active') and not view.get('reconciliation'):
+                        view['active']=filled
+                        store_slot(state,number,view)
+                        break
+                action='ACTIVE_ENTRY'
+                break
             action='PLACE_LIMIT'
     elif can_place and not selected_side and valid:
         action='DIRECTION_CONFLICT'
@@ -2709,7 +2618,7 @@ def http_json(url: str, payload: Optional[dict] = None, timeout: int = 12) -> di
 
 
 
-def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
+def notify_queue(state: dict, token: str, chat_id: str, path: Path, persist=None) -> bool:
     if not token or not chat_id:
         raise ValueError("Telegram token/chat_id required for --notify")
     while state["notification_queue"]:
@@ -2720,7 +2629,7 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
             # Obsolete queued pages consisting solely of old version-wide
             # statistics must not block the delivery of later close events.
             state['notification_queue'].pop(0)
-            atomic_write(path, state)
+            persist() if persist else atomic_write(path, state)
             continue
         if not item.get('version') and ('Найближчі сетапи:' in body or 'після комісій' in body):
             body='🕓 Збережений звіт старого формату з черги\n'+body
@@ -2748,7 +2657,7 @@ def notify_queue(state: dict, token: str, chat_id: str, path: Path) -> bool:
             print('::error::Telegram network error: queued for retry; check outbound access',file=sys.stderr)
             return False
         state["notification_queue"].pop(0)
-        atomic_write(path, state)
+        persist() if persist else atomic_write(path, state)
         print('[TELEGRAM] Message delivered successfully; queued pages remaining: '
               +str(len(state['notification_queue'])),flush=True)
     return True
@@ -2957,21 +2866,24 @@ def resolve_live_config(cfg: Config) -> Config:
 def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
     core = cfg.core
     data = core.collect_market_data()
-    raw = data.get('candles',{}).get('3m',[])
-    if checkpoint and raw:
-        for _ in range(24):
-            earliest = min(c.ts for c in raw)
-            if earliest <= checkpoint:
-                break
-            url = f"{core.OKX_BASE_URL}/history-candles?"+urllib.parse.urlencode(
-                {'instId':cfg.instrument,'bar':'3m','after':earliest,'limit':300})
-            resp = core.http_get(url)
-            body = resp.json() if resp else {}
-            older = [Candle.parse(row) for row in body.get('data',[])] if body.get('code')=='0' else []
-            if not older or min(c.ts for c in older)>=earliest:
-                break
-            raw.extend(older)
-    data['candles']['3m'] = raw
+    data.setdefault('candles',{})
+    for tf in ('1m','3m'):
+        raw = data['candles'].get(tf,[])
+        if checkpoint and raw:
+            for _ in range(24):
+                earliest=min(c.ts for c in raw)
+                if earliest<=checkpoint: break
+                url=f"{core.OKX_BASE_URL}/history-candles?"+urllib.parse.urlencode(
+                    {'instId':cfg.instrument,'bar':tf,'after':earliest,'limit':300})
+                resp=core.http_get(url);body=resp.json() if resp else {}
+                older=[Candle.parse(row) for row in body.get('data',[])] if body.get('code')=='0' else []
+                if not older or min(c.ts for c in older)>=earliest: break
+                raw.extend(older)
+        data['candles'][tf]=raw
+    current=[c for c in data['candles'].get('1m',[]) if not c.confirmed]
+    if current:
+        data['current_candle_1m']=asdict(max(current,key=lambda c:c.ts))
+    data['require_1m']=True
     data['now'] = int(time.time()*1000)
     data['trusted'] = data.get('execution_price_trusted',False)
     data['candles'] = {tf:[asdict(c) for c in rows] for tf,rows in data.get('candles',{}).items()}
@@ -2991,6 +2903,14 @@ def report_due(now_ms: int, last_report_ms: int) -> bool:
     independent; a failed Telegram delivery stays queued for later delivery.
     """
     return now_ms // TF['15m'] > max(0, last_report_ms) // TF['15m']
+
+
+def notification_checkpoint(state, path):
+    # Keep all position, order, PnL, cancellation and notification identity.
+    # Bulky detector diagnostics can be rebuilt; they delay live delivery.
+    skip={'anchor_memory','signals','watch','setup_matrix','quality_archives',
+          'setup_statistics','best_scenario','setup_renewals','stale_refresh'}
+    atomic_write(path,{k:v for k,v in state.items() if k not in skip})
 
 
 def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
@@ -3018,6 +2938,12 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         if snapshot_path is None:
             cfg = resolve_live_config(cfg)
         state = load_state(state_path,cfg)
+        checkpoint_path=state_path.with_name('notification_checkpoint_v12.json')
+        recovery=read_json(checkpoint_path)
+        if recovery and recovery.get('last_run_ts',0)>=state.get('last_run_ts',0):
+            if recovery.get('instrument')!=cfg.instrument:
+                raise ValueError('Notification checkpoint belongs to a different instrument')
+            state.update(recovery)
         if auto_report:
             notify = report_due(int(time.time()*1000),int(state.get('last_report_requested_ts',0) or 0))
         try:
@@ -3050,16 +2976,6 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
         stage('strategy_and_lifecycle')
-        archive_path=Path(os.environ.get('RESEARCH_ARCHIVE_FILE',str(state_path.with_name('research_market_v12_6.json'))))
-        try:
-            # Offline/test snapshots never acquire live provenance just because
-            # a caller requested --snapshot or patched collect_snapshot.
-            if snapshot_path is not None:
-                snap.metadata.pop('research_provenance',None)
-            state['market_history_status']=research_evidence.record(archive_path,snap,cfg,sys.modules[__name__])
-        except (ValueError,OSError) as exc:
-            state['market_history_status']={'status':'FAILED','error':str(exc)}
-            print('Market evidence recording failed: '+str(exc),file=sys.stderr)
         if notify:
             result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
         stage('research_archive')
@@ -3084,23 +3000,35 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             state['last_report_requested_ts']=report_ts
             print('[TELEGRAM] 15m report queued; pages: '
                   +str(len(state['notification_queue'])),flush=True)
+        delivery_ok=True
+        if state['notification_queue']:
+            notification_checkpoint(state,checkpoint_path)
+            if not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID:
+                delivery_ok=False
+            else:
+                delivery_ok=notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,
+                    checkpoint_path,persist=lambda:notification_checkpoint(state,checkpoint_path))
+        stage('telegram_delivery')
+        archive_path=Path(os.environ.get('RESEARCH_ARCHIVE_FILE',str(state_path.with_name('research_market_v12_6.json'))))
+        try:
+            # Offline/test snapshots never acquire live provenance just because
+            # a caller requested --snapshot or patched collect_snapshot.
+            if snapshot_path is not None:
+                snap.metadata.pop('research_provenance',None)
+            state['market_history_status']=research_evidence.record(archive_path,snap,cfg,sys.modules[__name__])
+        except (ValueError,OSError) as exc:
+            state['market_history_status']={'status':'FAILED','error':str(exc)}
+            print('Market evidence recording failed: '+str(exc),file=sys.stderr)
+        stage('research_archive')
         atomic_write(state_path,state)
         stage('save_state')
         export_journal(journal_path,state,core)
         stage('save_journal')
-        # Retry an unsent report on EVERY subsequent 5m scan, without composing
-        # a new 5m message. This also covers out-of-order/duplicate market data.
-        if state['notification_queue']:
-            if not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID:
-                print('::error::TELEGRAM_TOKEN or TELEGRAM_CHAT_ID is missing; '
-                      'message retained for retry',file=sys.stderr)
-                return 2
-            if not notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,state_path):
-                stage('telegram_delivery_failed')
-                return 2
-        else:
-            print('[TELEGRAM] No message scheduled in this 5m scan',flush=True)
-        stage('telegram_delivery')
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+        if not delivery_ok:
+            print('::error::Telegram delivery failed; report retained for retry',file=sys.stderr)
+            return 2
         if result['action']=='DATA_HOLD':
             print('DATA_HOLD: no new orders; Telegram summary/state were processed',file=sys.stderr)
         return 0  # preserve queued notifications/ledger even when data are on hold
@@ -3109,6 +3037,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
 def main(core) -> int:
     parser = argparse.ArgumentParser(description='Full 24-setup ICT LIMIT bot v12')
     parser.add_argument('--self-test',action='store_true')
+    parser.add_argument('--all-archived-tests',action='store_true',
+                        help='With --self-test, also run historical tests for superseded policies')
     parser.add_argument('--legacy-self-test',action='store_true',help='Original compatibility checks; no production execution')
     parser.add_argument('--audit-journal',type=Path)
     parser.add_argument('--replay',type=Path)
@@ -3121,7 +3051,7 @@ def main(core) -> int:
     if args.legacy_self_test:
         # Frozen legacy fixtures were designed around the original 0.4% core
         # screening heuristic. Override it ONLY inside this offline compatibility
-        # harness; actual orders/replays always use the >=1.0% engine stop floor.
+        # harness; checklist entries use the configured absolute structural stop bounds.
         if not hasattr(core, "ABS_MIN_STOP_PCT"):
             return 0 if core._run_self_test() else 1
         saved_core_floor = core.ABS_MIN_STOP_PCT
@@ -3133,7 +3063,10 @@ def main(core) -> int:
     cfg = replace(Config.from_env(),core=core)
     if args.self_test:
         import unittest
-        suite = unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
+        modules=('test_full_limit_engine','test_v12_20_3_telegram_delivery',
+                 'test_v12_20_4_scan_gap_long','test_v12_20_5_entry_admission','test_v12_5_early_limits','test_v12_21_checklist')
+        suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
+               if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():
             raise ValueError('test_full_limit_engine.py required')
         # GitHub's job-level MARKET_HISTORY_FILE also reaches tests that mock

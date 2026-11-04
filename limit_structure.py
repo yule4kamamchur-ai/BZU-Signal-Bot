@@ -11,6 +11,11 @@ SESSION_SETUPS={'OPENING_RANGE_BREAKOUT','FAILED_OPENING_RANGE_BREAKOUT',
                 'OR_FAILURE_2_SHORT','TIME_OF_DAY_ADAPTIVE','DAILY_WEEKLY_OPEN_RECLAIM'}
 
 
+def front_run_entry(low, high, side, atr15, tick, rounder):
+    padding = max(.03, .06*atr15)
+    return rounder(high+padding if side==1 else low-padding, tick, up=side==-1)
+
+
 def closed(snapshot,tf):
     return [c for c in snapshot.candles.get(tf,[]) if c.confirmed and c.ts+TF[tf]<=snapshot.now]
 
