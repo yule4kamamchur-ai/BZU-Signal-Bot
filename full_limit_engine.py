@@ -2515,24 +2515,33 @@ def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
 
 
 def decorate_message(message):
-    # Also normalizes inline TP marks and queued messages from older releases.
-    # Keep price/math symbols (•, %, ≥, ≤, ≈, +/-) and event text intact.
-    icons=[('Ціна зараз:','💰'),('Найкращий сценарій:','🏆'),('Готовність до входу','🧩'),
-           ('СУПРОВІД —','🔵'),('ОЧІКУЄМО ЛІМІТ —','🟡'),
-           ('СПОСТЕРІГАЄМО','🟠'),('ЗАКРИТІ УГОДИ','✅'),
-           ('Структура: без','🟢'),('Структура: можливе','🟠'),
-           ('Структура: ризик','🔴'),('Структура: недостатньо','⚪')]
+    """Keep source status emojis; add labels only to older emoji-less reports.
+
+    Idempotent: the body is decorated on creation and again on queue delivery.
+    Dropping all emojis formerly erased the ⏳/🔵/✅ lifecycle indicators.
+    """
+    icons = [('Ціна зараз:', '💰'), ('Ціна:', '💰'),
+             ('Найкращий сценарій:', '🏆'), ('Готовність до входу', '🧩'),
+             ('СУПРОВІД —', '🔵'), ('ОЧІКУВАННЯ —', '⏳'),
+             ('ОЧІКУЄМО ЛІМІТ —', '🟡'), ('СПОСТЕРІГАЄМО', '👀'),
+             ('ЗАКРИТІ УГОДИ', '✅'),
+             ('Структура: без', '🟢'), ('Структура: можливе', '🟠'),
+             ('Структура: ризик', '🔴'), ('Структура: недостатньо', '⚪')]
+
     def is_icon(char):
-        point=ord(char)
-        return (0x1F000<=point<=0x1FAFF or 0x2300<=point<=0x23FF
-                or 0x2600<=point<=0x27BF or point in (0xFE0F,0x200D,0x20E3))
-    output=[]
+        point = ord(char)
+        return (0x1F000 <= point <= 0x1FAFF or 0x2300 <= point <= 0x23FF
+                or 0x2600 <= point <= 0x27BF or point in (0xFE0F, 0x200D, 0x20E3))
+
+    output = []
     for line in message.split('\n'):
-        stripped=''.join(char for char in line if not is_icon(char)).strip()
-        icon=next((mark for start,mark in icons if stripped.startswith(start)),None)
-        if 'ЗАКРИТО:' in stripped and line.lstrip().startswith(('✅','❌','⚪')):
-            icon=line.lstrip()[0]
-        output.append(icon+' '+stripped if icon else stripped)
+        stripped = line.strip()
+        leading = stripped.split(' ', 1)[0]
+        if stripped and not any(is_icon(ch) for ch in leading):
+            icon = next((mark for start, mark in icons if stripped.startswith(start)), None)
+            if icon:
+                stripped = icon + ' ' + stripped
+        output.append(stripped)
     return '\n'.join(output)
 
 
