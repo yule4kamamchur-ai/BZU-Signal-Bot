@@ -117,7 +117,15 @@ CONTRACTS = {
 
 def entry_trigger(plan,proof):
     """A session/HTF score cannot substitute for a witnessed raid or BOS/FVG."""
-    return bool(proof.get('sweep_reclaim') or proof.get('displacement_bos_fvg'))
+    if proof.get('sweep_reclaim') or proof.get('displacement_bos_fvg'):
+        return True
+    if plan.get('policy') == 'BZU_MOMENTUM_V12_24':
+        origin = plan.get('zone_origin', {})
+        zone = plan.get('entry_zone', {})
+        return bool(origin.get('confirmed') and origin.get('break_known_ts')
+                    and (plan.get('organic_confluence') or 'FVG' in zone.get('kind', ''))
+                    and not plan.get('zone_audit', {}).get('mitigated'))
+    return False
 
 
 def validate(plan, proof):
@@ -223,6 +231,6 @@ def validate(plan, proof):
              'fvg':fvg,'rejection':rejection,'acceptance':accepted,'reclaim':reclaim,
              'evidence_as_of_ts':proof.get('as_of_ts'),'original_detector_proven':anchored,
              'break_retest_activated':activated}
-    if plan.get('policy') in ('BZU_PRECISION_V12_22','BZU_MASTER_V12_23') and not entry_trigger(plan,proof):
+    if plan.get('policy') in ('BZU_PRECISION_V12_22','BZU_MASTER_V12_23','BZU_MOMENTUM_V12_24') and not entry_trigger(plan,proof):
         ok=False;why='ICT_SWEEP_OR_BOS_FVG_REQUIRED'
     return bool(ok),'CONFIRMED' if ok else why,details

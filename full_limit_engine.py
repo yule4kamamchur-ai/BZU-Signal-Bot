@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.23.0-master-plan"
-REPORT_RELEASE = 'v12.23.0'
+VERSION = "full-ict-v12.24.0-m15-momentum"
+REPORT_RELEASE = 'v12.24.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -91,7 +91,7 @@ class Config:
     min_stop_pct: float = 0.010  # legacy-plan metadata; new policy uses min_stop_absolute
     min_target_pct: float = 0.020  # legacy-plan metadata; new TP1 is 1.4R
     max_entry_distance_atr: float = 3.5
-    min_score: float = 65.0
+    min_score: float = 60.0
     conflict_margin: float = 8.0
     ttl_minutes: int = 120
     setup_age_minutes: int = 180
@@ -134,8 +134,8 @@ class Config:
             raise ValueError('Analysis scan interval must be 3, 5 or 15 minutes')
         if not .18 <= self.min_stop_absolute <= .22 or not .65 <= self.max_stop_absolute <= .75:
             raise ValueError("Absolute BZU stop bounds must be .18..22 and .65..75")
-        if self.min_net_rr < 1.8 or self.max_entry_distance_atr > 3.5 or not 65 <= self.min_score <= 100:
-            raise ValueError("Checklist requires final RR >=1.8, distance <=3.5 ATR, score >=65")
+        if self.min_net_rr < 1.8 or self.max_entry_distance_atr > 3.5 or not 60 <= self.min_score <= 100:
+            raise ValueError("Checklist requires final RR >=1.8, distance <=3.5 ATR, score >=60")
         ZoneInfo(self.timezone)
 
     @classmethod
@@ -456,7 +456,10 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         zone=anchor_zone_key(a,cfg)
         previous=by_zone.get(zone)
         event=None
-        if previous and zone not in live_zones and contexts:
+        organic = a.evidence.get('source_strategy') in scanner.ORGANIC_MOMENTUM
+        if organic and previous and previous.get('evidence', {}).get('episode_ts') != a.evidence['episode_ts']:
+            previous = None
+        if previous and not organic and zone not in live_zones and contexts:
             native=contexts.get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
             sign=core.side_sign(a.side)
             visited=any(c.low<=a.level if sign==1 else c.high>=a.level
@@ -500,6 +503,8 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         a=core.anchor_from_dict(raw)
         if a is None or not (a.created_ts<=s.now<a.expires_ts):continue
         native=(contexts or {}).get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
+        if a.evidence.get('source_strategy') in scanner.ORGANIC_MOMENTUM:
+            continue
         if a.setup_type in setup_paths.BREAK_RETEST and 'activation_phase' not in a.evidence:
             if key not in {p['event_key'] for p in open_plans(state)}:
                 a.evidence.update(activation_phase='WAIT_BREAK',activation_policy='CLOSED_BREAK_THEN_LIMIT_RETEST')
@@ -728,6 +733,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         # price match with one of the legacy 24 location detectors. Use the
         # SAME shared geometry/target/order machinery, with explicit origin.
         organic_regime = strategy_organics.classify(s)
+        active_side = policy.active_structure(s, cfg.tick, sys.modules[__name__]).get('side', 0)
         organic_setups = entry_playbooks.scenarios_since(
             s, cfg.tick, state.get('last_run_ts', 0))
         direct_anchors = []
@@ -738,9 +744,10 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             # erroneously applied the 4*ATR stop cap to 3m ATR and missed
             # genuine 15m obstacles/targets. Keep these contracts separate.
             a = strategy_direct_entries.from_signal(signal,s,cfg,tf_contexts['15m'],
-                                                      core,organic_regime,entry_playbooks)
+                                                      core,organic_regime,entry_playbooks,active_side)
             if a is not None:
                 direct_anchors.append(a)
+        direct_anchors.extend(scanner.organic_anchors(s,cfg,tf_contexts['15m'],sys.modules[__name__]))
         fresh.extend(direct_anchors)
         fresh.extend(bzu_policy.session_anchors(s,tf_contexts["15m"],cfg,sys.modules[__name__]))
         anchors = merge_full_anchors(fresh,state,s,cfg,{**tf_contexts,'MICRO_PRECURSOR':early_context})
@@ -841,6 +848,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
     for p in plans:
         q = assessments[p['id']]
         proof=policy.evidence(p,s,cfg.tick)
+        sweep = p.get('zone_origin', {}).get('sweep')
+        if sweep and not proof['sweep_reclaim']:
+            proof.update(sweep_reclaim=True, latest_sweep=sweep)
         p['ict_evidence']=proof
         if p.get('entry_route')=='STRATEGY_EVENT':
             # A direct event is evaluated against its exact as-of strategy
@@ -1784,10 +1794,15 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
                 return
         if pending['side']*(snapshot.price-pending['tp1'])<0:
             pending['target_cancel_armed']=True
-        flip=policy.structural_flip(snapshot,-pending['side'],pending['placed_ts'],cfg.tick,sys.modules[__name__])
+        flip_frames = ('15m', '1H')
+        if (bzu_policy.is_precision(pending)
+                and regime.get('active_structure', {}).get('side') == pending['side']):
+            flip_frames = ('15m',)
+        flip=policy.structural_flip(snapshot,-pending['side'],pending['placed_ts'],cfg.tick,
+                                    sys.modules[__name__],timeframes=flip_frames)
         if flip['confirmed']:
             request_cancel(state,pending,'STRUCTURE_FLIPPED',snapshot.now)
-        elif snapshot.now>=session_cutoff(snapshot.now,cfg):
+        elif pending.get('policy') != bzu_policy.POLICY and snapshot.now>=session_cutoff(snapshot.now,cfg):
             request_cancel(state,pending,'SESSION_ENDED',snapshot.now)
         elif pending.get('target_cancel_armed',True) and pending['side']*(snapshot.price-pending['tp1'])>=0:
             request_cancel(state,pending,'TARGET_REACHED_WITHOUT_FILL',snapshot.now)
@@ -1819,6 +1834,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         old_config=state.get('runtime_config')
         cadence_only=isinstance(old_config,dict) and {k:v for k,v in old_config.items() if k!='analysis_scan_minutes'}=={
             k:v for k,v in config_dict(cfg).items() if k!='analysis_scan_minutes'}
+        score_only = (isinstance(old_config,dict)
+                      and state.get('version') == 'full-ict-v12.23.0-master-plan'
+                      and old_config.get('min_score') == 65 and cfg.min_score == 60
+                      and {**old_config, 'min_score':60} == config_dict(cfg))
         # One-time release migration preserves entry/stop/TTL. Exit policy
         # changes explicitly after catching up the previous observed interval.
         # Later operator configuration changes still require closed slots.
@@ -1836,7 +1855,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'full-ict-v12.10.0-causal-direction-control',
                                        'full-ict-v12.11.0-directional-ict-arbiter',
                                        'full-ict-v12.20.0-reviewed-short',
-                                       'full-ict-v12.21.0-bzu-checklist') and not cadence_only:
+                                       'full-ict-v12.21.0-bzu-checklist') and not (cadence_only or score_only):
             raise ValueError("Configuration changed with an open plan; finish its lifecycle first")
         state.setdefault('config_migrations',[]).append({'from':state.get('version'),
                  'to':VERSION,'ts':s.now,'existing_plans_preserved':True})
@@ -1911,11 +1930,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     if can_place and analysis['health']:
         if not busy:
             action = 'DATA_HOLD'
-        can_place = False
-    elif can_place and s.now >= session_cutoff(s.now,cfg)-TF['15m'] and not any(
-            scanner.timeframe(p) != '15m' for p in analysis.get('plans',[])):
-        if not busy:
-            action = 'SESSION_CLOSED'
         can_place = False
     # Direction is a portfolio decision, NOT 24 unrelated entry permissions.
     # Existing live positions lock direction until they close. Existing pending
@@ -2181,7 +2195,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if plan.get('action_type')=='ACTIVE_ENTRY':
                 park_pending(state,[p for p in pending_plans(state) if p['id']!=plan['id']])
                 book={**state,'pending':plan,'active':None,'reconciliation':None}
-                end_order(book,plan,'FILLED','CURRENT_QUOTE_CATCH_UP',s.now)
+                direct = plan.get('direct_entry') or {}
+                reason = ('CURRENT_QUOTE_MOMENTUM' if direct.get('pattern') in ('BREAKOUT', 'ZONE_REACTION')
+                          else 'CURRENT_QUOTE_CATCH_UP')
+                end_order(book,plan,'FILLED',reason,s.now)
                 quote=Candle(s.now,plan['entry'],plan['entry'],plan['entry'],plan['entry'])
                 filled=bzu_policy.first_fill(plan,quote,sys.modules[__name__],cfg,60_000)
                 filled['fill_time_status']='CURRENT_QUOTE_AT_REPORT'
@@ -2405,10 +2422,11 @@ REASON_UA = {
     'ZONE_ORIGIN_BOS_REQUIRED':'імпульс із цієї зони не підтвердив злам структури',
     'ZONE_ORIGIN_HISTORY_MISSING':'бракує історії для перевірки походження зони',
     'ICT_SWEEP_OR_BOS_FVG_REQUIRED':'потрібне зняття ліквідності або імпульсний BOS зі свіжим FVG',
-    'CONFLUENCE_BELOW_THRESHOLD':'оцінка нижче 65 балів або 80 проти тренду',
+    'CONFLUENCE_BELOW_THRESHOLD':'оцінка нижче порогу допуску',
     'LOCAL_STRUCTURE_CONFLICT':'15m проти старшого тренду; чекаємо CHoCH або досягнення HTF зони',
     'SAME_SIDE_LOSS_COOLDOWN':'після стопа цей напрямок на паузі до години або нового A+ sweep',
-    'OIL_OVERNIGHT_BLACKOUT':'нічне вікно ризику 21:30–03:00 UTC',
+    'OIL_OVERNIGHT_BLACKOUT':'нічне вікно ризику 22:00–01:00 UTC',
+    'EIA_INVENTORY_WINDOW':'пауза навколо публікації запасів EIA',
     'US_OPEN_CONFIRMATION_REQUIRED':'чекаємо завершення перших 15 хвилин вікна Нью-Йорка',
     'EXECUTION_CONTROL_REVERSED':'підтверджена зміна локального напрямку після виставлення',
     'LEVEL_PASSED_WHILE_UNARMED':'ціна пройшла рівень, поки вхід був недоступний',
@@ -3154,7 +3172,9 @@ def main(core) -> int:
         # Active release contracts. Superseded entry/exit policies remain
         # available explicitly through --all-archived-tests.
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
-                 'test_v12_18_speed','test_v12_23_master')
+                 'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
+                 'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
+                 'test_v12_24_momentum')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

@@ -30,7 +30,7 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
     rows=sorted((c for c in snapshot.candles.get('15m', [])
           if c.confirmed and c.ts+900_000 <= snapshot.now),key=lambda c:c.ts)
     ratio=max(((c.high-c.low)/atr15 for c in rows[-2:]),default=0.) if atr15>0 else 0.
-    base={'fast':ratio>1.8,'range_atr15':ratio,'blocked':False,
+    base={'fast':False,'range_atr15':ratio,'blocked':False,
           'action':'PRECISION_ENTRY','veto_enabled':True,'shock_known_ts':None}
     if side not in (-1,1) or atr15<=0:
         return base
@@ -45,6 +45,15 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
     if not shocks:
         return base
     shock=shocks[-1];known=shock.ts+900_000
+    latest = rows[-1]
+    if latest.ts >= known:
+        span = max(latest.high - latest.low, tick)
+        favorable_close = (latest.close - latest.low if side == 1
+                           else latest.high - latest.close)
+        boundary = (zone['high'] if side == 1 else zone['low']) if zone else latest.open
+        if (side * (latest.close - latest.open) >= .6 * atr15
+                and favorable_close >= 2 * span / 3 and side * (latest.close - boundary) > 0):
+            return {**base, 'action': 'FAVORABLE_DISPLACEMENT'}
     confirmation=None
     confirmation_tf=None
     if zone:

@@ -57,6 +57,11 @@ def health_text(code):
 
 
 def setup_text(plan):
+    source = plan.get('source_strategy')
+    if source == 'BREAKER_FLIP_15M':
+        return 'Breaker • ретест пробою'
+    if source == 'MOMENTUM_STAIRCASE_15M':
+        return 'Сходинки тренду'
     name = plan.get('setup', plan.get('setup_type', ''))
     return SETUP_LABELS.get(name, name or 'Сетап')
 

@@ -62,6 +62,46 @@ def vwap_priority(plan, snapshot, tick):
             'rating':'A+' if aligned else None}
 
 
+def active_structure(snapshot, tick, engine):
+    """Prefer an intact, confirmed 15m break to a lagging HTF bias."""
+    from dataclasses import replace
+    import strategy_organics as organic
+
+    rows = organic.closed(snapshot, '15m')
+    if len(rows) < 20 or snapshot.now - (rows[-1].ts + TF['15m']) >= 2 * TF['15m']:
+        return {}
+    if any(b.ts - a.ts != TF['15m'] for a, b in zip(rows[-20:-1], rows[-19:])):
+        return {}
+    breaks = list(organic.body_breaks(rows, tick, engine))
+    if not breaks:
+        return {}
+    index, side, level = breaks[-1]
+    known = rows[index].ts + TF['15m']
+    if snapshot.now - known >= 8 * TF['15m']:
+        return {}
+    if any(side * (bar.close - level) <= 0 for bar in rows[index + 1:]):
+        return {}
+    close = rows[index].close
+    ema = organic.ema20(rows[:index + 1])
+    vwap = session_vwap(replace(snapshot, now=known))['value']
+    if not any(line is not None and side * (close - line) > 0 for line in (ema, vwap)):
+        return {}
+    return {'side': side, 'known_ts': known, 'level': level, 'close': close,
+            'ema20': ema, 'vwap': vwap}
+
+
+def momentum_aligned(snapshot, side):
+    import strategy_organics as organic
+
+    rows = organic.closed(snapshot, '15m')
+    ema = organic.ema20(rows)
+    if ema is None or snapshot.now - (rows[-1].ts + TF['15m']) >= TF['15m']:
+        return False
+    vwap = session_vwap(snapshot)['value']
+    return any(line is not None and side * (rows[-1].close - line) > 0
+               and side * (snapshot.price - line) > 0 for line in (ema, vwap))
+
+
 def market_regime(snapshot, tick, engine):
     import strategy_organics
     r=strategy_organics.classify(snapshot)
@@ -77,15 +117,18 @@ def market_regime(snapshot, tick, engine):
     rows=today or closed(snapshot,'15m')[-32:]
     local=local_structure(snapshot,tick,engine)
     conflict=local['side'] and (one or four)==-local['side']
-    return {'state':'PULLBACK_PHASE' if conflict else label,'trend_state':label,
+    active = active_structure(snapshot, tick, engine)
+    state = ('BULLISH_ACTIVE' if active['side'] == 1 else 'BEARISH_ACTIVE') if active else (
+        'PULLBACK_PHASE' if conflict else label)
+    return {'state':state,'trend_state':label,'active_structure':active,
             'local_structure':local,'side_1h':one,'side_4h':four,'as_of_ts':snapshot.now,
             'range_low':min((c.low for c in rows),default=snapshot.price),
             'range_high':max((c.high for c in rows),default=snapshot.price)}
 
 
-def structural_flip(snapshot, side, since, tick, engine):
+def structural_flip(snapshot, side, since, tick, engine, timeframes=('15m', '1H')):
     """Only a newly observed CLOSED 15m/1H BOS authorizes a pending flip."""
-    for tf in ('15m','1H'):
+    for tf in timeframes:
         rows=closed(snapshot,tf)
         for i in range(max(7,len(rows)-3),len(rows)):
             c=rows[i];known=c.ts+TF[tf]
@@ -115,6 +158,11 @@ def local_structure(snapshot, tick, engine):
 
 
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
+    active = regime.get('active_structure', {}).get('side', 0)
+    if active == side:
+        return True, 'LTF_STRUCTURE_OVERRIDE'
+    if active == -side:
+        return False, 'LOCAL_STRUCTURE_CONFLICT'
     state=regime.get('trend_state',regime['state'])
     if regime['state']=='PULLBACK_PHASE' and side==-regime['local_structure']['side']:
         reached_htf=bool(zone and zone.get('timeframe') in ('1H','4H')
@@ -134,6 +182,9 @@ def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
         if not (reversal or (reached and m15['sweep_then_shift'])):
             return False,'REGIME_LONG_ONLY' if state=='BULLISH_TREND' else 'REGIME_SHORT_ONLY'
     if state=='RANGE_LIQUIDITY_ROTATION':
+        if (zone and zone.get('kind') in ('BREAKER_FLIP_15M', 'MOMENTUM_STAIRCASE_15M')
+                and momentum_aligned(snapshot, side)):
+            return True, 'ORGANIC_M15_MOMENTUM'
         width=max(regime['range_high']-regime['range_low'],tick)
         location=(entry-regime['range_low'])/width
         if .30<=location<=.70: return False,'RANGE_MIDDLE_BLOCKED'
@@ -141,7 +192,8 @@ def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
         if (side==1 and location>.30) or (side==-1 and location<.70):
             return False,'RANGE_WRONG_EDGE'
         proof=evidence({'side':side,'entry':entry,'formation_timeframe':'15m'},snapshot,tick)
-        if not (proof['sweep_reclaim'] or ict_methodology.session_sweeps(snapshot,side,tick,engine)):
+        if not (proof['sweep_reclaim'] or (zone and zone.get('kind') == 'SWEEP_RECLAIM_ZONE')
+                or ict_methodology.session_sweeps(snapshot,side,tick,engine)):
             return False,'RANGE_SWEEP_REQUIRED'
     return True,'CONFIRMED'
 

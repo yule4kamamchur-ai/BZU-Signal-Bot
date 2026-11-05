@@ -7,7 +7,7 @@ No I/O, no mutable global state, no dependency on observed future returns.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import mean
 
 STEP = {'3m': 180_000, '15m': 900_000, '1H': 3_600_000, '4H': 14_400_000}
@@ -113,7 +113,7 @@ def _confirmed_mixed_continuation(signal, snapshot, tick, regime):
                 and abs(move)/max(path,tick) >= .31)
 
 
-def qualify(signal, snapshot, tick, regime=None):
+def qualify(signal, snapshot, tick, regime=None, active_side=0):
     """Return independently attributable strategy rationale, or a veto.
 
     A rule applies only to NEW candidate entries, not legacy open positions.
@@ -124,7 +124,9 @@ def qualify(signal, snapshot, tick, regime=None):
     strategy = strategy_for(signal.family)
     reason = 'STRATEGY_UNKNOWN'
     if strategy == 'TREND_CONTINUATION':
-        if regime.state == ('TREND_LONG' if signal.side == 1 else 'TREND_SHORT'):
+        if active_side == signal.side:
+            reason = 'STRATEGY_M15_OVERRIDE_CONFIRMED'
+        elif regime.state == ('TREND_LONG' if signal.side == 1 else 'TREND_SHORT'):
             reason = 'STRATEGY_TREND_CONFIRMED'
         elif _confirmed_mixed_continuation(signal, snapshot, tick, regime):
             reason = 'STRATEGY_MIXED_1H_15M_BOS_CONFIRMED'
@@ -137,7 +139,7 @@ def qualify(signal, snapshot, tick, regime=None):
         # Sideways, transitional, or counter-trend sweep/MSS. Aligned reversal
         # can still be a lower-timeframe liquidity continuation.
         reason = 'STRATEGY_SWEEP_MSS_CONFIRMED'
-    allow = reason in ('STRATEGY_TREND_CONFIRMED',
+    allow = reason in ('STRATEGY_TREND_CONFIRMED', 'STRATEGY_M15_OVERRIDE_CONFIRMED',
                        'STRATEGY_MIXED_1H_15M_BOS_CONFIRMED',
                        'STRATEGY_RANGE_CONFIRMED', 'STRATEGY_SWEEP_MSS_CONFIRMED')
     # Quality is a deterministic *evidence order*, not an empirical win rate.
@@ -152,3 +154,100 @@ def qualify(signal, snapshot, tick, regime=None):
             'strategy': strategy, 'regime': regime.state,
             'evidence_score': evidence_score if allow else None,
             'as_of_ts': snapshot.now, 'estimated_win_rate': None}
+
+
+def ema20(rows):
+    if len(rows) < 20:
+        return None
+    value = mean(c.close for c in rows[:20])
+    for candle in rows[20:]:
+        value += (candle.close - value) * 2 / 21
+    return value
+
+
+def body_breaks(rows, tick, engine):
+    """Recent 15m breaks of a swing whose two right bars had already closed."""
+    step = STEP['15m']
+    points = engine.pivots(rows[-80:])
+    for index in range(max(7, len(rows) - 8), len(rows)):
+        candle, previous = rows[index], rows[index - 1]
+        if candle.ts - previous.ts != step:
+            continue
+        for side, kind in ((1, 'HIGH'), (-1, 'LOW')):
+            ref = next((p for p in reversed(points) if p['kind'] == kind
+                        and p['known_ts'] + step <= candle.ts), None)
+            if ref is None:
+                continue
+            level = ref['level']
+            if (side * (previous.close - level) <= 0
+                    and side * (candle.open - level) <= tick
+                    and side * (candle.close - level) > tick
+                    and side * (candle.close - candle.open) > tick):
+                yield index, side, level
+
+
+def formations(snapshot, tick, engine):
+    """15m Breaker and momentum pullback zones with closed-bar origin proof."""
+    import directional_policy as direction
+
+    rows = closed(snapshot, '15m')
+    step = STEP['15m']
+    if len(rows) < 20 or not 0 <= snapshot.now - (rows[-1].ts + step) < step:
+        return []
+    if any(b.ts - a.ts != step for a, b in zip(rows[-20:-1], rows[-19:])):
+        return []
+    latest = rows[-1]
+    known = latest.ts + step
+    result = []
+
+    def add(family, side, proximal, distal, stop, reference, midpoint=None):
+        low, high = sorted((proximal, distal))
+        if low <= 0 or high - low < tick * .99 or side * (proximal - stop) <= tick:
+            return
+        result.append({
+            'family': family, 'side': side, 'signal_ts': known,
+            'event_ts': known, 'invalidation': stop,
+            'origin_broke_structure': True, 'organic_confluence': True,
+            'zone_freshness': 'UNMITIGATED',
+            'entry_zone': {'low': low, 'high': high, 'known_ts': known,
+                           'timeframe': '15m', 'kind': family,
+                           'reference': reference, 'impulse_midpoint': midpoint},
+        })
+
+    volatility = max(engine.atr(rows[:-1]), tick)
+    for index, side, level in body_breaks(rows, tick, engine):
+        if index != len(rows) - 1 or side * (latest.close - latest.open) < .6 * volatility:
+            continue
+        extreme = latest.low if side == 1 else latest.high
+        add('BREAKER_FLIP_15M', side, level, level - side * max(.02, tick),
+            extreme, level, (latest.high + latest.low) / 2)
+
+    vwap = direction.session_vwap(replace(snapshot, now=known))['value']
+    average = ema20(rows)
+    if vwap is None:
+        return result
+    for side in (1, -1):
+        if not all(side * (price - line) > 0 for price in (latest.close, snapshot.price)
+                   for line in (vwap, average)):
+            continue
+        for size in (3, 2):
+            run = rows[-size:]
+            extreme = (lambda c: c.high) if side == 1 else (lambda c: c.low)
+            if (not all(side * (c.close - c.open) > 0 for c in run)
+                    or not all(side * (extreme(b) - extreme(a)) > 0 and
+                               side * (b.close - a.close) > 0 for a, b in zip(run, run[1:]))):
+                continue
+            # At least one body closes through an already observed step.
+            # A sequence of wicks alone does not prove a structural break.
+            crossed = [extreme(a) for a, b in zip(rows[-size-1:-1], run)
+                       if side * (b.open - extreme(a)) <= tick
+                       and side * (b.close - extreme(a)) > tick]
+            if not crossed:
+                continue
+            tip = extreme(latest)
+            base = (min(c.low for c in run) if side == 1 else max(c.high for c in run))
+            span = side * (tip - base)
+            add('MOMENTUM_STAIRCASE_15M', side, tip - side * .25 * span,
+                tip - side * .382 * span, base, crossed[-1])
+            break
+    return result
