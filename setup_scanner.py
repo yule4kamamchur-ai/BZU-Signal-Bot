@@ -15,6 +15,72 @@ MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
 
 
+# Shared v12.27 direction and plan-integrity contracts. These are deterministic
+# validity checks, not a win-probability model or an alternative trading signal.
+ZONE_DIRECTION = {
+    'DEMAND_OB':1, 'FVG_BULL':1, 'BULLISH_BREAKER':1, 'BULL_BREAKER':1,
+    'BREAKER_BULL':1, 'SWEEP_LOW':1, 'IFVG_BULL':1,
+    'SUPPLY_OB':-1, 'FVG_BEAR':-1, 'BEARISH_BREAKER':-1, 'BEAR_BREAKER':-1,
+    'BREAKER_BEAR':-1, 'SWEEP_HIGH':-1, 'IFVG_BEAR':-1,
+}
+DIRECTIONAL_FORMATIONS = frozenset({'CONFIRMED_FVG', 'BREAKER_FLIP_15M',
+    'MOMENTUM_STAIRCASE_15M', 'DISPLACEMENT_CATCHER_15M',
+    'LIQUIDITY_RAID_ENGULFING_15M', 'STRUCTURAL_LEVEL', 'SESSION_SWEEP_ENGULFING',
+    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB'})
+PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
+    'zone_origin', 'approach', 'session_gate', 'planning_policy', 'entry_checks',
+    'confluence', 'ict_evidence', 'rating', 'grade')
+
+
+def zone_direction_matches(zone, side):
+    kind = zone.get('kind', '')
+    expected = ZONE_DIRECTION.get(kind)
+    declared = zone.get('side')
+    if declared in ('LONG', 'SHORT'):
+        declared = 1 if declared == 'LONG' else -1
+    return (side in (-1, 1) and (declared not in (-1, 1) or declared == side)
+            and (expected == side if expected else kind in DIRECTIONAL_FORMATIONS))
+
+
+def replace_plan_diagnostics(row, diagnostics):
+    """A new branch owns its entire geometry; partial updates must not inherit SL."""
+    from copy import deepcopy
+    for key in PLAN_DIAGNOSTICS:
+        row.pop(key, None)
+    row.update(deepcopy(diagnostics))
+    row.setdefault('entry_checks', entry_checks())
+
+
+def candidate_plan_error(row, min_score=65, min_rr=1.35):
+    """Full, directional candidate contract; never apply to a managed OPEN stop."""
+    def finite_number(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and isfinite(v)
+    side = row.get('side')
+    if not zone_direction_matches(row, side):
+        return 'ZONE_DIRECTION_MISMATCH'
+    values = [row.get(k) for k in ('low', 'high', 'entry', 'stop', 'tp1', 'tp2')]
+    if not all(finite_number(v) and v > 0 for v in values):
+        return 'INCOMPLETE_PLAN'
+    low, high, entry, stop, tp1, tp2 = values
+    if low >= high:
+        return 'INVALID_ZONE_RANGE'
+    risk = side * (entry-stop)
+    if risk <= 0 or side*(tp1-entry) <= 0 or side*(tp2-tp1) < -1e-8:
+        return 'INVALID_PLAN_GEOMETRY'
+    if not finite_number(row.get('score')) or not min_score <= row['score'] <= 100:
+        return 'SCORE_BELOW_65'
+    if row.get('score_source') != 'CONTEXT':
+        return 'CONTEXT_NOT_EVALUATED'
+    if side*(tp1-entry)/risk < min_rr-1e-8:
+        return 'RR_BELOW_1_35'
+    if not low-1e-8 <= entry <= high+1e-8:
+        # Planner front-running of a narrow zone is explicit, bounded and causal.
+        proximal = high if side == 1 else low
+        if not 0 <= side*(entry-proximal) <= .03000001:
+            return 'ENTRY_OUTSIDE_ZONE'
+    return None
+
+
 def closed_five_minutes(snapshot):
     """UTC-aligned 5m bars, requiring all five confirmed constituent minutes.
 

@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b1018">
-<title>BZU · Pro Cockpit v12.26</title>
+<title>BZU · Pro Cockpit v12.27</title>
 <link rel="stylesheet" href="./live_terminal.css">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <script defer src="./live_terminal.js"></script>
 </head>
 <body>
 <header class="masthead">
-  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>PRO COCKPIT</span></h1><p class="muted">Brent · v12.26 · сигнальний журнал</p></div></div>
+  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>LIVE REACTION</span></h1><p class="muted">Brent · v12.27 · сигнальний журнал</p></div></div>
   <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
 </header>
 <section id="state-banner" class="state-banner" data-mode="SCANNING" aria-labelledby="state-title">
@@ -30,14 +30,14 @@
     <section class="panel chart-panel" aria-labelledby="chart-title">
       <div class="bar"><div><p class="eyebrow">MARKET VIEW</p><h2 id="chart-title">Карта рівнів</h2></div><div class="chart-tools"><button id="5m" aria-pressed="false">M5</button><button id="15m" aria-pressed="true">M15</button><button id="all-zones" aria-pressed="false">Усі зони</button></div></div>
       <div class="chart-shell"><div id="chart"></div></div>
-      <p id="chart-message" class="muted"></p>
+      <p id="chart-message" class="muted"></p><div id="chart-levels" class="chart-levels" aria-label="Усі підписані рівні графіка"></div>
       <div class="chart-legend"><span class="long">● Вхід / LONG</span><span class="short">● SL / SHORT</span><span class="target">● Цілі</span><span class="amber">● Б/У</span><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Lightweight Charts</a></div>
     </section>
     <section class="panel activity-panel" aria-labelledby="activity-title"><div class="bar"><h2 id="activity-title">Останні дії</h2><small>За журналом · Київ</small></div><p id="last-event" class="last-event">Очікуємо історію рішень.</p><ol id="events" class="events"></ol></section>
   </div>
   <aside class="console" aria-label="Пульт ордерів">
     <section class="panel" aria-labelledby="orders-title"><div class="bar"><div><p class="eyebrow">EXECUTION MONITOR</p><h2 id="orders-title">Ліміти й супровід</h2></div><span id="order-count" class="badge">0</span></div><p id="alert" role="status" aria-live="polite"></p><div id="orders"></div><p class="execution-note">Дотик котирування — привід перевірити виконання у брокера. Кнопки копіюють рівні.</p></section>
-    <section class="panel" aria-labelledby="radar-title"><div class="bar"><div><p class="eyebrow">LONG / SHORT RADAR</p><h2 id="radar-title">Кандидати на вхід</h2></div><small id="radar-source">За зліпком</small></div><div id="radar" class="radar-grid"></div></section>
+    <section class="panel" aria-labelledby="radar-title"><div class="bar"><div><p class="eyebrow">LONG / SHORT RADAR</p><h2 id="radar-title">Кандидати на вхід</h2></div><small id="radar-source">За зліпком</small></div><div id="radar" class="radar-grid"></div><div id="reaction-monitor" class="reaction-monitor" data-stage="WAIT"><h3 id="reaction-title">Чекаємо повний план ≥65/100</h3><p id="reaction-detail">Live фільтр працює у відкритій вкладці.</p><p id="reaction-metrics" class="muted micro"></p></div></section>
     <section class="panel zones-panel" aria-labelledby="zones-title"><div class="bar"><h2 id="zones-title">Зони сканера</h2><small id="zone-count"></small></div><p class="muted micro">Бал — оцінка рушія, не ймовірність. Межа зони — попередній орієнтир.</p><div class="scroll"><table><thead><tr><th>Зона / статус</th><th>Бал</th><th>Вхід / Δ</th><th><span class="sr-only">На графіку</span></th></tr></thead><tbody id="zones"></tbody></table></div></section>
   </aside>
 </main>

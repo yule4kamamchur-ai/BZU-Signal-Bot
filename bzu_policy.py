@@ -235,6 +235,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if not session['allowed']:
         return None,session['reason']
     zone = zone_for(anchor, snapshot, cfg, engine)
+    if not scanner.zone_direction_matches(zone, side):
+        return None, 'ZONE_DIRECTION_MISMATCH'
     origin = scanner.zone_origin(zone, snapshot, side, cfg.tick, engine)
     if not origin['confirmed']:
         sweep_zone, sweep_origin = scanner.sweep_reclaim_zone(anchor, snapshot, side, cfg, engine)

@@ -29,11 +29,11 @@ class CockpitTests(unittest.TestCase):
         result=self.project(poi_paths=[row])
         self.assertEqual(result['system_mode'],'SCANNING')
         self.assertEqual(result['orders'],[])
-        self.assertEqual(result['radar']['LONG']['status'],'WAIT_CONFIRMATION')
-        self.assertEqual(result['radar']['LONG']['score'],72)
-        self.assertEqual(result['radar']['LONG']['entry_source'],'ANCHOR')
+        self.assertEqual(result['reference_levels'][0]['status'],'REFERENCE')
+        self.assertEqual(result['reference_levels'][0]['score'],72)
+        self.assertEqual(result['reference_levels'][0]['entry_source'],'ANCHOR')
         self.assertNotIn('PRIVATE_SENTINEL',json.dumps(result))
-        self.assertNotIn('stop',result['radar']['LONG'])
+        self.assertNotIn('stop',result['reference_levels'][0])
         self.assertEqual(row,original)
 
     def test_planner_entry_targets_and_signed_distance_for_both_sides(self):
@@ -41,7 +41,8 @@ class CockpitTests(unittest.TestCase):
             entry=self.snap.price-side*.2
             row={'id':'candidate','side':side,'entry':entry,'stop':entry-side*.3,
                  'tp1':entry+side*.5,'tp2':entry+side*.8,'risk':.3,'score':76,
-                 'rating':'A','quality':{'accepted':True,'reason':'ACCEPTED'},'setup':'FVG'}
+                 'rating':'A','quality':{'accepted':True,'reason':'ACCEPTED'},'setup':'FVG',
+                 'entry_zone':{'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','low':entry-.03,'high':entry+.03,'known_ts':self.snap.now,'timeframe':'15m'}}
             result=self.project(candidate_plans=[row])
             candidate=result['radar']['LONG' if side==1 else 'SHORT']
             self.assertEqual(candidate['entry'],entry)
@@ -62,7 +63,7 @@ class CockpitTests(unittest.TestCase):
         self.assertIsNone(z['stop'])
         self.assertEqual(z['status'],'OBSERVING')
         self.assertEqual(z['entry_source'],'ZONE_BOUNDARY')
-        self.assertEqual(z['entry'],74.3)
+        self.assertEqual(z['source_high'],74.3)
 
     def test_retired_and_future_candidates_do_not_appear(self):
         rows=[{'side':1,'entry':74.5,'entry_zone':self.zone,'reason':r}
@@ -84,7 +85,7 @@ class CockpitTests(unittest.TestCase):
         other={**p,'id':'different-proposal','entry':p['entry']+.01,
                'stop':p['stop']-.20,'score':99,'reason':'ACCEPTED'}
         projected=self.project(candidate_plans=[other])
-        related=[c for c in projected['candidates'] if c.get('order_id')==p['id']]
+        related=[c for c in projected['zones'] if c.get('order_id')==p['id']]
         self.assertTrue(related)
         for candidate in related:
             self.assertEqual(candidate['entry'],p['entry'])
@@ -118,7 +119,7 @@ class CockpitTests(unittest.TestCase):
         b={'setup':'OTHER','side':1,'entry':74.4,'score':75,'entry_zone':self.zone,
            'reason':'IMPULSE_CONFIRMATION_REQUIRED'}
         result=self.project(poi_paths=[a,b])
-        candidates=result['candidates']
+        candidates=result['reference_levels']
         self.assertEqual(len(candidates),2)
         waiting=next(c for c in candidates if c['setup']=='OTHER')
         self.assertNotIn('stop',waiting)
@@ -129,9 +130,9 @@ class CockpitTests(unittest.TestCase):
         rows=[{'setup':'FVG','side':side,'entry':self.snap.price-side*(.1+i*.01),
                'score':70,'reason':'ACCEPTED'} for side in (1,-1) for i in range(100)]
         result=self.project(poi_paths=rows+rows)
-        self.assertEqual(len(result['candidates']),96)
-        self.assertEqual(sum(c['side']==1 for c in result['candidates']),48)
-        self.assertAlmostEqual(result['radar']['LONG']['entry'],self.snap.price-.1)
+        self.assertEqual(result['candidates'],[])
+        self.assertLessEqual(len(result['reference_levels']),48)
+        self.assertIsNone(result['radar']['LONG'])
 
     def test_impulse_brake_keeps_observed_zone_before_geometry(self):
         for side in (1,-1):

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.26.0-pro-cockpit"
-REPORT_RELEASE = 'v12.26.0'
+VERSION = "full-ict-v12.27.0-live-reaction"
+REPORT_RELEASE = 'v12.27.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -817,9 +817,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                            reason=reason,score=p['score'] if p else a.score,
                            status='LIMIT_READY' if p else 'BLOCKED',
                            signal_id=p['id'] if p else None,event_key=key)
-                row.update(diagnostics)
-                if 'score' in diagnostics:
-                    row['score_status']='CONTEXT'
+                scanner.replace_plan_diagnostics(row, diagnostics)
+                row['score_status']='CONTEXT' if p or 'score' in diagnostics else 'PATTERN'
                 if a.evidence.get('setup_conditions'):
                     row['setup_conditions']=copy.deepcopy(a.evidence['setup_conditions'])
                 elif row.get('setup_readiness_pct',0)<100:
@@ -969,6 +968,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         if alternatives:
             best=max(alternatives,key=lambda p:(p['quality']['accepted'],scanner.selection_key(p,s.price)))
             q=best['quality']
+            scanner.replace_plan_diagnostics(row, {k:best[k] for k in scanner.PLAN_DIAGNOSTICS if k in best})
+            row['score_status']='CONTEXT'
             row.update(signal_id=best['id'],event_key=best['event_key'],side=best['side'],level=best['entry'],
                        reason=q['reason'],status='LIMIT_READY' if q['accepted'] else 'BLOCKED',
                        score=best['score'],entry_checks=copy.deepcopy(best['entry_checks']),statistics=q['statistics'])
@@ -1834,6 +1835,9 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
 
 
 def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
+    entry_mode = os.environ.get('BZU_ENTRY_MODE', 'PASSIVE_LIMIT').strip().upper()
+    if entry_mode not in ('PASSIVE_LIMIT', 'LIVE_REACTION'):
+        raise ValueError('BZU_ENTRY_MODE must be PASSIVE_LIMIT or LIVE_REACTION')
     if s.now <= state.get("last_run_ts", 0):
         return {"action": "DUPLICATE_OR_OUT_OF_ORDER", "events": [], "analysis": {}}
     if state["instrument"] != cfg.instrument:
@@ -1993,6 +1997,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             cooled.append(candidate)
     valid=cooled
     valid.sort(key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+    analysis['entry_mode']=entry_mode
+    analysis['reaction_plans']=copy.deepcopy(valid) if can_place and entry_mode=='LIVE_REACTION' and not active_plans(state) else []
+    if entry_mode=='LIVE_REACTION':
+        # Static browser signals cannot acknowledge or persist an exchange fill.
+        # New plans stay unarmed hunting plans; never fabricate a PAPER fill.
+        can_place=False
+        if not busy and analysis['reaction_plans']:
+            action='WATCH_REACTION'
     active=active_plans(state)
     pending=pending_plans(state)
     # The older router may have persisted many waiting orders. Do not admit
@@ -2270,6 +2282,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     state['include_commission']=cfg.include_commission
     state['price_tick']=cfg.tick
     state['version'] = VERSION
+    state['entry_mode'] = entry_mode
     state['ledger_revision'] = 2
     cutoff = s.now-2*86_400_000
     state['used_events'] = {k:v for k,v in state['used_events'].items() if v>=cutoff}
@@ -3188,7 +3201,7 @@ def main(core) -> int:
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
-                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit')
+                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():
@@ -3197,12 +3210,17 @@ def main(core) -> int:
         # run_live. Never let fixtures append artificial prices to live evidence.
         previous_archive = os.environ.get('MARKET_HISTORY_FILE')
         previous_research = os.environ.get('RESEARCH_ARCHIVE_FILE')
+        previous_entry_mode = os.environ.pop('BZU_ENTRY_MODE', None)
         with tempfile.TemporaryDirectory(prefix='bzu-self-test-') as directory:
             os.environ['MARKET_HISTORY_FILE'] = str(Path(directory)/'market.json')
             os.environ['RESEARCH_ARCHIVE_FILE'] = str(Path(directory)/'research.json')
             try:
                 return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
             finally:
+                if previous_entry_mode is not None:
+                    os.environ['BZU_ENTRY_MODE'] = previous_entry_mode
+                else:
+                    os.environ.pop('BZU_ENTRY_MODE', None)
                 if previous_archive is None:
                     os.environ.pop('MARKET_HISTORY_FILE',None)
                 else:

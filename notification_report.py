@@ -306,10 +306,12 @@ def build_checklist(state, snapshot, result, cfg, engine):
     regime = directional_policy.market_regime(snapshot, cfg.tick, engine)
     trend = {
         'BULLISH_TREND': 'BULLISH',
+        'BULLISH_ACTIVE': 'BULLISH',
         'BEARISH_TREND': 'BEARISH',
+        'BEARISH_ACTIVE': 'BEARISH',
         'RANGE_LIQUIDITY_ROTATION': 'RANGE',
         'PULLBACK_PHASE': 'CONFLICT / PULLBACK',
-    }[regime['state']]
+    }.get(regime.get('state'), 'UNKNOWN')
     price_ok = snapshot.trusted and snapshot.price > 0 and 0 <= now - snapshot.ticker_ts <= 120_000
     price = f'{snapshot.price:.8g}' if price_ok else 'недоступна'
     frozen = result.get('action') in ('DATA_HOLD', 'DUPLICATE_OR_OUT_OF_ORDER')
@@ -413,7 +415,18 @@ def build_checklist(state, snapshot, result, cfg, engine):
 
     # A research/watch candidate is not a pending order. Do not print long
     # rejection diagnostics while real orders are already occupying the slots.
-    if not pending and not active and not frozen and not selected:
+    if not pending and not active and not frozen and result.get('analysis', {}).get('entry_mode') == 'LIVE_REACTION':
+        import live_terminal
+        public = live_terminal.build(state, snapshot, result, cfg, engine)
+        primary = next((p for p in public['candidates'] if p['id'] == public['primary_candidate_id']), None)
+        if primary:
+            side = 'LONG' if primary['side'] == 1 else 'SHORT'
+            lines += ['', f'👁 ПЛАН LIVE РЕАКЦІЇ • {side} @ {primary["entry"]:.8g}',
+                      f'SL {primary["stop"]:.8g} • TP1 {primary["tp1"]:.8g} • TP2 {primary["tp2"]:.8g}',
+                      'Нову лімітку не активовано. Реакцію відстежує відкрита вкладка дашборду.']
+        else:
+            lines += ['', '👁 LIVE REACTION: чекаємо повний якісний план; ордер не активовано.']
+    if not pending and not active and not frozen and not selected and result.get('analysis', {}).get('entry_mode') != 'LIVE_REACTION':
         waiting = [p for p in state.get('watch', []) if p.get('reason') in (
             'WAIT_RETEST', 'IMPULSE_CONFIRMATION_REQUIRED', 'LOCAL_STRUCTURE_CONFLICT',
             'SAME_SIDE_LOSS_COOLDOWN', 'ZONE_ORIGIN_BOS_REQUIRED')]
