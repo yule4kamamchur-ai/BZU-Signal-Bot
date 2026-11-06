@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.24.0 — GitHub-only Scan / 15m Telegram
+name: BZU Auto Bot — ICT v12.25.0 — GitHub-only Scan / 15m Telegram
 
 on:
   schedule:
@@ -17,6 +17,8 @@ jobs:
   run-bot:
     # GitHub Actions is the sole scheduled runner: no VPS, Docker, or worker.
     # Each invocation is a finite one-shot execution (no persistent process).
+    outputs:
+      pages_ready: ${{ steps.pages_artifact.outputs.ready }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -24,11 +26,12 @@ jobs:
       JOURNAL_PERSISTENCE_CONFIRMED: 'true'
       SIGNAL_MEMORY_FILE: last_signal_v6_4.json
       SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
+      LIVE_STATE_FILE: live_state.json
       MARKET_HISTORY_FILE: market_history_v12.json
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.24.0-m15-momentum'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.25.0-live-terminal'
       INCLUDE_COMMISSION: 'true'
       ANALYSIS_SCAN_MINUTES: '15'
       LIMIT_MAX_STOP_ATR: '4.00'
@@ -69,7 +72,7 @@ jobs:
       # Run only cheap safety checks in live trading. The full regression suite can run offline with --self-test.
       - name: Fast preflight (version, detectors, imports and syntax)
         run: |
-          python -m py_compile bot_oneshot.py full_limit_engine.py notification_report.py \
+          python -m py_compile bot_oneshot.py full_limit_engine.py notification_report.py live_terminal.py \
             setup_scanner.py signal_quality.py ict_methodology.py portfolio_arbitration.py \
             bzu_policy.py position_monitor.py limit_structure.py lifecycle_forecast.py trade_dependencies.py research_zone_policy_1220.py \
             entry_adverse_selection.py edge_intelligence.py entry_playbooks.py strategy_organics.py strategy_direct_entries.py edge_research.py strategy_research.py trade_meta_model.py directional_policy.py setup_paths.py
@@ -77,7 +80,7 @@ jobs:
           from pathlib import Path
           import os
           must_exist = (
-              'bot_oneshot.py', 'full_limit_engine.py', 'notification_report.py',
+              'bot_oneshot.py', 'full_limit_engine.py', 'notification_report.py', 'live_terminal.py',
               'bzu_policy.py', 'position_monitor.py', 'limit_structure.py', 'research_zone_policy_1220.py',
               'setup_scanner.py', 'signal_quality.py', 'ict_methodology.py',
               'portfolio_arbitration.py', 'entry_adverse_selection.py', 'edge_intelligence.py',
@@ -97,7 +100,7 @@ jobs:
           expected = os.environ['EXPECTED_BOT_VERSION']
           print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
           if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
-              raise SystemExit('Mismatched v12.24.0 files: update bot_oneshot.py and full_limit_engine.py together. '
+              raise SystemExit('Mismatched v12.25.0 files: update bot_oneshot.py and full_limit_engine.py together. '
                                f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
               raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
@@ -145,7 +148,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           # Commit only runtime files, never remove unrelated or legacy files.
-          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json notification_checkpoint_v12.json; do
+          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json notification_checkpoint_v12.json live_state.json; do
             if [ -f "$file" ]; then
               git add -f -- "$file"
             fi
@@ -176,7 +179,7 @@ jobs:
 
             # A different writer changed the same ledger: preserve both copies.
             if ! git diff --quiet "$base_revision" "$remote_revision" -- \
-                last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json notification_checkpoint_v12.json; then
+                last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json notification_checkpoint_v12.json live_state.json; then
               echo '::error::Remote state changed during this run. Refusing to overwrite it; recover this run from its state artifact.'
               exit 1
             fi
@@ -205,5 +208,41 @@ jobs:
             market_history_v12.json
             research_market_v12_6.json
             notification_checkpoint_v12.json
+            live_state.json
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Stage public terminal files
+        id: pages_bundle
+        if: ${{ always() && steps.persist.outcome == 'success' && hashFiles('live_state.json') != '' }}
+        run: |
+          mkdir -p pages-artifact
+          cp index.html live_terminal.js live_state.json pages-artifact/
+
+      - name: Upload terminal for GitHub Pages
+        id: pages_upload
+        if: ${{ always() && steps.pages_bundle.outcome == 'success' }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages-artifact
+
+      - name: Mark Pages artifact ready
+        id: pages_artifact
+        if: ${{ always() && steps.pages_upload.outcome == 'success' }}
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  deploy-pages:
+    if: ${{ always() && needs.run-bot.outputs.pages_ready == 'true' }}
+    needs: run-bot
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish terminal
+        id: deployment
+        uses: actions/deploy-pages@v4

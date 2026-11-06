@@ -38,6 +38,9 @@ def session_liquidity(snapshot):
         d=datetime.fromtimestamp(c.ts/1000,ZoneInfo('Europe/London'))
         if 8*60<=d.hour*60+d.minute<16*60+30: london.append(c)
     add('LONDON',london)
+    new_york = ZoneInfo('America/New_York')
+    add('NEW_YORK', [c for c in today if 570 <=
+        (d := datetime.fromtimestamp(c.ts/1000,new_york)).hour * 60 + d.minute < 1020])
     lon=now.astimezone(ZoneInfo('Europe/London'));ny=now.astimezone(ZoneInfo('America/New_York'))
     active_ny=9*60+30<=ny.hour*60+ny.minute<17*60
     active_lon=8*60<=lon.hour*60+lon.minute<16*60+30
@@ -45,6 +48,75 @@ def session_liquidity(snapshot):
             'active':active_ny or active_lon,'pools':pools,'as_of_ts':snapshot.now}
     cache[key]=result
     return result
+
+
+def body_break(rows, index, points, side, tick, step):
+    """Return a pivot already known when the crossing candle opened."""
+    if index < 1 or rows[index].ts - rows[index - 1].ts != step:
+        return None
+    candle, previous = rows[index], rows[index - 1]
+    kind = 'HIGH' if side == 1 else 'LOW'
+    pivot = next((p for p in reversed(points) if p['kind'] == kind
+                  and p['known_ts'] + step <= candle.ts), None)
+    if pivot is None:
+        return None
+    level = pivot['level']
+    if (side * (previous.close - level) <= 0
+            and side * (candle.open - level) <= tick * .5
+            and side * (candle.close - level) > tick
+            and side * (candle.close - candle.open) > tick):
+        return pivot
+    return None
+
+
+def immediate_session_sweep(snapshot, rows, side, tick):
+    """Engulf the prior M15 body on the same candle that raids a known pool."""
+    from dataclasses import replace
+
+    if len(rows) < 2:
+        return None
+    previous, raid = rows[-2:]
+    step = 900_000
+    if raid.ts - previous.ts != step:
+        return None
+    if not (side * (previous.close - previous.open) < 0
+            and side * (raid.close - raid.open) > tick
+            and side * (raid.open - previous.close) <= tick * .5
+            and side * (raid.close - previous.open) >= -tick * .5):
+        return None
+    prior = replace(snapshot, now=raid.ts)
+    kyiv = ZoneInfo('Europe/Kyiv')
+    local = datetime.fromtimestamp(raid.ts / 1000, kyiv)
+    london = local.astimezone(ZoneInfo('Europe/London'))
+    new_york = local.astimezone(ZoneInfo('America/New_York'))
+    prefixes = []
+    if 480 <= london.hour*60 + london.minute < 990:
+        prefixes.append('LONDON_')
+    if 570 <= new_york.hour*60 + new_york.minute < 1020:
+        prefixes.append('NEW_YORK_')
+    pools = [p for p in session_liquidity(prior)['pools'] if p['name'].startswith(tuple(prefixes))]
+    asia = [c for c in rows[:-1] if (d := datetime.fromtimestamp(c.ts / 1000, kyiv)).date()
+            == local.date() and d.hour < local.hour + 1] if local.hour < 9 else []
+    previous_hour = raid.ts // 3_600_000 * 3_600_000 - 3_600_000
+    hour = [c for c in rows[:-1] if previous_hour <= c.ts < previous_hour + 3_600_000]
+    if [c.ts for c in hour] != list(range(previous_hour, previous_hour + 3_600_000, step)):
+        hour = []
+    suffix = 'LOW' if side == 1 else 'HIGH'
+    extreme = raid.low if side == 1 else raid.high
+    for label, bars in (('ASIA', asia), ('PREV_HOUR', hour)):
+        if bars:
+            level = min(c.low for c in bars) if side == 1 else max(c.high for c in bars)
+            pools.append({'name': label + '_' + suffix, 'level': level,
+                          'known_ts': bars[-1].ts + step})
+    eligible = [p for p in pools if p['name'].endswith(suffix)
+                and p['known_ts'] <= raid.ts and side * (p['level'] - extreme) >= tick - 1e-9
+                and side * (raid.close - p['level']) > tick]
+    if eligible:
+        pool = min(eligible, key=lambda p: abs(p['level'] - extreme))
+        return {'pool': pool['name'], 'level': pool['level'], 'extreme': extreme,
+                'known_ts': raid.ts + step, 'sweep_ts': raid.ts + step,
+                'reference_known_ts': pool['known_ts'], 'pattern': 'ENGULFING', 'side': side}
+    return None
 
 
 def session_sweeps(snapshot, side, tick, engine):
@@ -119,6 +191,11 @@ def entry_trigger(plan,proof):
     """A session/HTF score cannot substitute for a witnessed raid or BOS/FVG."""
     if proof.get('sweep_reclaim') or proof.get('displacement_bos_fvg'):
         return True
+    if plan.get('policy') == 'BZU_LIVE_V12_25':
+        origin = plan.get('zone_origin', {})
+        return bool(origin.get('confirmed') and
+                    (origin.get('sweep') or (origin.get('break_known_ts') and
+                     plan.get('m15_momentum_aligned'))))
     if plan.get('policy') == 'BZU_MOMENTUM_V12_24':
         origin = plan.get('zone_origin', {})
         zone = plan.get('entry_zone', {})
@@ -231,6 +308,6 @@ def validate(plan, proof):
              'fvg':fvg,'rejection':rejection,'acceptance':accepted,'reclaim':reclaim,
              'evidence_as_of_ts':proof.get('as_of_ts'),'original_detector_proven':anchored,
              'break_retest_activated':activated}
-    if plan.get('policy') in ('BZU_PRECISION_V12_22','BZU_MASTER_V12_23','BZU_MOMENTUM_V12_24') and not entry_trigger(plan,proof):
+    if plan.get('policy') in ('BZU_PRECISION_V12_22','BZU_MASTER_V12_23','BZU_MOMENTUM_V12_24','BZU_LIVE_V12_25') and not entry_trigger(plan,proof):
         ok=False;why='ICT_SWEEP_OR_BOS_FVG_REQUIRED'
     return bool(ok),'CONFIRMED' if ok else why,details

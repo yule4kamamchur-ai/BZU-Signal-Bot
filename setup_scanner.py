@@ -105,7 +105,7 @@ def catch_up(snapshot, entry, stop, side, known_ts, tick, zone=None):
 def closed_reaction(snapshot, side, zone, touch_ts):
     """Latest closed 5m/15m bar must reclaim the zone after its actual touch."""
     for tf,step in (('5m',300_000),('15m',900_000)):
-        rows=sorted((c for c in snapshot.candles.get(tf,[]) if c.confirmed
+        rows = closed_five_minutes(snapshot) if tf == '5m' else sorted((c for c in snapshot.candles.get(tf,[]) if c.confirmed
                      and c.ts+step<=snapshot.now),key=lambda c:c.ts)
         if not rows:
             continue
@@ -116,7 +116,10 @@ def closed_reaction(snapshot, side, zone, touch_ts):
     return None
 
 
-ORGANIC_MOMENTUM = frozenset({'BREAKER_FLIP_15M', 'MOMENTUM_STAIRCASE_15M'})
+ORGANIC_MOMENTUM = frozenset({'BREAKER_FLIP_15M', 'DISPLACEMENT_CATCHER_15M'})
+
+ORGANIC_REVERSAL = 'SESSION_SWEEP_ENGULFING_15M'
+ORGANIC_FORMATIONS = ORGANIC_MOMENTUM | {ORGANIC_REVERSAL}
 
 
 def organic_anchors(snapshot, cfg, context, engine):
@@ -128,17 +131,21 @@ def organic_anchors(snapshot, cfg, context, engine):
         side = setup['side']
         family = setup['family']
         proximal = zone['high'] if side == 1 else zone['low']
-        buffer = .02 if family == 'BREAKER_FLIP_15M' else .03
-        entry = engine.round_tick(proximal + side * buffer, cfg.tick, up=side == 1)
+        raw_entry = (zone['low'] + zone['high']) / 2 if family == 'DISPLACEMENT_CATCHER_15M' else proximal
+        entry = engine.round_tick(round(raw_entry + cfg.tick/2, 10), cfg.tick)
+        if family == ORGANIC_REVERSAL:
+            name = 'SWEEP_RECLAIM' if side == 1 else 'LIQUIDITY_SWEEP_REVERSAL_SHORT'
+        else:
+            name = 'BREAKOUT_RETEST' if family == 'BREAKER_FLIP_15M' else 'PULLBACK_CONTINUATION'
         known = setup['signal_ts']
         evidence = {**setup, 'entry_route': 'STRATEGY_EVENT', 'setup_timeframe': '15m',
                     'formation_timeframe': '15m', 'source_strategy': family,
                     'strategy_signal_ts': known, 'strategy_event_ts': known,
                     'episode_ts': known,
-                    'setup_conditions': [{'condition': 'Закритий імпульс M15 підтверджено',
+                    'setup_conditions': [{'condition': 'Закритий патерн M15 підтверджено',
                                           'met': True}]}
         anchor = cfg.core.make_anchor(
-            'BREAKOUT_RETEST' if family == 'BREAKER_FLIP_15M' else 'PULLBACK_CONTINUATION',
+            name,
             'LONG' if side == 1 else 'SHORT', entry, setup['invalidation'],
             family, family, context, score=75, evidence=evidence, ttl_minutes=30)
         if anchor is not None:
@@ -160,6 +167,9 @@ def organic_zone_origin(zone, snapshot, side, tick, engine):
         at_origin = replace(snapshot, now=known, price=candle.close)
         for witnessed in organic.formations(at_origin, tick, engine):
             if witnessed['side'] == side and witnessed['entry_zone'] == zone:
+                if zone.get('sweep'):
+                    return {'confirmed': True, 'timeframe': '15m', 'reference': zone['reference'],
+                            'sweep': zone['sweep'], 'reason': 'SESSION_SWEEP_ENGULFING_CONFIRMED'}
                 return {'confirmed': True, 'timeframe': '15m', 'reference': zone['reference'],
                         'break_known_ts': known, 'displacement_known_ts': known,
                         'reason': 'ORGANIC_M15_ORIGIN_CONFIRMED'}
@@ -197,7 +207,7 @@ def zone_origin(zone, snapshot, side, tick, engine):
     The reference is frozen before formation. Neither a later pivot nor an
     unrelated break elsewhere can turn a weak historical bounce into an OB.
     """
-    if zone.get('kind') in ORGANIC_MOMENTUM:
+    if zone.get('kind') in ORGANIC_FORMATIONS:
         return organic_zone_origin(zone, snapshot, side, tick, engine)
     tf=zone.get('timeframe','15m');step=engine.TF.get(tf)
     if not step or zone['high']<=zone['low']:
@@ -208,7 +218,7 @@ def zone_origin(zone, snapshot, side, tick, engine):
     before=[c for c in rows if c.ts<origin]
     if len(before)<6:
         return {'confirmed':False,'reason':'ZONE_ORIGIN_HISTORY_MISSING'}
-    refs=[p for p in engine.pivots(before) if p['kind']==('HIGH' if side==1 else 'LOW')
+    refs=[p for p in engine.pivots(before, strength=1 if tf == '15m' else 2) if p['kind']==('HIGH' if side==1 else 'LOW')
           and p['known_ts']+step<=origin]
     reference=refs[-1]['level'] if refs else (max(c.high for c in before[-6:])
                                                      if side==1 else min(c.low for c in before[-6:]))

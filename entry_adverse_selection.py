@@ -42,6 +42,35 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
         wick=c.close-c.low if side==1 else c.high-c.close
         if body>0 and max(body,combined)>1.8*atr15 and wick<=.10*max(c.high-c.low,tick):
             shocks.append(c)
+    forming_brake = None
+    if zone:
+        import setup_scanner as scanner
+        micro_rows = scanner.closed_five_minutes(snapshot)
+        quarter = snapshot.now // 900_000 * 900_000
+        for start in (quarter, quarter - 900_000):
+            sample = [c for c in micro_rows if start <= c.ts < start + 900_000]
+            expected = min(3, (snapshot.now - start) // 300_000)
+            if expected < 1 or [c.ts for c in sample] != [start + i*300_000 for i in range(expected)]:
+                continue
+            if start == quarter and any(
+                    -side*(bar.close-sample[0].open) > 1.8*atr15
+                    and bar.low <= zone['high'] and bar.high >= zone['low']
+                    and bar.ts + 300_000 > zone.get('known_ts',0) for bar in sample):
+                forming_brake = sample[-1].ts + 300_000
+            if expected < 2:
+                continue
+            closed_quarter = next((c for c in reversed(rows) if c.ts == start), None)
+            reaction = (intra_bar_reaction(snapshot, closed_quarter, side, zone, atr15, tick)
+                        if closed_quarter is not None else
+                        _micro_reaction(snapshot, sample, side, zone, atr15, tick))
+            if reaction and (not forming_brake or reaction['known_ts'] >= forming_brake) and (
+                    not shocks or shocks[-1].ts <= start):
+                return {**base, 'fast':True,'blocked':False,'action':'CONFIRMED_RETEST',
+                        'shock_known_ts':sample[-1].ts, 'confirmation_timeframe':'5m',
+                        'confirmation_known_ts':reaction['known_ts'], 'confirmation_pattern':reaction['pattern']}
+    if forming_brake:
+        return {**base, 'fast':True, 'blocked':True, 'action':'CONFIRMATION_REQUIRED',
+                'shock_known_ts':forming_brake}
     if not shocks:
         return base
     shock=shocks[-1];known=shock.ts+900_000
@@ -70,11 +99,6 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
         if confirmation and any(c.ts>=confirmation and
                 side*(c.close-(zone['low'] if side==1 else zone['high']))<0 for c in rows):
             confirmation=None
-        if confirmation is None:
-            micro=intra_bar_reaction(snapshot,shock,side,zone,atr15,tick)
-            if micro:
-                confirmation=micro['known_ts']
-                confirmation_tf='5m'
     return {**base,'fast':True,'blocked':confirmation is None,
             'shock_known_ts':known,'confirmation_known_ts':confirmation,
             'confirmation_timeframe':confirmation_tf,
@@ -82,28 +106,31 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001):
 
 
 def intra_bar_reaction(snapshot, shock, side, zone, atr15, tick):
-    """Earlier adverse 5m impulse then final engulfing/pinbar at this zone.
-
-    Only the latest closed 15m interval can release its own brake. Require
-    complete, matching 5m OHLC; stale, missing or inconsistent bars abstain.
-    """
+    """Match three independently closed M5 bars to a completed M15."""
     import setup_scanner as scanner
-    end=shock.ts+900_000
-    if end != snapshot.now//900_000*900_000:
+
+    end = shock.ts + 900_000
+    if not shock.confirmed or not 0 <= snapshot.now - end < 300_000:
         return None
-    bars={c.ts:c for c in scanner.closed_five_minutes(snapshot)}
-    if any(shock.ts+i*300_000 not in bars for i in range(3)):
+    bars = [c for c in scanner.closed_five_minutes(snapshot) if shock.ts <= c.ts < end]
+    if [c.ts for c in bars] != [shock.ts + i*300_000 for i in range(3)]:
         return None
-    first,previous,last=[bars[shock.ts+i*300_000] for i in range(3)]
-    combined=(first.open,max(c.high for c in (first,previous,last)),
-              min(c.low for c in (first,previous,last)),last.close)
-    if any(abs(a-b)>tick*.51 for a,b in zip(combined,
-                (shock.open,shock.high,shock.low,shock.close))):
+    combined = (bars[0].open, max(c.high for c in bars), min(c.low for c in bars), bars[-1].close)
+    if any(abs(a-b) > tick*.51 for a,b in zip(combined, (shock.open, shock.high, shock.low, shock.close))):
+        return None
+    return _micro_reaction(snapshot, bars, side, zone, atr15, tick)
+
+
+def _micro_reaction(snapshot, bars, side, zone, atr15, tick):
+    """The last closed M5 bar reverses an earlier M5 move at the zone."""
+    first, previous, last = bars[0], bars[-2], bars[-1]
+    end = last.ts + 300_000
+    if snapshot.now - end >= 300_000:
         return None
     early=max(-side*(first.close-first.open),
               -side*(previous.close-previous.open),
               -side*(previous.close-first.open))
-    if early<=1.8*atr15 or last.low>zone['high'] or last.high<zone['low']:
+    if early<=1.8*atr15 or last.low>zone['high'] or last.high<zone['low'] or end <= zone.get('known_ts',0):
         return None
     body=side*(last.close-last.open)
     wick=min(last.open,last.close)-last.low if side==1 else last.high-max(last.open,last.close)

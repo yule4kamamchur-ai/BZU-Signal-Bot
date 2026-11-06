@@ -69,7 +69,7 @@ def current_score(incumbent, proof):
     return base
 
 
-def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0):
+def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=None):
     """Propose at most ONE replacement per cycle; return auditable diagnostics.
 
     Called only for the unfilled book and with quality+ICT accepted candidates.
@@ -106,12 +106,43 @@ def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0):
     if not eligible:
         audit['decision']='INCUMBENT_TOO_NEW_OR_EXPIRING'
         return audit
+    # A new structural step gets priority over score-only rotation.
+    # Keep the cancellation handshake and make the new entry provably closer.
+    import strategy_organics
+    a15 = engine.atr(strategy_organics.closed(snapshot, '15m')) if engine else 0.
+    for incumbent, info in sorted(eligible, key=lambda item: -abs(snapshot.price-item[0]['entry'])):
+        side = incumbent['side']
+        gap = side * (snapshot.price - incumbent['entry'])
+        if a15 <= 0 or gap <= 1.3 * a15:
+            continue
+        for candidate in sorted(candidates,key=lambda p:policy.ranking(p,snapshot.price,cfg.tick),reverse=True):
+            zone = candidate.get('entry_zone', {})
+            origin = candidate.get('zone_origin', {})
+            improvement = side * (candidate['entry'] - incumbent['entry'])
+            if (candidate.get('side') != side
+                    or candidate.get('action_type') != 'NEW_PENDING_LIMIT'
+                    or candidate.get('event_key') == incumbent.get('event_key')
+                    or candidate.get('id') == incumbent.get('id')
+                    or not candidate.get('quality',{}).get('accepted')
+                    or not origin.get('confirmed') or not origin.get('break_known_ts')
+                    or not ('FVG' in zone.get('kind', '') or 'BREAKER' in zone.get('kind', ''))
+                    or zone.get('known_ts',0) <= incumbent['placed_ts']
+                    or improvement < cfg.tick * .99 or improvement >= gap
+                    or any(other is not incumbent and not policy.compatible(candidate, other, cfg.tick)
+                           for other in current)):
+                continue
+            score = _finite(candidate.get('direction_score',candidate.get('score')))
+            audit.update(decision='REQUEST_REPLACEMENT',candidate_id=candidate['id'],
+                         replace_id=incumbent['id'], advantage=round(score-info['score'],4),
+                         reason='DYNAMIC_ORDER_STEP', distance_atr=gap/a15)
+            return audit
     # Review the weakest mature incumbent first, but keep the OTHER plan
     # in the comparison: replacement cannot create duplicate same-thesis risk.
     weakest,weak_info=min(eligible,key=lambda item:item[1]['score'])
     retained=[p for p in current if p is not weakest]
     for challenger in sorted(candidates,key=lambda p:policy.ranking(p,snapshot.price,cfg.tick),reverse=True):
         if challenger.get('side') not in (-1,1):continue
+        if challenger.get('action_type') == 'ACTIVE_ENTRY':continue
         if challenger.get('side')!=weakest.get('side'):continue  # opposite switching is a separate portfolio lock
         if challenger.get('id')==weakest.get('id') or challenger.get('event_key')==weakest.get('event_key'):
             continue

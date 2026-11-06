@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from math import isfinite
 import ict_methodology
+from dataclasses import replace
 
 TF = {'3m':180_000, '15m':900_000, '1H':3_600_000, '4H':14_400_000}
 # These detectors can propose a useful *location* without an ICT trade trigger.
@@ -64,7 +65,6 @@ def vwap_priority(plan, snapshot, tick):
 
 def active_structure(snapshot, tick, engine):
     """Prefer an intact, confirmed 15m break to a lagging HTF bias."""
-    from dataclasses import replace
     import strategy_organics as organic
 
     rows = organic.closed(snapshot, '15m')
@@ -74,28 +74,63 @@ def active_structure(snapshot, tick, engine):
         return {}
     breaks = list(organic.body_breaks(rows, tick, engine))
     if not breaks:
-        return {}
+        return _trend_structure(snapshot, rows, tick, engine)
     index, side, level = breaks[-1]
     known = rows[index].ts + TF['15m']
     if snapshot.now - known >= 8 * TF['15m']:
-        return {}
+        return _trend_structure(snapshot, rows, tick, engine)
     if any(side * (bar.close - level) <= 0 for bar in rows[index + 1:]):
-        return {}
-    close = rows[index].close
+        return _trend_structure(snapshot, rows, tick, engine)
+    candle = rows[index]
     ema = organic.ema20(rows[:index + 1])
+    previous_ema = organic.ema20(rows[:index])
     vwap = session_vwap(replace(snapshot, now=known))['value']
-    if not any(line is not None and side * (close - line) > 0 for line in (ema, vwap)):
+    previous_vwap = session_vwap(replace(snapshot, now=candle.ts))['value']
+    volatility = max(tick, engine.atr(rows[:index]))
+    slope_floor = max(tick, .04 * volatility)
+    slope = any(current is not None and previous is not None
+                and side * (current - previous) >= slope_floor
+                for current, previous in ((ema, previous_ema), (vwap, previous_vwap)))
+    range_atr = (candle.high - candle.low) / volatility
+    if not (slope or range_atr >= 1.1) or not momentum_aligned(snapshot, side, max_age=2):
         return {}
-    return {'side': side, 'known_ts': known, 'level': level, 'close': close,
-            'ema20': ema, 'vwap': vwap}
+    if not any(line is not None and side * (candle.close - line) > 0 for line in (ema, vwap)):
+        return {}
+    return {'side': side, 'known_ts': known, 'level': level, 'close': candle.close,
+            'ema20': ema, 'vwap': vwap, 'qualified_slope': slope, 'break_range_atr': range_atr}
 
 
-def momentum_aligned(snapshot, side):
+def _trend_structure(snapshot, rows, tick, engine):
+    """Keep an established M15 trend while both swings and EMA agree."""
+    import strategy_organics as organic
+
+    points = engine.pivots(rows[-32:], strength=1)
+    highs = [p for p in points if p['kind'] == 'HIGH'][-2:]
+    lows = [p for p in points if p['kind'] == 'LOW'][-2:]
+    if len(highs) < 2 or len(lows) < 2:
+        return {}
+    average, previous = organic.ema20(rows), organic.ema20(rows[:-1])
+    if previous is None:
+        return {}
+    slope_floor = max(tick, .04 * engine.atr(rows[:-1]))
+    for side, bounds in ((1, lows), (-1, highs)):
+        level = bounds[-1]['level']
+        if (all(side * (pair[-1]['level'] - pair[0]['level']) >= tick for pair in (highs, lows))
+                and side * (average - previous) >= slope_floor
+                and all(side * (price - average) > 0 and side * (price - level) > 0
+                        for price in (rows[-1].close, snapshot.price))):
+            return {'side':side, 'known_ts':max(highs[-1]['known_ts'],lows[-1]['known_ts']) + TF['15m'],
+                    'level':level, 'close':rows[-1].close, 'ema20':average, 'qualified_slope':True,
+                    'proof':'CONTINUING_SWING_STRUCTURE'}
+    return {}
+
+
+def momentum_aligned(snapshot, side, max_age=1):
     import strategy_organics as organic
 
     rows = organic.closed(snapshot, '15m')
     ema = organic.ema20(rows)
-    if ema is None or snapshot.now - (rows[-1].ts + TF['15m']) >= TF['15m']:
+    if ema is None or snapshot.now - (rows[-1].ts + TF['15m']) >= max_age * TF['15m']:
         return False
     vwap = session_vwap(snapshot)['value']
     return any(line is not None and side * (rows[-1].close - line) > 0
@@ -130,13 +165,14 @@ def structural_flip(snapshot, side, since, tick, engine, timeframes=('15m', '1H'
     """Only a newly observed CLOSED 15m/1H BOS authorizes a pending flip."""
     for tf in timeframes:
         rows=closed(snapshot,tf)
+        points = engine.pivots(rows, strength=1 if tf == '15m' else 2)
         for i in range(max(7,len(rows)-3),len(rows)):
-            c=rows[i];known=c.ts+TF[tf]
-            if known<=since: continue
-            refs=[p for p in engine.pivots(rows[:i]) if p['kind']==('HIGH' if side==1 else 'LOW')
-                  and p['known_ts']+TF[tf]<=c.ts]
-            if refs and side*(rows[i-1].close-refs[-1]['level'])<=0 and side*(c.close-refs[-1]['level'])>tick:
-                return {'confirmed':True,'timeframe':tf,'known_ts':known,'side':side,'level':refs[-1]['level']}
+            known = rows[i].ts + TF[tf]
+            if known <= since:
+                continue
+            pivot = ict_methodology.body_break(rows, i, points, side, tick, TF[tf])
+            if pivot:
+                return {'confirmed':True,'timeframe':tf,'known_ts':known,'side':side,'level':pivot['level']}
     return {'confirmed':False,'side':side}
 
 
@@ -158,6 +194,9 @@ def local_structure(snapshot, tick, engine):
 
 
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
+    sweep = (zone or {}).get('sweep')
+    if sweep and sweep.get('pattern') == 'ENGULFING' and sweep.get('side') == side:
+        return True, 'SESSION_SWEEP_ENGULFING'
     active = regime.get('active_structure', {}).get('side', 0)
     if active == side:
         return True, 'LTF_STRUCTURE_OVERRIDE'
@@ -182,7 +221,7 @@ def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
         if not (reversal or (reached and m15['sweep_then_shift'])):
             return False,'REGIME_LONG_ONLY' if state=='BULLISH_TREND' else 'REGIME_SHORT_ONLY'
     if state=='RANGE_LIQUIDITY_ROTATION':
-        if (zone and zone.get('kind') in ('BREAKER_FLIP_15M', 'MOMENTUM_STAIRCASE_15M')
+        if (zone and zone.get('kind') in ('BREAKER_FLIP_15M', 'DISPLACEMENT_CATCHER_15M')
                 and momentum_aligned(snapshot, side)):
             return True, 'ORGANIC_M15_MOMENTUM'
         width=max(regime['range_high']-regime['range_low'],tick)
@@ -267,21 +306,23 @@ def evidence(plan, snapshot, tick):
                 last_impulse_ts=c.ts+TF[tf]
 
     sweep=bool(sweeps); fvg=bool(gaps)
-    # Strictly historical confirmed pivot: two CLOSED right-hand bars are
-    # required before a level may be broken. A close beyond the level alone
-    # cannot retroactively establish that the pivot was known at that moment.
+    # M15 can use one closed right bar. The pivot still predates the break.
     shifts=[]
     if len(rows)>=12:
-        for j in range(3,len(rows)-3):
-            window=rows[j-2:j+3]
+        right = 1 if tf == '15m' else 2
+        for j in range(2,len(rows)-right-1):
+            window=rows[j-2:j+right+1]
             pivot=(rows[j].high==max(b.high for b in window) if side==1
                    else rows[j].low==min(b.low for b in window))
             if not pivot:continue
             level=rows[j].high if side==1 else rows[j].low
-            known=rows[j+2].ts+TF[tf]
-            for k in range(max(j+3,len(rows)-8),len(rows)):
+            known=rows[j+right].ts+TF[tf]
+            for k in range(max(j+right+1,len(rows)-8),len(rows)):
                 if rows[k].ts < known:continue
-                if side*(rows[k-1].close-level)<=0 and side*(rows[k].close-level)>tick:
+                if (rows[k].ts - rows[k-1].ts == TF[tf]
+                        and side*(rows[k-1].close-level)<=0
+                        and side*(rows[k].open-level)<=tick*.5
+                        and side*(rows[k].close-level)>tick):
                     shifts.append({'known_ts':rows[k].ts+TF[tf], 'level':round(level,8)})
     # The price must FIRST sweep/reclaim liquidity and only THEN break the
     # known structure. An FVG without this order is not an ICT sweep+MSS.

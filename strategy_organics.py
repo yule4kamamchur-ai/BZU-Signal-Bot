@@ -166,88 +166,66 @@ def ema20(rows):
 
 
 def body_breaks(rows, tick, engine):
-    """Recent 15m breaks of a swing whose two right bars had already closed."""
-    step = STEP['15m']
-    points = engine.pivots(rows[-80:])
+    """Use one closed right bar. The breakout itself cannot confirm its pivot."""
+    import ict_methodology as ict
+
+    points = engine.pivots(rows[-80:], strength=1)
     for index in range(max(7, len(rows) - 8), len(rows)):
-        candle, previous = rows[index], rows[index - 1]
-        if candle.ts - previous.ts != step:
-            continue
-        for side, kind in ((1, 'HIGH'), (-1, 'LOW')):
-            ref = next((p for p in reversed(points) if p['kind'] == kind
-                        and p['known_ts'] + step <= candle.ts), None)
-            if ref is None:
-                continue
-            level = ref['level']
-            if (side * (previous.close - level) <= 0
-                    and side * (candle.open - level) <= tick
-                    and side * (candle.close - level) > tick
-                    and side * (candle.close - candle.open) > tick):
-                yield index, side, level
+        for side in (1, -1):
+            pivot = ict.body_break(rows, index, points, side, tick, STEP['15m'])
+            if pivot:
+                yield index, side, pivot['level']
 
 
 def formations(snapshot, tick, engine):
-    """15m Breaker and momentum pullback zones with closed-bar origin proof."""
+    """Closed M15 displacement or same-bar session sweep and reversal."""
     import directional_policy as direction
+    import ict_methodology as ict
 
     rows = closed(snapshot, '15m')
     step = STEP['15m']
-    if len(rows) < 20 or not 0 <= snapshot.now - (rows[-1].ts + step) < step:
-        return []
-    if any(b.ts - a.ts != step for a, b in zip(rows[-20:-1], rows[-19:])):
+    if len(rows) < 2 or not 0 <= snapshot.now - (rows[-1].ts + step) < step:
         return []
     latest = rows[-1]
     known = latest.ts + step
     result = []
 
-    def add(family, side, proximal, distal, stop, reference, midpoint=None):
+    def add(family, side, proximal, distal, stop, reference, sweep=None):
         low, high = sorted((proximal, distal))
-        if low <= 0 or high - low < tick * .99 or side * (proximal - stop) <= tick:
+        if low <= 0 or high <= low or side * (proximal - stop) <= tick:
             return
         result.append({
             'family': family, 'side': side, 'signal_ts': known,
             'event_ts': known, 'invalidation': stop,
-            'origin_broke_structure': True, 'organic_confluence': True,
+            'origin_broke_structure': sweep is None, 'organic_confluence': True,
             'zone_freshness': 'UNMITIGATED',
             'entry_zone': {'low': low, 'high': high, 'known_ts': known,
                            'timeframe': '15m', 'kind': family,
-                           'reference': reference, 'impulse_midpoint': midpoint},
+                           'reference': reference, 'sweep': sweep},
         })
 
-    volatility = max(engine.atr(rows[:-1]), tick)
-    for index, side, level in body_breaks(rows, tick, engine):
-        if index != len(rows) - 1 or side * (latest.close - latest.open) < .6 * volatility:
-            continue
-        extreme = latest.low if side == 1 else latest.high
-        add('BREAKER_FLIP_15M', side, level, level - side * max(.02, tick),
-            extreme, level, (latest.high + latest.low) / 2)
+    for side in (1, -1):
+        sweep = ict.immediate_session_sweep(snapshot, rows, side, tick)
+        if sweep:
+            add('SESSION_SWEEP_ENGULFING_15M', side, sweep['level'],
+                sweep['level'] - side * tick, sweep['extreme'], sweep['level'], sweep)
 
+    if len(rows) < 20 or any(b.ts - a.ts != step for a, b in zip(rows[-20:-1], rows[-19:])):
+        return result
+    volatility = max(engine.atr(rows[:-1]), tick)
+    span = latest.high - latest.low
+    body = abs(latest.close - latest.open)
+    if span < .85 * volatility or body < .65 * span:
+        return result
     vwap = direction.session_vwap(replace(snapshot, now=known))['value']
     average = ema20(rows)
-    if vwap is None:
-        return result
-    for side in (1, -1):
-        if not all(side * (price - line) > 0 for price in (latest.close, snapshot.price)
-                   for line in (vwap, average)):
+    for index, side, level in body_breaks(rows, tick, engine):
+        if index != len(rows) - 1 or not any(
+                line is not None and side * (latest.close - line) > 0
+                for line in (average, vwap)):
             continue
-        for size in (3, 2):
-            run = rows[-size:]
-            extreme = (lambda c: c.high) if side == 1 else (lambda c: c.low)
-            if (not all(side * (c.close - c.open) > 0 for c in run)
-                    or not all(side * (extreme(b) - extreme(a)) > 0 and
-                               side * (b.close - a.close) > 0 for a, b in zip(run, run[1:]))):
-                continue
-            # At least one body closes through an already observed step.
-            # A sequence of wicks alone does not prove a structural break.
-            crossed = [extreme(a) for a, b in zip(rows[-size-1:-1], run)
-                       if side * (b.open - extreme(a)) <= tick
-                       and side * (b.close - extreme(a)) > tick]
-            if not crossed:
-                continue
-            tip = extreme(latest)
-            base = (min(c.low for c in run) if side == 1 else max(c.high for c in run))
-            span = side * (tip - base)
-            add('MOMENTUM_STAIRCASE_15M', side, tip - side * .25 * span,
-                tip - side * .382 * span, base, crossed[-1])
-            break
+        extreme = latest.low if side == 1 else latest.high
+        add('BREAKER_FLIP_15M', side, level, level - side * tick, extreme, level)
+        add('DISPLACEMENT_CATCHER_15M', side, latest.close - side * .25 * body,
+            latest.close - side * .30 * body, extreme, level)
     return result

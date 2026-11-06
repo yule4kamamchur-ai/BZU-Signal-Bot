@@ -366,7 +366,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
             lines += [f"✅ ОРДЕР АКТИВОВАНО {label} @ {p.get('entry', ev.get('entry', 0)):.8g} • {when}"]
         elif kind == 'SECOND_LIMIT_FILLED':
             lines += [f"✅ Друга частина {label}: середній вхід {ev['entry']:.8g} • {when}"]
-        elif kind == 'BREAKEVEN_ARMED':
+        elif kind in ('BREAKEVEN_ARMED', 'STRUCTURAL_TRAIL_ARMED'):
             lines += [f"🛡️ {label}: SL → {ev['stop']:.8g} • з наступної свічки"]
         elif kind == 'TP1_PARTIAL':
             lines += [f"🎯 TP1 {label} досягнуто • SL → {ev['stop']:.8g}"]
@@ -374,7 +374,8 @@ def build_checklist(state, snapshot, result, cfg, engine):
             reasons = {'TARGET_REACHED_WITHOUT_FILL': 'TP1 досягнуто без входу',
                        'LIMIT_TTL': 'минув час дії', 'SESSION_ENDED': 'сесія закінчилася',
                        'STRUCTURE_FLIPPED': 'підтверджено злам структури',
-                       'LEVEL_PASSED_WHILE_UNARMED': 'рівень пройдено до активації'}
+                       'LEVEL_PASSED_WHILE_UNARMED': 'рівень пройдено до активації',
+                       'DYNAMIC_ORDER_STEP': 'нова ближча структурна зона'}
             reason = reasons.get(ev.get('reason'), engine.REASON_UA.get(ev.get('reason'), 'сценарій скасовано'))
             lines += [f"❌ ЛІМІТ ЗНЯТО {label} @ {p.get('limit_price', p.get('entry', 0)):.8g} • {reason}"]
         elif kind == 'CLOSED':

@@ -68,3 +68,27 @@ def review(position, snapshot):
     return {'status': status, 'reason': reason, 'adverse': status in ('REVERSAL_RISK', 'WEAKENING'),
             'break_15m': adverse_15m, 'break_1h': adverse_1h,
             'regime': regime.state, 'as_of_ts': snapshot.now}
+
+
+def structural_stop(position, snapshot, as_of, close, tick, engine):
+    """A completed post-fill M15 swing can tighten the next execution bar."""
+    step = STEPS['15m']
+    side = position['side']
+    cache = vars(snapshot).setdefault('_position_pivots', {})
+    if step not in cache:
+        rows = strategy_organics.closed(snapshot, '15m')
+        starts = {c.ts for c in rows}
+        cache[step] = [p for p in engine.pivots(rows, strength=1)
+                       if p['known_ts'] == p['ts'] + step and p['ts'] - step in starts]
+    kind = 'LOW' if side == 1 else 'HIGH'
+    filled = position['filled_ts']
+    swing = next((p for p in reversed(cache[step]) if p['kind'] == kind
+                  and filled < p['ts'] and p['known_ts'] + step <= as_of), None)
+    if swing is None:
+        return None
+    candidate = engine.round_tick(round(swing['level'] - side*tick, 10), tick, up=side == -1)
+    if (side*(candidate-position['entry']) > 0
+            and side*(candidate-position['stop']) > tick*.5
+            and side*(close-candidate) > tick*.5):
+        return candidate
+    return None

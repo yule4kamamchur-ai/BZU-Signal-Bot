@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.24.0-m15-momentum"
-REPORT_RELEASE = 'v12.24.0'
+VERSION = "full-ict-v12.25.0-live-terminal"
+REPORT_RELEASE = 'v12.25.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -456,7 +456,7 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         zone=anchor_zone_key(a,cfg)
         previous=by_zone.get(zone)
         event=None
-        organic = a.evidence.get('source_strategy') in scanner.ORGANIC_MOMENTUM
+        organic = a.evidence.get('source_strategy') in scanner.ORGANIC_FORMATIONS
         if organic and previous and previous.get('evidence', {}).get('episode_ts') != a.evidence['episode_ts']:
             previous = None
         if previous and not organic and zone not in live_zones and contexts:
@@ -503,7 +503,7 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         a=core.anchor_from_dict(raw)
         if a is None or not (a.created_ts<=s.now<a.expires_ts):continue
         native=(contexts or {}).get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
-        if a.evidence.get('source_strategy') in scanner.ORGANIC_MOMENTUM:
+        if a.evidence.get('source_strategy') in scanner.ORGANIC_FORMATIONS:
             continue
         if a.setup_type in setup_paths.BREAK_RETEST and 'activation_phase' not in a.evidence:
             if key not in {p['event_key'] for p in open_plans(state)}:
@@ -801,7 +801,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
                 'entry':a.level,'reason':reason,'event_key':key,
                 'route':a.evidence.get('entry_route','NATIVE_PATTERN'),
-                'source_strategy':a.evidence.get('source_strategy')})
+                'source_strategy':a.evidence.get('source_strategy'),
+                'entry_zone':diagnostics.get('entry_zone') or a.evidence.get('entry_zone'),
+                'score':p.get('score') if p else None})
             row=(None if a.evidence.get('entry_route')=='STRATEGY_EVENT' else
                  next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None))
             if row is not None:
@@ -859,6 +861,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             admitted=bool(src.get('source_strategy') and
                           src.get('strategy_signal_ts') is not None and
                           src.get('strategy_event_ts') is not None)
+            if p.get('policy') == bzu_policy.POLICY:
+                admitted = admitted and ict_methodology.entry_trigger(p, proof)
             ict_reason='DIRECT_STRATEGY_EVENT' if admitted else 'DIRECT_STRATEGY_PROOF_MISSING'
             p['ict_contract']={'source':'STRATEGY_EVENT', 'source_strategy':src.get('source_strategy'),
                                'signal_ts':src.get('strategy_signal_ts'),
@@ -920,7 +924,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         p['quality'] = q
         for path in admission_paths:
             if path['event_key']==p['event_key']:
-                path['reason']=q['reason'] if not q['accepted'] else 'ACCEPTED'
+                path.update(reason=q['reason'] if not q['accepted'] else 'ACCEPTED',
+                            score=p['score'], rating=p.get('rating'))
         checks=p.setdefault('entry_checks',scanner.entry_checks())
         # Accepted planner proposals have already passed the first six gates.
         # This also keeps injected replay planners under the same contract.
@@ -1033,7 +1038,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                        p['reason'] for p in direct_paths if p['reason']!='ACCEPTED'))}
     return {"health": [],"plans": accepted,"direct_strategy":direct_report,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
             "meta_model":ledger['last_meta_diagnostic'],
-            "watch":watch,"setup_matrix":matrix,"timeframe_contexts":tf_contexts,"early_context":early_context,
+            "watch":watch,"setup_matrix":matrix,"poi_paths":admission_paths,"timeframe_contexts":tf_contexts,"early_context":early_context,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
             "detectors": detector_audit,"setup_statistics": stats,
             "raw_plans": len(plans),"registered_setups": len(core.DETECTORS),
@@ -1342,12 +1347,12 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
     emit(state,name,ts,order_id=p["id"],price=exit_price,fraction=size)
 
 
-def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step: int = 180_000) -> None:
+def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step: int = 180_000, snapshot=None) -> None:
     p = state["active"]
     if not p:
         return
     if bzu_policy.is_new(p):
-        return bzu_policy.manage(state,c,cfg,sys.modules[__name__],step,fill_bar)
+        return bzu_policy.manage(state,c,cfg,sys.modules[__name__],step,fill_bar,snapshot)
     cfg = execution_config(p,cfg)
     side, entry, risk = p["side"], p["entry"], p["risk"]
     ts = c.ts+step
@@ -1546,7 +1551,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         if not c.confirmed or c.ts+step>s.now:
             continue
         if state["active"]:
-            manage_bar(state, c, cfg, step=step)
+            manage_bar(state, c, cfg, step=step, snapshot=s)
             continue
         p = state["pending"]
         if not p or c.ts <= p.get("last_bar", -1):
@@ -1662,7 +1667,7 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
         park_pending(state,[])
         for number,view in slot_views(state):
             if view.get('active'):
-                manage_bar(view,c,cfg,step=step)
+                manage_bar(view,c,cfg,step=step,snapshot=s)
                 store_slot(state,number,view)
         remaining=[]
         for plan in waiting:
@@ -1802,7 +1807,7 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
                                     sys.modules[__name__],timeframes=flip_frames)
         if flip['confirmed']:
             request_cancel(state,pending,'STRUCTURE_FLIPPED',snapshot.now)
-        elif pending.get('policy') != bzu_policy.POLICY and snapshot.now>=session_cutoff(snapshot.now,cfg):
+        elif pending.get('policy') not in (bzu_policy.POLICY, bzu_policy.MOMENTUM_POLICY) and snapshot.now>=session_cutoff(snapshot.now,cfg):
             request_cancel(state,pending,'SESSION_ENDED',snapshot.now)
         elif pending.get('target_cancel_armed',True) and pending['side']*(snapshot.price-pending['tp1'])>=0:
             request_cancel(state,pending,'TARGET_REACHED_WITHOUT_FILL',snapshot.now)
@@ -2017,7 +2022,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         pending_sides_for_rotation={p['side'] for p in pending}
         if len(pending_sides_for_rotation)==1 and proposed_for_rotation in pending_sides_for_rotation:
             arbitration_audit=arbitration.decision(pending,valid,s,cfg,policy,
-                                                   state.get('last_portfolio_swap_ts',0))
+                                                   state.get('last_portfolio_swap_ts',0),sys.modules[__name__])
         else:
             arbitration_audit={'decision':'SKIPPED','reason':'DIRECTION_NOT_CONFIRMED_FOR_ROTATION'}
         if arbitration_audit['decision']=='REQUEST_REPLACEMENT':
@@ -2026,18 +2031,18 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             execution_tf,execution_step=execution_series(s)
             at_boundary=(s.now%execution_step==0 and any(
                 c.confirmed and c.ts+execution_step==s.now for c in s.candles.get(execution_tf,[])))
-            request_cancel(state,obsolete,'BETTER_SAME_DIRECTION_ICT_CANDIDATE',s.now)
+            request_cancel(state,obsolete,arbitration_audit['reason'],s.now)
             state['last_portfolio_swap_ts']=s.now
             intent={'candidate_event_key':challenger.get('event_key'),
                     'candidate_id':challenger['id'],'replaced_id':obsolete['id'],
                     'decided_ts':s.now,'expires_ts':min(challenger['expires_ts'],
-                                                       s.now+15*60_000),
+                                                       s.now+30*60_000),
                     'status':'PREPARED_WAIT_RECONCILIATION'}
             state['portfolio_rotation_intent']=intent
             emit(state,'PORTFOLIO_REPLACEMENT_DECISION',s.now,
                  order_id=obsolete['id'],replacement_id=challenger['id'],
                  advantage=arbitration_audit['advantage'],
-                 criterion='COMPARATIVE_SCORE_NOT_EXPECTED_WR',
+                 criterion=arbitration_audit['reason'],
                  fast_path=bool(at_boundary and all(p['id']!=obsolete['id'] for p in pending_plans(state))))
             pending=pending_plans(state)
             if at_boundary and all(p['id']!=obsolete['id'] for p in pending) \
@@ -3130,6 +3135,11 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         stage('save_state')
         export_journal(journal_path,state,core)
         stage('save_journal')
+        live_path = os.environ.get('LIVE_STATE_FILE')
+        if live_path and snapshot_path is None and result['action'] != 'DUPLICATE_OR_OUT_OF_ORDER':
+            import live_terminal
+            atomic_write(Path(live_path), live_terminal.build(state,snap,result,cfg,sys.modules[__name__]))
+
         if checkpoint_path.exists():
             checkpoint_path.unlink()
         if not delivery_ok:
@@ -3174,7 +3184,7 @@ def main(core) -> int:
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
-                 'test_v12_24_momentum')
+                 'test_v12_25_live_terminal')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

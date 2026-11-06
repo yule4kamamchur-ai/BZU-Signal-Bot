@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'bzu-m15-organic-momentum-v13'
+STRATEGY = 'bzu-m15-displacement-structure-v14'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -271,25 +271,29 @@ def confluence(plan, snapshot, proof, cfg, engine):
              and (origin.get('confirmed') or 'FVG' in zone.get('kind', '')
                   or 'OB' in zone.get('kind', '')))
     sweeps = ict_methodology.session_sweeps(snapshot, plan['side'], cfg.tick, engine)
-    sweep = bool(proof.get('sweep_reclaim') or origin.get('sweep') or sweeps)
-    bos = bool(origin.get('break_known_ts') or proof.get('displacement_bos_fvg'))
-    trend_pattern = bool(fresh and (plan.get('organic_confluence')
-                         or 'FVG' in zone.get('kind', '')
-                         or proof.get('displacement_bos_fvg')))
+    if origin.get('sweep', {}).get('pattern') == 'ENGULFING':
+        sweeps = [*sweeps, origin['sweep']]
+    sweep = bool(origin.get('sweep') or proof.get('sweep_then_shift') or sweeps
+                 or (proof.get('sweep_reclaim') and proof.get('level_rejection')))
+    bos = bool((origin.get('confirmed') and origin.get('break_known_ts'))
+               or proof.get('displacement_bos_fvg'))
     aligned = plan.get('m15_momentum_aligned')
     if aligned is None:
         aligned = direction.momentum_aligned(snapshot, plan['side'])
-    reversal = {'base': 25, 'liquidity_sweep': 30 * int(sweep),
+    reversal = {'base': 25, 'liquidity_reversal': 30 * int(sweep),
                 'fresh_zone': 15 * int(fresh)}
     trend = {'base': 25, 'structure_break': 25 * int(bos),
-             'm15_momentum': 15 * int(aligned), 'organic_pattern_or_fvg': 10 * int(trend_pattern)}
+             'm15_momentum': 15 * int(aligned),
+             'fresh_zone': 10 * int(fresh and bos)}
     routes = [('REVERSAL_SWEEP', reversal, sweep and fresh),
-              ('ORGANIC_TREND', trend, bos and trend_pattern)]
+              ('ORGANIC_TREND', trend, bos and aligned and fresh)]
     route, components, trigger = max(routes, key=lambda item: (item[2], sum(item[1].values())))
     volume = volume_footprint(plan, snapshot, proof, sweeps)
     parts = {**components, 'relative_volume_bonus': volume['bonus']}
+    if not trigger:
+        parts = {'base': 25}
     score = sum(parts.values())
-    threshold = max(60, cfg.min_score)
+    threshold = max(65, cfg.min_score)
     active = plan.get('market_regime', {}).get('active_structure', {}).get('side')
     countertrend = active != plan['side'] and any(
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))
@@ -330,7 +334,7 @@ def volume_footprint(plan, snapshot, proof, session_sweeps):
 
 
 
-PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','rr1','rr2','rr3',
+PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','rr1','rr2','rr3',
              'approach','market_regime','ict_evidence','confluence',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
@@ -344,7 +348,7 @@ PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-master-rvol-vwap-round-5m-v12','bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-m15-organic-momentum-v13','bzu-master-rvol-vwap-round-5m-v12','bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))

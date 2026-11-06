@@ -17,20 +17,21 @@ import research_zone_policy_1220 as zones
 import setup_scanner as scanner
 import strategy_direct_entries
 
-POLICY = 'BZU_MOMENTUM_V12_24'
+POLICY = 'BZU_LIVE_V12_25'
+MOMENTUM_POLICY = 'BZU_MOMENTUM_V12_24'
 MASTER_POLICY = 'BZU_MASTER_V12_23'
 PRECISION_POLICY = 'BZU_PRECISION_V12_22'
 LEGACY_POLICY = 'BZU_CHECKLIST_V12_21'
-EXIT = 'BE_1R_ROUND_TP1_50_TP2_50'
+EXIT = 'STRUCTURAL_TRAIL_TP1_50_TP2_50'
 MINUTE = 60_000
 
 
 def is_new(plan):
-    return plan.get('policy') in (POLICY,MASTER_POLICY,PRECISION_POLICY,LEGACY_POLICY)
+    return plan.get('policy') in (POLICY,MOMENTUM_POLICY,MASTER_POLICY,PRECISION_POLICY,LEGACY_POLICY)
 
 
 def is_precision(plan):
-    return plan.get('policy') in (POLICY,MASTER_POLICY,PRECISION_POLICY)
+    return plan.get('policy') in (POLICY,MOMENTUM_POLICY,MASTER_POLICY,PRECISION_POLICY)
 
 
 def round_target(entry, target, side, tick):
@@ -134,17 +135,17 @@ def zone_for(anchor, snapshot, cfg, engine):
             'kind':'STRUCTURAL_LEVEL', 'timeframe':tf}
 
 
-def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, front_run=None):
+def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, front_run=None, exact_entry=None):
     """One risk-bearing entry. Never move a structural stop toward the price."""
     narrow=high-low<=.35*a15
     first=(high+.02 if side==1 else low-.02) if narrow and not deep else (low+high)/2
     if front_run is not None and not deep:
         first = (high if side == 1 else low) + side * front_run
-    first=engine.round_tick(round(first, 10),cfg.tick,up=side==1)
+    first = exact_entry if exact_entry is not None else engine.round_tick(round(first, 10), cfg.tick, up=side==1)
     stop = engine.round_tick(swing-side*.20*a15, cfg.tick, up=side == -1)
     stop = engine.round_tick(first-side*max(side*(first-stop),cfg.min_stop_absolute),
                              cfg.tick,up=side==-1)
-    if front_run is None and side*(first-stop) > cfg.max_stop_absolute+1e-9:
+    if exact_entry is None and front_run is None and side*(first-stop) > cfg.max_stop_absolute+1e-9:
         # Deepen at most to equilibrium; a still-expensive setup is rejected.
         first=engine.round_tick((low+high)/2,cfg.tick,up=side==1)
     risk = side*(first-stop)
@@ -159,12 +160,28 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')
     exit_fee = engine.fee_rate(cfg, 'taker')
     buffer = max(2 * cfg.tick, .06 * a15)
-    tp1_raw = engine.round_tick(round(entry + side * 1.4 * risk, 10), cfg.tick, up=side == 1)
+    tp1_raw = engine.round_tick(round(entry + side * 1.4 * risk, 10), cfg.tick, up=side == -1)
     tp1 = round_target(entry, tp1_raw, side, cfg.tick) if oil_round_protection(cfg) else tp1_raw
-    if side * (tp1 - entry) <= 0:
-        return None, 'ROUND_LEVEL_TARGET_COLLAPSED'
+    # Round-number protection must not turn TP1 into the old early exit.
+    if side * (tp1 - entry) < 1.35 * risk - 1e-9:
+        tp1 = tp1_raw
+    if side * (tp1 - entry) < 1.35 * risk - 1e-9:
+        tp1 = engine.round_tick(round(entry + side * 1.35 * risk, 10), cfg.tick, up=side == 1)
     targets = sorted(engine.full_targets(context, snapshot, anchor.side, entry, cfg),
                      key=lambda target: side * (target['level'] - entry))
+    magnet = next((target for target in targets
+                   if target.get('timeframe') in ('1H', '4H')
+                   and (target.get('hard_barrier') or target.get('freshness') == 'UNSWEPT')
+                   and 1.35 - 1e-9 <= side * (target['level'] - entry) / risk <= 1.50 + 1e-9), None)
+    if magnet:
+        tp1_raw = tp1 = engine.round_tick(round(magnet['level'] - side * .03, 10),
+                                          cfg.tick, up=side == -1)
+        if side * (tp1 - entry) <= 0:
+            return None, 'ROUND_LEVEL_TARGET_COLLAPSED'
+        if magnet.get('hard_barrier'):
+            targets = []
+    elif side * (tp1 - entry) <= 0:
+        return None, 'ROUND_LEVEL_TARGET_COLLAPSED'
     reason = 'TARGET_RR_TOO_LOW'
     for target in targets:
         distance = side * (target['level'] - entry) - buffer
@@ -173,6 +190,9 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
         tp2_raw = engine.round_tick(round(entry + side * min(distance, 3 * risk), 10),
                                     cfg.tick, up=side == -1)
         tp2 = round_target(entry, tp2_raw, side, cfg.tick) if oil_round_protection(cfg) else tp2_raw
+        # A round level already passed at TP1 cannot serve as the runner target.
+        if side * (tp2 - tp1) <= 0:
+            tp2 = tp2_raw
         rr2 = side * (tp2 - entry) / risk
         costs = (entry * entry_fee + tp2 * exit_fee) / risk
         if side * (tp2 - tp1) <= 0:
@@ -184,7 +204,16 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
         else:
             return {'tp1': tp1, 'tp2': tp2, 'rr2': rr2, 'costs_r': costs,
                     'entry_fee': entry_fee, 'exit_fee': exit_fee,
-                    'raw_targets': {'tp1': tp1_raw, 'tp2': tp2_raw}}, 'ACCEPTED'
+                    'raw_targets': {'tp1': tp1_raw, 'tp2': tp2_raw},
+                    'tp1_alignment': magnet}, 'ACCEPTED'
+    if magnet:
+        rr = side * (tp1 - entry) / risk
+        costs = (entry * entry_fee + tp1 * exit_fee) / risk
+        if rr > costs:
+            return {'tp1':tp1,'tp2':tp1,'rr2':rr,'costs_r':costs,
+                    'entry_fee':entry_fee,'exit_fee':exit_fee,
+                    'raw_targets':{'tp1':tp1_raw,'tp2':tp1_raw},
+                    'tp1_alignment':magnet}, 'ACCEPTED'
     return None, reason
 
 
@@ -226,11 +255,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     momentum_zone = zone.get('kind') in scanner.ORGANIC_MOMENTUM
     countertrend = active_side != side and any(regime[key] == -side for key in ('side_1h', 'side_4h'))
     deep = countertrend or high - low > .55 + 1e-9
-    breaker = zone.get('kind') == 'BREAKER_FLIP_15M'
-    front_run = .02 if breaker else .03
+    organic_formation = momentum_zone or zone.get('kind') == scanner.ORGANIC_REVERSAL
+    front_run = .03
     tf = zone['timeframe']
     structural = anchor.invalidation
-    if not momentum_zone:
+    if not organic_formation:
         swings = [p for p in engine.pivots(structure.closed(snapshot, tf))
                   if p['kind'] == ('LOW' if side == 1 else 'HIGH')
                   and p['known_ts'] + engine.TF[tf] <= zone['known_ts']
@@ -239,13 +268,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             anchor.invalidation, low if side == 1 else high,
             swings[-1]['level'] if swings else anchor.invalidation)
     entry, stop, risk, legs = technical_geometry(
-        low, high, structural, side, a15, cfg, engine, deep=deep, front_run=front_run)
-    if breaker and side * (entry - stop) > cfg.max_stop_absolute:
-        midpoint = zone['impulse_midpoint']
-        if side * ((low if side == 1 else high) - midpoint) > cfg.tick:
-            structural = midpoint
-            entry, stop, risk, legs = technical_geometry(
-                low, high, structural, side, a15, cfg, engine, deep=deep, front_run=front_run)
+        low, high, structural, side, a15, cfg, engine, deep=deep, front_run=front_run,
+        exact_entry=anchor.level if organic_formation else None)
     raw_stop=stop
     if oil_round_protection(cfg):
         stop=round_stop(stop,side,cfg.tick)
@@ -284,7 +308,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if audit['mitigated']:
         return None, 'ZONE_MITIGATED'
     passive = scanner.passive_gate(entry, side, snapshot.bid, snapshot.ask, cfg.tick)['passive']
-    confirmed_retest = bool(passive and audit['touched'] and approach.get('confirmation_known_ts'))
+    confirmed_retest = bool(passive and audit['touched'] and
+                            (approach.get('confirmation_known_ts') or 0) > audit['touch_ts'])
     can_wait = passive and (not audit['touched'] or confirmed_retest)
     allowed, why = direction.regime_admission(side, entry, regime, snapshot, cfg.tick, engine, zone)
     mark('HTF_ALIGNMENT', allowed)
@@ -294,8 +319,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     organic = bool(anchor.evidence.get('organic_confluence') or momentum_zone)
     trending = active_side == side or (aligned and (organic or 'FVG' in zone.get('kind', '')))
     direct = strategy_direct_entries.momentum_quote(
-        snapshot, side, entry, stop, zone, origin, cfg.tick) if trending else None
-    if not can_wait and direct is None:
+        snapshot, side, entry, stop, zone, origin, cfg.tick) if trending and not organic_formation else None
+    if not organic_formation and not can_wait and direct is None:
         catchup = scanner.catch_up(snapshot, entry, stop, side, zone['known_ts'], cfg.tick, zone)
         diag['catch_up'] = catchup
         if catchup['allowed']:
@@ -326,13 +351,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if not can_wait:
             return None, 'WAIT_RETEST'
         geometry, why = protected_targets(
-            context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, organic=momentum_zone)
+            context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, organic=organic_formation)
         if geometry is None:
             mark('TARGET_RR', False)
             return None, why
     mark('PASSIVE_LIMIT', True)
     mark('TARGET_RR', True)
     tp1, tp2, rr2 = geometry['tp1'], geometry['tp2'], geometry['rr2']
+    has_runner = side * (tp2 - tp1) > 0
     diag['round_level_protection'] = {'original_stop': raw_stop, 'stop': stop,
         'original_targets': geometry['raw_targets'], 'tp1': tp1, 'tp2': tp2}
     # Remaining models are evidence only. Their individual return values do
@@ -369,8 +395,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
          'risk':risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
          'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
-         'partials':{'TP1':.5,'TP2':.5}, 'exit_policy':EXIT,
-         'breakeven_trigger_r':1.,
+         'partials':{'TP1':.5,'TP2':.5} if has_runner else {'TP1':1.},
+         'exit_policy':EXIT, 'tp1_alignment':geometry.get('tp1_alignment'),
+         'breakeven_trigger_r':side*(tp1-entry)/risk,
+         'structural_trail_trigger_r':1.15, 'breakeven_price':engine.round_tick(
+             round(entry + side*.02, 10), cfg.tick, up=side==1),
          'target_management':EXIT, 'tp1_decision_gate':False,
          'exit_path_barriers':[], 'full_exit_candidates':[],
          'net_rr':rr2-geometry['costs_r'], 'costs_r':geometry['costs_r'],
@@ -431,7 +460,7 @@ def fill_legs(p, c, engine, cfg, initial=False):
         p['entry'] = cost/p['filled_fraction']
         p['risk'] = p['side']*(p['entry']-p['initial_stop'])
         p['risk_budget'] = p['risk']*p['filled_fraction']
-        if p.get('policy') in (POLICY, MASTER_POLICY):
+        if p.get('policy') in (POLICY, MOMENTUM_POLICY, MASTER_POLICY):
             # One full-size leg: retain exact tick-aligned, protected targets.
             return
         p['tp1'] = engine.round_tick(p['entry']+p['side']*p['risk']*p.get('rr1',1.),
@@ -471,7 +500,7 @@ def close(state, p, price, ts, reason, cfg, engine, ambiguous=False):
     engine.emit(state,'CLOSED',ts,order_id=p['id'],reason=reason,net_r=t['net_r'],ambiguous_ohlc=ambiguous)
 
 
-def manage(state, c, cfg, engine, step, fill_bar=False):
+def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     p = state.get('active')
     if not p or c.ts <= p.get('last_bar',-1):
         return
@@ -495,7 +524,11 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
     # Favorable extremes in a fill bar can precede either fill. A close through
     # the target proves the favorable traversal after both entries.
     proved = lambda level: (not (fill_bar or added)) or side*(c.close-level)>=0
-    if is_precision(p) and not p.get('breakeven_armed'):
+    current_policy = p.get('policy') == POLICY
+    if not fill_bar and not added:
+        favorable = c.high if side == 1 else c.low
+        p['mfe_r'] = max(p['mfe_r'], side*(favorable-p['entry'])/p['risk'])
+    if is_precision(p) and not current_policy and not p.get('breakeven_armed'):
         trigger=p['entry']+side*p['risk']*p.get('breakeven_trigger_r',1.)
         reached=c.high>=trigger if side==1 else c.low<=trigger
         if reached and proved(trigger):
@@ -506,6 +539,10 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
             engine.emit(state,'BREAKEVEN_ARMED',ts,order_id=p['id'],stop=be)
     if not p.get('tp1_hit') and target_hit and proved(p['tp1']):
         fraction=p.get('partials',{}).get('TP1',.6)
+        if current_policy and fraction == 1.:
+            p.update(tp1_hit=True, tp1_reached_ts=ts)
+            close(state,p,p['tp1']*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg,engine)
+            return
         size = fraction*p['filled_fraction']
         price = p['tp1']*(1-side*cfg.slippage_bps/10_000)
         p['realized_gross_r'] += size*side*(price-p['entry'])/p['risk_budget']
@@ -519,7 +556,14 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
         be=p['stop']
         # Snapping can bring TP1 below 1R. It must not silently lower the
         # independent 1R breakeven trigger for new Master plans.
-        if p.get('policy') not in (POLICY, MASTER_POLICY) or p.get('breakeven_armed'):
+        if current_policy:
+            be = engine.round_tick(round(p['entry'] + side*.02, 10), cfg.tick, up=side==1)
+            if side*(be-p['stop'])>0:
+                p['pending_stop'] = {'price':be,'effective_ts':ts}
+            else:
+                be = p['stop']
+            p['breakeven_armed'] = True
+        elif p.get('policy') not in (MOMENTUM_POLICY, MASTER_POLICY) or p.get('breakeven_armed'):
             be = breakeven_price(p,cfg,engine) if is_precision(p) else engine.round_tick(p['entry']+side*.02,cfg.tick,up=side==1)
             if side*(be-p['stop'])>0:
                 p['pending_stop'] = {'price':be,'effective_ts':ts}
@@ -534,9 +578,12 @@ def manage(state, c, cfg, engine, step, fill_bar=False):
     if p.get('time_exit_enabled') and ts >= p['exit_deadline']:
         close(state,p,c.close*(1-side*cfg.slippage_bps/10_000),ts,'INTRADAY_TIME_EXIT',cfg,engine)
         return
-    if not fill_bar and not added:
-        favorable = c.high if side==1 else c.low
-        p['mfe_r'] = max(p['mfe_r'],side*(favorable-p['entry'])/p['risk'])
+    if current_policy and not p.get('tp1_hit') and p['mfe_r'] > 1.15 + 1e-9 and snapshot is not None:
+        import position_monitor
+        trailing = position_monitor.structural_stop(p, snapshot, ts, c.close, cfg.tick, engine)
+        if trailing is not None:
+            p['pending_stop'] = {'price':trailing,'effective_ts':ts}
+            engine.emit(state,'STRUCTURAL_TRAIL_ARMED',ts,order_id=p['id'],stop=trailing)
     p['last_bar'] = c.ts
 
 
@@ -564,7 +611,7 @@ def merge_plans(plans, snapshot, cfg, engine):
     result=[]
     for group in groups:
         best = copy.deepcopy(max(group, key=lambda p: (
-            p['score'], p.get('source_strategy') == 'BREAKER_FLIP_15M')))
+            p['score'], -abs(snapshot.price - p['entry']))))
         best['supporting_setups'] = sorted({p['setup'] for p in group})
         best['supporting_families'] = sorted({p['canonical_setup_family'] for p in group})
         best['parent_keys'] = sorted({p['event_key'] for p in group if p['event_key']!=best['event_key']})
