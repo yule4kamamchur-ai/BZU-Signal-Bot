@@ -239,13 +239,15 @@ class MicroBrake(unittest.TestCase):
             # At NOW-1 the 15m shock isn't closed and cannot activate a brake.
             if mutation=='future':
                 self.assertIsNone(adverse.intra_bar_reaction(snap,snap.candles['15m'][0],1,zone,1.,.01))
-            else:self.assertTrue(adverse.approach(snap,1.,1,zone,.01)['blocked'],mutation)
+            else:self.assertTrue(adverse.approach(snap,1.,1,zone,.01,stop=101.65)['blocked'],mutation)
 
     def test_stale_or_wrong_zone_reaction_cannot_release(self):
         snap,zone=micro_snapshot();snap.now+=900_000
-        self.assertTrue(adverse.approach(snap,1.,1,zone,.01)['blocked'])
-        snap.now=NOW
-        self.assertTrue(adverse.approach(snap,1.,1,{'low':100.,'high':100.2},.01)['blocked'])
+        # A fresh adverse close near SL must not be released by the prior quarter's pin.
+        snap.candles['15m'].append(replace(snap.candles['15m'][0],ts=NOW))
+        self.assertTrue(adverse.approach(snap,1.,1,zone,.01,stop=101.65)['blocked'])
+        snap.now=NOW;snap.candles['15m'].pop()
+        self.assertTrue(adverse.approach(snap,1.,1,{'low':101.9,'high':102.1},.01,stop=101.65)['blocked'])
 
     def test_complete_minute_aggregation_and_no_gap_fallback(self):
         snap,zone=micro_snapshot()
@@ -258,9 +260,9 @@ class MicroBrake(unittest.TestCase):
                                        low=min(o,close) if i!=4 else c.low,volume=.2))
         snap.candles['1m']=minutes
         self.assertEqual(len(scanner.closed_five_minutes(snap)),3)
-        self.assertFalse(adverse.approach(snap,1.,1,zone,.01)['blocked'])
+        self.assertFalse(adverse.approach(snap,1.,1,zone,.01,stop=101.65)['blocked'])
         snap.candles['1m'].pop(7)
-        self.assertTrue(adverse.approach(snap,1.,1,zone,.01)['blocked'])
+        self.assertTrue(adverse.approach(snap,1.,1,zone,.01,stop=101.65)['blocked'])
 
     def test_minute_aggregation_survives_snapshot_parse(self):
         rows=[bar(NOW-900_000+i*60_000) for i in range(15)]

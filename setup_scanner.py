@@ -38,7 +38,7 @@ def zone_direction_matches(zone, side):
     declared = zone.get('side')
     if declared in ('LONG', 'SHORT'):
         declared = 1 if declared == 'LONG' else -1
-    return (side in (-1, 1) and (declared not in (-1, 1) or declared == side)
+    return (not isinstance(side,bool) and side in (-1, 1) and (declared not in (-1, 1) or declared == side)
             and (expected == side if expected else kind in DIRECTIONAL_FORMATIONS))
 
 
@@ -79,6 +79,99 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         if not 0 <= side*(entry-proximal) <= .03000001:
             return 'ENTRY_OUTSIDE_ZONE'
     return None
+
+
+def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
+                              context=None, geometry=None, targets=None):
+    """Causal geometric pre-plan + transparent 5-factor ranking, never execution.
+
+    Existing complete engine geometry is frozen. A missing plan is calculated
+    as one whole unit, so a preview's TP cannot be attached to another SL.
+    Fallback R targets are explicitly labelled projections, not liquidity.
+    """
+    def valid(v):
+        return isinstance(v,(int,float)) and not isinstance(v,bool) and isfinite(v)
+    side=zone.get('side');low=zone.get('source_low',zone.get('low'));high=zone.get('source_high',zone.get('high'))
+    known=zone.get('known_ts');tick=cfg.tick
+    if (not zone_direction_matches(zone,side) or not all(valid(v) and v>0 for v in (low,high,tick)) or
+            low>=high or not valid(known) or known>snapshot.now or zone.get('mitigated')):
+        return None
+    closed15=[c for c in snapshot.candles.get('15m',[]) if c.confirmed and c.ts+900_000<=snapshot.now]
+    a=engine.atr(closed15)
+    if not valid(a) or a<=0:
+        return None
+    wide=high-low>1.5*a
+    entry=engine.round_tick((low+high)/2 if wide else (high if side==1 else low)+side*.03,tick,up=side==1)
+    stop=engine.round_tick((low if side==1 else high)-side*.25*a,tick,up=side==-1)
+    frozen=False
+    if geometry and all(valid(geometry.get(k)) and geometry[k]>0 for k in ('entry','stop','tp1','tp2')):
+        ge,gs,g1,g2=(geometry[k] for k in ('entry','stop','tp1','tp2'))
+        if side*(ge-gs)>0 and side*(g1-ge)>0 and side*(g2-g1)>=-tick/2:
+            entry,stop=ge,gs;frozen=True
+    risk=side*(entry-stop)
+    if risk<=0 or stop<=0:
+        return None
+    context=context or {}
+    available=engine.full_targets(context,snapshot,'LONG' if side==1 else 'SHORT',entry,cfg) if targets is None else targets
+    levels=[]
+    for target in available:
+        value=target.get('level');ts=target.get('known_ts')
+        if not valid(value) or (valid(ts) and ts>snapshot.now) or side*(value-entry)<=2*tick:
+            continue
+        levels.append((side*(value-entry),value,target.get('kind','STRUCTURE')))
+    levels.sort()
+    if frozen:
+        tp1,tp2=geometry['tp1'],geometry['tp2'];tp1_source=tp2_source='ENGINE_PLAN'
+    else:
+        if levels:
+            tp1=engine.round_tick(levels[0][1]-side*tick,tick,up=side==-1);tp1_source=levels[0][2]
+        else:
+            tp1=engine.round_tick(entry+side*1.45*risk,tick,up=side==1);tp1_source='R_MULTIPLE_1_45'
+        second=next((row for row in levels if side*(row[1]-tp1)>2*tick),None)
+        if second:
+            tp2=engine.round_tick(second[1]-side*tick,tick,up=side==-1);tp2_source=second[2]
+        else:
+            tp2=engine.round_tick(entry+side*max(2.4*risk,side*(tp1-entry)+.5*risk),tick,up=side==1)
+            tp2_source='R_MULTIPLE_2_40_OR_BEYOND_TP1'
+    if min(tp1,tp2)<=0 or side*(tp1-entry)<=0 or side*(tp2-tp1)<-tick/2:
+        return None
+    rr1,rr2=side*(tp1-entry)/risk,side*(tp2-entry)/risk
+    native=zone.get('timeframe','15m');step=engine.TF.get(native,300_000 if native=='5m' else 900_000)
+    rows=[c for c in snapshot.candles.get(native,[]) if c.confirmed and c.ts+step<=snapshot.now]
+    after=[c for c in rows if c.ts>=known]
+    touched=low<=snapshot.price<=high or any(c.low<=high and c.high>=low for c in after)
+    first_after=((known+step-1)//step)*step
+    complete=bool(rows and rows[0].ts<=known and (not after or after[0].ts<=first_after) and not any(b.ts-a0.ts!=step for a0,b in zip(after,after[1:])))
+    freshness='TESTED' if touched else 'UNTESTED' if complete else 'UNKNOWN_HISTORY'
+    sweep=zone.get('sweep') or {}
+    sweep_ts=sweep.get('known_ts',sweep.get('sweep_ts',known)) if isinstance(sweep,dict) else snapshot.now+1
+    explicit_sweep=zone.get('sweep_known_ts')
+    htf_or_sweep=native in ('1H','4H') or (valid(explicit_sweep) and explicit_sweep<=snapshot.now) or bool(sweep and any(k in sweep for k in ('known_ts','sweep_ts')) and valid(sweep_ts) and sweep_ts<=snapshot.now)
+    departure=[c for c in rows if known-2*step<=c.ts<known+3*step]
+    displacement=('FVG' in zone['kind'] or any(side*(c.close-c.open)>=.6*a and
+                  side*(c.close-(high if side==1 else low))>0 for c in departure))
+    nearest_room=levels[0][0]-tick if levels else float('inf')
+    room=rr1>=1.4-1e-8 and nearest_room>=1.4*risk-1e-8
+    criteria=[('REGIME_ALIGNMENT',25,primary_side==side),('UNTESTED',20,freshness=='UNTESTED'),
+              ('HTF_OR_SWEEP',20,htf_or_sweep),('DISPLACEMENT_OR_FVG',20,displacement),('ROOM_TO_RUN',15,room)]
+    score=sum(weight for _,weight,passed in criteria if passed)
+    import entry_adverse_selection as adverse
+    brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop)
+    stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
+    gate=('STOP_ALREADY_BREACHED' if stop_breached else
+          'STOP_OUTSIDE_RISK_BOUNDS' if not cfg.min_stop_absolute-1e-8<=risk<=cfg.max_stop_absolute+1e-8 else
+          'INSUFFICIENT_ROOM' if not room else
+          'DISTANT_ZONE' if abs(snapshot.price-entry)>cfg.max_entry_distance_atr*a+tick else None)
+    return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
+        'score':score,'grade':'A' if score>=65 else 'B+' if score>=58 else 'C',
+        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_5_FACTOR_V1',
+        'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
+                           for key,weight,passed in criteria],
+        'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else 'EQUILIBRIUM' if wide else 'PROXIMAL_PLUS_0_03',
+        'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
+        'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),
+        'tactic':'OBSERVE' if gate else 'LIMIT' if score>=65 and not brake['blocked'] else 'REACTION_M5' if score>=58 else 'OBSERVE',
+        'calculated_ts':snapshot.now}
 
 
 def closed_five_minutes(snapshot):

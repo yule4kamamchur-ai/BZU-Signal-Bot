@@ -160,13 +160,13 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')
     exit_fee = engine.fee_rate(cfg, 'taker')
     buffer = max(2 * cfg.tick, .06 * a15)
-    tp1_raw = engine.round_tick(round(entry + side * 1.4 * risk, 10), cfg.tick, up=side == -1)
+    tp1_raw = engine.round_tick(round(entry + side * 1.45 * risk, 10), cfg.tick, up=side == 1)
     tp1 = round_target(entry, tp1_raw, side, cfg.tick) if oil_round_protection(cfg) else tp1_raw
     # Round-number protection must not turn TP1 into the old early exit.
-    if side * (tp1 - entry) < 1.35 * risk - 1e-9:
+    if side * (tp1 - entry) < 1.4 * risk - 1e-9:
         tp1 = tp1_raw
-    if side * (tp1 - entry) < 1.35 * risk - 1e-9:
-        tp1 = engine.round_tick(round(entry + side * 1.35 * risk, 10), cfg.tick, up=side == 1)
+    if side * (tp1 - entry) < 1.4 * risk - 1e-9:
+        tp1 = engine.round_tick(round(entry + side * 1.4 * risk, 10), cfg.tick, up=side == 1)
     targets = sorted(engine.full_targets(context, snapshot, anchor.side, entry, cfg),
                      key=lambda target: side * (target['level'] - entry))
     magnet = next((target for target in targets
@@ -248,11 +248,6 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     # Preserve the observed zone even when Impulse Brake stops planning early.
     diag['entry_zone'] = dict(zone)
     diag['zone_origin'] = origin
-    approach = adverse.approach(snapshot, a15,side,zone,cfg.tick)
-    diag['approach']=approach
-    if approach.get('blocked'):
-        diag['status']='WATCHING'
-        return None,'IMPULSE_CONFIRMATION_REQUIRED'
     regime = direction.market_regime(snapshot, cfg.tick, engine)
     active_side = regime.get('active_structure', {}).get('side')
     aligned = direction.momentum_aligned(snapshot, side)
@@ -280,11 +275,15 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         risk=side*(entry-stop)
     if side*(entry-anchor.invalidation)<=0:
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
+    approach = adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop)
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
                 approach=approach, planning_policy=POLICY)
     mark('VALID_STOP', cfg.min_stop_absolute-1e-9 <= risk <= cfg.max_stop_absolute+1e-9)
     if risk < cfg.min_stop_absolute-1e-9 or risk > cfg.max_stop_absolute+1e-9:
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
+    if approach.get('blocked'):
+        diag['status']='WATCHING'
+        return None,'IMPULSE_CONFIRMATION_REQUIRED'
     # Intrabar High/Low, including an unfinished current minute, can invalidate
     # a stop. Open bars never establish a positive setup confirmation or fill.
     minute = scanner.audit_rows(snapshot, after=zone['known_ts'])

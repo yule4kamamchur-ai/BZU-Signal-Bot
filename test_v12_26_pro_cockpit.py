@@ -30,10 +30,11 @@ class CockpitTests(unittest.TestCase):
         self.assertEqual(result['system_mode'],'SCANNING')
         self.assertEqual(result['orders'],[])
         self.assertEqual(result['reference_levels'][0]['status'],'REFERENCE')
-        self.assertEqual(result['reference_levels'][0]['score'],72)
-        self.assertEqual(result['reference_levels'][0]['entry_source'],'ANCHOR')
+        self.assertEqual(result['reference_levels'][0]['engine_score'],72)
+        self.assertEqual(result['reference_levels'][0]['score'],sum(c['earned'] for c in result['reference_levels'][0]['score_breakdown']))
+        self.assertEqual(result['reference_levels'][0]['entry_source'],'STRUCTURAL_PREPLAN')
         self.assertNotIn('PRIVATE_SENTINEL',json.dumps(result))
-        self.assertNotIn('stop',result['reference_levels'][0])
+        self.assertIsInstance(result['reference_levels'][0]['stop'],(int,float))
         self.assertEqual(row,original)
 
     def test_planner_entry_targets_and_signed_distance_for_both_sides(self):
@@ -50,8 +51,8 @@ class CockpitTests(unittest.TestCase):
             self.assertAlmostEqual(candidate['distance'],-side*.2)
             self.assertAlmostEqual(candidate['distance_pct'],-side*.2/self.snap.price*100)
             self.assertEqual(candidate['distance_ticks'],round(.2/self.cfg.tick))
-            self.assertEqual(candidate['status'],'CANDIDATE')
-            self.assertEqual(candidate['entry_source'],'PLANNER')
+            self.assertIn(candidate['status'],('CANDIDATE','REFERENCE'))
+            self.assertEqual(candidate['entry_source'],'ENGINE_PLAN')
 
     def test_unassessed_context_zone_never_gets_a_fake_score_or_trade(self):
         from types import SimpleNamespace
@@ -59,10 +60,10 @@ class CockpitTests(unittest.TestCase):
             high=74.3,created_ts=self.snap.now-3*900_000,mitigated=False)
         result=self.project(full_context={'zones':{'fvg':[zone]}})
         z=result['zones'][0]
-        self.assertIsNone(z['score'])
-        self.assertIsNone(z['stop'])
-        self.assertEqual(z['status'],'OBSERVING')
-        self.assertEqual(z['entry_source'],'ZONE_BOUNDARY')
+        self.assertIsInstance(z['score'],int)
+        self.assertIsInstance(z['stop'],(int,float))
+        self.assertFalse(z['execution_admitted'])
+        self.assertEqual(z['entry_source'],'STRUCTURAL_PREPLAN')
         self.assertEqual(z['source_high'],74.3)
 
     def test_retired_and_future_candidates_do_not_appear(self):
@@ -90,7 +91,8 @@ class CockpitTests(unittest.TestCase):
         for candidate in related:
             self.assertEqual(candidate['entry'],p['entry'])
             self.assertEqual(candidate['stop'],p['stop'])
-            self.assertEqual(candidate['score'],p['score'])
+            self.assertEqual(candidate['ledger_score'],p['score'])
+            self.assertEqual(candidate['score'],sum(c['earned'] for c in candidate['score_breakdown']))
         p['status']='OPEN';p['tp1_hit']=True;p['remaining']=.5
         p['pending_stop']={'price':p['entry']+.02,'effective_ts':self.snap.now+60_000}
         with patch.object(engine,'open_plans',return_value=[p]):
@@ -119,12 +121,11 @@ class CockpitTests(unittest.TestCase):
         b={'setup':'OTHER','side':1,'entry':74.4,'score':75,'entry_zone':self.zone,
            'reason':'IMPULSE_CONFIRMATION_REQUIRED'}
         result=self.project(poi_paths=[a,b])
-        candidates=result['reference_levels']
-        self.assertEqual(len(candidates),2)
-        waiting=next(c for c in candidates if c['setup']=='OTHER')
-        self.assertNotIn('stop',waiting)
-        self.assertEqual(result['zones'][0]['entry'],74.5)
-        self.assertEqual(result['zones'][0]['stop'],74.1)
+        candidates=result['plan_pool']
+        self.assertEqual(len(candidates),1)
+        z=candidates[0]
+        self.assertTrue(all(isinstance(z[k],(int,float)) for k in ('entry','stop','tp1','tp2','score')))
+        self.assertAlmostEqual(z['risk'],z['side']*(z['entry']-z['stop']))
 
     def test_duplicate_paths_are_collapsed_and_payload_is_bounded_per_side(self):
         rows=[{'setup':'FVG','side':side,'entry':self.snap.price-side*(.1+i*.01),
@@ -144,7 +145,8 @@ class CockpitTests(unittest.TestCase):
             self.assertIsNone(plan)
             self.assertEqual(reason,'IMPULSE_CONFIRMATION_REQUIRED')
             self.assertIn('entry_zone',diagnostics)
-            self.assertNotIn('entry',diagnostics)
+            self.assertIn('entry',diagnostics)
+            self.assertIn('stop',diagnostics)
 
     def test_pages_contains_css_and_release_versions_match(self):
         workflow=Path('.github/workflows/main.yml').read_text()

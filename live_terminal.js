@@ -14,12 +14,14 @@ let history = [], currentBar, lastSampleTime = 0, audio, sound = false, feedErro
 let socket, socketAttempt = 0, socketPing;
 let showAllZones = false, selectedZone = null;
 const reactions=new Map();
+const invalidZones=new Set(), selectedPlanIds=new Map();
 let m5Market=null, previousLiveSample=null, velocity=null, m5Busy=false;
 let stateError = false, stateBusy = false, tickerBusy = false, candlesBusy = false;
 
 const number = n => typeof n === 'number' && Number.isFinite(n);
 const stamp = n => number(n) && n > 0 ? time.format(n) : '—';
 const format = n => number(n) ? n.toFixed(Math.max(2, (String(state?.tick ?? .01).split('.')[1] ?? '').length)) : '—';
+const positiveNumber=v=>(typeof v==='number'||typeof v==='string'&&v.trim()!=='')&&v!==null&&Number.isFinite(Number(v))&&Number(v)>0?Number(v):NaN;
 const sideLabel = side => side === 1 ? 'LONG' : 'SHORT';
 const eventTime = ts => number(ts) ? new Intl.DateTimeFormat('uk-UA', {timeZone:'Europe/Kyiv',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(ts) : 'Час не передано';
 const ready = now => state && !stateError && state.status === 'READY' &&
@@ -65,6 +67,7 @@ function orderTracker(order) {
 }
 
 function track(order, tracker, market, now) {
+  if (![1,-1].includes(order.side)||!number(order.entry)||order.entry<=0||!number(order.stop)||order.stop<=0||!number(order.risk)||order.risk<=0) return;
   const pending = order.status === 'PENDING';
   const open = order.status === 'OPEN';
   if (open && tracker.observedStatus !== 'OPEN') {
@@ -131,13 +134,14 @@ function scoreText(row) {
 }
 const formatScore = n => Number(n.toFixed(1)).toString();
 function statusText(row, price) {
-  if (row.status==='REFERENCE') return 'Довідково · '+({INCOMPLETE_PLAN:'неповний план',SCORE_BELOW_65:'бал нижче 65',
+  if (state.cockpit_schema===3&&validCandidate(row)&&livePlanState(row,price)==='INVALID') return 'SL ПРОБИТО · ЗОНУ СПИСАНО';
+  if (row.status==='REFERENCE') return 'Довідково · '+({INCOMPLETE_PLAN:'неповний план',SCORE_BELOW_65:'бал нижче 65',SCORE_BELOW_58:'бал нижче 58',INSUFFICIENT_ROOM:'мало простору до цілі',STOP_OUTSIDE_RISK_BOUNDS:'ризик поза лімітом',DISTANT_ZONE:'далека зона',STOP_ALREADY_BREACHED:'SL вже пробито після формування',
     CONTEXT_NOT_EVALUATED:'лише оцінка патерну',RR_BELOW_1_35:'недостатній R:R',ENGINE_CONFIRMATION_REQUIRED:'чекаємо підтвердження',
     BLOCKED_BY_TREND:'проти тренду',ENTRY_OUTSIDE_REFINED_ZONE:'Entry поза звуженою зоною',ZONE_NOT_AHEAD_OF_PRICE:'ціна вже у зоні або за нею',
     STRUCTURAL_SPREAD_CONFLICT:'конфлікт дистанції',LOWER_PRIORITY:'другорядний рівень',EXPIRED:'строк минув',
     NOT_IN_FINAL_REACTION_PLANS:'не пройдено фінальний допуск',ATR_UNAVAILABLE:'бракує ATR',ZONE_TIME_UNKNOWN:'невідомий час зони'}[row.gate_reason]??'без допуску до входу');
   return ({ OPEN:'У супроводі', PENDING:'Ліміт активний', CANCELLING:'Скасування ліміту',
-    WAIT_CONFIRMATION:'Підтвердження ' + (row.confirmation_timeframe || 'структури'),
+    PREPLAN:'Попередній план · очікує допуску', WAIT_CONFIRMATION:'Підтвердження ' + (row.confirmation_timeframe || 'структури'),
     BLOCKED:'Вхід заблоковано', REFERENCE:'Довідковий рівень', OBSERVING:'Довідкова зона' })[row.status] ??
     (Math.abs(row.entry - price) <= .08 ? 'Готується вхід · ціна поруч' : 'Кандидат · чекаємо підхід');
 }
@@ -150,35 +154,53 @@ function validCandidate(row) {
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
-  if (!['low','high','entry','stop','tp1','tp2','score'].every(k=>number(row[k])&&row[k]>0)) return false;
+  if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
-  return row.low<row.high && risk>0 && row.side*(row.tp1-row.entry)/risk>=1.35-1e-8 &&
-    row.side*(row.tp2-row.tp1)>=-1e-8 && row.score>=65 && row.score<=100 && number(row.known_ts) && row.known_ts<=state.snapshot_ts && row.score_source==='CONTEXT' &&
-    (!outside || (row.side*(row.entry-proximal)>=0 && row.side*(row.entry-proximal)<=.03000001));
+  const preview=row.score_source==='ZONE_HEURISTIC'&&row.score_model==='ZONE_5_FACTOR_V1';
+  return row.low<row.high && risk>0 && row.side*(row.tp1-row.entry)/risk>=(preview?0:1.35)-1e-8 &&
+    row.side*(row.tp2-row.tp1)>=-1e-8 && (preview||row.score>=65) && row.score<=100 && number(row.known_ts) && row.known_ts<=state.snapshot_ts && (preview||row.score_source==='CONTEXT') &&
+    (!outside || (row.side*(row.entry-proximal)>=0 && row.side*(row.entry-proximal)<=.03000001+(preview?(state.tick||.01):0)));
 }
-function radarRows() {
-  const bias=state.primary_bias || 0;
+function poolRows() { return state.plan_pool??state.candidates??[]; }
+function zoneFingerprint(row) {
+  return [state.instrument,row.kind,row.timeframe,row.side,row.source_low??row.low,row.source_high??row.high,row.known_ts].join('|');
+}
+function livePlanState(row,price) {
+  if (invalidZones.has(zoneFingerprint(row)) || row.side*(price-row.stop)<=0) return 'INVALID';
+  if (number(row.valid_until)&&row.valid_until<=Date.now()) return 'EXPIRED';
+  const tracker=reactions.get(reactionKey(row));
+  if (tracker?.stage==='READY') return 'READY';
+  if (tracker?.stage==='TOUCHED') return 'TOUCHED';
+  if (row.low<=price&&price<=row.high) return 'IN_ZONE';
+  return row.side*(price-row.entry)>0?'APPROACH':'WAIT_REACTION';
+}
+function radarRows(price = displayedPrice()) {
+  const bias=state.primary_bias||0;
   const rows=[1,-1].map(side=>{
-    const row=state.radar?.[side===1?'LONG':'SHORT'];
-    const listed=(state.candidates??[]).find(c=>c.id===row?.id);
-    if (!listed || ['kind','side','entry','stop','tp1','tp2'].some(k=>listed[k]!==row[k])) return null;
-    if (!row?.reaction_eligible || !validCandidate(row) || (bias && side!==bias) ||
-        row.side!==side || row.status!=='CANDIDATE' || row.valid_until<=Date.now()) return null;
-    // Arm from the planner snapshot, not a resort on each tick after price enters the zone.
-    if (side*(state.price-row.entry)<=0 || (side===1?row.high>state.price:row.low<state.price)) return null;
-    return row;
+    let choices=poolRows().filter(row=>row.side===side&&validCandidate(row)&&row.display_eligible!==false&&
+      (!bias||side===bias)&&!['OPEN','PENDING','CANCELLING'].includes(row.status)&&row.gate_reason!=='STOP_ALREADY_BREACHED'&&
+      !['INVALID','EXPIRED'].includes(livePlanState(row,price)));
+    // A witnessed touch owns the live check until resolved; do not chase another zone mid-rejection.
+    const held=choices.find(row=>selectedPlanIds.get(side)===row.id&&['TOUCHED','READY'].includes(livePlanState(row,price)));
+    choices.sort((a,b)=>Boolean(b.reaction_eligible)-Boolean(a.reaction_eligible)||(!a.reaction_eligible&&!b.reaction_eligible?Math.abs(a.entry-price)-Math.abs(b.entry-price):b.score-a.score)||
+      Math.abs(a.entry-price)-Math.abs(b.entry-price));
+    const selected=held??choices[0]??null;
+    if (selected) selectedPlanIds.set(side,selected.id); else selectedPlanIds.delete(side);
+    return selected;
   });
   if (rows[0]&&rows[1] && (rows[1].entry-rows[0].entry < Math.max(.65,state.min_structural_spread||0) || rows[0].high>=rows[1].low)) {
-    const keep=bias || (rows[0].score>=rows[1].score?1:-1);
-    rows[keep===1?1:0]=null;
+    const keep=bias || (rows[0].score>=rows[1].score?1:-1);rows[keep===1?1:0]=null;
   }
   return rows;
 }
+function mainPlan(rows=radarRows().filter(Boolean)) {
+  return rows.find(r=>r.id===state.primary_candidate_id)||rows.find(r=>r.side===state.primary_bias)||[...rows].sort((a,b)=>b.score-a.score)[0]||null;
+}
 function reactionRows() {
-  if (state.cockpit_schema!==2 || state.orders.some(o=>o.status==='OPEN') || !ready(Date.now())) return [];
-  let rows=radarRows().filter(Boolean);
+  if (![2,3].includes(state.cockpit_schema) || state.orders.some(o=>o.status==='OPEN') || !ready(Date.now())) return [];
+  let rows=radarRows().filter(r=>r?.reaction_eligible&&r.score>=(state.cockpit_schema===3?58:65));
   for (const order of state.orders) {
     if (order.status!=='PENDING' || order.expires_ts<=Date.now()) continue;
     const row={...order,...order.zone,id:'order:'+order.id,score_source:'CONTEXT',reaction_eligible:true,valid_until:order.expires_ts};
@@ -219,8 +241,9 @@ function updateReaction(row, market) {
   const price=market.price, risk=row.side*(row.entry-row.stop), proximal=row.side===1?row.high:row.low;
   const remainingRisk=row.side*(price-row.stop);
   const depth=row.side===1?(row.high-price)/(row.high-row.low):(price-row.low)/(row.high-row.low);
-  if (depth>=.6-1e-8 || remainingRisk<=Math.max(2*tick,.15*risk)) {
-    t.stage='INVALID';t.message='Зону пробито / небезпечно близько до SL. Локальний вхід заблоковано.';
+  if (remainingRisk<=0) {
+    invalidZones.add(zoneFingerprint(row));
+    t.stage='INVALID';t.message='Ціна пробила SL. Зону списано локально; радар обирає наступний рівень.';
     return t;
   }
   if (t.stage==='READY') {
@@ -248,7 +271,7 @@ function updateReaction(row, market) {
     const newRR=remainingRisk>0?row.side*(row.tp1-price)/remainingRisk:0;
     if (rejection>=minReturn-1e-8 && row.side*(price-row.entry)>=tick-1e-8 &&
         t.samples>t.touchSample && t.samples>=(cfg.min_samples??3)) {
-      if (row.side*(price-row.entry)>(cfg.max_chase_r??.25)*risk || newRR<1.35-1e-8) {
+      if (row.side*(price-row.entry)>(cfg.max_chase_r??.25)*risk || newRR<(state.cockpit_schema===3?1.4:1.35)-1e-8) {
         t.stage='MISSED';t.message='Відбій спостерігався, але ціна вже погіршила R:R. Вхід пропущено.';
       } else if (t.events.has('REACTION')) {
         t.stage='MISSED';t.message='Цю реакцію вже показано. Повторний сигнал не створюється.';
@@ -274,25 +297,29 @@ function observeLive(market) {
   if (!m5Market||m5Market.time!==bucket) m5Market={time:bucket,open:market.price,high:market.price,low:market.price,
     close:market.price,source:'OBSERVED_TICKS',received:now};
   else {m5Market.high=Math.max(m5Market.high,market.price);m5Market.low=Math.min(m5Market.low,market.price);m5Market.close=market.price;}
+  for (const row of poolRows()) if (validCandidate(row)&&!['OPEN','PENDING','CANCELLING'].includes(row.status)&&row.side*(market.price-row.stop)<=0&&!invalidZones.has(zoneFingerprint(row))) {
+    invalidZones.add(zoneFingerprint(row));const t=reactionTracker(row);t.stage='INVALID';
+    notify(row,t,'ZONE_SL','SL плану '+format(row.stop)+' пробито · зону списано локально');
+  }
   const keep=new Set();
   for (const row of reactionRows()) {keep.add(reactionKey(row));updateReaction(row,market);}
-  for (const key of reactions.keys()) if (!keep.has(key)) reactions.delete(key);
+  for (const [key,t] of reactions) if (!keep.has(key)&&!['INVALID','MISSED'].includes(t.stage)) reactions.delete(key);
 }
 function currentReaction() {
   const rows=reactionRows();
-  const primary=rows.find(r=>r.id.startsWith('order:')) || rows.find(r=>r.id===state.primary_candidate_id) || rows[0];
+  const primary=rows.find(r=>r.id.startsWith('order:')) || mainPlan(rows);
   return primary?{row:primary,tracker:reactionTracker(primary)}:null;
 }
 function reactionPresentation(usable, live) {
   if (!usable||!live||document.hidden) return {stage:'PAUSED',title:'Live реакція призупинена',detail:'Потрібні актуальний зліпок і свіжі котирування у відкритій вкладці.'};
   if (state.orders.some(o=>o.status==='OPEN')) return {stage:'PAUSED',title:'Супроводжуємо позицію',detail:'Пошук нового live входу призупинено, доки позиція відкрита.'};
   const current=currentReaction();
-  if (!current) return {stage:'WAIT',title:'Чекаємо повний план ≥65/100',detail:'Слабкі, неповні та протитрендові рівні залишаються довідковими.'};
+  if (!current) return {stage:'WAIT',title:'Чекаємо реакційний план від 58/100',detail:'Слабкі, неповні та протитрендові рівні залишаються довідковими.'};
   const {row,tracker:t}=current;
   const expired=t.stage==='READY' && (Date.now()-t.readyTs>(state.reaction_config?.ready_ttl_ms??15000)||Math.floor(Date.now()/300000)!==t.bucket);
   const stage=expired?'MISSED':t.stage;
   return {stage,row,tracker:t,title:({UNARMED:'Чекаємо свіжий підхід',ARMED:'План підготовлено · чекаємо дотик',
-    TOUCHED:'У ЗОНІ · чекаємо реакцію M5',READY:'LIVE РЕАКЦІЯ · перевірте вхід',INVALID:'ЛОКАЛЬНИЙ ВХІД ЗАБЛОКОВАНО',
+    TOUCHED:'У ЗОНІ · чекаємо реакцію M5',READY:'🎯 СНАЙПЕРСЬКИЙ СИГНАЛ · LIVE РЕАКЦІЯ M5',INVALID:'ЛОКАЛЬНИЙ ВХІД ЗАБЛОКОВАНО',
     MISSED:'Вікно реакції минуло'})[stage],detail:expired?'Не наздоганяємо ціну після завершення вікна реакції.':t.message};
 }
 function renderReaction(usable,live) {
@@ -351,11 +378,12 @@ function renderZones(price) {
     name.title = z.gate_reason ?? z.reason_text ?? z.reason ?? 'Зона без оціненого сетапу';
     const score = td(scoreText(z));
     if (z.score_source==='PATTERN' && number(z.score)) score.append(element('small','Патерн'));
-    score.title = z.score_source === 'PATTERN' ? 'Бал патерну; повна перевірка входу ще не пройдена' :
+    score.title = z.score_breakdown ? z.score_breakdown.map(c=>c.criterion+': '+c.earned+'/'+c.maximum).join(' · ') : z.score_source === 'PATTERN' ? 'Бал патерну; повна перевірка входу ще не пройдена' :
       z.score_source === 'UNASSESSED' ? 'Рушій ще не оцінив сетап для цієї зони' : 'Оцінка контексту рушієм';
     const entry = td('');
     entry.append(element('strong', format(z.entry)), element('small', distanceText(z.entry, price)),
-      element('small', entrySource(z)));
+      element('small', entrySource(z)),element('small','SL '+format(z.stop)+' · TP1 '+format(z.tp1)),
+      element('small','TP2 '+format(z.tp2)+' · R:R '+(number(z.rr1)?z.rr1.toFixed(2):'не визначено')));
     const action = td('');
     const focus = element('button', '◎');
     focus.type = 'button'; focus.dataset.zone = z.id;
@@ -370,8 +398,11 @@ function renderZones(price) {
     cell.colSpan = 4; row.append(cell); container.append(row);
   }
 }
+function tacticText(row) {
+  return row.tactic==='LIMIT'?'КЛАС A · пряма лімітка'+(row.execution_admitted?' · допуск пройдено':' · попередній план, очікує допуску'):row.tactic==='REACTION_M5'?'КЛАС '+row.grade+' · вхід лише за реакцією M5':'Довідковий план · вхід заблоковано';
+}
 function entrySource(row) {
-  return ({ ORDER:'Ордер за журналом', PLANNER:'Розрахунок рушія', ANCHOR:'Попередній рівень сетапу',
+  return ({ STRUCTURAL_PREPLAN:'Попередній структурний план', ENGINE_PLAN:'План рушія', ORDER:'Ордер за журналом', PLANNER:'Розрахунок рушія', ANCHOR:'Попередній рівень сетапу',
     ZONE_BOUNDARY:'Орієнтир: межа зони' })[row.entry_source] ?? 'Рівень зі зліпка';
 }
 function copyButtons(row) {
@@ -487,21 +518,21 @@ function renderBanner(price, usable, live) {
   const active=state.orders.find(o=>o.status==='OPEN');
   const pending=state.orders.find(o=>o.status==='PENDING');
   const candidates=radarRows().filter(Boolean);
-  const candidate=candidates.find(r=>r.id===state.primary_candidate_id)||candidates.find(r=>r.side===state.primary_bias)||candidates[0];
+  const candidate=mainPlan(candidates);
   let mode='SCANNING', title='Скануємо ринок · шукаємо сетап', detail='Чекаємо підтверджених умов входу.', pill='СКАНУВАННЯ';
   if (candidate) {
     mode=candidate.side===-1?'PRIMARY_SHORT':'PRIMARY_LONG'; pill='ГОЛОВНИЙ ПРІОРИТЕТ';
-    title='ЧЕКАЄМО ЗОНУ: ' + sideLabel(candidate.side) + ' ' +
+    title=(candidate.tactic==='OBSERVE'?'ДОВІДКОВИЙ ПЛАН: ':candidate.entry_source==='STRUCTURAL_PREPLAN'?'ПОПЕРЕДНІЙ ПЛАН: ':'ЧЕКАЄМО ЗОНУ: ') + sideLabel(candidate.side) + ' ' +
       (number(candidate.low) ? '[' + format(candidate.low) + '–' + format(candidate.high) + ']' : format(candidate.entry));
-    detail=(candidate.setup ?? candidate.kind) + ' · ' + statusText(candidate,price) + ' · Δ ' + distanceText(candidate.entry,price) +
+    detail=(candidate.setup ?? candidate.kind) + ' · '+scoreText(candidate)+' · '+tacticText(candidate)+' · ' + statusText(candidate,price) + ' · Δ ' + distanceText(candidate.entry,price) +
       ' · ' + entrySource(candidate) + ' ' + format(candidate.entry) +
       (number(candidate.stop) ? ' | SL ' + format(candidate.stop) : '') +
-      (number(candidate.tp1) ? ' | TP1 ' + format(candidate.tp1) : '');
+      (number(candidate.tp1) ? ' | TP1 ' + format(candidate.tp1) : '')+(number(candidate.tp2)?' | TP2 '+format(candidate.tp2):'')+(number(candidate.rr1)?' | R:R '+candidate.rr1.toFixed(2):'');
   }
   if (!candidate && state.primary_bias && !active && !pending) {
     mode=state.primary_bias===-1?'PRIMARY_SHORT':'PRIMARY_LONG';
     title='ПРІОРИТЕТ '+sideLabel(state.primary_bias)+' · чекаємо якісний план';
-    detail='Немає повного плану ≥65/100 з R:R ≥1.35 на правильному боці ціни. Довідкові рівні — у таблиці.';
+    detail='Немає повного незламаного плану. Довідкові рівні — у таблиці; чекаємо новий зліпок.';
   }
   if (pending) {
     const tracker=orderTracker(pending);
@@ -538,8 +569,9 @@ function renderBanner(price, usable, live) {
     detail='Останній зліпок: ' + stamp(state.snapshot_ts) + '. Рівні нижче — останні відомі, сповіщення призупинено.';
   } else if (!live) detail += ' · Дистанції за ціною зі зліпка.';
   const banner=$('state-banner'); banner.dataset.mode=mode;
-  banner.classList.toggle('near',usable && live && !active && pending && !orderTracker(pending).touch &&
-    !orderTracker(pending).end && Math.abs(price-pending.entry)<=.08000001);
+  const isNear=Boolean(usable && live && !active && pending?.status==='PENDING' && number(pending.entry) && pending.entry>0 &&
+    !orderTracker(pending).touch && !orderTracker(pending).end && Math.abs(price-pending.entry)<=.08000001);
+  banner.classList.toggle('near',isNear);
   $('state-title').textContent=title; $('state-detail').textContent=detail; $('state-pill').textContent=pill;
   $('state-eyebrow').textContent=banner.classList.contains('near') ? 'ЦІНА БІЛЯ ЛІМІТКИ · ПРИГОТУЙТЕСЯ ДО ПЕРЕВІРКИ ВХОДУ' : 'ПОТОЧНИЙ СТАН СИСТЕМИ';
   for (const [id,enabled] of [['step-scan',usable && !state.orders.length],['step-pending',usable && !active && !!pending],['step-active',usable && !!active]]) {
@@ -564,10 +596,18 @@ function renderRadar(price, live) {
       element('p',format(row.entry),'candidate-entry'),element('p',entrySource(row),'muted'),
       element('p',distanceText(row.entry,price),'distance'));
     const localStage=card.dataset.reaction;
-    const badge=element('span',localStage==='INVALID'?'Локальний вхід заблоковано':localStage==='MISSED'?'Реакцію пропущено':statusText(row,price),'badge');
+    const badge=element('span',localStage==='INVALID'?'Локальний вхід заблоковано':localStage==='MISSED'?'Реакцію пропущено':tacticText(row),'badge');
     card.append(badge,element('p',scoreText(row) + (row.score_source==='PATTERN' ? ' · патерн' : ''),'reason'));
-    if (number(row.stop)) card.append(element('p','SL ' + format(row.stop) + ' · TP1 ' + format(row.tp1),'reason'));
-    if (row.reason_text) card.append(element('p',row.reason_text,'reason'));
+    if (number(row.stop)) card.append(element('p','SL ' + format(row.stop) + ' · TP1 ' + format(row.tp1)+' · TP2 '+format(row.tp2)+' · R:R '+(number(row.rr1)?row.rr1.toFixed(2):'не визначено'),'reason'));
+    if (row.score_breakdown) {
+      const detail=element('details',null,'score-criteria');detail.append(element('summary','За що нараховано бал?'));
+      const names={REGIME_ALIGNMENT:'Тренд',UNTESTED:'Свіжість',HTF_OR_SWEEP:'Старший TF / sweep',DISPLACEMENT_OR_FVG:'Імпульс / FVG',ROOM_TO_RUN:'Простір до цілі'};
+      for(const c of row.score_breakdown)detail.append(element('p',(names[c.criterion]??c.criterion)+' · '+c.earned+'/'+c.maximum));
+      card.append(detail);
+    }
+    if (row.engine_reason&&row.engine_reason!=='NO_EVALUATED_SETUP')card.append(element('p','Перевірка рушія: '+(row.reason_text??row.engine_reason),'reason'));
+    if (row.plan_basis==='STRUCTURAL_PREPLAN')card.append(element('p','Розрахунковий план, не виставлений ордер.','reason'));
+    else if (row.reason_text) card.append(element('p',row.reason_text,'reason'));
     container.append(card);
   });
 }
@@ -603,7 +643,7 @@ function render() {
     card.append(element('p',management(order,tracker,price,usable),'action'));
     const details=element('dl');
     const rr=order.risk>0 && number(order.tp1) ? order.side*(order.tp1-order.entry)/order.risk : null;
-    const fields=[['Сетап',order.setup ?? 'Не вказано'],['Бал / клас',scoreText(order)],['Entry / SL',format(order.entry)+' / '+format(order.stop)],
+    const fields=[['Сетап',order.setup ?? 'Не вказано'],['Бал / клас за журналом',scoreText(order)],['Entry / SL',format(order.entry)+' / '+format(order.stop)],
       ['TP1 / TP2',format(order.tp1)+' / '+format(order.tp2)],['Ризик ціни / R:R TP1',format(order.risk)+' $/од. / '+(number(rr)?rr.toFixed(2):'Не розраховано')],
       ['Поріг / стоп Б/У',format(order.be_trigger)+' / '+format(order.be_stop)]];
     if (number(order.pending_stop)) fields.push(['Запланований SL',format(order.pending_stop)+' з '+stamp(order.pending_stop_effective_ts)]);
@@ -649,6 +689,8 @@ function initChart() {
       const info=original();
       if (!info || !state) return info;
       const values=state.orders.flatMap(o=>[o.entry,o.stop,o.tp1,o.tp2,o.be_trigger]).filter(number);
+      const main=mainPlan();
+      if (main) values.push(main.entry,main.stop,main.tp1);
       const selected=state.zones.find(z=>z.id===selectedZone);
       if (selected) values.push(selected.low,selected.high);
       if (values.length) {
@@ -717,17 +759,21 @@ function drawLevels() {
     if (order.tp2!==order.tp1) add(order.tp2,prefix+'TP2 · залишок ('+signed(order.side*(order.tp2-order.entry)/order.risk)+'R)','#7db7ff');
   }
   // Zone titles belong inside the shaded band; axis labels mark the precise entry.
-  for (const zone of visibleZones(price)) {
+  const mainPlans=radarRows(price).filter(Boolean);
+  const primary=mainPlan(mainPlans);mainPlans.sort((a,b)=>(b.id===primary?.id)-(a.id===primary?.id));
+  for (const zone of mainPlans) {
     if (state.orders.some(o=>o.id===zone.order_id)) continue;
     add(zone.entry,(zone.timeframe ?? '')+' '+zone.kind+' '+sideLabel(zone.side)+
-      (zone.status==='CANDIDATE'?' · КАНДИДАТ':' · ДОВІДКОВО'),zone.side===1?'#4c9f88':'#ad6577');
-    if (zone.status==='CANDIDATE') {
+      (' · '+(zone.grade??'ПЛАН')+' '+(zone.tactic??'РІВЕНЬ')),zone.side===1?'#4c9f88':'#ad6577');
+    if (number(zone.stop)&&number(zone.tp1)) {
       add(zone.stop,sideLabel(zone.side)+' SL @ '+format(zone.stop),'#ff8994',false);
       add(zone.tp1,sideLabel(zone.side)+' TP1 @ '+format(zone.tp1),'#7db7ff');
+      add(zone.tp2,sideLabel(zone.side)+' TP2 @ '+format(zone.tp2),'#6698d0');
     }
   }
   series.applyOptions({priceFormat:{type:'price',precision:Math.max(2,(String(state.tick).split('.')[1] ?? '').length),minMove:state.tick || .01}});
-  const labels=[price,(currentBar??history.at(-1))?.close].filter(number).map(p=>series.priceToCoordinate(p)).filter(y=>y!==null);
+  series.applyOptions({lastValueVisible:mainPlans.length===0});
+  const labels=mainPlans.length?[]:[price,(currentBar??history.at(-1))?.close].filter(number).map(p=>series.priceToCoordinate(p)).filter(y=>y!==null);
   const legend=[];
   for (const spec of specs) {
     const y=series.priceToCoordinate(spec.price);
@@ -796,7 +842,7 @@ async function loadCandles(fit = false) {
 }
 
 function acceptTicker(row) {
-  const price = Number(row?.last), ts = Number(row?.ts);
+  const price = positiveNumber(row?.last), ts = positiveNumber(row?.ts);
   if (row?.instId !== state?.instrument || !number(price) || price <= 0 ||
       !number(ts) || ts <= 0 || ts > Date.now() + 3000 || (quote && ts < quote.ts)) return false;
   if (quote&&ts===quote.ts) return price===quote.price;
@@ -872,7 +918,7 @@ async function pollState() {
     if (first) {
       quote = undefined; lastSampleTime = 0; history = []; currentBar = undefined;
       if (series) series.setData([]);
-      position.clear(); selectedZone=null; reactions.clear(); m5Market=null; previousLiveSample=null;
+      position.clear(); selectedZone=null; reactions.clear(); invalidZones.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
       disconnectSocket();
     }
     const previousSnapshot = state?.snapshot_ts;
@@ -890,7 +936,7 @@ async function pollState() {
     for (const id of position.keys()) if (!ids.has(id)) position.delete(id);
     setHistory(next.candles?.[frame] ?? [], first);
     const keep=new Set(reactionRows().map(reactionKey));
-    for (const key of reactions.keys()) if (!keep.has(key)) reactions.delete(key);
+    for (const [key,t] of reactions) if (!keep.has(key)&&!['INVALID','MISSED'].includes(t.stage)) reactions.delete(key);
     render();
     void pollTicker(); void pollM5();
     await loadCandles(first);
@@ -965,7 +1011,7 @@ setInterval(() => {
 },1000);
 setInterval(pollTicker, 3000);
 setInterval(pollState, 30_000);
-setInterval(pollM5,15_000);
+setInterval(pollM5,3000);
 document.addEventListener('visibilitychange', () => {
   pauseReactions();
   if (!document.hidden) { void pollState(); void pollTicker(); void pollM5(); }

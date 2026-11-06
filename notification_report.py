@@ -415,7 +415,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
 
     # A research/watch candidate is not a pending order. Do not print long
     # rejection diagnostics while real orders are already occupying the slots.
-    if not pending and not active and not frozen and result.get('analysis', {}).get('entry_mode') == 'LIVE_REACTION':
+    if not pending and not active and not frozen and result.get('analysis', {}).get('entry_mode') in ('LIVE_REACTION','HYBRID'):
         import live_terminal
         public = live_terminal.build(state, snapshot, result, cfg, engine)
         primary = next((p for p in public['candidates'] if p['id'] == public['primary_candidate_id']), None)
@@ -423,10 +423,10 @@ def build_checklist(state, snapshot, result, cfg, engine):
             side = 'LONG' if primary['side'] == 1 else 'SHORT'
             lines += ['', f'👁 ПЛАН LIVE РЕАКЦІЇ • {side} @ {primary["entry"]:.8g}',
                       f'SL {primary["stop"]:.8g} • TP1 {primary["tp1"]:.8g} • TP2 {primary["tp2"]:.8g}',
-                      'Нову лімітку не активовано. Реакцію відстежує відкрита вкладка дашборду.']
+                      'Попередній план не є ордером. Перевірте тактику та допуск у дашборді.']
         else:
             lines += ['', '👁 LIVE REACTION: чекаємо повний якісний план; ордер не активовано.']
-    if not pending and not active and not frozen and not selected and result.get('analysis', {}).get('entry_mode') != 'LIVE_REACTION':
+    if not pending and not active and not frozen and not selected and result.get('analysis', {}).get('entry_mode') not in ('LIVE_REACTION','HYBRID'):
         waiting = [p for p in state.get('watch', []) if p.get('reason') in (
             'WAIT_RETEST', 'IMPULSE_CONFIRMATION_REQUIRED', 'LOCAL_STRUCTURE_CONFLICT',
             'SAME_SIDE_LOSS_COOLDOWN', 'ZONE_ORIGIN_BOS_REQUIRED')]

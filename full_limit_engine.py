@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.27.0-live-reaction"
-REPORT_RELEASE = 'v12.27.0'
+VERSION = "full-ict-v12.28.0-pro-quant"
+REPORT_RELEASE = 'v12.28.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -1790,7 +1790,7 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
         if bzu_policy.is_precision(pending):
             session=bzu_policy.session_gate(snapshot.now)
             approach=entry_adverse_selection.approach(snapshot,atr(policy.closed(snapshot,'15m')),
-                        pending['side'],pending.get('entry_zone'),cfg.tick)
+                        pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'))
             cooldown=arbitration.loss_cooldown(pending,state['trades'],snapshot.now)
             regime=policy.market_regime(snapshot,cfg.tick,sys.modules[__name__])
             local_ok,local_reason=policy.regime_admission(pending['side'],pending['entry'],regime,
@@ -1836,8 +1836,8 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
 
 def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     entry_mode = os.environ.get('BZU_ENTRY_MODE', 'PASSIVE_LIMIT').strip().upper()
-    if entry_mode not in ('PASSIVE_LIMIT', 'LIVE_REACTION'):
-        raise ValueError('BZU_ENTRY_MODE must be PASSIVE_LIMIT or LIVE_REACTION')
+    if entry_mode not in ('PASSIVE_LIMIT', 'LIVE_REACTION', 'HYBRID'):
+        raise ValueError('BZU_ENTRY_MODE must be PASSIVE_LIMIT, LIVE_REACTION or HYBRID')
     if s.now <= state.get("last_run_ts", 0):
         return {"action": "DUPLICATE_OR_OUT_OF_ORDER", "events": [], "analysis": {}}
     if state["instrument"] != cfg.instrument:
@@ -1998,7 +1998,23 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     valid=cooled
     valid.sort(key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
     analysis['entry_mode']=entry_mode
-    analysis['reaction_plans']=copy.deepcopy(valid) if can_place and entry_mode=='LIVE_REACTION' and not active_plans(state) else []
+    if entry_mode=='HYBRID':
+        market=policy.market_regime(s,cfg.tick,sys.modules[__name__])
+        dominant=1 if market.get('state') in ('BULLISH_ACTIVE','BULLISH_TREND') else -1 if market.get('state') in ('BEARISH_ACTIVE','BEARISH_TREND') else 0
+        for candidate in valid:
+            zone={**candidate.get('entry_zone',{}),'side':candidate['side']}
+            candidate['zone_quality']=scanner.calculate_zone_trade_plan(zone,s,cfg,sys.modules[__name__],dominant,
+                analysis.get('full_context',{}),geometry=candidate)
+    analysis['admitted_plans']=copy.deepcopy(valid) if can_place else []
+    analysis['reaction_plans']=copy.deepcopy(valid) if can_place and entry_mode in ('LIVE_REACTION','HYBRID') and not active_plans(state) else []
+    if entry_mode=='HYBRID':
+        # A structural preview alone never creates a paper order: all ordinary
+        # planner, session, loss-cooldown, risk and direction checks already ran.
+        valid=[p for p in valid if p.get('zone_quality') and p['zone_quality']['score']>=65 and
+               p['zone_quality']['tactic']=='LIMIT' and not p['zone_quality']['risk_gate'] and
+               (not dominant or p['side']==dominant)]
+        if not valid and not busy and analysis['reaction_plans']:
+            action='WATCH_REACTION'
     if entry_mode=='LIVE_REACTION':
         # Static browser signals cannot acknowledge or persist an exchange fill.
         # New plans stay unarmed hunting plans; never fabricate a PAPER fill.
@@ -3201,7 +3217,7 @@ def main(core) -> int:
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
-                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity')
+                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity', 'test_v12_28_quant')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

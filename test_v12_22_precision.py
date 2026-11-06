@@ -208,14 +208,16 @@ class Brakes(unittest.TestCase):
                 for i,body in enumerate(bodies):
                     rows.append(bar(NOW-(len(bodies)-i)*900000,o,o+.02,o-body-.01,o-body));o-=body
                 if side==-1: rows=[mirror(c) for c in rows]
-                zone={'low':101.8,'high':102.2} if side==1 else {'low':97.8,'high':98.2}
+                zone={'low':102.05,'high':102.2} if side==1 else {'low':97.8,'high':97.95}
+                stop=101.8 if side==1 else 98.2
+                expected=len(bodies)==1 # v12.28: two moderate candles are not an artificial shock.
                 snap=e.Snapshot(NOW,o,{'15m':rows})
-                self.assertTrue(adverse.approach(snap,1.,side,zone,.01)['blocked'])
+                self.assertEqual(adverse.approach(snap,1.,side,zone,.01,stop=stop)['blocked'],expected)
                 confirm=bar(NOW,102.,102.7,101.85,102.6)
                 snap.candles['15m'].append(confirm if side==1 else mirror(confirm))
-                self.assertTrue(adverse.approach(snap,1.,side,zone,.01)['blocked'])
+                self.assertEqual(adverse.approach(snap,1.,side,zone,.01,stop=stop)['blocked'],expected)
                 snap.now+=900000
-                self.assertFalse(adverse.approach(snap,1.,side,zone,.01)['blocked'])
+                self.assertFalse(adverse.approach(snap,1.,side,zone,.01,stop=stop)['blocked'])
 
     def test_favorable_impulse_does_not_block(self):
         snap=e.Snapshot(NOW,103.,{'15m':[bar(NOW-900000,100.,103.,99.9,102.99)]})

@@ -99,7 +99,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
    ctx.scenario={...cleanFixture,price:100,snapshot_ts:clock.value,orders:[],candidates:[row],zones:[row],
      primary_bias:side,primary_candidate_id:row.id,radar:{LONG:side===1?row:null,SHORT:side===-1?row:null},
      reaction_config:{retracement:.06,min_samples:3,max_sample_gap_ms:15000,ready_ttl_ms:15000,max_chase_r:.25}};
-   run('state=scenario;stateError=false;quote=undefined;reactions.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
+   run('state=scenario;stateError=false;quote=undefined;reactions.clear();invalidZones.clear();selectedPlanIds.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
    return row;
  };
  const feed=(price,step=3000)=>{
@@ -121,8 +121,8 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  }
  reset();feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY'); // Started inside, no witnessed approach.
  reset();feed(100);feed(99.73);feed(99.70);feed(99.77,20000);assert.notEqual(stage(),'READY'); // Data gap revokes touch proof.
- reset();feed(100);feed(99.68);assert.equal(stage(),'INVALID');feed(100);assert.equal(stage(),'INVALID');
- assert.match(text('state-title'),/ЗАБЛОКОВАНО/);
+ reset();feed(100);feed(99.29);assert.equal(run('radarRows().filter(Boolean).length'),0);feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);
+ assert.match(text('alert'),/пробито/);assert.equal(run('invalidZones.size'),1);
  reset();feed(100);feed(99.73);feed(99.70);run('pauseReactions()');feed(99.77);assert.notEqual(stage(),'READY');
  reset();feed(100);feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');
  clock.value+=16000;run('render()');assert.equal(stage(),'MISSED');assert.doesNotMatch(text('state-title'),/LIVE РЕАКЦІЯ/);
@@ -153,11 +153,43 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  const pendingRow=reset();
  ctx.pending={...order,...pendingRow,id:'existing-limit',status:'PENDING',zone:{...pendingRow},expires_ts:clock.value+600000};
  run('state.orders=[pending]');feed(100);assert.equal(run('reactionRows().length'),1);
- feed(99.68);assert.equal(stage(),'INVALID');assert.equal(run('state.orders[0].status'),'PENDING');
- assert.match(text('orders'),/Локальний вхід заблоковано/);
+ feed(99.29);assert.equal(stage(),'INVALID');assert.equal(run('state.orders[0].status'),'PENDING');
+ assert.match(text('orders'),/Локальний вхід заблоковано|торкнулася SL/);
  // Axis labels closer than 20 screen pixels are suppressed; exact levels remain in the text legend.
  reset();feed(100);const shown=priceLines.filter(x=>x.axisLabelVisible).map(x=>series.priceToCoordinate(x.price));
  for(let i=0;i<shown.length;i++)for(let j=i+1;j<shown.length;j++)assert.ok(Math.abs(shown[i]-shown[j])>=20);
  assert.match(text('chart-levels'),/SL/);
- console.log('PASS: 17 cockpit scenarios + 21 live-reaction/data-integrity scenarios; synthetic DOM/API adapter, no real browser rendering.');
+ // v12.28: a B+ structural pre-plan is visible and can prove a fresh local reaction.
+ const preplan=(side=1)=>{
+   const row=reset(side);Object.assign(row,{score:60,grade:'B+',timeframe:'15m',score_source:'ZONE_HEURISTIC',score_model:'ZONE_5_FACTOR_V1',
+     tactic:'REACTION_M5',status:'PREPLAN',entry_source:'STRUCTURAL_PREPLAN',plan_basis:'STRUCTURAL_PREPLAN',rr1:2,rr2:3,display_eligible:true});
+   run('state.cockpit_schema=3;state.plan_pool=state.candidates;');return row;
+ };
+ preplan();feed(100);assert.match(text('radar'),/КЛАС B\+/);assert.match(text('zones'),/TP2/);
+ feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');assert.equal(run('state.orders.length'),0);
+ // Ordinary deep penetration is not a terminal invalidation until the actual SL is breached.
+ preplan();feed(100);feed(99.68);assert.equal(stage(),'TOUCHED');feed(99.77);assert.equal(stage(),'READY');
+ // SL invalidation immediately selects the next resistance from the existing cached pool.
+ const first=preplan(-1);const second={...first,id:'higher-resistance',entry:101.3,low:101.25,high:101.35,stop:101.7,tp1:100.5,tp2:100.1};
+ ctx.second=second;run('state.plan_pool.push(second);state.zones.push(second);');
+ feed(100);assert.equal(run('radarRows()[1].id'),first.id);
+ feed(100.71);assert.equal(run('radarRows()[1].id'),'higher-resistance');
+ assert.match(text('radar'),/101.30/);assert.ok(priceLines.some(l=>l.title.includes('SL')&&Math.abs(l.price-101.7)<.0001));
+ assert.match(text('zones'),/SL ПРОБИТО/);
+ // The same invalidated zone cannot reappear simply because the quote returns below it.
+ feed(100.2);assert.equal(run('radarRows()[1].id'),'higher-resistance');
+ // A complete low-grade preview remains visible, with no local entry notification.
+ const weak=preplan();weak.score=40;weak.grade='C';weak.tactic='OBSERVE';weak.reaction_eligible=false;
+ feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.match(text('radar'),/40\/100/);
+ // With no pending order, repeated renders never toggle the near-limit class by passing undefined.
+ preplan();feed(100);for(let i=0;i<5;i++)run('render()');assert.equal(nodes.get('state-banner').classList.contains('near'),false);
+ run('state.orders=[{...orderFixture,side:-1,entry:null}]');run('render()');
+ assert.equal(nodes.get('state-banner').classList.contains('near'),false);assert.doesNotMatch(text('alert'),/Дотик ціни до входу/);
+ // Null, blank, boolean and zero API fields do not become valid quote numbers.
+ reset();for(const value of [null,'',false,'0','   ']){ctx.badQuote={instId:'BZ-USDT-SWAP',last:value,ts:String(clock.value)};assert.equal(run('acceptTicker(badQuote)'),false);}
+ // The main plan's exact Entry, SL and TP1 are drawn even while Entry is near the live quote.
+ preplan();feed(99.73);assert.ok(priceLines.some(l=>l.title.includes('SL')&&l.axisLabelVisible));
+ assert.ok(priceLines.some(l=>l.title.includes('TP1')&&l.axisLabelVisible));
+ assert.ok(priceLines.some(l=>Math.abs(l.price-99.7)<.0001&&l.axisLabelVisible));
+ console.log('PASS: 46 offline UI scenarios (38 preserved + 8 v12.28); synthetic DOM/API adapter, no real browser rendering.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

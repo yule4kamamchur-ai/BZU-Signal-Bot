@@ -19,90 +19,61 @@ MIN_REJECTIONS=2
 RECENT_HOURS=6
 
 
-def approach(snapshot, atr15, side=0, zone=None, tick=.001):
-    """Brake only an adverse impulse; release on a later witnessed reclaim.
+def approach(snapshot, atr15, side=0, zone=None, tick=.001, stop=None):
+    """Brake only a fresh, dominant adverse candle closing near the planned SL.
 
-    A favorable expansion must not block a continuation limit. An open candle
-    cannot release the brake. The shock candle itself is never its own proof
-    of a subsequent reaction. An earlier impulse followed by a separate
-    closed 5m reaction inside that same 15m bar is valid ordered evidence.
+    The last candle is compared with the prior ATR, excluding that candle.
+    Ordinary pullbacks and two aggregated moderate candles are not shocks.
+    Closed M5 can release an observed shock; open candles never confirm entry.
     """
-    rows=sorted((c for c in snapshot.candles.get('15m', [])
-          if c.confirmed and c.ts+900_000 <= snapshot.now),key=lambda c:c.ts)
-    ratio=max(((c.high-c.low)/atr15 for c in rows[-2:]),default=0.) if atr15>0 else 0.
-    base={'fast':False,'range_atr15':ratio,'blocked':False,
-          'action':'PRECISION_ENTRY','veto_enabled':True,'shock_known_ts':None}
-    if side not in (-1,1) or atr15<=0:
+    rows=sorted((c for c in snapshot.candles.get('15m',[])
+                 if c.confirmed and c.ts+900_000<=snapshot.now),key=lambda c:c.ts)
+    base={'fast':False,'range_atr15':0.,'blocked':False,'action':'PRECISION_ENTRY',
+          'veto_enabled':True,'shock_known_ts':None,'brake_model':'LAST_CANDLE_NEAR_STOP_V28'}
+    if side not in (-1,1) or atr15<=0 or not zone:
         return base
-    shocks=[]
-    for i in range(max(0,len(rows)-8),len(rows)):
-        c=rows[i];body=-side*(c.close-c.open)
-        pair=(rows[i-1] if i and c.ts-rows[i-1].ts==900_000 else None)
-        combined=body+(max(0.,-side*(pair.close-pair.open)) if pair else 0.)
-        wick=c.close-c.low if side==1 else c.high-c.close
-        if body>0 and max(body,combined)>1.8*atr15 and wick<=.10*max(c.high-c.low,tick):
-            shocks.append(c)
-    forming_brake = None
-    if zone:
-        import setup_scanner as scanner
-        micro_rows = scanner.closed_five_minutes(snapshot)
-        quarter = snapshot.now // 900_000 * 900_000
-        for start in (quarter, quarter - 900_000):
-            sample = [c for c in micro_rows if start <= c.ts < start + 900_000]
-            expected = min(3, (snapshot.now - start) // 300_000)
-            if expected < 1 or [c.ts for c in sample] != [start + i*300_000 for i in range(expected)]:
-                continue
-            if start == quarter and any(
-                    -side*(bar.close-sample[0].open) > 1.8*atr15
-                    and bar.low <= zone['high'] and bar.high >= zone['low']
-                    and bar.ts + 300_000 > zone.get('known_ts',0) for bar in sample):
-                forming_brake = sample[-1].ts + 300_000
-            if expected < 2:
-                continue
-            closed_quarter = next((c for c in reversed(rows) if c.ts == start), None)
-            reaction = (intra_bar_reaction(snapshot, closed_quarter, side, zone, atr15, tick)
-                        if closed_quarter is not None else
-                        _micro_reaction(snapshot, sample, side, zone, atr15, tick))
-            if reaction and (not forming_brake or reaction['known_ts'] >= forming_brake) and (
-                    not shocks or shocks[-1].ts <= start):
-                return {**base, 'fast':True,'blocked':False,'action':'CONFIRMED_RETEST',
-                        'shock_known_ts':sample[-1].ts, 'confirmation_timeframe':'5m',
-                        'confirmation_known_ts':reaction['known_ts'], 'confirmation_pattern':reaction['pattern']}
-    if forming_brake:
-        return {**base, 'fast':True, 'blocked':True, 'action':'CONFIRMATION_REQUIRED',
-                'shock_known_ts':forming_brake}
-    if not shocks:
+    prior=rows[-15:-1]
+    true_ranges=[max(c.high-c.low,abs(c.high-prior[i-1].close),abs(c.low-prior[i-1].close))
+                 if i else c.high-c.low for i,c in enumerate(prior)]
+    baseline=sum(true_ranges)/len(true_ranges) if len(true_ranges)>=5 else atr15
+    if baseline<=0:
         return base
-    shock=shocks[-1];known=shock.ts+900_000
-    latest = rows[-1]
-    if latest.ts >= known:
-        span = max(latest.high - latest.low, tick)
-        favorable_close = (latest.close - latest.low if side == 1
-                           else latest.high - latest.close)
-        boundary = (zone['high'] if side == 1 else zone['low']) if zone else latest.open
-        if (side * (latest.close - latest.open) >= .6 * atr15
-                and favorable_close >= 2 * span / 3 and side * (latest.close - boundary) > 0):
-            return {**base, 'action': 'FAVORABLE_DISPLACEMENT'}
-    confirmation=None
-    confirmation_tf=None
-    if zone:
-        for c in rows:
-            if c.ts<known or c.low>zone['high'] or c.high<zone['low']:
-                continue
-            wick=min(c.open,c.close)-c.low if side==1 else c.high-max(c.open,c.close)
-            boundary=zone['high'] if side==1 else zone['low']
-            reclaim=side*(c.close-boundary)>0 and side*(c.close-c.open)>0
-            pin=wick>=.5*max(c.high-c.low,tick) and side*(c.close-(zone['low']+zone['high'])/2)>0
-            if reclaim or pin:
-                confirmation=c.ts+900_000
-                confirmation_tf='15m'
-        if confirmation and any(c.ts>=confirmation and
-                side*(c.close-(zone['low'] if side==1 else zone['high']))<0 for c in rows):
-            confirmation=None
-    return {**base,'fast':True,'blocked':confirmation is None,
-            'shock_known_ts':known,'confirmation_known_ts':confirmation,
-            'confirmation_timeframe':confirmation_tf,
-            'action':'CONFIRMED_RETEST' if confirmation else 'CONFIRMATION_REQUIRED'}
+    stop=(zone['low']-.25*baseline if side==1 else zone['high']+.25*baseline) if stop is None else stop
+    import setup_scanner as scanner
+    micro=scanner.closed_five_minutes(snapshot)
+    if rows:
+        proof=intra_bar_reaction(snapshot,rows[-1],side,zone,baseline,tick)
+        if proof:
+            return {**base,'fast':True,'action':'CONFIRMED_RETEST','confirmation_timeframe':'5m',
+                    'confirmation_known_ts':proof['known_ts'],'confirmation_pattern':proof['pattern']}
+    quarter=snapshot.now//900_000*900_000
+    sample=[c for c in micro if quarter<=c.ts and c.ts+300_000<=snapshot.now]
+    expected=(snapshot.now-quarter)//300_000
+    complete=bool(expected and [c.ts for c in sample]==[quarter+i*300_000 for i in range(expected)])
+    if complete and len(sample)>=2:
+        proof=_micro_reaction(snapshot,sample,side,zone,baseline,tick)
+        if proof:
+            return {**base,'fast':True,'action':'CONFIRMED_RETEST','confirmation_timeframe':'5m',
+                    'confirmation_known_ts':proof['known_ts'],'confirmation_pattern':proof['pattern']}
+    candidates=[]
+    if rows and snapshot.now-(rows[-1].ts+900_000)<900_000:
+        candidates.append((rows[-1],rows[-1].ts+900_000,'15m'))
+    if complete:
+        candidates.append((sample[-1],sample[-1].ts+300_000,'5m'))
+    if not candidates:
+        return {**base,'data_status':'NO_FRESH_CLOSED_CANDLE'}
+    # A newer closed 5m prefix supersedes the preceding 15m candle.
+    candle,known,tf=max(candidates,key=lambda x:x[1])
+    width=max(candle.high-candle.low,tick)
+    adverse_body=-side*(candle.close-candle.open)
+    stop_side_wick=candle.close-candle.low if side==1 else candle.high-candle.close
+    near_stop=side*(candle.close-stop)<=.25*baseline+tick*.5
+    blocked=(width>1.8*baseline and adverse_body>=.7*width and
+             stop_side_wick<=.1*width and near_stop)
+    return {**base,'range_atr15':width/baseline,'atr_baseline':baseline,'stop_distance':side*(candle.close-stop),
+            'near_stop':near_stop,'body_fraction':adverse_body/width,'stop_side_wick_fraction':stop_side_wick/width,
+            'fast':bool(blocked),'blocked':bool(blocked),'shock_known_ts':known if blocked else None,
+            'evaluated_timeframe':tf,'action':'CONFIRMATION_REQUIRED' if blocked else 'PRECISION_ENTRY'}
 
 
 def intra_bar_reaction(snapshot, shock, side, zone, atr15, tick):

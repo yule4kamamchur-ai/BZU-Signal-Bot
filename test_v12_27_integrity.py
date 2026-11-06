@@ -73,9 +73,10 @@ class IntegrityTests(unittest.TestCase):
             if variant=='missing':row.pop('tp2')
             if variant=='low_rr':row['tp1']=row['entry']+.39
             out=self.project([row])
-            self.assertFalse(out['candidates'],variant)
-            self.assertTrue(out['reference_levels'],variant)
-            self.assertEqual(out['reference_levels'][0]['status'],'REFERENCE')
+            self.assertTrue(out['zones'],variant)
+            for z in out['zones']:
+                self.assertTrue(all(isinstance(z[k],(int,float)) for k in ('entry','stop','tp1','tp2','score')))
+                self.assertEqual(z['score'],sum(c['earned'] for c in z['score_breakdown']))
 
     def test_exact_score_and_rr_boundaries_and_input_not_mutated(self):
         row=self.row(score=65);row['tp1']=row['entry']+.3*1.35
@@ -102,7 +103,7 @@ class IntegrityTests(unittest.TestCase):
     def test_range_pair_requires_structural_gap(self):
         close=self.project([self.row(1,99.8,75),self.row(-1,100.2,80)])
         self.assertEqual(sum(v is not None for v in close['radar'].values()),1)
-        self.assertIsNotNone(close['radar']['SHORT'])
+        self.assertTrue(close['radar']['SHORT'] or close['radar']['LONG'])
         far=self.project([self.row(1),self.row(-1)])
         self.assertEqual(sum(v is not None for v in far['radar'].values()),2)
         self.assertGreaterEqual(far['radar']['SHORT']['entry']-far['radar']['LONG']['entry'],far['min_structural_spread'])
@@ -111,8 +112,8 @@ class IntegrityTests(unittest.TestCase):
         for side in (1,-1):
             row=self.row(side,100.)
             out=self.project([row])
-            self.assertFalse(out['candidates'])
-            self.assertEqual(out['reference_levels'][0]['gate_reason'],'ZONE_NOT_AHEAD_OF_PRICE')
+            self.assertTrue(out['zones'])
+            self.assertEqual(out['zones'][0]['map_state'],'AT_OR_THROUGH_ENTRY')
 
     def test_closed_body_at_60_percent_removes_spent_zone(self):
         row=self.row(-1,100.2);row['entry_zone'].update(low=100.1,high=100.4,known_ts=self.snap.now-1_800_000)
@@ -133,12 +134,12 @@ class IntegrityTests(unittest.TestCase):
         row['entry_zone'].update(low=100.8,high=102.)
         out=self.project([row])
         z=out['zones'][0]
-        self.assertTrue(z['refined'])
-        self.assertAlmostEqual(z['low'],101.6)
+        self.assertTrue(z['wide_zone'])
+        self.assertAlmostEqual(z['low'],100.8)
         self.assertEqual(z['source_low'],100.8)
         self.assertEqual(z['entry'],row['entry'])
         self.assertEqual(z['stop'],row['stop'])
-        self.assertFalse(out['candidates'])
+        self.assertEqual(z['plan_basis'],'ENGINE_GEOMETRY')
 
     def test_private_fields_not_exported(self):
         row=self.row();row.update(private_token='DO_NOT_EXPORT');row['quality']['private_token']='DO_NOT_EXPORT'

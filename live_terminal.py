@@ -1,4 +1,4 @@
-"""Allowlisted, read-only public projection for the v12.27 direction integrity and live reaction.
+"""Allowlisted, read-only public projection for the v12.28 scored structural pre-plans and live tracking.
 
 Candidate geometry is copied from the planner, never recalculated by the UI.
 Unassessed market zones remain explicitly unassessed, not zero-score signals.
@@ -35,7 +35,7 @@ def build(state, snapshot, result, cfg, engine):
             'status': 'OPEN' if active else 'CANCELLING' if plan.get('cancel_requested_ts') else 'PENDING',
             'side': plan['side'], 'type': 'DIRECT' if plan.get('action_type') == 'ACTIVE_ENTRY' else 'LIMIT',
             'setup': plan.get('source_strategy') or plan.get('setup'),
-            'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['stop']),
+            'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
             'tp1': plan.get('tp1', plan.get('tp')), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),
             'be_trigger': plan.get('tp1') if plan.get('policy') == engine.bzu_policy.POLICY else
@@ -64,8 +64,8 @@ def build(state, snapshot, result, cfg, engine):
     primary_side = 1 if mode == 'BULLISH_ACTIVE' else -1 if mode == 'BEARISH_ACTIVE' else 0
     minimum_spread = max(.65, 1.2 * atr15)
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
-    allowed_ids = ({p['id'] for p in analysis.get('reaction_plans', [])}
-                   if entry_mode == 'LIVE_REACTION' else None)
+    allowed_ids = ({p['id'] for p in analysis.get('admitted_plans', analysis.get('reaction_plans', []))}
+                   if entry_mode in ('LIVE_REACTION','HYBRID') else None)
     zone_cache = {}
     closed_five = engine.scanner.closed_five_minutes(snapshot)
 
@@ -101,10 +101,9 @@ def build(state, snapshot, result, cfg, engine):
             return None
         result = {'kind': zone['kind'], 'timeframe': zone.get('timeframe'), 'side': side,
                   'low': low, 'high': high, 'known_ts': known, 'source_low':low, 'source_high':high}
-        if atr15 and high-low > 1.5*atr15:
-            # Refine the DISPLAY band, never silently move an existing plan's entry/SL.
-            result.update(low=low if side==1 else high-(high-low)/3,
-                          high=low+(high-low)/3 if side==1 else high, refined=True)
+        sweep=zone.get('sweep') or {}
+        sweep_ts=sweep.get('known_ts',sweep.get('sweep_ts')) if isinstance(sweep,dict) else None
+        if numeric(sweep_ts) and sweep_ts<=snapshot.now: result['sweep_known_ts']=sweep_ts
         return result
 
     def zone_key(zone):
@@ -156,6 +155,8 @@ def build(state, snapshot, result, cfg, engine):
         key = (*zone_key(zone), identity, entry) if zone else (identity, row.get('timeframe'), side, entry)
         item = {**(zone or {}), 'id': engine.ident(*key), 'side': side,
                 'setup': row.get('source_strategy') or row.get('setup'),
+                'engine_plan_id':row.get('id'),
+                'engine_accepted':bool((row.get('quality') or {}).get('accepted') and (allowed_ids is None or row.get('id') in allowed_ids)),
                 'timeframe': (zone or {}).get('timeframe') or row.get('timeframe'),
                 'entry': entry, 'entry_source': row.get('entry_source') or
                     ('PLANNER' if numeric(row.get('stop')) else 'ANCHOR'),
@@ -225,29 +226,60 @@ def build(state, snapshot, result, cfg, engine):
             if rank(item) >= rank(previous):
                 zones[zone_key(zone)] = item
 
-    reference_rows = [z for z in candidates.values() if z['status']=='REFERENCE']
-    candidate_rows = [z for z in candidates.values() if z.get('reaction_eligible') and z['status']=='CANDIDATE']
-    candidate_rows.sort(key=lambda z: (-(z.get('score') or 0), -z['rr1'], abs(z['distance'])))
-    radar = {label:next((z for z in candidate_rows if z['side']==side), None)
-             for label,side in (('LONG',1),('SHORT',-1))}
-    left, right = radar['LONG'], radar['SHORT']
-    if left and right and (right['entry']-left['entry'] < minimum_spread or left['high'] >= right['low']):
-        keep = max((left,right),key=lambda z:(z['side']==primary_side,z['score'],z['rr1']))
-        removed = right if keep is left else left
-        radar['SHORT' if removed['side']==-1 else 'LONG'] = None
-        removed.update(status='REFERENCE',reaction_eligible=False,gate_reason='STRUCTURAL_SPREAD_CONFLICT')
-        reference_rows.append(removed)
-    # One primary hunting zone; a conflicting or counter-trend branch never becomes an equal command.
-    selected_ids = {z['id'] for z in radar.values() if z}
-    candidate_rows = [z for z in candidate_rows if z['id'] in selected_ids]
-    all_zones = list(zones.values())
-    for z in all_zones:
-        if z.get('reaction_eligible') and z['id'] not in selected_ids:
-            z.update(status='REFERENCE', reaction_eligible=False,gate_reason='LOWER_PRIORITY')
-    primary = next((z for z in candidate_rows if z['side']==primary_side), None)
-    if not primary and not primary_side:
-        primary = max(candidate_rows,key=lambda z:(z['score'],z['rr1']),default=None)
-
+    # Every valid zone is planned independently of an executable setup's admission.
+    # Whole geometries are copied or calculated; partial plans are never spliced.
+    planned=[];unplanned=[]
+    by_order={o['id']:o for o in orders}
+    context=analysis.get('full_context', {})
+    for original in zones.values():
+        z=dict(original)
+        order=by_order.get(z.get('order_id'))
+        geometry=dict(z)
+        if order and order['status']=='OPEN': geometry['stop']=order['initial_stop']
+        calc=engine.scanner.calculate_zone_trade_plan(z,snapshot,cfg,engine,primary_side,context,geometry)
+        if not calc:
+            unplanned.append({'id':z['id'],'kind':z['kind'],'reason':'INSUFFICIENT_PLAN_DATA'})
+            continue
+        z.update(engine_score=original.get('score'),engine_reason=original.get('reason'))
+        z.update(calc)
+        z['id']=engine.ident('ZONE_PLAN_V28',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
+        z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
+        z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
+        z['priority']='PRIMARY' if not primary_side or z['side']==primary_side else 'COUNTER_TREND'
+        z['execution_admitted']=bool(original.get('engine_accepted'))
+        gate=calc['risk_gate']
+        if primary_side and z['side']!=primary_side: gate=gate or 'BLOCKED_BY_TREND'
+        if z['side']*(snapshot.price-z['stop'])<=0: gate='STOP_BREACHED'
+        if z['score']<58: gate=gate or 'SCORE_BELOW_58'
+        z.update(gate_reason=gate,status='REFERENCE' if gate else 'CANDIDATE' if z['execution_admitted'] else 'PREPLAN',
+                 display_eligible=gate not in ('STOP_BREACHED','STOP_ALREADY_BREACHED') and z['priority']!='COUNTER_TREND',
+                 reaction_eligible=not bool(gate),map_state='AHEAD' if z['side']*(snapshot.price-z['entry'])>0 else 'AT_OR_THROUGH_ENTRY')
+        if gate: z['tactic']='OBSERVE'
+        if order:
+            # Existing ledger contracts win over newly calculated previews.
+            z['ledger_score']=order.get('score')
+            if calc['plan_basis']=='ENGINE_GEOMETRY':
+                z.update({k:order.get(k) for k in ('entry','stop','tp1','tp2','risk','status') if order.get(k) is not None})
+                z['rr1']=z['side']*(z['tp1']-z['entry'])/z['risk']
+                z['rr2']=z['side']*(z['tp2']-z['entry'])/z['risk']
+            else:
+                z.update(status='REFERENCE',gate_reason='INCOMPLETE_LEDGER_PLAN',
+                         reason_text='Повний попередній план зони; неповний план ордера наведено окремо за журналом.')
+            z.update(order_id=order['id'],display_eligible=False,reaction_eligible=False,execution_admitted=True)
+        planned.append(distance(z))
+    all_zones=sorted(planned,key=lambda z:abs(z['distance']))
+    candidate_rows=[z for z in all_zones if z.get('display_eligible')]
+    def priority(z):
+        return (z.get('gate_reason') is not None,not z.get('reaction_eligible'),abs(z['distance']) if z.get('gate_reason') else -(z.get('score') or 0),-z['rr1'],abs(z['distance']))
+    candidate_rows.sort(key=priority)
+    radar={label:next((z for z in candidate_rows if z['side']==side),None) for label,side in (('LONG',1),('SHORT',-1))}
+    left,right=radar['LONG'],radar['SHORT']
+    if left and right and (right['entry']-left['entry']<minimum_spread or left['high']>=right['low']):
+        keep=min((left,right),key=priority)
+        radar['SHORT' if keep is left else 'LONG']=None
+    primary=next((z for z in radar.values() if z and z['side']==primary_side),None)
+    if not primary and not primary_side: primary=min((z for z in radar.values() if z),key=priority,default=None)
+    reference_rows=[z for z in all_zones if z.get('gate_reason')]
 
     records = {row['id']:row for row in [*state.get('orders', []), *state.get('trades', [])]}
     recent = []
@@ -270,7 +302,7 @@ def build(state, snapshot, result, cfg, engine):
     system_mode = ('DATA_HOLD' if not healthy else 'ACTIVE' if any(o['status']=='OPEN' for o in orders) else
                    'PENDING' if any(o['status']=='PENDING' for o in orders) else
                    'CANCELLING' if orders else 'SCANNING')
-    return {'schema':1, 'cockpit_schema':2, 'version':engine.REPORT_RELEASE,
+    return {'schema':1, 'cockpit_schema':3, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
@@ -278,11 +310,11 @@ def build(state, snapshot, result, cfg, engine):
             'execution':'SIGNAL_LEDGER','daily':engine.day_stats(state,snapshot.now,cfg),
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),
             'recent_events':recent[-20:], 'last_event':recent[-1] if recent else None,
-            'candidates':candidate_rows, 'radar':radar, 'primary_candidate_id':primary['id'] if primary else None,
+            'candidates':candidate_rows, 'plan_pool':all_zones, 'unplanned_zones':unplanned, 'radar':radar, 'primary_candidate_id':primary['id'] if primary else None,
             'primary_bias':primary_side,'atr15':atr15,'min_structural_spread':minimum_spread,
             'entry_mode':entry_mode,'reference_levels':reference_rows[:48],
             'candidate_rejections':rejected[:100],
-            'candidate_rules':{'min_score':65,'min_rr':1.35,'max_zone_atr':1.5,'mitigation_depth':.6},
+            'candidate_rules':{'min_score':58,'direct_min_score':65,'min_rr':1.4,'max_zone_atr':1.5,'mitigation_depth':.6},
             'reaction_config':{'retracement':max(.06,3*cfg.tick),'max_sample_gap_ms':15000,
                                'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25},
             'zones':sorted(all_zones,key=lambda z:abs(z['distance'])),
