@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.25.0-live-terminal"
-REPORT_RELEASE = 'v12.25.0'
+VERSION = "full-ict-v12.26.0-pro-cockpit"
+REPORT_RELEASE = 'v12.26.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -799,11 +799,14 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
                     diagnostics.update(preview_geometry(a,native,s,cfg))
             admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
-                'entry':a.level,'reason':reason,'event_key':key,
+                'entry':diagnostics.get('entry', a.level),'reason':reason,'event_key':key,
+                'entry_source':'PLANNER' if 'entry' in diagnostics else 'ANCHOR',
+                **{k:diagnostics[k] for k in ('stop','risk','tp1','tp2','approach','status') if k in diagnostics},
                 'route':a.evidence.get('entry_route','NATIVE_PATTERN'),
                 'source_strategy':a.evidence.get('source_strategy'),
                 'entry_zone':diagnostics.get('entry_zone') or a.evidence.get('entry_zone'),
-                'score':p.get('score') if p else None})
+                'score':p.get('score') if p else a.score,
+                'score_status':'CONTEXT' if p else 'PATTERN'})
             row=(None if a.evidence.get('entry_route')=='STRATEGY_EVENT' else
                  next((r for r in matrix if r['setup']==a.setup_type and r['timeframe']==tf),None))
             if row is not None:
@@ -925,7 +928,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         for path in admission_paths:
             if path['event_key']==p['event_key']:
                 path.update(reason=q['reason'] if not q['accepted'] else 'ACCEPTED',
-                            score=p['score'], rating=p.get('rating'))
+                            score=p['score'], rating=p.get('rating'), entry=p['entry'], entry_source='PLANNER',
+                            **{k:p[k] for k in ('stop','risk','tp1','tp2','readiness_pct') if k in p})
         checks=p.setdefault('entry_checks',scanner.entry_checks())
         # Accepted planner proposals have already passed the first six gates.
         # This also keeps injected replay planners under the same contract.
@@ -3184,7 +3188,7 @@ def main(core) -> int:
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
-                 'test_v12_25_live_terminal')
+                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

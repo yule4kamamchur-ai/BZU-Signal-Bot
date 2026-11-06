@@ -243,6 +243,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             return None, origin['reason']
         zone, origin = sweep_zone, sweep_origin
     low, high = zone['low'], zone['high']
+    # Preserve the observed zone even when Impulse Brake stops planning early.
+    diag['entry_zone'] = dict(zone)
     diag['zone_origin'] = origin
     approach = adverse.approach(snapshot, a15,side,zone,cfg.tick)
     diag['approach']=approach

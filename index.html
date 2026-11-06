@@ -3,68 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BZU Live Terminal</title>
-<style>
-  :root { color-scheme: dark; font: 16px/1.5 system-ui,sans-serif; background: #0b1220; color: #f1f5f9; }
-  * { box-sizing: border-box; }
-  body { margin: auto; max-width: 1200px; padding: clamp(14px, 3vw, 36px); }
-  h1, h2, h3, p { margin: 0; } h1 { font-size: clamp(1.8rem, 6vw, 3rem); }
-  h2 { font-size: 1.16rem; } h3 { font-size: 1rem; }
-  header, .bar { display: flex; align-items: center; justify-content: space-between; gap: .7rem; flex-wrap: wrap; }
-  .muted, small { color: #aabbd0; }
-  .summary { margin: 1.2rem 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit,minmax(175px,1fr)); }
-  .tile, .panel, .order { padding: 16px; border-radius: 12px; background: #121d2f; border: 1px solid #2a3b52; }
-  .tile strong { display: block; font-size: 1.3rem; margin: .22rem 0; font-variant-numeric: tabular-nums; }
-  .panel { margin-bottom: 14px; }
-  .chart-shell { position: relative; margin-top: 12px; }
-  #chart { height: clamp(275px, 48vh, 510px); }
-  #chart-message { padding: .5rem 0; }
-  #orders { display: grid; gap: 12px; margin-top: 12px; grid-template-columns: repeat(auto-fit,minmax(min(100%,290px),1fr)); }
-  .order { border-left: 4px solid #64748b; min-width: 0; }
-  .order[data-tone="approach"] { border-color: #f8cb58; } .order[data-tone="entry"] { border-color: #52d8aa; }
-  .order[data-tone="target"] { border-color: #63a9ff; } .order[data-tone="danger"] { border-color: #ff8590; }
-  .order.pulse { animation: flash 1.2s ease-out; }
-  @keyframes flash { 30% { background: #253e56; } }
-  @media (prefers-reduced-motion: reduce) { .order.pulse { animation: none; } }
-  dl { display: grid; grid-template-columns: 1fr 1fr; margin: .6rem 0 0; gap: .25rem .6rem; font-size: .88rem; }
-  dt { color: #aabbd0; } dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
-  .scroll { overflow-x: auto; } table { border-collapse: collapse; width: 100%; margin-top: 8px; white-space: nowrap; }
-  th, td { padding: .45rem .55rem; text-align: left; border-bottom: 1px solid #2a3b52; }
-  button { color: inherit; font: inherit; background: #1c2c42; border: 1px solid #47617e; border-radius: 8px; padding: .45rem .75rem; cursor: pointer; }
-  button[aria-pressed="true"] { background: #2a5671; border-color: #71c8f5; }
-  a { color: #89d5ff; } #alert { min-height: 1.5em; color: #96deff; margin-top: .6rem; }
-</style>
+<meta name="theme-color" content="#0b1018">
+<title>BZU · Pro Cockpit v12.26</title>
+<link rel="stylesheet" href="./live_terminal.css">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <script defer src="./live_terminal.js"></script>
 </head>
 <body>
-<header>
-  <div><p class="muted">BZU / v12.25 Live Terminal</p><h1>Моніторинг Brent</h1></div>
-  <button type="button" id="audio" aria-pressed="false">Увімкнути звук</button>
+<header class="masthead">
+  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>PRO COCKPIT</span></h1><p class="muted">Brent · v12.26 · сигнальний журнал</p></div></div>
+  <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
 </header>
+<section id="state-banner" class="state-banner" data-mode="SCANNING" aria-labelledby="state-title">
+  <div class="state-heading"><div><p id="state-eyebrow" class="eyebrow">ПОТОЧНИЙ СТАН СИСТЕМИ</p><h2 id="state-title">Завантажуємо стан бота…</h2></div><span id="state-pill" class="badge">З’ЄДНАННЯ</span></div>
+  <p id="state-detail">Очікуємо журнал і котирування.</p>
+  <ol class="stepper" aria-label="Етапи угоди"><li id="step-scan">1 · Пошук</li><li id="step-pending">2 · Лімітка</li><li id="step-active">3 · Супровід</li></ol>
+</section>
 <div class="summary">
-  <div class="tile"><small>Ціна OKX</small><strong id="price">—</strong><small id="quote-status">Очікуємо котирування</small></div>
-  <div class="tile"><small>Режим ринку</small><strong id="regime">—</strong><small id="instrument">—</small></div>
-  <div class="tile"><small>Цикл бота · Київ</small><strong id="stamp">—</strong><small id="state-status">Очікуємо зліпок</small></div>
-  <div class="tile"><small>Сьогодні</small><strong id="daily">—</strong><small id="capacity">0/2 місць</small></div>
+  <div class="tile"><small>ЦІНА OKX</small><strong id="price">—</strong><small id="quote-status">Очікуємо котирування</small></div>
+  <div class="tile"><small>РЕЖИМ РИНКУ</small><strong id="regime">—</strong></div>
+  <div class="tile"><small>ЦИКЛ БОТА · КИЇВ</small><strong id="stamp">—</strong><small id="state-status">Очікуємо зліпок</small></div>
+  <div class="tile"><small>СЬОГОДНІ</small><strong id="daily">—</strong><small id="capacity">0/2 місць</small></div>
 </div>
-<section class="panel" aria-labelledby="chart-title">
-  <div class="bar"><h2 id="chart-title">Свічковий графік</h2><div>
-    <button id="5m" aria-pressed="false">M5</button> <button id="15m" aria-pressed="true">M15</button>
-  </div></div>
-  <div class="chart-shell"><div id="chart"></div></div>
-  <p id="chart-message" class="muted"></p>
-  <small>Зелені лінії — вхід · червоні — SL · сині — TP · смуги — зони. <a href="https://www.tradingview.com/">TradingView Lightweight Charts</a></small>
-</section>
-<section class="panel" aria-labelledby="orders-title">
-  <h2 id="orders-title">Ліміти й супровід</h2>
-  <p class="muted">Статус бота з журналу. Сповіщення браузера показують дотики ціни. Виконання перевіряйте в терміналі брокера.</p>
-  <p id="alert" role="status" aria-live="polite"></p><div id="orders"></div>
-</section>
-<section class="panel" aria-labelledby="zones-title">
-  <h2 id="zones-title">Зони сканера</h2>
-  <div class="scroll"><table><thead><tr><th>Зона</th><th>TF</th><th>Напрямок</th><th>Діапазон</th><th>Бал</th></tr></thead><tbody id="zones"></tbody></table></div>
-</section>
-<footer class="muted">Котирування кожні 3 с · зліпок кожні 30 с · сповіщення в активній вкладці</footer>
+<main class="cockpit">
+  <div class="market-column">
+    <section class="panel chart-panel" aria-labelledby="chart-title">
+      <div class="bar"><div><p class="eyebrow">MARKET VIEW</p><h2 id="chart-title">Карта рівнів</h2></div><div class="chart-tools"><button id="5m" aria-pressed="false">M5</button><button id="15m" aria-pressed="true">M15</button><button id="all-zones" aria-pressed="false">Усі зони</button></div></div>
+      <div class="chart-shell"><div id="chart"></div></div>
+      <p id="chart-message" class="muted"></p>
+      <div class="chart-legend"><span class="long">● Вхід / LONG</span><span class="short">● SL / SHORT</span><span class="target">● Цілі</span><span class="amber">● Б/У</span><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Lightweight Charts</a></div>
+    </section>
+    <section class="panel activity-panel" aria-labelledby="activity-title"><div class="bar"><h2 id="activity-title">Останні дії</h2><small>За журналом · Київ</small></div><p id="last-event" class="last-event">Очікуємо історію рішень.</p><ol id="events" class="events"></ol></section>
+  </div>
+  <aside class="console" aria-label="Пульт ордерів">
+    <section class="panel" aria-labelledby="orders-title"><div class="bar"><div><p class="eyebrow">EXECUTION MONITOR</p><h2 id="orders-title">Ліміти й супровід</h2></div><span id="order-count" class="badge">0</span></div><p id="alert" role="status" aria-live="polite"></p><div id="orders"></div><p class="execution-note">Дотик котирування — привід перевірити виконання у брокера. Кнопки копіюють рівні.</p></section>
+    <section class="panel" aria-labelledby="radar-title"><div class="bar"><div><p class="eyebrow">LONG / SHORT RADAR</p><h2 id="radar-title">Кандидати на вхід</h2></div><small id="radar-source">За зліпком</small></div><div id="radar" class="radar-grid"></div></section>
+    <section class="panel zones-panel" aria-labelledby="zones-title"><div class="bar"><h2 id="zones-title">Зони сканера</h2><small id="zone-count"></small></div><p class="muted micro">Бал — оцінка рушія, не ймовірність. Межа зони — попередній орієнтир.</p><div class="scroll"><table><thead><tr><th>Зона / статус</th><th>Бал</th><th>Вхід / Δ</th><th><span class="sr-only">На графіку</span></th></tr></thead><tbody id="zones"></tbody></table></div></section>
+  </aside>
+</main>
+<footer><span>Котирування · 3 с &nbsp; Зліпок · 30 с</span><span id="copy-status" role="status" aria-live="polite"></span><span>Read-only · SIGNAL LEDGER</span></footer>
 </body>
 </html>
