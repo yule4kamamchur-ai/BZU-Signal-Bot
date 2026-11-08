@@ -114,14 +114,14 @@ def max_zone_distance(atr15, cfg):
 
 
 def zone_risk_bounds(atr15, cfg):
-    floor = max(cfg.min_stop_absolute, min(.28, max(.22, .40 * atr15)))
+    floor = max(cfg.min_stop_absolute, .22, .40 * atr15)
     return floor, min(.65, cfg.max_stop_absolute)
 
 
 def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
     """Clip risk to the tick grid, while flagging a stop inside the invalidation."""
     floor, cap = zone_risk_bounds(atr15, cfg)
-    raw_stop = structural - side * .25 * atr15
+    raw_stop = structural - side * max(cfg.tick, .25 * atr15)
     structural_distance = side * (entry - raw_stop)
     risk = min(cap, max(floor, structural_distance))
     stop = engine.round_tick(round(entry - side * risk, 10), cfg.tick, up=side == -1)
@@ -129,20 +129,29 @@ def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
         stop = engine.round_tick(round(entry - side * cap, 10), cfg.tick, up=side == 1)
     risk = side * (entry - stop)
     safe = (floor - 1e-8 <= risk <= cap + 1e-8
-            and side * (structural - stop) >= cfg.tick - 1e-8 and stop > 0)
+            and side * (raw_stop - stop) >= -1e-8 and stop > 0)
     return stop, risk, safe
+
+
+def structural_target_price(target, now, side, tick, engine):
+    """Front-run a known structural level by one tick."""
+    if not isinstance(target, dict):
+        return None
+    level, known = target.get('level'), target.get('known_ts')
+    if not isinstance(level, (int, float)) or not isfinite(level) or level <= 0:
+        return None
+    if known is not None and (not isinstance(known, (int, float)) or not isfinite(known) or known > now):
+        return None
+    return engine.round_tick(round(level - side * tick, 10), tick, up=side == -1)
 
 
 def zone_targets(entry, risk, side, targets, now, tick, engine):
     """Select the first eligible buffered targets and keep hard barriers causal."""
     levels = []
     for target in targets:
-        level, known = target.get('level'), target.get('known_ts')
-        if not isinstance(level, (int, float)) or not isfinite(level) or level <= 0:
+        price = structural_target_price(target, now, side, tick, engine)
+        if price is None:
             continue
-        if known is not None and known > now:
-            continue
-        price = engine.round_tick(round(level - side * tick, 10), tick, up=side == -1)
         distance = side * (price - entry)
         if distance > 0:
             levels.append((distance, price, target))
@@ -159,7 +168,8 @@ def zone_targets(entry, risk, side, targets, now, tick, engine):
             'tp1_source': first[2].get('kind', 'STRUCTURE') if first else 'R_MULTIPLE_1_50',
             'tp2_source': second[2].get('kind', 'STRUCTURE') if second else 'R_MULTIPLE_2_20',
             'tp1_alignment': first[2] if first else None,
-            'structural_tp2': second is not None,
+            'tp2_alignment': second[2] if second else None,
+            'structural_tp1': first is not None, 'structural_tp2': second is not None,
             'path_clear': barrier is None or side * (tp1 - entry) <= barrier[0] + 1e-8}
 
 
@@ -203,7 +213,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
             entry, stop = ge, gs
             risk = side * (entry - stop)
             floor, cap = zone_risk_bounds(a, cfg)
-            safe = floor - 1e-8 <= risk <= cap + 1e-8 and side * (distal - stop) >= tick - 1e-8
+            boundary = geometry.get('invalidation', distal)
+            buffer = max(tick, .25 * a)
+            safe = (floor - 1e-8 <= risk <= cap + 1e-8 and valid(boundary) and
+                    min(side * (distal - stop), side * (boundary - stop)) >= buffer - 1e-8)
             frozen = True
     if risk <= 0 or stop <= 0:
         return None
@@ -234,19 +247,33 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     displacement=('FVG' in zone['kind'] or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
     room = rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8 and destination['path_clear']
+    if frozen:
+        structural_tp1 = structural_target_price(
+            geometry.get('tp1_alignment'), snapshot.now, side, tick, engine) == round(tp1, 10)
+        structural_tp2 = structural_target_price(
+            geometry.get('tp2_alignment'), snapshot.now, side, tick, engine) == round(tp2, 10)
+    else:
+        structural_tp1 = destination['structural_tp1']
+        structural_tp2 = destination['structural_tp2']
     criteria=[('REGIME_ALIGNMENT',25,primary_side==side),('UNTESTED',20,freshness=='UNTESTED'),
               ('HTF_OR_SWEEP',20,htf_or_sweep),('DISPLACEMENT_OR_FVG',20,displacement),('ROOM_TO_RUN',15,room)]
-    score=sum(weight for _,weight,passed in criteria if passed)
+    volume = formation_volume(zone, snapshot)
+    score_cap = 100 if volume['confirmed'] else 59
+    score = min(score_cap, sum(weight for _, weight, passed in criteria if passed))
     import entry_adverse_selection as adverse
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     gate=('STOP_ALREADY_BREACHED' if stop_breached else
           'STOP_OUTSIDE_RISK_BOUNDS' if not safe else
           'INSUFFICIENT_ROOM' if not room else
-          'DISTANT_ZONE' if abs(snapshot.price-entry)>max_zone_distance(a,cfg)+tick else None)
+          'DISTANT_ZONE' if abs(snapshot.price-entry)>max_zone_distance(a,cfg)+tick else
+          'FORMATION_VOLUME_REQUIRED' if not volume['confirmed'] else
+          'STRUCTURAL_TP1_REQUIRED' if not structural_tp1 else
+          'STRUCTURAL_TP2_REQUIRED' if not structural_tp2 else None)
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
         'score':score,'grade':'A' if score>=65 else 'B+' if score>=60 else 'C',
         'score_source':'ZONE_HEURISTIC','score_model':'ZONE_5_FACTOR_V2',
+        'score_cap':score_cap, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
         'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else 'EQUILIBRIUM' if wide else 'PROXIMAL_PLUS_0_03',
@@ -304,6 +331,16 @@ def event_rvol(snapshot, timeframe, known_ts):
         return {**result,'status':'NO_VOLUME_BASELINE'}
     return {**result,'rvol':event.volume/average,'volume':event.volume,
             'sma_volume_20':average,'status':'AVAILABLE'}
+
+
+def formation_volume(zone, snapshot):
+    """Validate only the closed impulse that formed this native zone."""
+    timeframe = zone.get('timeframe')
+    known = zone.get('impulse_known_ts', zone.get('known_ts'))
+    result = event_rvol(snapshot, timeframe, known)
+    confirmed = (timeframe in PRIMARY and result['status'] == 'AVAILABLE'
+                 and result['volume'] > 1.35 * result['sma_volume_20'])
+    return {**result, 'confirmed': confirmed}
 
 
 def audit_rows(snapshot, after=0):

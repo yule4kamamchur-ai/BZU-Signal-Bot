@@ -37,10 +37,10 @@ def fixture(side=1, pivot=74.50, quote_offset=None, staircase=False, now=NOW):
 
     rows = [bar(now - (80 - i) * STEP, 74.33, 74.40, 74.28, 74.35) for i in range(80)]
     rows[-5] = bar(now - 5 * STEP, 74.36, 74.50, 74.33, 74.43)
-    rows[-1] = bar(now - STEP, 74.38, 74.82, 74.34, 74.78)
+    rows[-1] = bar(now - STEP, 74.38, 74.82, 74.34, 74.78, 200.)
     if staircase:
         rows[-2] = bar(now - 2 * STEP, 74.35, 74.59, 74.32, 74.57)
-        rows[-1] = bar(now - STEP, 74.56, 74.86, 74.53, 74.78)
+        rows[-1] = bar(now - STEP, 74.56, 74.86, 74.53, 74.78, 200.)
     candles = {'15m': rows}
     for tf in ('1H', '4H'):
         step = engine.TF[tf]

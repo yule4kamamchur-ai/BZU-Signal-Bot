@@ -105,7 +105,7 @@ function track(order, tracker, market, now) {
     const full = order.tp1_fraction === 1;
     if (full) tracker.end = 'TP1';
     notify(order, tracker, 'TP1', 'Ціна торкнулася TP1 ' + format(order.tp1) +
-      (full ? ' · рівень повної фіксації' : ' · перевірте часткову фіксацію і рівень Б/У'));
+      (full ? ' · рівень повної фіксації' : ' · очікуємо підтвердження часткової фіксації'));
   }
   if (!tracker.end && tracker.tp1 && number(order.tp2) && order.tp2 !== order.tp1 &&
       order.side * (market.price - order.tp2) >= 0) {
@@ -140,15 +140,26 @@ function statusText(row, price) {
     if (stage === 'MISSED') return 'Вікно реакції минуло';
     if (stage === 'EXPIRED') return 'Строк дії плану минув';
   }
-  if (row.status==='REFERENCE') return 'Довідково · '+({INCOMPLETE_PLAN:'неповний план',SCORE_BELOW_65:'бал нижче 65',SCORE_BELOW_60:'бал нижче 60',IMPULSE_CONFIRMATION_REQUIRED:'потрібне підтвердження після імпульсу',INSUFFICIENT_ROOM:'мало простору до цілі',STOP_OUTSIDE_RISK_BOUNDS:'ризик поза лімітом',DISTANT_ZONE:'далека зона',STOP_ALREADY_BREACHED:'SL вже пробито після формування',
-    CONTEXT_NOT_EVALUATED:'лише оцінка патерну',RR_BELOW_1_35:'недостатній R:R',ENGINE_CONFIRMATION_REQUIRED:'чекаємо підтвердження',
-    BLOCKED_BY_TREND:'проти тренду',ENTRY_OUTSIDE_REFINED_ZONE:'Entry поза звуженою зоною',ZONE_NOT_AHEAD_OF_PRICE:'ціна вже у зоні або за нею',
-    STRUCTURAL_SPREAD_CONFLICT:'конфлікт дистанції',LOWER_PRIORITY:'другорядний рівень',EXPIRED:'строк минув',
-    NOT_IN_FINAL_REACTION_PLANS:'не пройдено фінальний допуск',ATR_UNAVAILABLE:'бракує ATR',ZONE_TIME_UNKNOWN:'невідомий час зони'}[row.gate_reason]??'без допуску до входу');
-  return ({ OPEN:'У супроводі', PENDING:'Ліміт активний', CANCELLING:'Скасування ліміту',
-    PREPLAN:'Попередній план · очікує допуску', WAIT_CONFIRMATION:'Підтвердження ' + (row.confirmation_timeframe || 'структури'),
-    BLOCKED:'Вхід заблоковано', REFERENCE:'Довідковий рівень', OBSERVING:'Довідкова зона' })[row.status] ??
-    (Math.abs(row.entry - price) <= .08 ? 'Готується вхід · ціна поруч' : 'Кандидат · чекаємо підхід');
+  if (row.status === 'OPEN') return 'Позиція відкрита';
+  if (row.status === 'PENDING') return 'Лімітка виставлена';
+  if (row.status === 'CANCELLING') return 'Скасовуємо лімітку';
+  if (actionablePlan(row, price)) {
+    return row.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5' : 'Чекаємо підходу до входу';
+  }
+  const reasons = {
+    FORMATION_VOLUME_REQUIRED: 'Імпульсу бракує підтвердження обсягом',
+    STRUCTURAL_TP1_REQUIRED: 'Бракує структурної цілі для часткової фіксації',
+    STRUCTURAL_TP2_REQUIRED: 'Бракує наступної структурної цілі',
+    INSUFFICIENT_ROOM: 'До цілі замало простору',
+    STOP_OUTSIDE_RISK_BOUNDS: 'Для стопа за структурою замало допустимого ризику',
+    BLOCKED_BY_TREND: 'Зона проти поточного тренду',
+    DISTANT_ZONE: 'Зона поки далеко від ціни',
+    ZONE_NOT_AHEAD_OF_PRICE: 'Ціна вже пройшла точку входу',
+    EXPIRED: 'Строк дії плану минув',
+    STOP_ALREADY_BREACHED: 'Ціна вже пробила зону',
+    IMPULSE_CONFIRMATION_REQUIRED: 'Чекаємо підтвердження після імпульсу'
+  };
+  return reasons[row.gate_reason] ?? 'Спостерігаємо за зоною';
 }
 // Independent validation at the public-data boundary. A chart label cannot authorize a trade.
 function validCandidate(row) {
@@ -173,6 +184,7 @@ function validCandidate(row) {
 }
 function actionablePlan(row, price) {
   return row.actionable === true && row.execution_admitted === true &&
+    row.formation_volume?.confirmed === true && ['A','B+'].includes(row.grade) &&
     row.status === 'CANDIDATE' && !row.gate_reason && ['LIMIT','REACTION_M5'].includes(row.tactic) &&
     (!state.primary_bias || row.side === state.primary_bias) && validCandidate(row) &&
     !['INVALID','EXPIRED','MISSED'].includes(livePlanState(row, price));
@@ -401,18 +413,13 @@ function renderZones(price) {
     const name = td('');
     name.append(element('strong', (z.timeframe ?? '') + ' ' + z.kind),
       element('small', sideLabel(z.side) + ' · ' + format(z.low) + '–' + format(z.high)));
-    const badge = element('span', statusText(z, price), 'zone-badge');
-    badge.dataset.status = z.status ?? 'OBSERVING';
-    name.append(badge);
-    name.title = z.gate_reason ?? z.reason_text ?? z.reason ?? 'Зона без оціненого сетапу';
-    const score = td(scoreText(z));
-    if (z.score_source==='PATTERN' && number(z.score)) score.append(element('small','Патерн'));
-    score.title = z.score_breakdown ? z.score_breakdown.map(c=>c.criterion+': '+c.earned+'/'+c.maximum).join(' · ') : z.score_source === 'PATTERN' ? 'Бал патерну; повна перевірка входу ще не пройдена' :
-      z.score_source === 'UNASSESSED' ? 'Рушій ще не оцінив сетап для цієї зони' : 'Оцінка контексту рушієм';
-    const entry = td('');
-    entry.append(element('strong', format(z.entry)), element('small', distanceText(z.entry, price)),
-      element('small', entrySource(z)),element('small','SL '+format(z.stop)+' · TP1 '+format(z.tp1)),
-      element('small','TP2 '+format(z.tp2)+' · R:R '+(number(z.rr1)?z.rr1.toFixed(2):'не визначено')));
+    const approved = ready(Date.now()) && actionablePlan(z, price);
+    const score = td(approved ? scoreText(z) : '—');
+    const entry = td(statusText(z, price));
+    if (approved) {
+      entry.append(element('small', 'Вхід ' + format(z.entry) + ' · SL ' + format(z.stop) +
+        ' · TP1 ' + format(z.tp1) + ' · TP2 ' + format(z.tp2)));
+    }
     const action = td('');
     if (z.id === focusable) {
       const focus = element('button', '◎');
@@ -429,17 +436,10 @@ function renderZones(price) {
     cell.colSpan = 4; row.append(cell); container.append(row);
   }
 }
-function tacticText(row) {
-  return row.tactic==='LIMIT'?'КЛАС A · пряма лімітка'+(row.execution_admitted?' · допуск пройдено':' · попередній план, очікує допуску'):row.tactic==='REACTION_M5'?'КЛАС '+row.grade+' · вхід лише за реакцією M5':'Довідковий план · вхід заблоковано';
-}
-function entrySource(row) {
-  return ({ STRUCTURAL_PREPLAN:'Попередній структурний план', ENGINE_PLAN:'План рушія', ORDER:'Ордер за журналом', PLANNER:'Розрахунок рушія', ANCHOR:'Попередній рівень сетапу',
-    ZONE_BOUNDARY:'Орієнтир: межа зони' })[row.entry_source] ?? 'Рівень зі зліпка';
-}
 function copyButtons(row) {
   const wrap = element('div', null, 'copy-actions');
   for (const [key,label] of [['entry','Entry'], ['stop','SL'], ['tp1','TP1'], ['be_stop','Б/У']]) {
-    if (!number(row[key])) continue;
+    if (!number(row[key]) || (key === 'be_stop' && (!row.tp1_partial || !number(row.be_confirmed_ts)))) continue;
     const button = element('button', 'Копіювати ' + label);
     button.type = 'button'; button.dataset.copy = String(row[key]);
     button.dataset.copyLabel = label;
@@ -467,10 +467,10 @@ function lifecycle(order, price) {
   const track = element('div', null, 'lifecycle');
   track.setAttribute('role','img');
   track.setAttribute('aria-label', 'Шлях ціни: SL ' + format(order.stop) + ', вхід ' + format(order.entry) +
-    ', поріг Б/У ' + format(order.be_trigger) + ', TP1 ' + format(order.tp1) + ', TP2 ' + format(order.tp2) +
+    ', TP1 ' + format(order.tp1) + ', TP2 ' + format(order.tp2) +
     ', поточна ціна ' + format(price) + '. Позначки етапів у рівних інтервалах.');
   track.append(element('div', null, 'lifecycle-track'));
-  const milestones = [['SL',order.stop],['Вхід',order.entry],['Б/У',order.be_trigger],['TP1',order.tp1],['TP2',order.tp2]]
+  const milestones = [['SL',order.stop],['Вхід',order.entry],['TP1',order.tp1],['TP2',order.tp2]]
     .filter(([,value]) => number(value)).sort((a,b)=>order.side*(a[1]-b[1]));
   const groups = [];
   for (const [label,value] of milestones) {
@@ -486,8 +486,7 @@ function lifecycle(order, price) {
     const dot = element('div', null, 'milestone');
     dot.dataset.label = i===0 ? 'SL' : i===groups.length-1 ? 'TP2' : group.labels[0];
     dot.style.left = x + '%';
-    const confirmed = group.labels.includes('TP1') ? order.tp1_hit :
-      group.labels.includes('Вхід') ? true : group.labels.includes('Б/У') ? order.breakeven_armed : false;
+    const confirmed = group.labels.includes('TP1') ? order.tp1_partial : group.labels.includes('Вхід');
     if (confirmed) dot.classList.add('reached');
     dot.append(element('span', group.labels.join(' / ')), element('span', format(group.value)));
     track.append(dot);
@@ -511,16 +510,20 @@ function management(order, tracker, price, usable) {
   if (order.status==='PENDING') return tracker.touch ?
     'Ціна торкнулася Entry. Виконання ще не підтверджене журналом.' :
     'Чекаємо виконання лімітки. SL ' + format(order.stop) + ' · TP1 ' + format(order.tp1) + '.';
-  if (order.tp1_hit) {
-    const protectedStop = order.side*(order.stop-order.entry)>=0;
-    return (protectedStop ? 'Стоп уже захищає вхід: ' : 'Поточний SL: ') + format(order.stop) +
-      '. Залишок ' + Math.round((order.remaining ?? 1)*100) + '% → TP2 ' + format(order.tp2) +
-      (number(order.pending_stop) ? '. Запланований SL ' + format(order.pending_stop) + ' з ' + stamp(order.pending_stop_effective_ts) : '');
+  if (order.tp1_partial) {
+    if (number(order.pending_stop) && number(order.be_confirmed_ts)) {
+      return 'TP1 зафіксовано, стоп Б/У ' + format(order.pending_stop) +
+        ' набуде чинності о ' + stamp(order.pending_stop_effective_ts) + '.';
+    }
+    if (number(order.be_stop) && order.side * (order.stop - order.be_stop) >= -1e-8) {
+      return 'Стоп уже захищає залишок до TP2 ' + format(order.tp2) + '.';
+    }
+    return order.be_waits_for_structure === false ?
+      'Частину позиції зафіксовано, супроводжуємо залишок до TP2.' :
+      'TP1 зафіксовано, чекаємо структуру M5 для перенесення стопа.';
   }
-  if (tracker.tp1) return 'Дотик TP1. Перевірте фіксацію ' + Math.round(order.tp1_fraction*100) +
-    '%' + (order.tp1_fraction<1 && number(order.be_stop) ? ' і перенесення SL на ' + format(order.be_stop) : '') + ' у брокера.';
-  return 'Утримуємо за планом. SL ' + format(order.stop) + ' · до TP1 ' +
-    format(Math.max(0,order.side*(order.tp1-price))) + ' $.';
+  if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
+  return 'Зберігаємо поточний стоп до TP1 ' + format(order.tp1) + '.';
 }
 function countdown(expiry) {
   if (!number(expiry)) return 'Строк не передано';
@@ -564,16 +567,12 @@ function renderBanner(price, usable, live) {
     (state.primary_bias ? ' • Пошук за трендом (' + sideLabel(state.primary_bias) + ')' : '');
   let detail = 'Чекаємо підтвердженого сетапу.';
   if (candidate) {
-    detail = 'Робоча зона ' + sideLabel(candidate.side) + ' ' + format(candidate.low) + '–' + format(candidate.high) +
-      ' (Вхід ' + format(candidate.entry) + ' | SL ' + format(candidate.stop) + ' | TP1 ' + format(candidate.tp1) +
-      ' | R:R ' + ((candidate.tp1 - candidate.entry) / (candidate.entry - candidate.stop)).toFixed(2) + ' • Бал ' + scoreText(candidate) + ').';
+    detail = (candidate.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5 біля ' : 'Чекаємо підходу до ') +
+      format(candidate.entry) + ' для ' + (candidate.side === 1 ? 'купівлі' : 'продажу') + '.';
   }
   if (active) {
     const tracker = orderTracker(active);
-    const move = active.side * (price - active.entry);
-    if (usable && live && move > (state.tick || .01) / 2) tracker.managing = true;
-    const managing = tracker.managing || active.tp1_hit || active.remaining < 1 ||
-      active.side * (active.stop - active.entry) >= -1e-8;
+    const managing = active.tp1_partial === true;
     mode = managing ? 'MANAGING' : 'ENTERED';
     pill = managing ? 'В СУПРОВОДІ • КОНТРОЛЬ ПОЗИЦІЇ' : 'В УГОДІ • ПОЗИЦІЮ ВІДКРИТО';
     title = (managing ? 'В СУПРОВОДІ' : 'В УГОДІ') + ' • ' +
@@ -583,8 +582,7 @@ function renderBanner(price, usable, live) {
     const tracker = orderTracker(pending);
     pill = 'ЛІМІТКА ВИСТАВЛЕНА';
     title = 'ОЧІКУЄМО ВХІД • ' + sideLabel(pending.side) + ' @ ' + format(pending.entry);
-    detail = 'Лімітка діє ' + countdown(pending.expires_ts) + ' (SL ' + format(pending.stop) +
-      ' | TP1 ' + format(pending.tp1) + ').';
+    detail = 'Очікуємо виконання лімітки.';
     if (tracker.touch) detail = 'Ціна торкнулася входу, чекаємо підтвердження виконання.';
     if (tracker.end) detail = management(pending, tracker, price, usable);
   } else if (state.orders.length) {
@@ -624,26 +622,13 @@ function renderRadar(price, live) {
     card.append(element('h3',sideLabel(side),side===1?'long':'short'));
     card.dataset.priority=state.primary_bias===side?'PRIMARY':state.primary_bias?'COUNTER':'RANGE';
     if (!row) {card.append(element('p',state.primary_bias&&state.primary_bias!==side?
-      '⛔ Проти тренду. Лише довідковий резерв; чекаємо підтвердженого розвороту.':
-      'Слабкі або неповні зони відфільтровано. Чекаємо план від 60/100.','reason'));container.append(card);return;}
+      'Очікуємо підтвердженої зміни тренду.':
+      'Чекаємо підтвердженого плану.','reason'));container.append(card);return;}
     card.dataset.reaction=reactions.get(reactionKey(row))?.stage??'WAIT';
-    if (card.dataset.priority==='PRIMARY') card.append(element('p','ГОЛОВНИЙ ПРІОРИТЕТ · ЗА ТРЕНДОМ','priority-label'));
-    card.append(element('p',(row.timeframe ?? '') + ' ' + (row.setup ?? row.kind ?? 'Сетап'),'setup'),
-      element('p',format(row.entry),'candidate-entry'),element('p',entrySource(row),'muted'),
-      element('p',distanceText(row.entry,price),'distance'));
-    const localStage=card.dataset.reaction;
-    const badge=element('span',localStage==='INVALID'?'Локальний вхід заблоковано':localStage==='MISSED'?'Реакцію пропущено':tacticText(row),'badge');
-    card.append(badge,element('p',scoreText(row) + (row.score_source==='PATTERN' ? ' · патерн' : ''),'reason'));
-    if (number(row.stop)) card.append(element('p','SL ' + format(row.stop) + ' · TP1 ' + format(row.tp1)+' · TP2 '+format(row.tp2)+' · R:R '+(number(row.rr1)?row.rr1.toFixed(2):'не визначено'),'reason'));
-    if (row.score_breakdown) {
-      const detail=element('details',null,'score-criteria');detail.append(element('summary','За що нараховано бал?'));
-      const names={REGIME_ALIGNMENT:'Тренд',UNTESTED:'Свіжість',HTF_OR_SWEEP:'Старший TF / sweep',DISPLACEMENT_OR_FVG:'Імпульс / FVG',ROOM_TO_RUN:'Простір до цілі'};
-      for(const c of row.score_breakdown)detail.append(element('p',(names[c.criterion]??c.criterion)+' · '+c.earned+'/'+c.maximum));
-      card.append(detail);
-    }
-    if (row.engine_reason&&row.engine_reason!=='NO_EVALUATED_SETUP')card.append(element('p','Перевірка рушія: '+(row.reason_text??row.engine_reason),'reason'));
-    if (row.plan_basis==='STRUCTURAL_PREPLAN')card.append(element('p','Розрахунковий план, не виставлений ордер.','reason'));
-    else if (row.reason_text) card.append(element('p',row.reason_text,'reason'));
+    card.append(element('p', format(row.entry), 'candidate-entry'),
+      element('p', (row.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5' : 'Чекаємо підходу до входу') +
+        ' · клас ' + row.grade, 'reason'),
+      element('p', 'SL ' + format(row.stop) + ' · TP1 ' + format(row.tp1) + ' · TP2 ' + format(row.tp2), 'reason'));
     container.append(card);
   });
 }
@@ -681,7 +666,7 @@ function render() {
     const rr=order.risk>0 && number(order.tp1) ? order.side*(order.tp1-order.entry)/order.risk : null;
     const fields=[['Сетап',order.setup ?? 'Не вказано'],['Бал / клас за журналом',scoreText(order)],['Entry / SL',format(order.entry)+' / '+format(order.stop)],
       ['TP1 / TP2',format(order.tp1)+' / '+format(order.tp2)],['Ризик ціни / R:R TP1',format(order.risk)+' $/од. / '+(number(rr)?rr.toFixed(2):'Не розраховано')],
-      ['Поріг / стоп Б/У',format(order.be_trigger)+' / '+format(order.be_stop)]];
+      ['Захист після TP1', number(order.be_stop) ? format(order.be_stop) : 'Очікує підтвердження M5']];
     if (number(order.pending_stop)) fields.push(['Запланований SL',format(order.pending_stop)+' з '+stamp(order.pending_stop_effective_ts)]);
     for (const [key,value] of fields) details.append(element('dt',key),element('dd',value));
     if (pending) {
@@ -724,7 +709,7 @@ function initChart() {
     autoscaleInfoProvider: original => {
       const info=original();
       if (!info || !state) return info;
-      const values=chartOrders().flatMap(o=>[o.entry,o.stop,o.tp1,o.tp2,o.be_trigger]).filter(number);
+      const values=chartOrders().flatMap(o=>[o.entry,o.stop,o.tp1,o.tp2]).filter(number);
       const main=chartPlan();
       if (main) values.push(main.entry,main.stop,main.tp1);
       for (const zone of visibleZones()) values.push(zone.low, zone.high);
@@ -789,7 +774,6 @@ function drawLevels() {
     add(order.entry,prefix+(order.status==='OPEN'?'В УГОДІ':order.status==='CANCELLING'?'СКАСУВАННЯ':'LIMIT')+
       ' @ '+format(order.entry)+(order.status==='PENDING'?' · Δ '+signed(order.entry-price,' $'):''),'#55d6ad');
     add(order.stop,prefix+'SL @ '+format(order.stop)+' ('+signed(order.side*(order.stop-order.entry)/order.risk)+'R)','#ff8994',false);
-    add(order.be_trigger,prefix+'УМОВА Б/У @ '+format(order.be_trigger),'#f4c76b');
     add(order.tp1,prefix+'TP1 · '+Math.round(order.tp1_fraction*100)+'% ('+signed(order.side*(order.tp1-order.entry)/order.risk)+'R)','#7db7ff');
     if (order.tp2!==order.tp1) add(order.tp2,prefix+'TP2 · залишок ('+signed(order.side*(order.tp2-order.entry)/order.risk)+'R)','#7db7ff');
   }

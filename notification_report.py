@@ -195,8 +195,8 @@ def build(state, snapshot, result, cfg, engine):
         if p.get('pending_target'):
             amendment=p['pending_target']
             lines += [f"Ціль {amendment['name']} з {engine.report_deadline(amendment['effective_ts'],now,cfg)}"]
-        if p.get('pending_stop'):
-            amendment = p['pending_stop']
+        amendment = engine.bzu_policy.protective_amendment(p)
+        if amendment:
             lines += [f"Новий SL {amendment['price']:.8g} з {engine.report_deadline(amendment['effective_ts'], now, cfg)}"]
         if not p.get('tp1_decision_gate'):
             lines += [f"Супровід до {engine.report_deadline(p['exit_deadline'], now, cfg)}"]
@@ -371,7 +371,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
         elif kind in ('BREAKEVEN_ARMED', 'STRUCTURAL_TRAIL_ARMED'):
             lines += [f"🛡️ {label}: SL → {ev['stop']:.8g} • з наступної свічки"]
         elif kind == 'TP1_PARTIAL':
-            lines += [f"🎯 TP1 {label} досягнуто • SL → {ev['stop']:.8g}"]
+            lines += [f"🎯 Частину {label} зафіксовано на TP1 • чекаємо підтвердження M5 для Б/У"]
         elif kind in ('CANCELLED', 'EXPIRED', 'CANCEL_REQUESTED'):
             reasons = {'TARGET_REACHED_WITHOUT_FILL': 'TP1 досягнуто без входу',
                        'LIMIT_TTL': 'минув час дії', 'SESSION_ENDED': 'сесія закінчилася',
@@ -395,8 +395,8 @@ def build_checklist(state, snapshot, result, cfg, engine):
             f'🛡️ SL: {p["stop"]:.8g} • 🎯 TP1: {p.get("tp1", p["tp"]):.8g}'
             + (f' • TP2: {p["tp2"]:.8g}' if p.get('tp2') is not None else ''),
         ]
-        if p.get('pending_stop'):
-            amendment = p['pending_stop']
+        amendment = engine.bzu_policy.protective_amendment(p)
+        if amendment:
             lines += [f"🛡️ Новий SL: {amendment['price']:.8g} • з {engine.local_time(amendment['effective_ts'], cfg)}"]
 
     if pending:

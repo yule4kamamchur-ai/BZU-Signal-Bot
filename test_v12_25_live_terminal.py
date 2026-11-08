@@ -60,7 +60,7 @@ class EntryTests(unittest.TestCase):
                         engine.Candle(ts,150-o,150-l,150-h,150-c,100.))
             rows = [bar(c.ts,74.56,74.63,74.37,74.58) for c in snap.candles['15m']]
             rows[-2] = bar(NOW-2*STEP,74.56,74.62,74.38,74.43)
-            rows[-1] = bar(NOW-STEP,74.42,74.65,74.27,74.60)
+            rows[-1] = replace(bar(NOW-STEP,74.42,74.65,74.27,74.60), volume=200.)
             snap.candles['15m'] = rows
             snap.price = rows[-1].close
             snap.bid, snap.ask = snap.price-.01, snap.price+.01
@@ -123,7 +123,7 @@ class ExitTests(unittest.TestCase):
             self.assertIsNone(geometry)
             self.assertEqual(reason, 'INSUFFICIENT_ROOM')
 
-    def test_no_early_be_and_tp1_arms_two_cent_stop_for_runner(self):
+    def test_partial_tp1_keeps_stop_until_m5_confirmation(self):
         for side in (1, -1):
             snap,cfg,plan = self.plan(side)
             entry,risk = plan['entry'],plan['risk']
@@ -137,11 +137,11 @@ class ExitTests(unittest.TestCase):
             self.assertNotIn('pending_stop',p)
             engine.manage_bar(book,bar(NOW+120_000,side*(p['tp1']-entry),1.2*risk),cfg,step=60_000)
             self.assertTrue(p['tp1_hit'])
-            self.assertAlmostEqual(p['pending_stop']['price'],entry+side*.02)
-            self.assertAlmostEqual(p['remaining'],.5)
-            self.assertEqual(p['pending_stop']['effective_ts'],NOW+180_000)
+            self.assertNotIn('pending_stop', p)
+            self.assertEqual(p['stop'], p['initial_stop'])
+            self.assertAlmostEqual(p['remaining'], .5)
 
-    def test_structural_trail_only_after_confirmed_post_entry_swing(self):
+    def test_pre_tp1_swing_cannot_move_stop(self):
         snap,cfg,plan = self.plan()
         entry,risk = plan['entry'],plan['risk']
         p = bzu_policy.first_fill(plan,engine.Candle(NOW,entry,entry,entry,entry),engine,cfg,60_000)
@@ -155,8 +155,8 @@ class ExitTests(unittest.TestCase):
         engine.manage_bar(book,first,cfg,step=60_000,snapshot=s)
         self.assertNotIn('pending_stop',p)
         engine.manage_bar(book,replace(first,ts=end-60_000),cfg,step=60_000,snapshot=s)
-        self.assertAlmostEqual(p['pending_stop']['price'],entry+.08-cfg.tick)
-        self.assertEqual(p['pending_stop']['effective_ts'],end)
+        self.assertNotIn('pending_stop', p)
+        self.assertEqual(p['stop'], p['initial_stop'])
 
     def test_v24_plan_keeps_saved_exit_contract(self):
         snap,cfg,plan = self.plan()
@@ -169,7 +169,7 @@ class ExitTests(unittest.TestCase):
         book['active'] = p
         engine.manage_bar(book,replace(c,ts=NOW+60_000,high=entry+1.04*risk),cfg,step=60_000)
         self.assertEqual(p['exit_policy'],'BE_1R_ROUND_TP1_50_TP2_50')
-        self.assertTrue(p['breakeven_armed'])
+        self.assertFalse(p.get('breakeven_armed', False))
 
 
 class IntegrationTests(unittest.TestCase):

@@ -1,4 +1,5 @@
 """Public projection contracts: no lost watch state or invented executable plans."""
+from dataclasses import replace
 import copy
 import json
 from pathlib import Path
@@ -8,12 +9,13 @@ from unittest.mock import patch
 import full_limit_engine as engine
 import live_terminal
 from test_v12_24_momentum import fixture, anchor_for
-from test_v12_28_quant import target_for
+from test_v12_28_quant import target_for, structural_witnesses
 
 
 class CockpitTests(unittest.TestCase):
     def setUp(self):
         self.snap, self.cfg, _ = fixture()
+        self.snap.candles['1H'][-1] = replace(self.snap.candles['1H'][-1], volume=200.)
         self.book = engine.new_state(self.cfg)
         self.zone = {'kind':'MOMENTUM_STAIRCASE_15M','low':74.3,'high':74.5,
                      'timeframe':'15m','known_ts':self.snap.now-900_000}
@@ -32,7 +34,7 @@ class CockpitTests(unittest.TestCase):
         self.assertEqual(result['orders'],[])
         self.assertEqual(result['reference_levels'][0]['status'],'REFERENCE')
         self.assertEqual(result['reference_levels'][0]['engine_score'],72)
-        self.assertEqual(result['reference_levels'][0]['score'],sum(c['earned'] for c in result['reference_levels'][0]['score_breakdown']))
+        self.assertEqual(result['reference_levels'][0]['score'],min(result['reference_levels'][0]['score_cap'],sum(c['earned'] for c in result['reference_levels'][0]['score_breakdown'])))
         self.assertEqual(result['reference_levels'][0]['entry_source'],'STRUCTURAL_PREPLAN')
         self.assertNotIn('PRIVATE_SENTINEL',json.dumps(result))
         self.assertIsInstance(result['reference_levels'][0]['stop'],(int,float))
@@ -45,7 +47,7 @@ class CockpitTests(unittest.TestCase):
                  'tp1':entry+side*.5,'tp2':entry+side*.8,'risk':.3,'score':76,
                  'rating':'A','quality':{'accepted':True,'reason':'ACCEPTED'},'setup':'FVG',
                  'entry_zone':{'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','low':entry-.03,'high':entry+.03,'known_ts':self.snap.now,'timeframe':'1H'}}
-            result=self.project(admitted_plans=[row])
+            result=self.project(admitted_plans=[structural_witnesses(row, self.cfg.tick)])
             candidate=result['radar']['LONG' if side==1 else 'SHORT']
             self.assertEqual(candidate['entry'],entry)
             self.assertEqual(candidate['tp1'],row['tp1'])
@@ -93,14 +95,18 @@ class CockpitTests(unittest.TestCase):
             self.assertEqual(candidate['entry'],p['entry'])
             self.assertEqual(candidate['stop'],p['stop'])
             self.assertEqual(candidate['ledger_score'],p['score'])
-            self.assertEqual(candidate['score'],sum(c['earned'] for c in candidate['score_breakdown']))
+            self.assertEqual(candidate['score'],min(candidate['score_cap'],sum(c['earned'] for c in candidate['score_breakdown'])))
         p['status']='OPEN';p['tp1_hit']=True;p['remaining']=.5
-        p['pending_stop']={'price':p['entry']+.02,'effective_ts':self.snap.now+60_000}
+        p['realized_legs']=[{'target':'TP1','fraction':.5,'ts':self.snap.now-900_000}]
+        p['pending_stop']={'price':p['breakeven_price'],'effective_ts':self.snap.now+60_000,
+                           'policy':engine.bzu_policy.STOP_POLICY}
+        p['be_confirmed_ts']=self.snap.now
         with patch.object(engine,'open_plans',return_value=[p]):
             opened=live_terminal.build(self.book,self.snap,result,self.cfg,engine)
         self.assertEqual(opened['system_mode'],'ACTIVE')
         o=opened['orders'][0]
         self.assertTrue(o['tp1_hit'])
+        self.assertTrue(o['tp1_partial'])
         self.assertEqual(o['remaining'],.5)
         self.assertEqual(o['pending_stop_effective_ts'],self.snap.now+60_000)
         held=live_terminal.build(self.book,self.snap,{'action':'DATA_HOLD'},self.cfg,engine)

@@ -1,5 +1,6 @@
 """v12.28 transparent structural pre-plans, last-candle brake and hybrid routing."""
 import copy
+from dataclasses import replace
 import json
 import os
 from types import SimpleNamespace
@@ -19,12 +20,21 @@ def target_for(side):
     return [{'level': entry + side * .78, 'kind': 'TEST_TP1'}, *legacy_targets(side)]
 
 
+def structural_witnesses(plan, tick):
+    for target in ('tp1', 'tp2'):
+        if target in plan:
+            plan[target + '_alignment'] = {
+                'level': round(plan[target] + plan['side'] * tick, 10), 'kind': 'TEST_SWING'}
+    return plan
+
+
 class ZonePlanTests(unittest.TestCase):
     def setUp(self):
         self.cfg=engine.Config(core=core,tick=.01)
         self.snap=engine.Snapshot(NOW,100.,{},99.99,100.01,True,NOW,'BZ-USDT-SWAP')
         for tf,step in engine.TF.items():
             self.snap.candles[tf]=[engine.Candle(NOW-(30-i)*step,100.,100.25,99.75,100.,100.) for i in range(30)]
+            self.snap.candles[tf][-1] = replace(self.snap.candles[tf][-1], volume=200.)
         self.zone={'kind':'FVG_BULL','side':1,'timeframe':'15m','low':98.8,'high':99.,'known_ts':NOW}
 
     def plan(self,zone=None,side=1,**kwargs):
@@ -60,7 +70,8 @@ class ZonePlanTests(unittest.TestCase):
         self.assertEqual(htf['score'],100)
 
     def test_grade_b_plus_has_complete_geometry_and_reaction_tactic(self):
-        p=self.plan({**self.zone,'kind':'DEMAND_OB'})
+        p=self.plan({**self.zone,'kind':'DEMAND_OB'},
+                    targets=[{'level':99.64,'kind':'SWING'}, {'level':99.94,'kind':'SWING'}])
         self.assertEqual(p['score'],60)
         self.assertEqual(p['grade'],'B+')
         self.assertEqual(p['tactic'],'REACTION_M5')
@@ -128,7 +139,7 @@ class ZonePlanTests(unittest.TestCase):
         with patch.object(engine.policy,'market_regime',return_value={'state':'BEARISH_ACTIVE'}),patch.object(engine,'atr',return_value=.5),patch.object(engine,'open_plans',return_value=[old]):
             managed=live_terminal.build(book,self.snap,{'action':'WATCH','analysis':analysis},self.cfg,engine)
         self.assertEqual(managed['orders'][0]['score'],53)
-        for z in managed['zones']:self.assertEqual(z['score'],sum(c['earned'] for c in z['score_breakdown']))
+        for z in managed['zones']:self.assertEqual(z['score'],min(z['score_cap'],sum(c['earned'] for c in z['score_breakdown'])))
 
 
 class BrakeTests(unittest.TestCase):

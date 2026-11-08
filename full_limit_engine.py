@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.29.0-pro-quant"
-REPORT_RELEASE = 'v12.29.0'
+VERSION = "full-ict-v12.29.1-pro-quant"
+REPORT_RELEASE = 'v12.29.1'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -1368,10 +1368,7 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step
         p.update(tp=target_amend['price'],full_exit_target=target_amend['name'],
                  partials={target_amend['name']:1.})
         p.pop('pending_target')
-    amend = p.get("pending_stop")
-    if amend and c.ts >= amend["effective_ts"]:
-        p["stop"] = amend["price"]
-        p.pop("pending_stop")
+    bzu_policy.apply_protective_stop(p, c.ts)
     stop_hit = c.low <= p["stop"] if side == 1 else c.high >= p["stop"]
     full_exit = p.get('exit_policy') == 'SINGLE_FULL_EXIT'
     targets = [('TP',p['tp'])] if full_exit else [
@@ -1428,6 +1425,7 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step
     if not fill_bar:
         close_r = side*(c.close-entry)/risk
         p["strong_closes"] = p.get("strong_closes", 0)+1 if close_r >= cfg.break_even_trigger_r else 0
+    bzu_policy.arm_breakeven(state, p, snapshot, ts, c.close, cfg, sys.modules[__name__])
     p["last_bar"] = c.ts
 
 
@@ -1514,33 +1512,9 @@ def review_full_exit(state: dict, s: Snapshot, cfg: Config) -> None:
 
 
 def _amend_slot_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
-    """Current review in each 5m scan; amendments start at the next whole bar."""
-    if state.get("active") and bzu_policy.is_new(state["active"]):
-        return
-    review_full_exit(state,s,cfg)
-    p = state.get("active")
-    if p and p.get('tp1_decision_gate') and not p.get('tp1_hit'):
-        return  # Initial SL remains unchanged until the first target is observed.
-    if not p or p.get("pending_stop") or (p.get("strong_closes", 0) < 2 and not p.get("tp1_hit")):
-        return
-    cfg = execution_config(p,cfg)
-    entry, side, risk = p["entry"], p["side"], p["risk"]
-    if not p.get("tp1_hit") and side*(s.price-entry)/risk < cfg.break_even_trigger_r:
-        return
-    slip = cfg.slippage_bps/10_000
-    be = entry*(side+fee_rate(cfg,"maker"))/((side-fee_rate(cfg,"taker"))*(1-side*slip))
-    be = round_tick(be, cfg.tick, up=side == 1)
-    if p.get("tp2_hit"):
-        points = pivots(s.candles["3m"][-25:])
-        supports = [q for q in points if q["kind"] == ("LOW" if side==1 else "HIGH")]
-        if supports:
-            trail = supports[-1]["level"]-side*max(2*cfg.tick,.15*atr(s.candles["3m"]))
-            if side*(trail-be)>0 and side*(s.price-trail)>.15*risk:
-                be = round_tick(trail,cfg.tick,up=side==-1)
-    if side*(be-p["stop"]) > 0 and side*(s.price-be) > max(2*cfg.tick, .15*risk):
-        effective = ((s.now+TF["3m"]-1)//TF["3m"])*TF["3m"]
-        p["pending_stop"] = {"price": be, "effective_ts": effective}
-        emit(state, "PAPER_STOP_AMENDED", s.now, order_id=p["id"], stop=be, effective_ts=effective)
+    active = state.get('active')
+    if active and not bzu_policy.is_new(active):
+        review_full_exit(state, s, cfg)
 
 
 def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
@@ -1786,6 +1760,14 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
 
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     """Shared causal cancellation policy for the book, learning and scenarios."""
+    zone = pending.get('entry_zone') or {}
+    timeframe = zone.get('timeframe') or pending.get('formation_timeframe')
+    if zone.get('kind') == 'MICRO_BOS_FVG' or (timeframe and timeframe not in scanner.PRIMARY):
+        request_cancel(state, pending, 'MICRO_ZONE_EXCLUDED', snapshot.now)
+        return
+    if (pending.get('setup') or pending.get('setup_type')) == 'SESSION_MEAN_RECLAIM':
+        request_cancel(state, pending, 'SESSION_MEAN_LIMIT_DISABLED', snapshot.now)
+        return
     if bzu_policy.is_new(pending):
         if bzu_policy.is_precision(pending):
             session=bzu_policy.session_gate(snapshot.now)
@@ -2497,6 +2479,9 @@ REASON_UA = {
     'SESSION_CLOSED':'наступна торгова сесія для 15m входу',
     'DATA_HOLD':'відновлення повних актуальних даних',
     'LIMIT_WOULD_CROSS_SPREAD':'поточні ASK/BID не дозволяють пасивний ліміт',
+    'FORMATION_VOLUME_REQUIRED':'імпульсу бракує підтвердження обсягом',
+    'STRUCTURAL_TP1_REQUIRED':'немає структурної цілі TP1 від 1.40R',
+    'STRUCTURAL_TP2_REQUIRED':'немає наступної структурної цілі TP2 від 2.20R',
     'SESSION_MEAN_LIMIT_DISABLED':'лімітні входи від середньої сесії вимкнено',
     'MICRO_ZONE_EXCLUDED':'мікрозона без рівня старшого таймфрейму',
     'RANGE_ZONE_TOO_CLOSE':'зона занадто близько до ціни в діапазоні',
@@ -3238,7 +3223,7 @@ def main(core) -> int:
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
                  'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity',
-                 'test_v12_28_quant', 'test_v12_29_quant')
+                 'test_v12_28_quant', 'test_v12_29_quant', 'test_v12_29_1_checklist')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

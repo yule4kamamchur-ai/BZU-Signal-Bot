@@ -41,7 +41,7 @@ const run=source=>vm.runInContext(source,ctx),text=id=>nodes.get(id).textContent
 const now=Date.now();
 const zone=(id,side,low,high,entry)=>({id,kind:side===1?'MOMENTUM_STAIRCASE_15M':'FVG_BEAR',timeframe:'15m',side,low,high,entry,
  known_ts:now-3600000,score:74,grade:'A',score_source:'CONTEXT',entry_source:'PLANNER',status:'CANDIDATE',stop:entry-side*.4,
- tp1:entry+side*.6,tp2:entry+side*1.1,reason:'ACCEPTED',actionable:true,execution_admitted:true,tactic:'LIMIT',reaction_eligible:true,valid_until:now+25*60000});
+ tp1:entry+side*.6,tp2:entry+side*1.1,reason:'ACCEPTED',actionable:true,execution_admitted:true,formation_volume:{confirmed:true},tactic:'LIMIT',reaction_eligible:true,valid_until:now+25*60000});
 const long=zone('long',1,99.60,99.71,99.66),short=zone('short',-1,100.50,100.80,100.55),far={...zone('far',-1,103,103.2,103.1),actionable:false};
 const order={id:'limit-1',number:7,status:'PENDING',side:1,type:'LIMIT',setup:'MOMENTUM_STAIRCASE_15M',entry:99.66,stop:99.25,
  tp1:100.24,tp2:100.75,risk:.41,score:74,grade:'A',be_trigger:100.24,be_stop:99.68,tp1_fraction:.5,remaining:1,
@@ -73,18 +73,24 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
  assert.ok(nodes.get('state-banner').classList.contains('banner-entered'));
  run('quote={price:99.90,ts:Date.now()+4};render();');
- assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');assert.match(text('orders'),/\+0.24/);
- run('quote={price:99.40,ts:Date.now()+5};render();');assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');
- run('quote={price:100.25,ts:Date.now()+6};render();');assert.match(text('orders'),/Дотик TP1.*50%/);
- run('state.orders[0].tp1_hit=true;state.orders[0].remaining=.5;state.orders[0].pending_stop=99.68;state.orders[0].pending_stop_effective_ts=Date.now()+60000;render();');
- assert.match(text('orders'),/Запланований SL 99.68/);assert.doesNotMatch(text('orders'),/вже захищає/);
- run('state.orders[0].stop=99.68;render();');assert.match(text('orders'),/Стоп уже захищає вхід/);
+ assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');assert.match(text('orders'),/\+0.24/);
+ run('quote={price:99.40,ts:Date.now()+5};render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
+ run('quote={price:100.25,ts:Date.now()+6};render();');
+ assert.match(text('orders'),/чекаємо підтвердження фіксації/);
+ assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
+ assert.equal(document.querySelectorAll('[data-focus]').some(x=>x.dataset.copyLabel==='Б/У'),false);
+ run('state.orders[0].tp1_hit=true;state.orders[0].tp1_partial=true;state.orders[0].remaining=.5;render();');
+ assert.match(text('state-detail'),/чекаємо структуру M5/);
+ assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');
+ run('state.orders[0].pending_stop=99.68;state.orders[0].be_confirmed_ts=Date.now();state.orders[0].pending_stop_effective_ts=Date.now()+60000;render();');
+ assert.match(text('orders'),/стоп Б\/У 99.68/);assert.doesNotMatch(text('orders'),/вже захищає/);
+ run('state.orders[0].stop=99.68;delete state.orders[0].pending_stop;render();');assert.match(text('orders'),/Стоп уже захищає залишок/);
  run('state.status="DATA_HOLD";render();');assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');
- run('state.status="READY";state.orders=[{...orderFixture,status:"OPEN",side:-1,entry:100.15,stop:100.55,risk:.4,tp1:99.55,tp2:99.05,be_trigger:99.55,be_stop:100.13}];quote={price:99.9,ts:Date.now()+6};render();');
- assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');assert.match(text('state-title'),/SHORT/);assert.match(text('orders'),/\+0.25/);
+ run('state.status="READY";state.orders=[{...orderFixture,status:"OPEN",side:-1,entry:100.15,stop:100.55,risk:.4,tp1:99.55,tp2:99.05}];quote={price:99.9,ts:Date.now()+6};render();');
+ assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');assert.match(text('state-title'),/SHORT/);assert.match(text('orders'),/\+0.25/);
  assert.ok(priceLines.some(l=>l.title.includes('SL')&&l.title.includes('−1.00R')));
- run('state.snapshot_ts=Date.now()-28*60000;render();');assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');
- run('state.snapshot_ts=Date.now();quote={price:100.1,ts:Date.now()-20000};render();');assert.match(text('state-title'),/СУПРОВОДІ/);
+ run('state.snapshot_ts=Date.now()-28*60000;render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
+ run('state.snapshot_ts=Date.now();quote={price:100.1,ts:Date.now()-20000};render();');assert.match(text('state-title'),/В УГОДІ/);
  run('state.orders=[];state.zones=[];state.candidates=[];state.recent_events=[];render();');assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);
  assert.match(text('orders'),/Скануємо ринок/);
  // UI fields use text nodes even when a public label contains markup.
@@ -103,7 +109,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
    const entry=side===1?99.7:100.3;
    const row={id:'reaction-'+side,kind:side===1?'FVG_BULL':'FVG_BEAR',side,entry,low:entry-.05,high:entry+.05,
      stop:entry-side*.4,tp1:entry+side*.8,tp2:entry+side*1.2,score:75,score_source:'CONTEXT',status:'CANDIDATE',
-     reaction_eligible:true,actionable:true,execution_admitted:true,timeframe:'15m',tactic:'REACTION_M5',grade:'A',known_ts:clock.value-300000,valid_until:clock.value+1500000,...overrides};
+     reaction_eligible:true,actionable:true,execution_admitted:true,formation_volume:{confirmed:true},timeframe:'15m',tactic:'REACTION_M5',grade:'A',known_ts:clock.value-300000,valid_until:clock.value+1500000,...overrides};
    ctx.scenario={...cleanFixture,price:100,snapshot_ts:clock.value,orders:[],candidates:[row],zones:[row],
      primary_bias:side,primary_candidate_id:row.id,radar:{LONG:side===1?row:null,SHORT:side===-1?row:null},
      reaction_config:{retracement:.06,min_samples:3,max_sample_gap_ms:15000,ready_ttl_ms:15000,max_chase_r:.25}};
@@ -174,7 +180,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
      tactic:'REACTION_M5',status:'CANDIDATE',entry_source:'ENGINE_PLAN',plan_basis:'ENGINE_GEOMETRY',rr1:2,rr2:3,display_eligible:true});
    run('state.cockpit_schema=4;state.plan_pool=state.candidates;');return row;
  };
- approvedReaction();feed(100);assert.match(text('radar'),/КЛАС B\+/);assert.match(text('zones'),/TP2/);
+ approvedReaction();feed(100);assert.match(text('radar'),/клас B\+/);assert.match(text('zones'),/TP2/);
  feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');assert.equal(run('state.orders.length'),0);
  // Ordinary deep penetration is not a terminal invalidation until the actual SL is breached.
  approvedReaction();feed(100);feed(99.68);assert.equal(stage(),'TOUCHED');feed(99.77);assert.equal(stage(),'READY');
@@ -189,7 +195,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  feed(100.2);assert.equal(run('radarRows()[1].id'),'higher-resistance');
  // A weak or blocked plan remains in the table and cannot add chart lines.
  const weak=approvedReaction();weak.score=40;weak.grade='C';weak.tactic='OBSERVE';weak.reaction_eligible=false;
- feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/40\/100/);
+ feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостерігаємо за зоною/);assert.doesNotMatch(text('zones'),/40\/100/);
  assert.equal(priceLines.length,0);
  // With no pending order, repeated renders never toggle the near-limit class by passing undefined.
  approvedReaction();feed(100);for(let i=0;i<5;i++)run('render()');assert.equal(nodes.get('state-banner').classList.contains('near'),false);
@@ -205,6 +211,11 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  approvedReaction();run('state.plan_pool[0].actionable=false;render();');
  assert.equal(priceLines.length,0);assert.doesNotMatch(text('state-detail'),/Робоча зона/);
  assert.equal(run('radarRows().filter(Boolean).length'),0);
+ // Old admissible-looking rows cannot bypass the formation-volume proof.
+ approvedReaction();run('delete state.plan_pool[0].formation_volume;state.plan_pool[0].gate_reason="FORMATION_VOLUME_REQUIRED";render();');
+ assert.equal(priceLines.length,0);assert.equal(run('radarRows().filter(Boolean).length'),0);
+ assert.match(text('zones'),/бракує підтвердження обсягом/);
+ assert.doesNotMatch(text('zones'),/FORMATION_VOLUME_REQUIRED|Довідковий план|60\/100/);
  // The context bands are rendered as zones only, with no entry/stop/target levels.
  run('state.context_bands=[{id:"context",side:1,kind:"DEMAND_OB",timeframe:"1H",low:98.8,high:99.1}];render();');
  assert.equal(run('visibleZones().length'),1);assert.equal(priceLines.length,0);

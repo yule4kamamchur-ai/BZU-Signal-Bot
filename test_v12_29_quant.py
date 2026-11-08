@@ -8,7 +8,7 @@ import full_limit_engine as engine
 import live_terminal
 import setup_scanner as scanner
 from test_v12_24_momentum import anchor_for, fixture
-from test_v12_28_quant import target_for
+from test_v12_28_quant import target_for, structural_witnesses
 
 
 class QuantAdmissionTests(unittest.TestCase):
@@ -22,7 +22,9 @@ class QuantAdmissionTests(unittest.TestCase):
                         'low': entry - .02, 'high': entry + .02}
                 with patch.object(engine, 'atr', return_value=.60):
                     plan = scanner.calculate_zone_trade_plan(
-                        zone, snap, cfg, engine, side, targets=[])
+                        zone, snap, cfg, engine, side, targets=[
+                            {'level': entry + side * .45, 'kind':'SWING'},
+                            {'level': entry + side * .70, 'kind':'SWING'}])
                 self.assertAlmostEqual(plan['risk'], .24)
                 self.assertGreater(side * (entry - plan['stop']), .02)
                 self.assertIsNone(plan['risk_gate'])
@@ -83,12 +85,13 @@ class QuantAdmissionTests(unittest.TestCase):
 
     def test_closer_blocked_zone_cannot_outrank_admitted_plan(self):
         snap, cfg, _ = fixture()
+        snap.candles['1H'][-1] = replace(snap.candles['1H'][-1], volume=200.)
         def plan(identity, distance):
             entry = snap.price - distance
-            return {'id': identity, 'side': 1, 'score': 85, 'entry': entry, 'stop': entry - .25,
+            return structural_witnesses({'id': identity, 'side': 1, 'score': 85, 'entry': entry, 'stop': entry - .25,
                     'tp1': entry + .38, 'tp2': entry + .60,
                     'entry_zone': {'kind': 'FVG_BULL', 'timeframe': '1H', 'low': entry - .04,
-                                   'high': entry + .04, 'known_ts': snap.now}}
+                                   'high': entry + .04, 'known_ts': snap.now}}, cfg.tick)
         blocked = plan('same-id', .10)
         admitted = plan('same-id', .52)
         with patch.object(engine, 'atr', return_value=.1),              patch.object(engine, 'full_targets', return_value=[]),              patch.object(engine.policy, 'market_regime', return_value={'state': 'BULLISH_ACTIVE'}):

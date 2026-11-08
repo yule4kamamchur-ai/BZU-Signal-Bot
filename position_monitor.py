@@ -70,25 +70,26 @@ def review(position, snapshot):
             'regime': regime.state, 'as_of_ts': snapshot.now}
 
 
-def structural_stop(position, snapshot, as_of, close, tick, engine):
-    """A completed post-fill M15 swing can tighten the next execution bar."""
-    step = STEPS['15m']
-    side = position['side']
-    cache = vars(snapshot).setdefault('_position_pivots', {})
-    if step not in cache:
-        rows = strategy_organics.closed(snapshot, '15m')
-        starts = {c.ts for c in rows}
-        cache[step] = [p for p in engine.pivots(rows, strength=1)
-                       if p['known_ts'] == p['ts'] + step and p['ts'] - step in starts]
-    kind = 'LOW' if side == 1 else 'HIGH'
-    filled = position['filled_ts']
-    swing = next((p for p in reversed(cache[step]) if p['kind'] == kind
-                  and filled < p['ts'] and p['known_ts'] + step <= as_of), None)
-    if swing is None:
-        return None
-    candidate = engine.round_tick(round(swing['level'] - side*tick, 10), tick, up=side == -1)
-    if (side*(candidate-position['entry']) > 0
-            and side*(candidate-position['stop']) > tick*.5
-            and side*(close-candidate) > tick*.5):
-        return candidate
+def confirmed_m5_structure(snapshot, after, as_of, side, stop, tick):
+    """A closed post-TP1 swing and a close through its opposite edge."""
+    from setup_scanner import closed_five_minutes
+
+    step = 300_000
+    rows = [bar for bar in closed_five_minutes(snapshot)
+            if after <= bar.ts and bar.ts + step <= as_of]
+    for i in range(len(rows) - 3, -1, -1):
+        left, swing, right = rows[i:i + 3]
+        if swing.ts != left.ts + step or right.ts != swing.ts + step:
+            continue
+        low_side = side == 1
+        extremes = [bar.low if low_side else bar.high for bar in (left, swing, right)]
+        level = extremes[1]
+        opposite = swing.high if low_side else swing.low
+        if (side * (extremes[0] - level) >= tick - 1e-8
+                and side * (extremes[2] - level) >= tick - 1e-8
+                and side * (level - stop) >= tick - 1e-8
+                and side * (right.close - opposite) >= tick - 1e-8
+                and all(side * ((bar.low if low_side else bar.high) - level) > 0
+                        for bar in rows[i + 3:])):
+            return right.ts + step
     return None

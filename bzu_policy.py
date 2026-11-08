@@ -22,7 +22,8 @@ MOMENTUM_POLICY = 'BZU_MOMENTUM_V12_24'
 MASTER_POLICY = 'BZU_MASTER_V12_23'
 PRECISION_POLICY = 'BZU_PRECISION_V12_22'
 LEGACY_POLICY = 'BZU_CHECKLIST_V12_21'
-EXIT = 'STRUCTURAL_TRAIL_TP1_50_TP2_50'
+EXIT = 'TP1_50_M5_BREAKEVEN_TP2_50'
+STOP_POLICY = 'TP1_PARTIAL_M5_CONFIRMED'
 MINUTE = 60_000
 
 
@@ -154,8 +155,10 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     geometry = scanner.zone_targets(entry, risk, side, targets, snapshot.now, cfg.tick, engine)
     if not geometry['path_clear']:
         return None, 'INSUFFICIENT_ROOM'
+    if not geometry['structural_tp1']:
+        return None, 'STRUCTURAL_TP1_REQUIRED'
     if not geometry['structural_tp2']:
-        return None, 'TARGET_RR_TOO_LOW'
+        return None, 'STRUCTURAL_TP2_REQUIRED'
     tp1, tp2 = geometry['tp1'], geometry['tp2']
     entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')
     exit_fee = engine.fee_rate(cfg, 'taker')
@@ -196,6 +199,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             diag['zone_origin'] = origin
             return None, origin['reason']
         zone, origin = sweep_zone, sweep_origin
+    impulse_known = origin.get('displacement_known_ts') or zone['known_ts']
+    zone = {**zone, 'impulse_known_ts': impulse_known}
     low, high = zone['low'], zone['high']
     # Preserve the observed zone even when Impulse Brake stops planning early.
     diag['entry_zone'] = dict(zone)
@@ -238,7 +243,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
                 approach=approach, planning_policy=POLICY)
     valid_stop = (min_risk - 1e-9 <= risk <= max_risk + 1e-9
-                  and side * (structural - stop) >= cfg.tick - 1e-9)
+                  and side * (structural - stop) >= max(cfg.tick, .25 * a15) - 1e-9)
     mark('VALID_STOP', valid_stop)
     if not valid_stop:
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
@@ -321,6 +326,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if geometry is None:
             mark('TARGET_RR', False)
             return None, why
+    volume = scanner.formation_volume(zone, snapshot)
+    if not volume['confirmed']:
+        return None, 'FORMATION_VOLUME_REQUIRED'
     mark('PASSIVE_LIMIT', True)
     mark('TARGET_RR', True)
     tp1, tp2, rr2 = geometry['tp1'], geometry['tp2'], geometry['rr2']
@@ -362,10 +370,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'risk':risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
          'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
          'partials':{'TP1':.5,'TP2':.5} if has_runner else {'TP1':1.},
-         'exit_policy':EXIT, 'tp1_alignment':geometry.get('tp1_alignment'),
+         'exit_policy':EXIT, 'tp1_alignment':geometry['tp1_alignment'],
+         'tp2_alignment':geometry['tp2_alignment'], 'formation_volume':volume,
          'breakeven_trigger_r':side*(tp1-entry)/risk,
-         'structural_trail_trigger_r':1.15, 'breakeven_price':engine.round_tick(
-             round(entry + side*.02, 10), cfg.tick, up=side==1),
          'target_management':EXIT, 'tp1_decision_gate':False,
          'exit_path_barriers':[], 'full_exit_candidates':[],
          'net_rr':rr2-geometry['costs_r'], 'costs_r':geometry['costs_r'],
@@ -386,6 +393,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'score':0., 'probability':None, 'probability_status':'UNVALIDATED_SCORE_NOT_WR',
          'evidence':[anchor.reason], 'candidate':{}, 'parent_keys':[],
          'status':'PENDING', 'last_bar':-1, 'version':engine.VERSION}
+    p['breakeven_price'] = breakeven_price(p, engine.execution_config(p, cfg), engine)
     return p, 'ACCEPTED'
 
 
@@ -433,13 +441,77 @@ def fill_legs(p, c, engine, cfg, initial=False):
                                     cfg.tick,up=p['side']==1 if is_precision(p) else p['side']==-1)
 
 
-def breakeven_price(p,cfg,engine):
-    """Cover stored entry/exit fees and configured exit slippage at the trigger."""
-    sign=p['side'];entry_fee=p['entry_fee_rate'] if cfg.include_commission else 0.
-    exit_fee=engine.fee_rate(cfg,'taker')
-    price=p['entry']*(1+sign*entry_fee)/(1-sign*exit_fee)
-    price/=1-sign*cfg.slippage_bps/10_000
-    return engine.round_tick(price,cfg.tick,up=sign==1)
+def breakeven_price(p, cfg, engine):
+    """Cover stored entry and exit fees and modeled stop slippage per unit."""
+    side = p['side']
+    entry_fee = p.get('entry_fee_rate', engine.fee_rate(cfg, 'maker')) if cfg.include_commission else 0.
+    exit_fee = engine.fee_rate(cfg, 'taker')
+    price = p['entry'] * (1 + side * entry_fee) / (1 - side * exit_fee)
+    price /= 1 - side * cfg.slippage_bps / 10_000
+    return engine.round_tick(round(price, 10), cfg.tick, up=side == 1)
+
+
+def partial_tp1_time(position):
+    """A TP1 price touch alone never proves a partial execution."""
+    filled = position.get('filled_fraction', 1.)
+    remaining = position.get('remaining', 1.)
+    tp1 = position.get('tp1')
+    if not position.get('tp1_hit') or not 0 < remaining < filled or tp1 is None:
+        return None
+    if position['side'] * (tp1 - position['entry']) < 1.40 * position['risk'] - 1e-8:
+        return None
+    return next((leg['ts'] for leg in position.get('realized_legs', [])
+                 if leg.get('target') == 'TP1' and 0 < leg.get('fraction', 0) < filled
+                 and isinstance(leg.get('ts'), int)), None)
+
+
+def protective_amendment(position):
+    amendment = position.get('pending_stop')
+    if not amendment or amendment.get('policy') != STOP_POLICY:
+        return None
+    partial_ts = partial_tp1_time(position)
+    known = position.get('be_confirmed_ts')
+    if partial_ts is None or not isinstance(known, int) or known < partial_ts + 900_000:
+        return None
+    effective, price = amendment.get('effective_ts'), amendment.get('price')
+    if not isinstance(effective, int) or effective < known:
+        return None
+    return amendment if isinstance(price, (int, float)) and math.isfinite(price) and price > 0 else None
+
+
+def apply_protective_stop(position, bar_start):
+    if not position.get('pending_stop'):
+        return
+    amendment = protective_amendment(position)
+    if amendment is None:
+        # Retire legacy unexecuted amendments. Preserve the currently effective SL.
+        position['retired_stop_amendment'] = position.pop('pending_stop')
+        position['breakeven_armed'] = False
+        return
+    if bar_start >= amendment['effective_ts']:
+        if position['side'] * (amendment['price'] - position['stop']) > 0:
+            position['stop'] = amendment['price']
+        position.pop('pending_stop')
+
+
+def arm_breakeven(state, position, snapshot, bar_end, close_price, cfg, engine):
+    if snapshot is None or position.get('pending_stop'):
+        return
+    partial_ts = partial_tp1_time(position)
+    if partial_ts is None or partial_ts >= bar_end:
+        return
+    stop = breakeven_price(position, cfg, engine)
+    side = position['side']
+    if side * (stop - position['stop']) <= 0 or side * (close_price - stop) < cfg.tick - 1e-8:
+        return
+    import position_monitor
+    known = position_monitor.confirmed_m5_structure(
+        snapshot, partial_ts, bar_end, side, stop, cfg.tick)
+    if known is None:
+        return
+    position.update(breakeven_armed=True, breakeven_price=stop, be_confirmed_ts=known,
+                    pending_stop={'price': stop, 'effective_ts': bar_end, 'policy': STOP_POLICY})
+    engine.emit(state, 'BREAKEVEN_ARMED', bar_end, order_id=position['id'], stop=stop, m5_known_ts=known)
 
 
 def close(state, p, price, ts, reason, cfg, engine, ambiguous=False):
@@ -472,8 +544,7 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
         return
     cfg = engine.execution_config(p,cfg)
     ts, side = c.ts+step, p['side']
-    if p.get('pending_stop') and c.ts >= p['pending_stop']['effective_ts']:
-        p['stop'] = p.pop('pending_stop')['price']
+    apply_protective_stop(p, c.ts)
     old_qty = p['filled_fraction']
     fill_legs(p,c,engine,cfg)
     added = p['filled_fraction'] > old_qty
@@ -490,22 +561,12 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     # Favorable extremes in a fill bar can precede either fill. A close through
     # the target proves the favorable traversal after both entries.
     proved = lambda level: (not (fill_bar or added)) or side*(c.close-level)>=0
-    current_policy = p.get('policy') == POLICY
     if not fill_bar and not added:
         favorable = c.high if side == 1 else c.low
         p['mfe_r'] = max(p['mfe_r'], side*(favorable-p['entry'])/p['risk'])
-    if is_precision(p) and not current_policy and not p.get('breakeven_armed'):
-        trigger=p['entry']+side*p['risk']*p.get('breakeven_trigger_r',1.)
-        reached=c.high>=trigger if side==1 else c.low<=trigger
-        if reached and proved(trigger):
-            be=breakeven_price(p,cfg,engine)
-            if side*(be-p['stop'])>0:
-                p['pending_stop']={'price':be,'effective_ts':ts}
-            p['breakeven_armed']=True
-            engine.emit(state,'BREAKEVEN_ARMED',ts,order_id=p['id'],stop=be)
     if not p.get('tp1_hit') and target_hit and proved(p['tp1']):
         fraction=p.get('partials',{}).get('TP1',.6)
-        if current_policy and fraction == 1.:
+        if fraction == 1.:
             p.update(tp1_hit=True, tp1_reached_ts=ts)
             close(state,p,p['tp1']*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg,engine)
             return
@@ -519,22 +580,8 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
         # Never add the second half after taking profit from the first half.
         for leg in p['entry_legs']:
             if leg['status']=='PENDING': leg['status']='CANCELLED_AFTER_TP1'
-        be=p['stop']
-        # Snapping can bring TP1 below 1R. It must not silently lower the
-        # independent 1R breakeven trigger for new Master plans.
-        if current_policy:
-            be = engine.round_tick(round(p['entry'] + side*.02, 10), cfg.tick, up=side==1)
-            if side*(be-p['stop'])>0:
-                p['pending_stop'] = {'price':be,'effective_ts':ts}
-            else:
-                be = p['stop']
-            p['breakeven_armed'] = True
-        elif p.get('policy') not in (MOMENTUM_POLICY, MASTER_POLICY) or p.get('breakeven_armed'):
-            be = breakeven_price(p,cfg,engine) if is_precision(p) else engine.round_tick(p['entry']+side*.02,cfg.tick,up=side==1)
-            if side*(be-p['stop'])>0:
-                p['pending_stop'] = {'price':be,'effective_ts':ts}
-        engine.emit(state,'TP1_PARTIAL',ts,order_id=p['id'],price=p['tp1'],fraction=fraction,
-                    rr=p.get('rr1',1.),stop=be)
+        engine.emit(state, 'TP1_PARTIAL', ts, order_id=p['id'], price=p['tp1'],
+                    fraction=fraction, rr=side * (p['tp1'] - p['entry']) / p['risk'])
         # TP1 is a realized milestone. Aggregate WR gets ONE label only when
         # the remaining position closes, including all fees and gap losses.
     second = c.high >= p['tp2'] if side==1 else c.low <= p['tp2']
@@ -544,12 +591,7 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     if p.get('time_exit_enabled') and ts >= p['exit_deadline']:
         close(state,p,c.close*(1-side*cfg.slippage_bps/10_000),ts,'INTRADAY_TIME_EXIT',cfg,engine)
         return
-    if current_policy and not p.get('tp1_hit') and p['mfe_r'] > 1.15 + 1e-9 and snapshot is not None:
-        import position_monitor
-        trailing = position_monitor.structural_stop(p, snapshot, ts, c.close, cfg.tick, engine)
-        if trailing is not None:
-            p['pending_stop'] = {'price':trailing,'effective_ts':ts}
-            engine.emit(state,'STRUCTURAL_TRAIL_ARMED',ts,order_id=p['id'],stop=trailing)
+    arm_breakeven(state, p, snapshot, ts, c.close, cfg, engine)
     p['last_bar'] = c.ts
 
 

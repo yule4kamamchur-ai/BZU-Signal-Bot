@@ -35,6 +35,10 @@ def build(state, snapshot, result, cfg, engine):
     orders = []
     for plan in plans:
         active = plan.get('status') == 'OPEN'
+        stop_amendment = engine.bzu_policy.protective_amendment(plan) or {}
+        partial = bool(active and 0 < plan.get('remaining', 1.) < plan.get('filled_fraction', 1.)
+                       and any(leg.get('target') == 'TP1' and leg.get('fraction', 0) > 0
+                               for leg in plan.get('realized_legs', [])))
         orders.append({
             'id': plan['id'], 'number': plan.get('order_number'),
             'status': 'OPEN' if active else 'CANCELLING' if plan.get('cancel_requested_ts') else 'PENDING',
@@ -43,17 +47,17 @@ def build(state, snapshot, result, cfg, engine):
             'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
             'tp1': plan.get('tp1', plan.get('tp')), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),
-            'be_trigger': plan.get('tp1') if plan.get('policy') == engine.bzu_policy.POLICY else
-                plan['entry'] + plan['side'] * plan['risk'] * plan.get('breakeven_trigger_r', 1.),
-            'be_stop': plan.get('breakeven_price'), 'breakeven_armed': bool(plan.get('breakeven_armed')),
-            'structural_trail_trigger': (plan['entry'] + plan['side'] * plan['risk'] * plan['structural_trail_trigger_r']
-                                         if 'structural_trail_trigger_r' in plan else None),
+            'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
+            'be_confirmed_ts': plan.get('be_confirmed_ts'),
+            'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
             'tp1_fraction': plan.get('partials', {}).get('TP1', 1.),
             'remaining': plan.get('remaining', 1.), 'tp1_hit': bool(plan.get('tp1_hit')),
+            'tp1_partial': partial,
+            'be_waits_for_structure': engine.bzu_policy.partial_tp1_time(plan) is not None,
             'effective_ts': plan.get('effective_ts', plan.get('placed_ts')),
             'expires_ts': plan.get('expires_ts'), 'filled_ts': plan.get('filled_ts'),
-            'pending_stop': (plan.get('pending_stop') or {}).get('price'),
-            'pending_stop_effective_ts': (plan.get('pending_stop') or {}).get('effective_ts'),
+            'pending_stop': stop_amendment.get('price'),
+            'pending_stop_effective_ts': stop_amendment.get('effective_ts'),
             'zone': {k:(plan.get('entry_zone') or {}).get(k) for k in ('kind','low','high','timeframe','known_ts')},
         })
 
@@ -63,6 +67,7 @@ def build(state, snapshot, result, cfg, engine):
     mode = {'BULLISH_TREND':'BULLISH_ACTIVE', 'BEARISH_TREND':'BEARISH_ACTIVE',
             'RANGE_LIQUIDITY_ROTATION':'RANGE'}.get(regime.get('state'), regime.get('state', 'UNKNOWN'))
     zones, context_zones = {}, []
+    admitted_geometry = {p['id']: p for p in analysis.get('admitted_plans', [])}
     rejected = []
     atr15 = engine.atr([c for c in snapshot.candles.get('15m', [])
                        if c.confirmed and c.ts + 900_000 <= snapshot.now])
@@ -87,6 +92,8 @@ def build(state, snapshot, result, cfg, engine):
             return None
         result = {'kind': zone['kind'], 'timeframe': zone.get('timeframe'), 'side': side,
                   'low': low, 'high': high, 'known_ts': known, 'source_low':low, 'source_high':high}
+        if numeric(zone.get('impulse_known_ts')):
+            result['impulse_known_ts'] = zone['impulse_known_ts']
         sweep=zone.get('sweep') or {}
         sweep_ts=sweep.get('known_ts',sweep.get('sweep_ts')) if isinstance(sweep,dict) else None
         if numeric(sweep_ts) and sweep_ts<=snapshot.now: result['sweep_known_ts']=sweep_ts
@@ -110,7 +117,8 @@ def build(state, snapshot, result, cfg, engine):
             if zone.mitigated or not step:
                 continue
             z = zone_data({'kind': zone.kind, 'timeframe': zone.timeframe, 'low': zone.low,
-                           'high': zone.high, 'known_ts': zone.created_ts + 2 * step}, side)
+                           'high': zone.high, 'known_ts': zone.created_ts + 2 * step,
+                           'impulse_known_ts': zone.created_ts + (step if name == 'fvg' else 2 * step)}, side)
             if z:
                 z.update(id=engine.ident(*zone_key(z)), score=None, grade=None, score_source='UNASSESSED',
                          entry=z['high'] if side == 1 else z['low'], entry_source='ZONE_BOUNDARY',
@@ -194,7 +202,8 @@ def build(state, snapshot, result, cfg, engine):
     for original in zones.values():
         z=dict(original)
         order=by_order.get(z.get('order_id'))
-        geometry = dict(z) if order or z.get('engine_accepted') else None
+        geometry = (dict(z) if order else admitted_geometry.get(z.get('engine_plan_id'))
+                    if z.get('engine_accepted') else None)
         if order and order['status'] == 'OPEN':
             geometry['stop'] = order['initial_stop']
         calc = engine.scanner.calculate_zone_trade_plan(
@@ -220,7 +229,7 @@ def build(state, snapshot, result, cfg, engine):
             gate = 'ZONE_NOT_AHEAD_OF_PRICE'
         elif z['valid_until'] <= snapshot.now:
             gate = 'EXPIRED'
-        elif z['score'] < 60 or (z['execution_admitted'] and (z['engine_score'] or 0) < 60):
+        elif gate is None and (z['score'] < 60 or (z['execution_admitted'] and (z['engine_score'] or 0) < 60)):
             gate = 'SCORE_BELOW_60'
         elif calc['impulse_blocked']:
             gate = 'IMPULSE_CONFIRMATION_REQUIRED'

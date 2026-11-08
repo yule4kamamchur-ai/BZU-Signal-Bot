@@ -1,4 +1,5 @@
 """Reproduction and boundary tests for v12.27 public direction integrity."""
+from dataclasses import replace
 import copy
 import json
 import os
@@ -9,23 +10,24 @@ import full_limit_engine as engine
 import live_terminal
 import setup_scanner as scanner
 from test_v12_24_momentum import fixture
-from test_v12_28_quant import target_for
+from test_v12_28_quant import target_for, structural_witnesses
 
 
 class IntegrityTests(unittest.TestCase):
     def setUp(self):
         self.snap,self.cfg,_=fixture()
+        self.snap.candles['1H'][-1] = replace(self.snap.candles['1H'][-1], volume=200.)
         self.snap.price=100.
         self.snap.bid,self.snap.ask=99.99,100.01
         self.book=engine.new_state(self.cfg)
 
     def row(self,side=1,entry=None,score=75):
         entry=entry if entry is not None else 99. if side==1 else 101.
-        return {'id':'candidate-'+str(side),'side':side,'entry':entry,'stop':entry-side*.3,
+        return structural_witnesses({'id':'candidate-'+str(side),'side':side,'entry':entry,'stop':entry-side*.3,
                 'tp1':entry+side*.6,'tp2':entry+side*.9,'risk':.3,'score':score,'rating':'A',
                 'setup':'VALID_PLAN','quality':{'accepted':True,'reason':'ACCEPTED'},
                 'entry_zone':{'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','low':entry-.04,
-                              'high':entry+.04,'timeframe':'1H','known_ts':self.snap.now}}
+                              'high':entry+.04,'timeframe':'1H','known_ts':self.snap.now}}, self.cfg.tick)
 
     def project(self,rows,mode='RANGE_LIQUIDITY_ROTATION',admitted=True):
         with patch.object(engine.policy,'market_regime',return_value={'state':mode}),patch.object(engine,'atr',return_value=.5):
@@ -78,10 +80,11 @@ class IntegrityTests(unittest.TestCase):
             self.assertTrue(out['zones'],variant)
             for z in out['zones']:
                 self.assertTrue(all(isinstance(z[k],(int,float)) for k in ('entry','stop','tp1','tp2','score')))
-                self.assertEqual(z['score'],sum(c['earned'] for c in z['score_breakdown']))
+                self.assertEqual(z['score'],min(z['score_cap'],sum(c['earned'] for c in z['score_breakdown'])))
 
     def test_exact_score_and_rr_boundaries_and_input_not_mutated(self):
         row=self.row(score=60);row['tp1']=row['entry']+.3*1.40
+        structural_witnesses(row, self.cfg.tick)
         before=copy.deepcopy(row)
         out=self.project([row])
         self.assertEqual(len(out['candidates']),1)
