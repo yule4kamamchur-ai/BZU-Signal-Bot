@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import full_limit_engine as engine
 import live_terminal
-from test_v12_24_momentum import fixture, target_for, anchor_for
+from test_v12_24_momentum import fixture, anchor_for
+from test_v12_28_quant import target_for
 
 
 class CockpitTests(unittest.TestCase):
@@ -43,8 +44,8 @@ class CockpitTests(unittest.TestCase):
             row={'id':'candidate','side':side,'entry':entry,'stop':entry-side*.3,
                  'tp1':entry+side*.5,'tp2':entry+side*.8,'risk':.3,'score':76,
                  'rating':'A','quality':{'accepted':True,'reason':'ACCEPTED'},'setup':'FVG',
-                 'entry_zone':{'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','low':entry-.03,'high':entry+.03,'known_ts':self.snap.now,'timeframe':'15m'}}
-            result=self.project(candidate_plans=[row])
+                 'entry_zone':{'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','low':entry-.03,'high':entry+.03,'known_ts':self.snap.now,'timeframe':'1H'}}
+            result=self.project(admitted_plans=[row])
             candidate=result['radar']['LONG' if side==1 else 'SHORT']
             self.assertEqual(candidate['entry'],entry)
             self.assertEqual(candidate['tp1'],row['tp1'])

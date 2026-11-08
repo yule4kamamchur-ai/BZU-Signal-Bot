@@ -142,13 +142,7 @@ def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, fro
     if front_run is not None and not deep:
         first = (high if side == 1 else low) + side * front_run
     first = exact_entry if exact_entry is not None else engine.round_tick(round(first, 10), cfg.tick, up=side==1)
-    stop = engine.round_tick(swing-side*.20*a15, cfg.tick, up=side == -1)
-    stop = engine.round_tick(first-side*max(side*(first-stop),cfg.min_stop_absolute),
-                             cfg.tick,up=side==-1)
-    if exact_entry is None and front_run is None and side*(first-stop) > cfg.max_stop_absolute+1e-9:
-        # Deepen at most to equilibrium; a still-expensive setup is rejected.
-        first=engine.round_tick((low+high)/2,cfg.tick,up=side==1)
-    risk = side*(first-stop)
+    stop, risk, _ = scanner.normalized_zone_stop(first, swing, side, a15, cfg, engine)
     legs = [{'name':'L1', 'price':first, 'fraction':1., 'status':'PENDING'}]
     return first, stop, risk, legs
 
@@ -156,65 +150,21 @@ def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, fro
 def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, organic=False):
     """Price structural targets on the final entry and execution fee contract."""
     risk = side * (entry - stop)
-    minimum = cfg.min_net_rr if active or organic else max(2.5, cfg.min_net_rr)
+    targets = engine.full_targets(context, snapshot, anchor.side, entry, cfg)
+    geometry = scanner.zone_targets(entry, risk, side, targets, snapshot.now, cfg.tick, engine)
+    if not geometry['path_clear']:
+        return None, 'INSUFFICIENT_ROOM'
+    if not geometry['structural_tp2']:
+        return None, 'TARGET_RR_TOO_LOW'
+    tp1, tp2 = geometry['tp1'], geometry['tp2']
     entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')
     exit_fee = engine.fee_rate(cfg, 'taker')
-    buffer = max(2 * cfg.tick, .06 * a15)
-    tp1_raw = engine.round_tick(round(entry + side * 1.45 * risk, 10), cfg.tick, up=side == 1)
-    tp1 = round_target(entry, tp1_raw, side, cfg.tick) if oil_round_protection(cfg) else tp1_raw
-    # Round-number protection must not turn TP1 into the old early exit.
-    if side * (tp1 - entry) < 1.4 * risk - 1e-9:
-        tp1 = tp1_raw
-    if side * (tp1 - entry) < 1.4 * risk - 1e-9:
-        tp1 = engine.round_tick(round(entry + side * 1.4 * risk, 10), cfg.tick, up=side == 1)
-    targets = sorted(engine.full_targets(context, snapshot, anchor.side, entry, cfg),
-                     key=lambda target: side * (target['level'] - entry))
-    magnet = next((target for target in targets
-                   if target.get('timeframe') in ('1H', '4H')
-                   and (target.get('hard_barrier') or target.get('freshness') == 'UNSWEPT')
-                   and 1.35 - 1e-9 <= side * (target['level'] - entry) / risk <= 1.50 + 1e-9), None)
-    if magnet:
-        tp1_raw = tp1 = engine.round_tick(round(magnet['level'] - side * .03, 10),
-                                          cfg.tick, up=side == -1)
-        if side * (tp1 - entry) <= 0:
-            return None, 'ROUND_LEVEL_TARGET_COLLAPSED'
-        if magnet.get('hard_barrier'):
-            targets = []
-    elif side * (tp1 - entry) <= 0:
-        return None, 'ROUND_LEVEL_TARGET_COLLAPSED'
-    reason = 'TARGET_RR_TOO_LOW'
-    for target in targets:
-        distance = side * (target['level'] - entry) - buffer
-        if distance + 1e-9 < minimum * risk:
-            continue
-        tp2_raw = engine.round_tick(round(entry + side * min(distance, 3 * risk), 10),
-                                    cfg.tick, up=side == -1)
-        tp2 = round_target(entry, tp2_raw, side, cfg.tick) if oil_round_protection(cfg) else tp2_raw
-        # A round level already passed at TP1 cannot serve as the runner target.
-        if side * (tp2 - tp1) <= 0:
-            tp2 = tp2_raw
-        rr2 = side * (tp2 - entry) / risk
-        costs = (entry * entry_fee + tp2 * exit_fee) / risk
-        if side * (tp2 - tp1) <= 0:
-            reason = 'ROUND_LEVEL_TARGET_COLLAPSED'
-        elif rr2 + 1e-9 < minimum:
-            reason = 'ROUND_LEVEL_RR_TOO_LOW'
-        elif rr2 - costs + 1e-9 < cfg.min_net_rr:
-            reason = 'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'
-        else:
-            return {'tp1': tp1, 'tp2': tp2, 'rr2': rr2, 'costs_r': costs,
-                    'entry_fee': entry_fee, 'exit_fee': exit_fee,
-                    'raw_targets': {'tp1': tp1_raw, 'tp2': tp2_raw},
-                    'tp1_alignment': magnet}, 'ACCEPTED'
-    if magnet:
-        rr = side * (tp1 - entry) / risk
-        costs = (entry * entry_fee + tp1 * exit_fee) / risk
-        if rr > costs:
-            return {'tp1':tp1,'tp2':tp1,'rr2':rr,'costs_r':costs,
-                    'entry_fee':entry_fee,'exit_fee':exit_fee,
-                    'raw_targets':{'tp1':tp1_raw,'tp2':tp1_raw},
-                    'tp1_alignment':magnet}, 'ACCEPTED'
-    return None, reason
+    rr2 = side * (tp2 - entry) / risk
+    costs = (entry * entry_fee + tp2 * exit_fee) / risk
+    if rr2 - costs + 1e-9 < cfg.min_net_rr:
+        return None, 'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'
+    return {**geometry, 'rr2': rr2, 'costs_r': costs, 'entry_fee': entry_fee,
+            'exit_fee': exit_fee, 'raw_targets': {'tp1': tp1, 'tp2': tp2}}, 'ACCEPTED'
 
 
 def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
@@ -235,6 +185,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if not session['allowed']:
         return None,session['reason']
     zone = zone_for(anchor, snapshot, cfg, engine)
+    if zone.get('timeframe') not in scanner.PRIMARY or zone.get('kind') == 'MICRO_BOS_FVG':
+        return None, 'MICRO_ZONE_EXCLUDED'
     if not scanner.zone_direction_matches(zone, side):
         return None, 'ZONE_DIRECTION_MISMATCH'
     origin = scanner.zone_origin(zone, snapshot, side, cfg.tick, engine)
@@ -249,6 +201,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     diag['entry_zone'] = dict(zone)
     diag['zone_origin'] = origin
     regime = direction.market_regime(snapshot, cfg.tick, engine)
+    zone_error = scanner.standalone_zone_error({**zone, 'side': side}, snapshot, cfg, engine, a15, regime.get('state'))
+    if zone_error:
+        return None, zone_error
     active_side = regime.get('active_structure', {}).get('side')
     aligned = direction.momentum_aligned(snapshot, side)
     momentum_zone = zone.get('kind') in scanner.ORGANIC_MOMENTUM
@@ -257,7 +212,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     organic_formation = momentum_zone or zone.get('kind') == scanner.ORGANIC_REVERSAL
     front_run = .03
     tf = zone['timeframe']
-    structural = anchor.invalidation
+    distal = low if side == 1 else high
+    structural = min(anchor.invalidation, distal) if side == 1 else max(anchor.invalidation, distal)
     if not organic_formation:
         swings = [p for p in engine.pivots(structure.closed(snapshot, tf))
                   if p['kind'] == ('LOW' if side == 1 else 'HIGH')
@@ -270,16 +226,21 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         low, high, structural, side, a15, cfg, engine, deep=deep, front_run=front_run,
         exact_entry=anchor.level if organic_formation else None)
     raw_stop=stop
+    min_risk, max_risk = scanner.zone_risk_bounds(a15, cfg)
     if oil_round_protection(cfg):
-        stop=round_stop(stop,side,cfg.tick)
-        risk=side*(entry-stop)
+        protected_stop = round_stop(stop, side, cfg.tick)
+        if side * (entry - protected_stop) <= max_risk + 1e-9:
+            stop = protected_stop
+            risk = side * (entry - stop)
     if side*(entry-anchor.invalidation)<=0:
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
     approach = adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop)
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
                 approach=approach, planning_policy=POLICY)
-    mark('VALID_STOP', cfg.min_stop_absolute-1e-9 <= risk <= cfg.max_stop_absolute+1e-9)
-    if risk < cfg.min_stop_absolute-1e-9 or risk > cfg.max_stop_absolute+1e-9:
+    valid_stop = (min_risk - 1e-9 <= risk <= max_risk + 1e-9
+                  and side * (structural - stop) >= cfg.tick - 1e-9)
+    mark('VALID_STOP', valid_stop)
+    if not valid_stop:
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
     if approach.get('blocked'):
         diag['status']='WATCHING'
@@ -302,7 +263,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'ANCHOR_INVALIDATED'
     distance = abs(snapshot.price-entry)
     diag['distance_atr'] = distance/a15
-    if distance > cfg.max_entry_distance_atr*a15+1e-9:
+    if distance > scanner.max_zone_distance(a15, cfg) + 1e-9:
         diag['needs_new_structural_event'] = True
         return None, 'LIMIT_UNREACHABLE'
     audit = zones.first_test(zone, minute, side, entry, risk, snapshot.now)
@@ -338,7 +299,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             side, quote, regime, snapshot, cfg.tick, engine, zone)
         if not direct_allowed:
             direct_failure = why
-        elif not cfg.min_stop_absolute - 1e-9 <= quote_risk <= cfg.max_stop_absolute + 1e-9:
+        elif not min_risk - 1e-9 <= quote_risk <= max_risk + 1e-9:
             direct_failure = 'STRUCTURAL_STOP_TOO_WIDE'
         else:
             geometry, direct_failure = protected_targets(
@@ -351,6 +312,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         elif not can_wait:
             return None, direct_failure
     if geometry is None:
+        if anchor.setup_type == 'SESSION_MEAN_RECLAIM':
+            return None, 'SESSION_MEAN_LIMIT_DISABLED'
         if not can_wait:
             return None, 'WAIT_RETEST'
         geometry, why = protected_targets(

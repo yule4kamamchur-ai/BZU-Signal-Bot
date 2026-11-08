@@ -81,8 +81,90 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     return None
 
 
+def standalone_zone_error(zone, snapshot, cfg, engine, atr15, regime):
+    """Require a native zone, minimum tick width and intact closed-candle structure."""
+    timeframe = zone.get('timeframe')
+    if timeframe not in PRIMARY or zone.get('kind') == 'MICRO_BOS_FVG':
+        return 'MICRO_ZONE_EXCLUDED'
+    low, high, known = (zone.get(key) for key in ('low', 'high', 'known_ts'))
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and isfinite(v)
+               for v in (low, high, known)):
+        return 'INCOMPLETE_PLAN'
+    if low <= 0 or high - low < cfg.tick - 1e-8 or known > snapshot.now:
+        return 'INVALID_ZONE_RANGE'
+    side = zone.get('side')
+    if not zone_direction_matches(zone, side):
+        return 'ZONE_DIRECTION_MISMATCH'
+    threshold = high - .6 * (high - low) if side == 1 else low + .6 * (high - low)
+    timeframes = set(('15m', timeframe))
+    closed_rows = (c for tf in timeframes for c in snapshot.candles.get(tf, [])
+                   if c.confirmed and known <= c.ts and c.ts + engine.TF[tf] <= snapshot.now)
+    if (zone.get('mitigated') or any(side * (c.close - threshold) <= 0 for c in closed_rows)
+            or any(c.ts >= known and side * (c.close - threshold) <= 0
+                   for c in closed_five_minutes(snapshot))):
+        return 'ZONE_MITIGATED'
+    distance = max(low - snapshot.price, snapshot.price - high, 0)
+    if regime in ('RANGE', 'RANGE_LIQUIDITY_ROTATION') and distance < .15 * atr15 - 1e-8:
+        return 'RANGE_ZONE_TOO_CLOSE'
+    return None
+
+
+def max_zone_distance(atr15, cfg):
+    return max(.60, cfg.max_entry_distance_atr * atr15)
+
+
+def zone_risk_bounds(atr15, cfg):
+    floor = max(cfg.min_stop_absolute, min(.28, max(.22, .40 * atr15)))
+    return floor, min(.65, cfg.max_stop_absolute)
+
+
+def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
+    """Clip risk to the tick grid, while flagging a stop inside the invalidation."""
+    floor, cap = zone_risk_bounds(atr15, cfg)
+    raw_stop = structural - side * .25 * atr15
+    structural_distance = side * (entry - raw_stop)
+    risk = min(cap, max(floor, structural_distance))
+    stop = engine.round_tick(round(entry - side * risk, 10), cfg.tick, up=side == -1)
+    if side * (entry - stop) > cap + 1e-8:
+        stop = engine.round_tick(round(entry - side * cap, 10), cfg.tick, up=side == 1)
+    risk = side * (entry - stop)
+    safe = (floor - 1e-8 <= risk <= cap + 1e-8
+            and side * (structural - stop) >= cfg.tick - 1e-8 and stop > 0)
+    return stop, risk, safe
+
+
+def zone_targets(entry, risk, side, targets, now, tick, engine):
+    """Select the first eligible buffered targets and keep hard barriers causal."""
+    levels = []
+    for target in targets:
+        level, known = target.get('level'), target.get('known_ts')
+        if not isinstance(level, (int, float)) or not isfinite(level) or level <= 0:
+            continue
+        if known is not None and known > now:
+            continue
+        price = engine.round_tick(round(level - side * tick, 10), tick, up=side == -1)
+        distance = side * (price - entry)
+        if distance > 0:
+            levels.append((distance, price, target))
+    levels.sort(key=lambda row: row[0])
+    barrier = next((row for row in levels if row[2].get('hard_barrier')), None)
+    reachable = [row for row in levels if barrier is None or row[0] <= barrier[0]]
+    first = next((row for row in reachable if row[0] >= 1.40 * risk - 1e-8), None)
+    tp1 = first[1] if first else engine.round_tick(round(entry + side * 1.50 * risk, 10), tick, up=side == 1)
+    second = next((row for row in reachable
+                   if row[0] >= 2.20 * risk - 1e-8 and side * (row[1] - tp1) >= tick - 1e-8), None)
+    tp2 = second[1] if second else engine.round_tick(
+        round(entry + side * max(2.20 * risk, side * (tp1 - entry) + tick), 10), tick, up=side == 1)
+    return {'tp1': tp1, 'tp2': tp2,
+            'tp1_source': first[2].get('kind', 'STRUCTURE') if first else 'R_MULTIPLE_1_50',
+            'tp2_source': second[2].get('kind', 'STRUCTURE') if second else 'R_MULTIPLE_2_20',
+            'tp1_alignment': first[2] if first else None,
+            'structural_tp2': second is not None,
+            'path_clear': barrier is None or side * (tp1 - entry) <= barrier[0] + 1e-8}
+
+
 def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
-                              context=None, geometry=None, targets=None):
+                              context=None, geometry=None, targets=None, regime=None):
     """Causal geometric pre-plan + transparent 5-factor ranking, never execution.
 
     Existing complete engine geometry is frozen. A missing plan is calculated
@@ -100,39 +182,40 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     a=engine.atr(closed15)
     if not valid(a) or a<=0:
         return None
-    wide=high-low>1.5*a
-    entry=engine.round_tick((low+high)/2 if wide else (high if side==1 else low)+side*.03,tick,up=side==1)
-    stop=engine.round_tick((low if side==1 else high)-side*.25*a,tick,up=side==-1)
-    frozen=False
-    if geometry and all(valid(geometry.get(k)) and geometry[k]>0 for k in ('entry','stop','tp1','tp2')):
-        ge,gs,g1,g2=(geometry[k] for k in ('entry','stop','tp1','tp2'))
-        if side*(ge-gs)>0 and side*(g1-ge)>0 and side*(g2-g1)>=-tick/2:
-            entry,stop=ge,gs;frozen=True
-    risk=side*(entry-stop)
-    if risk<=0 or stop<=0:
+    if standalone_zone_error(zone, snapshot, cfg, engine, a, regime):
         return None
-    context=context or {}
-    available=engine.full_targets(context,snapshot,'LONG' if side==1 else 'SHORT',entry,cfg) if targets is None else targets
-    levels=[]
-    for target in available:
-        value=target.get('level');ts=target.get('known_ts')
-        if not valid(value) or (valid(ts) and ts>snapshot.now) or side*(value-entry)<=2*tick:
-            continue
-        levels.append((side*(value-entry),value,target.get('kind','STRUCTURE')))
-    levels.sort()
+    wide = high - low > 1.5 * a
+    entry = engine.round_tick(round((low + high) / 2 if wide else
+                             (high if side == 1 else low) + side * .03, 10), tick, up=side == 1)
+    distal = low if side == 1 else high
+    # Use a confirmed swing outside the zone when it fits the risk cap.
+    swings = [point['level'] for point in engine.pivots(closed15)
+              if point['kind'] == ('LOW' if side == 1 else 'HIGH')
+              and point['known_ts'] + 900_000 <= known
+              and side * (distal - point['level']) >= 0
+              and side * (entry - point['level']) <= zone_risk_bounds(a, cfg)[1] - tick]
+    structural = min(swings, key=lambda level: abs(level - distal), default=distal)
+    stop, risk, safe = normalized_zone_stop(entry, structural, side, a, cfg, engine)
+    frozen = False
+    if geometry and all(valid(geometry.get(k)) and geometry[k] > 0 for k in ('entry', 'stop', 'tp1', 'tp2')):
+        ge, gs, g1, g2 = (geometry[k] for k in ('entry', 'stop', 'tp1', 'tp2'))
+        if side * (ge - gs) > 0 and side * (g1 - ge) > 0 and side * (g2 - g1) >= -tick / 2:
+            entry, stop = ge, gs
+            risk = side * (entry - stop)
+            floor, cap = zone_risk_bounds(a, cfg)
+            safe = floor - 1e-8 <= risk <= cap + 1e-8 and side * (distal - stop) >= tick - 1e-8
+            frozen = True
+    if risk <= 0 or stop <= 0:
+        return None
+    available = (engine.full_targets(context or {}, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
+                 if targets is None else targets)
+    destination = zone_targets(entry, risk, side, available, snapshot.now, tick, engine)
     if frozen:
-        tp1,tp2=geometry['tp1'],geometry['tp2'];tp1_source=tp2_source='ENGINE_PLAN'
+        tp1, tp2 = geometry['tp1'], geometry['tp2']
+        tp1_source = tp2_source = 'ENGINE_PLAN'
     else:
-        if levels:
-            tp1=engine.round_tick(levels[0][1]-side*tick,tick,up=side==-1);tp1_source=levels[0][2]
-        else:
-            tp1=engine.round_tick(entry+side*1.45*risk,tick,up=side==1);tp1_source='R_MULTIPLE_1_45'
-        second=next((row for row in levels if side*(row[1]-tp1)>2*tick),None)
-        if second:
-            tp2=engine.round_tick(second[1]-side*tick,tick,up=side==-1);tp2_source=second[2]
-        else:
-            tp2=engine.round_tick(entry+side*max(2.4*risk,side*(tp1-entry)+.5*risk),tick,up=side==1)
-            tp2_source='R_MULTIPLE_2_40_OR_BEYOND_TP1'
+        tp1, tp2 = destination['tp1'], destination['tp2']
+        tp1_source, tp2_source = destination['tp1_source'], destination['tp2_source']
     if min(tp1,tp2)<=0 or side*(tp1-entry)<=0 or side*(tp2-tp1)<-tick/2:
         return None
     rr1,rr2=side*(tp1-entry)/risk,side*(tp2-entry)/risk
@@ -150,8 +233,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     departure=[c for c in rows if known-2*step<=c.ts<known+3*step]
     displacement=('FVG' in zone['kind'] or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
-    nearest_room=levels[0][0]-tick if levels else float('inf')
-    room=rr1>=1.4-1e-8 and nearest_room>=1.4*risk-1e-8
+    room = rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8 and destination['path_clear']
     criteria=[('REGIME_ALIGNMENT',25,primary_side==side),('UNTESTED',20,freshness=='UNTESTED'),
               ('HTF_OR_SWEEP',20,htf_or_sweep),('DISPLACEMENT_OR_FVG',20,displacement),('ROOM_TO_RUN',15,room)]
     score=sum(weight for _,weight,passed in criteria if passed)
@@ -159,18 +241,18 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     gate=('STOP_ALREADY_BREACHED' if stop_breached else
-          'STOP_OUTSIDE_RISK_BOUNDS' if not cfg.min_stop_absolute-1e-8<=risk<=cfg.max_stop_absolute+1e-8 else
+          'STOP_OUTSIDE_RISK_BOUNDS' if not safe else
           'INSUFFICIENT_ROOM' if not room else
-          'DISTANT_ZONE' if abs(snapshot.price-entry)>cfg.max_entry_distance_atr*a+tick else None)
+          'DISTANT_ZONE' if abs(snapshot.price-entry)>max_zone_distance(a,cfg)+tick else None)
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
-        'score':score,'grade':'A' if score>=65 else 'B+' if score>=58 else 'C',
-        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_5_FACTOR_V1',
+        'score':score,'grade':'A' if score>=65 else 'B+' if score>=60 else 'C',
+        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_5_FACTOR_V2',
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
         'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else 'EQUILIBRIUM' if wide else 'PROXIMAL_PLUS_0_03',
         'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
         'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),
-        'tactic':'OBSERVE' if gate else 'LIMIT' if score>=65 and not brake['blocked'] else 'REACTION_M5' if score>=58 else 'OBSERVE',
+        'tactic':'OBSERVE' if gate or brake['blocked'] else 'LIMIT' if score>=65 and not brake['blocked'] else 'REACTION_M5' if score>=60 else 'OBSERVE',
         'calculated_ts':snapshot.now}
 
 

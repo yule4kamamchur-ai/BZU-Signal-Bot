@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.28.0-pro-quant"
-REPORT_RELEASE = 'v12.28.0'
+VERSION = "full-ict-v12.29.0-pro-quant"
+REPORT_RELEASE = 'v12.29.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -1997,30 +1997,34 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             cooled.append(candidate)
     valid=cooled
     valid.sort(key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
-    analysis['entry_mode']=entry_mode
-    if entry_mode=='HYBRID':
-        market=policy.market_regime(s,cfg.tick,sys.modules[__name__])
-        dominant=1 if market.get('state') in ('BULLISH_ACTIVE','BULLISH_TREND') else -1 if market.get('state') in ('BEARISH_ACTIVE','BEARISH_TREND') else 0
-        for candidate in valid:
-            zone={**candidate.get('entry_zone',{}),'side':candidate['side']}
-            candidate['zone_quality']=scanner.calculate_zone_trade_plan(zone,s,cfg,sys.modules[__name__],dominant,
-                analysis.get('full_context',{}),geometry=candidate)
-    analysis['admitted_plans']=copy.deepcopy(valid) if can_place else []
-    analysis['reaction_plans']=copy.deepcopy(valid) if can_place and entry_mode in ('LIVE_REACTION','HYBRID') and not active_plans(state) else []
-    if entry_mode=='HYBRID':
-        # A structural preview alone never creates a paper order: all ordinary
-        # planner, session, loss-cooldown, risk and direction checks already ran.
-        valid=[p for p in valid if p.get('zone_quality') and p['zone_quality']['score']>=65 and
-               p['zone_quality']['tactic']=='LIMIT' and not p['zone_quality']['risk_gate'] and
-               (not dominant or p['side']==dominant)]
-        if not valid and not busy and analysis['reaction_plans']:
-            action='WATCH_REACTION'
-    if entry_mode=='LIVE_REACTION':
-        # Static browser signals cannot acknowledge or persist an exchange fill.
-        # New plans stay unarmed hunting plans; never fabricate a PAPER fill.
-        can_place=False
-        if not busy and analysis['reaction_plans']:
-            action='WATCH_REACTION'
+    analysis['entry_mode'] = entry_mode
+    market = policy.market_regime(s, cfg.tick, sys.modules[__name__])
+    regime = market.get('state')
+    dominant = (1 if regime in ('BULLISH_ACTIVE', 'BULLISH_TREND') else
+                -1 if regime in ('BEARISH_ACTIVE', 'BEARISH_TREND') else 0)
+    confirmed = []
+    for candidate in valid:
+        zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
+        if dominant and candidate['side'] != dominant:
+            continue
+        if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
+            continue
+        if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
+                                        min_score=60, min_rr=1.40):
+            continue
+        assessment = scanner.calculate_zone_trade_plan(
+            zone, s, cfg, sys.modules[__name__], dominant, analysis.get('full_context', {}),
+            geometry=candidate, regime=regime)
+        if not assessment or assessment['score'] < 60 or assessment['tactic'] == 'OBSERVE':
+            continue
+        candidate['zone_quality'] = assessment
+        confirmed.append(candidate)
+    valid = confirmed
+    watch_allowed = can_place
+    if entry_mode == 'HYBRID':
+        valid = [p for p in confirmed if p['zone_quality']['tactic'] == 'LIMIT']
+    elif entry_mode == 'LIVE_REACTION':
+        can_place = False
     active=active_plans(state)
     pending=pending_plans(state)
     # The older router may have persisted many waiting orders. Do not admit
@@ -2255,6 +2259,19 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         action='META_REJECTED'
     elif direction_reason in ('LEGACY_OPPOSING_LIMITS_CANCELLING','DIRECTION_SWITCH_AWAITING_CANCEL','DIRECTION_AMBIGUOUS_CANCEL_PENDING'):
         action='CANCEL_LIMIT'
+    # Publish only plans that survived admission and the current portfolio lock.
+    # A valid reaction watch can be actionable without a placed paper order.
+    watch = []
+    if watch_allowed and not open_plans(state) and entry_mode in ('HYBRID', 'LIVE_REACTION'):
+        watches = [p for p in confirmed if p.get('action_type') != 'ACTIVE_ENTRY'
+                   and p.get('setup') != 'SESSION_MEAN_RECLAIM'
+                   and (entry_mode == 'LIVE_REACTION' or p['zone_quality']['tactic'] == 'REACTION_M5')]
+        watch_side, _, _ = policy.choose(watches, s.price, cfg.tick, cfg.conflict_margin)
+        watch = [p for p in watches if p['side'] == watch_side]
+        if watch:
+            action = 'WATCH_REACTION'
+    analysis['reaction_plans'] = copy.deepcopy(watch)
+    analysis['admitted_plans'] = copy.deepcopy(selected + watch)
     # Convert the market-ready state into the ACTUAL portfolio decision, so a
     # suppressed duplicate or a full book is never described as unexplained.
     tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
@@ -2480,6 +2497,9 @@ REASON_UA = {
     'SESSION_CLOSED':'наступна торгова сесія для 15m входу',
     'DATA_HOLD':'відновлення повних актуальних даних',
     'LIMIT_WOULD_CROSS_SPREAD':'поточні ASK/BID не дозволяють пасивний ліміт',
+    'SESSION_MEAN_LIMIT_DISABLED':'лімітні входи від середньої сесії вимкнено',
+    'MICRO_ZONE_EXCLUDED':'мікрозона без рівня старшого таймфрейму',
+    'RANGE_ZONE_TOO_CLOSE':'зона занадто близько до ціни в діапазоні',
     'LIMIT_UNREACHABLE':'рівень далі допустимої відстані у ATR',
     'INVALID_STRUCTURAL_FALSIFIER':'немає коректного рівня скасування сетапу',
     'ANCHOR_INVALIDATED':'структура сетапу порушена',
@@ -3217,7 +3237,8 @@ def main(core) -> int:
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
-                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity', 'test_v12_28_quant')
+                 'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity',
+                 'test_v12_28_quant', 'test_v12_29_quant')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

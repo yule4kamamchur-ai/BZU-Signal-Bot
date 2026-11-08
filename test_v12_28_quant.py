@@ -11,7 +11,12 @@ import full_limit_engine as engine
 import setup_scanner as scanner
 import live_terminal
 import entry_adverse_selection as adverse
-from test_v12_24_momentum import fixture, target_for, NOW
+from test_v12_24_momentum import fixture, target_for as legacy_targets, NOW
+
+
+def target_for(side):
+    entry = 74.50 if side == 1 else 75.50
+    return [{'level': entry + side * .78, 'kind': 'TEST_TP1'}, *legacy_targets(side)]
 
 
 class ZonePlanTests(unittest.TestCase):
@@ -32,9 +37,9 @@ class ZonePlanTests(unittest.TestCase):
             p=self.plan(z,side)
             self.assertAlmostEqual(p['entry'],99.03 if side==1 else 100.97)
             self.assertAlmostEqual(p['stop'],98.67 if side==1 else 101.33)
-            self.assertGreaterEqual(p['rr1'],1.45)
-            self.assertGreaterEqual(p['rr2'],2.4)
-            self.assertEqual(p['tp1_source'],'R_MULTIPLE_1_45')
+            self.assertGreaterEqual(p['rr1'],1.50-1e-8)
+            self.assertGreaterEqual(p['rr2'],2.20-1e-8)
+            self.assertEqual(p['tp1_source'],'R_MULTIPLE_1_50')
             self.assertGreater(side*(p['entry']-p['stop']),0)
 
     def test_wide_zone_uses_equilibrium_without_an_invented_distal_third(self):
@@ -69,12 +74,11 @@ class ZonePlanTests(unittest.TestCase):
         unknown=self.plan({**self.zone,'low':97.8,'high':98.,'known_ts':NOW-100*900_000})
         self.assertEqual(unknown['freshness'],'UNKNOWN_HISTORY')
 
-    def test_near_liquidity_is_not_skipped_to_manufacture_room(self):
-        p=self.plan(targets=[{'level':99.15,'kind':'NEAR_LIQUIDITY','known_ts':NOW}])
-        self.assertAlmostEqual(p['tp1'],99.14)
-        self.assertLess(p['rr1'],1.4)
+    def test_hard_barrier_blocks_target_projection(self):
+        p=self.plan(targets=[{'level':99.15,'kind':'NEAR_LIQUIDITY','known_ts':NOW,'hard_barrier':True}])
+        self.assertGreaterEqual(p['rr1'],1.50-1e-8)
         self.assertEqual(p['risk_gate'],'INSUFFICIENT_ROOM')
-        self.assertEqual(p['tactic'],'OBSERVE') # A high score cannot overrule a short target path.
+        self.assertEqual(p['tactic'],'OBSERVE')
         self.assertEqual(next(c for c in p['score_breakdown'] if c['criterion']=='ROOM_TO_RUN')['earned'],0)
 
     def test_existing_complete_geometry_is_frozen_and_partial_geometry_is_not_spliced(self):
@@ -113,7 +117,7 @@ class ZonePlanTests(unittest.TestCase):
         for z in out['zones']:
             self.assertTrue(all(isinstance(z[k],(int,float)) for k in ('entry','stop','tp1','tp2','score','rr1')))
             self.assertFalse(z['execution_admitted'])
-        self.assertIsNotNone(out['radar']['SHORT'])
+        self.assertIsNone(out['radar']['SHORT'])
         self.assertEqual(book,before)
         self.assertFalse(out['orders'])
         self.assertNotIn('SECRET',json.dumps(out))

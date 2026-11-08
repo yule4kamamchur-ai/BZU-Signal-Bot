@@ -8,7 +8,8 @@ import unittest
 import full_limit_engine as engine
 import live_terminal
 import setup_scanner as scanner
-from test_v12_24_momentum import fixture, target_for
+from test_v12_24_momentum import fixture
+from test_v12_28_quant import target_for
 
 
 class IntegrityTests(unittest.TestCase):
@@ -24,11 +25,11 @@ class IntegrityTests(unittest.TestCase):
                 'tp1':entry+side*.6,'tp2':entry+side*.9,'risk':.3,'score':score,'rating':'A',
                 'setup':'VALID_PLAN','quality':{'accepted':True,'reason':'ACCEPTED'},
                 'entry_zone':{'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','low':entry-.04,
-                              'high':entry+.04,'timeframe':'15m','known_ts':self.snap.now}}
+                              'high':entry+.04,'timeframe':'1H','known_ts':self.snap.now}}
 
-    def project(self,rows,mode='RANGE_LIQUIDITY_ROTATION'):
+    def project(self,rows,mode='RANGE_LIQUIDITY_ROTATION',admitted=True):
         with patch.object(engine.policy,'market_regime',return_value={'state':mode}),patch.object(engine,'atr',return_value=.5):
-            return live_terminal.build(self.book,self.snap,{'action':'WATCH','analysis':{'candidate_plans':rows}},self.cfg,engine)
+            return live_terminal.build(self.book,self.snap,{'action':'WATCH','analysis':{'candidate_plans':rows,'admitted_plans':rows if admitted else []}},self.cfg,engine)
 
     def test_reported_long_98_35_in_bear_fvg_is_rejected(self):
         damaged=self.row(1,98.35,53)
@@ -68,22 +69,23 @@ class IntegrityTests(unittest.TestCase):
     def test_weak_pattern_and_incomplete_plans_stay_reference_only(self):
         for variant in ('weak','pattern','missing','low_rr'):
             row=self.row()
-            if variant=='weak':row['score']=64.99
+            if variant=='weak':row['score']=59.99
             if variant=='pattern':row.pop('quality');row.pop('rating');row['reason']='ACCEPTED'
             if variant=='missing':row.pop('tp2')
             if variant=='low_rr':row['tp1']=row['entry']+.39
-            out=self.project([row])
+            out=self.project([row],admitted=variant!='pattern')
+            self.assertFalse(out['candidates'],variant)
             self.assertTrue(out['zones'],variant)
             for z in out['zones']:
                 self.assertTrue(all(isinstance(z[k],(int,float)) for k in ('entry','stop','tp1','tp2','score')))
                 self.assertEqual(z['score'],sum(c['earned'] for c in z['score_breakdown']))
 
     def test_exact_score_and_rr_boundaries_and_input_not_mutated(self):
-        row=self.row(score=65);row['tp1']=row['entry']+.3*1.35
+        row=self.row(score=60);row['tp1']=row['entry']+.3*1.40
         before=copy.deepcopy(row)
         out=self.project([row])
         self.assertEqual(len(out['candidates']),1)
-        self.assertGreaterEqual(out['candidates'][0]['rr1'],1.35-1e-8)
+        self.assertGreaterEqual(out['candidates'][0]['rr1'],1.40-1e-8)
         self.assertEqual(row,before)
 
     def test_bearish_primary_is_short_even_if_long_is_nearer_or_higher_score(self):
@@ -112,8 +114,8 @@ class IntegrityTests(unittest.TestCase):
         for side in (1,-1):
             row=self.row(side,100.)
             out=self.project([row])
-            self.assertTrue(out['zones'])
-            self.assertEqual(out['zones'][0]['map_state'],'AT_OR_THROUGH_ENTRY')
+            self.assertFalse(out['zones'])
+            self.assertFalse(out['candidates'])
 
     def test_closed_body_at_60_percent_removes_spent_zone(self):
         row=self.row(-1,100.2);row['entry_zone'].update(low=100.1,high=100.4,known_ts=self.snap.now-1_800_000)

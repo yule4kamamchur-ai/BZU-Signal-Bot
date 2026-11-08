@@ -1,4 +1,4 @@
-"""Allowlisted, read-only public projection for the v12.28 scored structural pre-plans and live tracking.
+"""Allowlisted, read-only public projection for the v12.29 actionable plans and live tracking.
 
 Candidate geometry is copied from the planner, never recalculated by the UI.
 Unassessed market zones remain explicitly unassessed, not zero-score signals.
@@ -14,6 +14,11 @@ RETIRED = frozenset({'ZONE_MITIGATED', 'ANCHOR_INVALIDATED', 'ANCHOR_TOO_OLD_TO_
 
 def numeric(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+
+
+def zone_rank(zone):
+    return (bool(zone.get('order_id')), bool(zone.get('engine_accepted')),
+            sum(numeric(zone.get(k)) for k in ('stop', 'tp1', 'tp2')), zone.get('score') or 0)
 
 
 def build(state, snapshot, result, cfg, engine):
@@ -57,47 +62,28 @@ def build(state, snapshot, result, cfg, engine):
     regime = engine.policy.market_regime(snapshot, cfg.tick, engine) if healthy else {}
     mode = {'BULLISH_TREND':'BULLISH_ACTIVE', 'BEARISH_TREND':'BEARISH_ACTIVE',
             'RANGE_LIQUIDITY_ROTATION':'RANGE'}.get(regime.get('state'), regime.get('state', 'UNKNOWN'))
-    zones, candidates = {}, {}
+    zones, context_zones = {}, []
     rejected = []
-    atr15 = engine.atr(snapshot.candles.get('15m', []))
+    atr15 = engine.atr([c for c in snapshot.candles.get('15m', [])
+                       if c.confirmed and c.ts + 900_000 <= snapshot.now])
     atr15 = atr15 if numeric(atr15) and atr15 > 0 else 0
     primary_side = 1 if mode == 'BULLISH_ACTIVE' else -1 if mode == 'BEARISH_ACTIVE' else 0
     minimum_spread = max(.65, 1.2 * atr15)
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
-    allowed_ids = ({p['id'] for p in analysis.get('admitted_plans', analysis.get('reaction_plans', []))}
-                   if entry_mode in ('LIVE_REACTION','HYBRID') else None)
-    zone_cache = {}
-    closed_five = engine.scanner.closed_five_minutes(snapshot)
+    admitted = analysis.get('admitted_plans', [])
+    admitted_rows = {id(plan) for plan in admitted}
 
     def reject(row, reason):
         rejected.append({'kind':(row.get('entry_zone') or row).get('kind'),
                          'side':row.get('side'),'entry':row.get('entry',row.get('level')),'reason':reason})
 
-    def zone_health(zone, side):
-        key = (zone.get('kind'), side, zone.get('low'), zone.get('high'), zone.get('known_ts'))
-        if key in zone_cache:
-            return zone_cache[key]
-        low, high = zone['low'], zone['high']
-        threshold = high-.6*(high-low) if side == 1 else low+.6*(high-low)
-        known = zone.get('known_ts')
-        known = known if numeric(known) else snapshot.now
-        # Closed bars only, after the zone became knowable; never the formation bar.
-        breached = any(c.confirmed and c.ts >= known and c.ts+900_000 <= snapshot.now and
-                      side*(c.close-threshold) <= 0 for c in snapshot.candles.get('15m', []))
-        breached = breached or any(c.ts >= known and side*(c.close-threshold) <= 0
-                                  for c in closed_five)
-        zone_cache[key] = not breached
-        return not breached
-
     def zone_data(zone, side):
         low, high = zone.get('low'), zone.get('high')
         known = zone.get('known_ts')
-        if (zone.get('mitigated') or side not in (-1, 1) or not zone.get('kind') or not numeric(low) or
-                not numeric(high) or not 0 < low < high or (numeric(known) and known > snapshot.now)):
-            return None
         if not engine.scanner.zone_direction_matches(zone, side):
             return None
-        if not zone_health(zone, side):
+        if engine.scanner.standalone_zone_error(
+                {**zone, 'side': side}, snapshot, cfg, engine, atr15, mode):
             return None
         result = {'kind': zone['kind'], 'timeframe': zone.get('timeframe'), 'side': side,
                   'low': low, 'high': high, 'known_ts': known, 'source_low':low, 'source_high':high}
@@ -130,11 +116,13 @@ def build(state, snapshot, result, cfg, engine):
                          entry=z['high'] if side == 1 else z['low'], entry_source='ZONE_BOUNDARY',
                          status='OBSERVING', reason='NO_EVALUATED_SETUP', stop=None, tp1=None, tp2=None)
                 zones[zone_key(z)] = distance(z)
+                if z['timeframe'] in ('15m', '1H'):
+                    context_zones.append({k: z[k] for k in ('id', 'kind', 'timeframe', 'side', 'low', 'high', 'known_ts')})
 
     # Low-detail paths first; real planner proposals take precedence. Never export internals.
     sources = [*analysis.get('watch', state.get('watch', [])),
                *analysis.get('setup_matrix', state.get('setup_matrix', [])),
-               *analysis.get('poi_paths', []), *analysis.get('candidate_plans', []), *plans]
+               *analysis.get('poi_paths', []), *analysis.get('candidate_plans', []), *admitted, *plans]
     for row in sources:
         side, reason = row.get('side'), row.get('reason', (row.get('quality') or {}).get('reason'))
         if side not in (-1, 1) or reason in RETIRED:
@@ -142,21 +130,23 @@ def build(state, snapshot, result, cfg, engine):
         raw_zone = row.get('entry_zone') or {}
         zone = zone_data(raw_zone, side)
         if raw_zone and not zone:
-            reject(row, 'ZONE_DIRECTION_MISMATCH' if not engine.scanner.zone_direction_matches(raw_zone, side) else 'ZONE_MITIGATED_OR_INVALID_RANGE')
+            reject(row, 'ZONE_DIRECTION_MISMATCH' if not engine.scanner.zone_direction_matches(raw_zone, side)
+                   else engine.scanner.standalone_zone_error(
+                {**raw_zone, 'side': side}, snapshot, cfg, engine, atr15, mode))
             continue
         if row.get('score_status') == 'UNAVAILABLE' or reason == 'SETUP_CONDITIONS_INCOMPLETE':
             continue
         entry = row.get('entry', row.get('level'))
         if not numeric(entry) or entry <= 0:
             continue
-        if not zone and row.get('status') in ('NO_SETUP', 'ERROR'):
+        if not zone:
             continue
         identity = row.get('source_strategy') or row.get('setup')
-        key = (*zone_key(zone), identity, entry) if zone else (identity, row.get('timeframe'), side, entry)
-        item = {**(zone or {}), 'id': engine.ident(*key), 'side': side,
+        key = (*zone_key(zone), identity, entry)
+        item = {**zone, 'id': engine.ident(*key), 'side': side,
                 'setup': row.get('source_strategy') or row.get('setup'),
                 'engine_plan_id':row.get('id'),
-                'engine_accepted':bool((row.get('quality') or {}).get('accepted') and (allowed_ids is None or row.get('id') in allowed_ids)),
+                'engine_accepted':id(row) in admitted_rows,
                 'timeframe': (zone or {}).get('timeframe') or row.get('timeframe'),
                 'entry': entry, 'entry_source': row.get('entry_source') or
                     ('PLANNER' if numeric(row.get('stop')) else 'ANCHOR'),
@@ -181,50 +171,20 @@ def build(state, snapshot, result, cfg, engine):
         if not is_managed and any(numeric(item.get(k)) and side*(item[k]-entry)<=0 for k in ('tp1','tp2')):
             reject(row, 'INVALID_TARGET_DIRECTION')
             continue
-        error = engine.scanner.candidate_plan_error(item)
-        if not numeric(item.get('known_ts')):
-            error = error or 'ZONE_TIME_UNKNOWN'
-        if item['status'] != 'CANDIDATE':
-            error = error or 'ENGINE_CONFIRMATION_REQUIRED'
-        if allowed_ids is not None and row.get('id') not in allowed_ids:
-            error = error or 'NOT_IN_FINAL_REACTION_PLANS'
-        if not atr15:
-            error = error or 'ATR_UNAVAILABLE'
-        if error:
-            item.update(status='REFERENCE', gate_reason=error, reaction_eligible=False)
-        else:
-            item.update(risk=side*(entry-item['stop']), rr1=side*(item['tp1']-entry)/(side*(entry-item['stop'])),
-                        status='CANDIDATE', reaction_eligible=True)
-        if zone and zone.get('refined') and not zone['low'] <= entry <= zone['high']:
-            item.update(status='REFERENCE',gate_reason='ENTRY_OUTSIDE_REFINED_ZONE',reaction_eligible=False)
-        if item.get('reaction_eligible') and (side*(snapshot.price-entry)<=cfg.tick/2 or
-                (zone['high']>snapshot.price if side==1 else zone['low']<snapshot.price)):
-            item.update(status='REFERENCE',gate_reason='ZONE_NOT_AHEAD_OF_PRICE',reaction_eligible=False)
         item['priority'] = 'PRIMARY' if not primary_side or side==primary_side else 'COUNTER_TREND'
-        if item.get('reaction_eligible') and primary_side and side != primary_side:
-            item.update(status='REFERENCE',gate_reason='BLOCKED_BY_TREND',reaction_eligible=False)
-        item['valid_until'] = min(row.get('expires_ts') or snapshot.now+27*60_000, snapshot.now+27*60_000)
-        if item['valid_until'] <= snapshot.now:
-            item.update(status='REFERENCE',gate_reason='EXPIRED',reaction_eligible=False)
+        item['valid_until'] = min(row.get('expires_ts') or snapshot.now + 27 * 60_000,
+                                  snapshot.now + 27 * 60_000)
         for order in orders:
-            if order['id'] == row.get('id') or (zone and order['side'] == side and zone['low'] <= order['entry'] <= zone['high']):
+            if order['id'] == row.get('id'):
                 item.update(status=order['status'], order_id=order['id'], entry_source='ORDER',
                             setup=order['setup'], score_source='CONTEXT', reason='ORDER_' + order['status'],
                             reason_text='чинний план за сигнальним журналом')
                 for field in ('entry', 'stop', 'tp1', 'tp2', 'risk', 'score', 'grade'):
                     item[field] = order.get(field)
                 break
-        ranks = {'OPEN':6, 'PENDING':5, 'CANCELLING':4, 'CANDIDATE':3, 'REFERENCE':1}
-        def rank(z):
-            return (ranks.get(z.get('status'), 0), sum(numeric(z.get(k)) for k in ('stop','tp1','tp2')), z.get('score') or 0)
-        previous_candidate = candidates.get(key, {})
-        if rank(item) < rank(previous_candidate):
-            continue
-        candidates[key] = distance(item)
-        if zone:
-            previous = zones.get(zone_key(zone), {})
-            if rank(item) >= rank(previous):
-                zones[zone_key(zone)] = item
+        previous = zones.get(zone_key(zone), {})
+        if zone_rank(item) >= zone_rank(previous):
+            zones[zone_key(zone)] = item
 
     # Every valid zone is planned independently of an executable setup's admission.
     # Whole geometries are copied or calculated; partial plans are never spliced.
@@ -234,27 +194,49 @@ def build(state, snapshot, result, cfg, engine):
     for original in zones.values():
         z=dict(original)
         order=by_order.get(z.get('order_id'))
-        geometry=dict(z)
-        if order and order['status']=='OPEN': geometry['stop']=order['initial_stop']
-        calc=engine.scanner.calculate_zone_trade_plan(z,snapshot,cfg,engine,primary_side,context,geometry)
+        geometry = dict(z) if order or z.get('engine_accepted') else None
+        if order and order['status'] == 'OPEN':
+            geometry['stop'] = order['initial_stop']
+        calc = engine.scanner.calculate_zone_trade_plan(
+            z, snapshot, cfg, engine, primary_side, context, geometry, regime=mode)
         if not calc:
             unplanned.append({'id':z['id'],'kind':z['kind'],'reason':'INSUFFICIENT_PLAN_DATA'})
             continue
         z.update(engine_score=original.get('score'),engine_reason=original.get('reason'))
         z.update(calc)
-        z['id']=engine.ident('ZONE_PLAN_V28',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
+        z['id']=engine.ident('ZONE_PLAN_V29',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
         z['priority']='PRIMARY' if not primary_side or z['side']==primary_side else 'COUNTER_TREND'
         z['execution_admitted']=bool(original.get('engine_accepted'))
-        gate=calc['risk_gate']
-        if primary_side and z['side']!=primary_side: gate=gate or 'BLOCKED_BY_TREND'
-        if z['side']*(snapshot.price-z['stop'])<=0: gate='STOP_BREACHED'
-        if z['score']<58: gate=gate or 'SCORE_BELOW_58'
-        z.update(gate_reason=gate,status='REFERENCE' if gate else 'CANDIDATE' if z['execution_admitted'] else 'PREPLAN',
-                 display_eligible=gate not in ('STOP_BREACHED','STOP_ALREADY_BREACHED') and z['priority']!='COUNTER_TREND',
-                 reaction_eligible=not bool(gate),map_state='AHEAD' if z['side']*(snapshot.price-z['entry'])>0 else 'AT_OR_THROUGH_ENTRY')
-        if gate: z['tactic']='OBSERVE'
+        gate = calc['risk_gate']
+        if z.get('setup') == 'SESSION_MEAN_RECLAIM':
+            gate = 'SESSION_MEAN_LIMIT_DISABLED'
+        if z['priority'] == 'COUNTER_TREND':
+            gate = 'BLOCKED_BY_TREND'
+        elif not healthy:
+            gate = 'DATA_HOLD'
+        elif z['side'] * (snapshot.price - z['entry']) <= cfg.tick / 2:
+            gate = 'ZONE_NOT_AHEAD_OF_PRICE'
+        elif z['valid_until'] <= snapshot.now:
+            gate = 'EXPIRED'
+        elif z['score'] < 60 or (z['execution_admitted'] and (z['engine_score'] or 0) < 60):
+            gate = 'SCORE_BELOW_60'
+        elif calc['impulse_blocked']:
+            gate = 'IMPULSE_CONFIRMATION_REQUIRED'
+        elif not z['execution_admitted'] or calc['plan_basis'] != 'ENGINE_GEOMETRY':
+            gate = gate or 'NOT_IN_FINAL_REACTION_PLANS'
+        elif engine.scanner.candidate_plan_error({**z, 'score_source': 'CONTEXT'},
+                                                min_score=60, min_rr=1.40):
+            gate = gate or 'INVALID_PLAN_GEOMETRY'
+        actionable = gate is None and order is None
+        z.update(gate_reason=gate, status='CANDIDATE' if actionable else 'REFERENCE',
+                 actionable=actionable, display_eligible=actionable, reaction_eligible=actionable,
+                 map_state='AHEAD' if z['side'] * (snapshot.price - z['entry']) > 0 else 'AT_OR_THROUGH_ENTRY')
+        if not actionable:
+            z['tactic'] = 'OBSERVE'
+        elif entry_mode == 'LIVE_REACTION':
+            z['tactic'] = 'REACTION_M5'
         if order:
             # Existing ledger contracts win over newly calculated previews.
             z['ledger_score']=order.get('score')
@@ -268,9 +250,9 @@ def build(state, snapshot, result, cfg, engine):
             z.update(order_id=order['id'],display_eligible=False,reaction_eligible=False,execution_admitted=True)
         planned.append(distance(z))
     all_zones=sorted(planned,key=lambda z:abs(z['distance']))
-    candidate_rows=[z for z in all_zones if z.get('display_eligible')]
+    candidate_rows=[z for z in all_zones if z['actionable']]
     def priority(z):
-        return (z.get('gate_reason') is not None,not z.get('reaction_eligible'),abs(z['distance']) if z.get('gate_reason') else -(z.get('score') or 0),-z['rr1'],abs(z['distance']))
+        return (-z['score'], abs(z['distance']), -z['rr1'])
     candidate_rows.sort(key=priority)
     radar={label:next((z for z in candidate_rows if z['side']==side),None) for label,side in (('LONG',1),('SHORT',-1))}
     left,right=radar['LONG'],radar['SHORT']
@@ -294,6 +276,18 @@ def build(state, snapshot, result, cfg, engine):
         item['reason_text'] = reasons.get(event.get('reason'), event.get('reason'))
         recent.append(item)
     recent.sort(key=lambda e: e['ts'])
+    last_closed = next((e for e in reversed(recent) if e['kind'] == 'CLOSED'), None)
+    def context_distance(zone):
+        return max(zone['low'] - snapshot.price, snapshot.price - zone['high'], 0)
+    # Only independently observed market bands may appear as quiet chart context.
+    context_zones = [z for z in context_zones
+                     if context_distance(z) <= engine.scanner.max_zone_distance(atr15, cfg)]
+    context_zones.sort(key=lambda z: (context_distance(z), z['timeframe'] != '1H'))
+    context_bands = []
+    for side in (1, -1):
+        nearest = next((z for z in context_zones if z['side'] == side), None)
+        if nearest:
+            context_bands.append(nearest)
 
     def candles(rows, step):
         return [{'time':c.ts//1000,'open':c.open,'high':c.high,'low':c.low,'close':c.close}
@@ -302,7 +296,7 @@ def build(state, snapshot, result, cfg, engine):
     system_mode = ('DATA_HOLD' if not healthy else 'ACTIVE' if any(o['status']=='OPEN' for o in orders) else
                    'PENDING' if any(o['status']=='PENDING' for o in orders) else
                    'CANCELLING' if orders else 'SCANNING')
-    return {'schema':1, 'cockpit_schema':3, 'version':engine.REPORT_RELEASE,
+    return {'schema':1, 'cockpit_schema':4, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
@@ -310,11 +304,12 @@ def build(state, snapshot, result, cfg, engine):
             'execution':'SIGNAL_LEDGER','daily':engine.day_stats(state,snapshot.now,cfg),
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),
             'recent_events':recent[-20:], 'last_event':recent[-1] if recent else None,
+            'last_closed':last_closed, 'context_bands':context_bands,
             'candidates':candidate_rows, 'plan_pool':all_zones, 'unplanned_zones':unplanned, 'radar':radar, 'primary_candidate_id':primary['id'] if primary else None,
             'primary_bias':primary_side,'atr15':atr15,'min_structural_spread':minimum_spread,
             'entry_mode':entry_mode,'reference_levels':reference_rows[:48],
             'candidate_rejections':rejected[:100],
-            'candidate_rules':{'min_score':58,'direct_min_score':65,'min_rr':1.4,'max_zone_atr':1.5,'mitigation_depth':.6},
+            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':1.4,'max_zone_atr':1.5,'mitigation_depth':.6},
             'reaction_config':{'retracement':max(.06,3*cfg.tick),'max_sample_gap_ms':15000,
                                'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25},
             'zones':sorted(all_zones,key=lambda z:abs(z['distance'])),

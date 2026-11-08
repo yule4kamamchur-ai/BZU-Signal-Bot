@@ -15,7 +15,8 @@ import portfolio_arbitration as arbitration
 import setup_scanner as scanner
 import signal_quality as quality
 import strategy_organics as organic
-from test_v12_24_momentum import NOW, STEP, anchor_for, fixture, target_for
+from test_v12_24_momentum import NOW, STEP, anchor_for, fixture
+from test_v12_28_quant import target_for
 
 
 class EntryTests(unittest.TestCase):
@@ -110,7 +111,7 @@ class ExitTests(unittest.TestCase):
         self.assertIsNotNone(plan, reason)
         return snap,cfg,plan
 
-    def test_htf_magnet_front_runs_level_without_requiring_a_runner(self):
+    def test_hard_htf_magnet_below_tp1_floor_blocks_the_new_plan(self):
         for side in (1, -1):
             snap,cfg,ctx = fixture(side)
             anchor = anchor_for(snap,cfg,ctx)
@@ -119,9 +120,8 @@ class ExitTests(unittest.TestCase):
             with patch.object(engine,'full_targets',return_value=[magnet]):
                 geometry, reason = bzu_policy.protected_targets(
                     ctx,snap,anchor,cfg,engine,entry,entry-side*risk,side,.3,False)
-            self.assertIsNotNone(geometry, reason)
-            self.assertAlmostEqual(geometry['tp1'],magnet['level'] - side*.03)
-            self.assertEqual(geometry['tp2'],geometry['tp1'])
+            self.assertIsNone(geometry)
+            self.assertEqual(reason, 'INSUFFICIENT_ROOM')
 
     def test_no_early_be_and_tp1_arms_two_cent_stop_for_runner(self):
         for side in (1, -1):
