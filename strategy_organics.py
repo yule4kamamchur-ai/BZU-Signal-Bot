@@ -228,4 +228,17 @@ def formations(snapshot, tick, engine):
         add('BREAKER_FLIP_15M', side, level, level - side * tick, extreme, level)
         add('DISPLACEMENT_CATCHER_15M', side, latest.close - side * .25 * body,
             latest.close - side * .30 * body, extreme, level)
+        # OTE uses the last confirmed counter-swing and the completed impulse extreme.
+        pivots = engine.pivots(rows[-16:-1], strength=1)
+        swing = next((p for p in reversed(pivots)
+                      if p['kind'] == ('LOW' if side == 1 else 'HIGH')
+                      and p['known_ts'] + step <= latest.ts), None)
+        origin = (min(extreme, swing['level']) if side == 1 else max(extreme, swing['level'])) if swing else extreme
+        tip = latest.high if side == 1 else latest.low
+        wave = side * (tip - origin)
+        if wave >= max(volatility, 12 * tick):
+            proximal = tip - side * .618 * wave
+            distal = tip - side * .705 * wave
+            if abs(proximal - distal) >= tick:
+                add('IMPULSE_OTE_15M', side, proximal, distal, origin, level)
     return result

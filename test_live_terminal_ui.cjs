@@ -95,7 +95,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.match(text('orders'),/Скануємо ринок/);
  // UI fields use text nodes even when a public label contains markup.
  ctx.injection='<img src=x onerror=alert(1)>';run('state.zones=[{...fixture.zones[0],kind:injection}];render();');
- assert.match(text('zones'),/<img src=x/);assert.equal(nodes.get('zones').children[0].children[0].children[0].tagName,'STRONG');
+ assert.doesNotMatch(text('zones'),/<img src=x/);assert.equal(nodes.get('zones').children[0].children[0].children[0].tagName,'STRONG');
 
  // A confirmed close, independent of subsequent diagnostic events, controls the red banner.
  run('state.last_closed={kind:"CLOSED",side:1,net_r:-1.15,ts:Date.now()-1000};render();');
@@ -113,7 +113,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
    ctx.scenario={...cleanFixture,price:100,snapshot_ts:clock.value,orders:[],candidates:[row],zones:[row],
      primary_bias:side,primary_candidate_id:row.id,radar:{LONG:side===1?row:null,SHORT:side===-1?row:null},
      reaction_config:{retracement:.06,min_samples:3,max_sample_gap_ms:15000,ready_ttl_ms:15000,max_chase_r:.25}};
-   run('state=scenario;stateError=false;quote=undefined;reactions.clear();invalidZones.clear();selectedPlanIds.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
+   run('state=scenario;stateError=false;quote=undefined;reactions.clear();m5Proofs.clear();invalidZones.clear();selectedPlanIds.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
    return row;
  };
  const feed=(price,step=3000)=>{
@@ -173,7 +173,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  // Axis labels closer than 20 screen pixels are suppressed; exact levels remain in the text legend.
  reset();feed(100);const shown=priceLines.filter(x=>x.axisLabelVisible).map(x=>series.priceToCoordinate(x.price));
  for(let i=0;i<shown.length;i++)for(let j=i+1;j<shown.length;j++)assert.ok(Math.abs(shown[i]-shown[j])>=20);
- assert.match(text('chart-levels'),/SL/);
+ assert.match(text('chart-levels'),/СТОП-ЛОС/);
  // An admitted B+ plan can prove a fresh local reaction.
  const approvedReaction=(side=1)=>{
    const row=reset(side);Object.assign(row,{score:60,grade:'B+',timeframe:'15m',score_source:'ZONE_HEURISTIC',score_model:'ZONE_5_FACTOR_V2',
@@ -189,13 +189,13 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  ctx.second=second;run('state.plan_pool.push(second);state.zones.push(second);');
  feed(100);assert.equal(run('radarRows()[1].id'),first.id);
  feed(100.71);assert.equal(run('radarRows()[1].id'),'higher-resistance');
- assert.match(text('radar'),/101.30/);assert.ok(priceLines.some(l=>l.title.includes('SL')&&Math.abs(l.price-101.7)<.0001));
+ assert.match(text('radar'),/101.30/);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&Math.abs(l.price-101.7)<.0001));
  assert.match(text('zones'),/SL ПРОБИТО/);
  // The same invalidated zone cannot reappear simply because the quote returns below it.
  feed(100.2);assert.equal(run('radarRows()[1].id'),'higher-resistance');
  // A weak or blocked plan remains in the table and cannot add chart lines.
  const weak=approvedReaction();weak.score=40;weak.grade='C';weak.tactic='OBSERVE';weak.reaction_eligible=false;
- feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостерігаємо за зоною/);assert.doesNotMatch(text('zones'),/40\/100/);
+ feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостерігаємо за зоною/);assert.match(text('zones'),/40\/100/);
  assert.equal(priceLines.length,0);
  // With no pending order, repeated renders never toggle the near-limit class by passing undefined.
  approvedReaction();feed(100);for(let i=0;i<5;i++)run('render()');assert.equal(nodes.get('state-banner').classList.contains('near'),false);
@@ -204,8 +204,8 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  // Null, blank, boolean and zero API fields do not become valid quote numbers.
  reset();for(const value of [null,'',false,'0','   ']){ctx.badQuote={instId:'BZ-USDT-SWAP',last:value,ts:String(clock.value)};assert.equal(run('acceptTicker(badQuote)'),false);}
  // The main plan's exact Entry, SL and TP1 are drawn even while Entry is near the live quote.
- approvedReaction();feed(99.73);assert.ok(priceLines.some(l=>l.title.includes('SL')&&l.axisLabelVisible));
- assert.ok(priceLines.some(l=>l.title.includes('TP1')&&l.axisLabelVisible));
+ approvedReaction();feed(99.73);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&l.axisLabelVisible));
+ assert.ok(priceLines.some(l=>l.title.includes('ТЕЙК-ПРОФІТ 1')&&l.axisLabelVisible));
  assert.ok(priceLines.some(l=>Math.abs(l.price-99.7)<.0001&&l.axisLabelVisible));
  // A high-score plan with a valid shape but no admission must remain hidden.
  approvedReaction();run('state.plan_pool[0].actionable=false;render();');
@@ -215,9 +215,42 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  approvedReaction();run('delete state.plan_pool[0].formation_volume;state.plan_pool[0].gate_reason="FORMATION_VOLUME_REQUIRED";render();');
  assert.equal(priceLines.length,0);assert.equal(run('radarRows().filter(Boolean).length'),0);
  assert.match(text('zones'),/бракує підтвердження обсягом/);
- assert.doesNotMatch(text('zones'),/FORMATION_VOLUME_REQUIRED|Довідковий план|60\/100/);
+ assert.doesNotMatch(text('zones'),/FORMATION_VOLUME_REQUIRED|Довідковий план/);
  // The context bands are rendered as zones only, with no entry/stop/target levels.
  run('state.context_bands=[{id:"context",side:1,kind:"DEMAND_OB",timeframe:"1H",low:98.8,high:99.1}];render();');
  assert.equal(run('visibleZones().length'),1);assert.equal(priceLines.length,0);
+ // v12.30 exposes actionable and reference layers independently.
+ const primaryRef=reset(1,{actionable:false,score:59,grade:'C',risk:.4,rr1:2,rr2:3,
+   gate_reason:'FORMATION_VOLUME_REQUIRED',tp1_source:'QUOTE_REFERENCE'});
+ const reserveRef={...primaryRef,id:'reserve',kind:'DEMAND_OB',entry:98.7,low:98.6,high:98.8,
+   stop:98.3,tp1:99.5,tp2:99.9};
+ const opposite={...primaryRef,id:'opposite',kind:'SUPPLY_OB',side:-1,entry:100.6,low:100.5,high:100.7,
+   stop:101,tp1:99.8,tp2:99.4,gate_reason:'BLOCKED_BY_TREND'};
+ ctx.refRows=[primaryRef,reserveRef,opposite];
+ run('state.cockpit_schema=5;state.plan_pool=refRows;state.zones=refRows;state.watch_levels={LONG:refRows[0].id,SHORT:"opposite"};state.reserve_levels={LONG:"reserve"};render();');
+ assert.match(text('state-title'),/ОРІЄНТИР LONG ВІД 99.70/);
+ assert.match(text('state-detail'),/ціна зліпка/);
+ assert.match(text('radar'),/Резерв нижче.*98.70/);
+ assert.match(text('radar'),/100.60.*Лімітка проти тренду заборонена/);
+ assert.equal(priceLines.length,0);assert.equal(run('reactionRows().length'),0);
+ const watchCopy=document.querySelectorAll('[data-focus]').find(x=>x.dataset.focus==='copy-'+primaryRef.id+'-entry');
+ await nodes.get('radar').listeners.click({target:watchCopy});assert.equal(clipboard,'99.70');
+
+ // A newly opened tab already inside the zone still waits for a closed M5.
+ const boundary=Math.floor(clock.value/300000)*300000+300000;
+ clock.value=boundary+2000;
+ reset(1,{entry_condition:'IN_ZONE_M5_RECLAIM',known_ts:boundary-900000},true);
+ run('state.cockpit_schema=5;state.plan_pool=state.candidates;');
+ feed(99.74,1000);assert.equal(stage(),'TOUCHED');
+ const row=(ts,open,high,low,close,confirmed)=>[ts,open,high,low,close,100,0,0,confirmed?'1':'0'].map(String);
+ const previous=row(boundary-600000,99.82,99.87,99.70,99.74,true);
+ const last=row(boundary-300000,99.72,99.80,99.62,99.77,false);
+ ctx.fetch=async()=>({ok:true,json:async()=>({code:'0',data:[last,previous]})});
+ await run('pollM5()');assert.notEqual(stage(),'READY');
+ last[8]='1';await run('pollM5()');assert.equal(stage(),'READY');
+ assert.match(text('alert'),/Відбій із тінню M5/);
+ assert.equal(run('state.orders.length'),0);
+ const observed=run('m5Proofs.size');await run('pollM5()');assert.equal(run('m5Proofs.size'),observed);
+ feed(99.95,1000);assert.notEqual(stage(),'READY');
  console.log('PASS: offline UI lifecycle, actionable radar, chart cleanup and reaction scenarios.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

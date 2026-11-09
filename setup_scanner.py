@@ -26,10 +26,10 @@ ZONE_DIRECTION = {
 DIRECTIONAL_FORMATIONS = frozenset({'CONFIRMED_FVG', 'BREAKER_FLIP_15M',
     'MOMENTUM_STAIRCASE_15M', 'DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M', 'STRUCTURAL_LEVEL', 'SESSION_SWEEP_ENGULFING',
-    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB'})
+    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB', 'IMPULSE_OTE_15M'})
 PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'zone_origin', 'approach', 'session_gate', 'planning_policy', 'entry_checks',
-    'confluence', 'ict_evidence', 'rating', 'grade')
+    'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition')
 
 
 def zone_direction_matches(zone, side):
@@ -95,12 +95,13 @@ def standalone_zone_error(zone, snapshot, cfg, engine, atr15, regime):
     side = zone.get('side')
     if not zone_direction_matches(zone, side):
         return 'ZONE_DIRECTION_MISMATCH'
-    threshold = high - .6 * (high - low) if side == 1 else low + .6 * (high - low)
+    # Penetration is a test. A closed body through the distal edge invalidates it.
+    threshold = low if side == 1 else high
     timeframes = set(('15m', timeframe))
     closed_rows = (c for tf in timeframes for c in snapshot.candles.get(tf, [])
                    if c.confirmed and known <= c.ts and c.ts + engine.TF[tf] <= snapshot.now)
-    if (zone.get('mitigated') or any(side * (c.close - threshold) <= 0 for c in closed_rows)
-            or any(c.ts >= known and side * (c.close - threshold) <= 0
+    if (zone.get('mitigated') or any(side * (c.close - threshold) < -1e-8 for c in closed_rows)
+            or any(c.ts >= known and side * (c.close - threshold) < -1e-8
                    for c in closed_five_minutes(snapshot))):
         return 'ZONE_MITIGATED'
     distance = max(low - snapshot.price, snapshot.price - high, 0)
@@ -133,6 +134,48 @@ def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
     return stop, risk, safe
 
 
+def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None):
+    """Work inside the native zone without shrinking its structural falsifier."""
+    width = high - low
+    wide = width > .45 + 1e-8 or width > .80 * atr15 + 1e-8
+    inside = low <= price <= high
+    distal, proximal = (low, high) if side == 1 else (high, low)
+    depth_prices = [(distal + side * width * fraction, basis)
+                    for fraction, basis in ((.50, 'EQUILIBRIUM'), (.35, 'DISTAL_35'), (.25, 'DISTAL_25'))]
+    if inside:
+        if side * (price - distal) <= width / 3:
+            depth_prices.insert(0, (price - side * .05, 'INSIDE_NEAR_QUOTE'))
+        choices = depth_prices
+    elif wide:
+        choices = depth_prices[:2]
+    else:
+        first = preferred if preferred is not None else proximal + side * .03
+        choices = [(first, 'DETECTOR_LEVEL' if preferred is not None else 'PROXIMAL_PLUS_0_03'), *depth_prices]
+    # In a shallow zone near the distal edge the only passive tick may be its boundary.
+    if inside:
+        choices = choices + [(distal, 'DISTAL_EDGE')]
+    fallback = None
+    for raw, basis in choices:
+        if (inside or basis != 'PROXIMAL_PLUS_0_03') and not low - 1e-8 <= raw <= high + 1e-8:
+            continue
+        entry = engine.round_tick(round(raw, 10), cfg.tick, up=(side == 1 and not inside) or (side == -1 and inside))
+        if inside and (not low - 1e-8 <= entry <= high + 1e-8 or side * (price - entry) < cfg.tick - 1e-8):
+            continue
+        stop, risk, safe = normalized_zone_stop(entry, structural, side, atr15, cfg, engine)
+        if safe:
+            return entry, stop, risk, basis, wide, inside
+        fallback = (entry, basis)
+    if fallback is None:
+        fallback = (engine.round_tick(round(distal, 10), cfg.tick, up=side == 1), 'DISTAL_EDGE')
+    entry, basis = fallback
+    floor, _ = zone_risk_bounds(atr15, cfg)
+    # Show the real required protection in a reference plan even when it exceeds the cap.
+    buffer = max(cfg.tick, .25 * atr15)
+    needed = max(floor, side * (entry - structural) + buffer)
+    stop = engine.round_tick(round(entry - side * needed, 10), cfg.tick, up=side == -1)
+    return entry, stop, side * (entry - stop), basis, wide, inside
+
+
 def structural_target_price(target, now, side, tick, engine):
     """Front-run a known structural level by one tick."""
     if not isinstance(target, dict):
@@ -145,7 +188,7 @@ def structural_target_price(target, now, side, tick, engine):
     return engine.round_tick(round(level - side * tick, 10), tick, up=side == -1)
 
 
-def zone_targets(entry, risk, side, targets, now, tick, engine):
+def zone_targets(entry, risk, side, targets, now, tick, engine, quote=None):
     """Select the first eligible buffered targets and keep hard barriers causal."""
     levels = []
     for target in targets:
@@ -159,17 +202,24 @@ def zone_targets(entry, risk, side, targets, now, tick, engine):
     barrier = next((row for row in levels if row[2].get('hard_barrier')), None)
     reachable = [row for row in levels if barrier is None or row[0] <= barrier[0]]
     first = next((row for row in reachable if row[0] >= 1.40 * risk - 1e-8), None)
-    tp1 = first[1] if first else engine.round_tick(round(entry + side * 1.50 * risk, 10), tick, up=side == 1)
+    quote_price = (engine.round_tick(quote, tick, up=side == -1)
+                   if isinstance(quote, (int, float)) and isfinite(quote) else None)
+    quote_reachable = (quote_price is not None and side * (quote_price - entry) >= 1.40 * risk - 1e-8
+                       and (barrier is None or side * (quote_price - entry) <= barrier[0]))
+    projection = engine.round_tick(round(entry + side * 1.50 * risk, 10), tick, up=side == 1)
+    tp1 = first[1] if first else quote_price if quote_reachable else projection
     second = next((row for row in reachable
                    if row[0] >= 2.20 * risk - 1e-8 and side * (row[1] - tp1) >= tick - 1e-8), None)
     tp2 = second[1] if second else engine.round_tick(
         round(entry + side * max(2.20 * risk, side * (tp1 - entry) + tick), 10), tick, up=side == 1)
     return {'tp1': tp1, 'tp2': tp2,
-            'tp1_source': first[2].get('kind', 'STRUCTURE') if first else 'R_MULTIPLE_1_50',
+            'tp1_source': first[2].get('kind', 'STRUCTURE') if first else
+                          'QUOTE_REFERENCE' if quote_reachable else 'R_MULTIPLE_1_50',
             'tp2_source': second[2].get('kind', 'STRUCTURE') if second else 'R_MULTIPLE_2_20',
             'tp1_alignment': first[2] if first else None,
             'tp2_alignment': second[2] if second else None,
             'structural_tp1': first is not None, 'structural_tp2': second is not None,
+            'barrier_price': barrier[1] if barrier else None,
             'path_clear': barrier is None or side * (tp1 - entry) <= barrier[0] + 1e-8}
 
 
@@ -192,20 +242,19 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     a=engine.atr(closed15)
     if not valid(a) or a<=0:
         return None
-    if standalone_zone_error(zone, snapshot, cfg, engine, a, regime):
+    zone_error = standalone_zone_error(zone, snapshot, cfg, engine, a, regime)
+    if zone_error and zone_error != 'RANGE_ZONE_TOO_CLOSE':
         return None
-    wide = high - low > 1.5 * a
-    entry = engine.round_tick(round((low + high) / 2 if wide else
-                             (high if side == 1 else low) + side * .03, 10), tick, up=side == 1)
     distal = low if side == 1 else high
-    # Use a confirmed swing outside the zone when it fits the risk cap.
-    swings = [point['level'] for point in engine.pivots(closed15)
-              if point['kind'] == ('LOW' if side == 1 else 'HIGH')
-              and point['known_ts'] + 900_000 <= known
-              and side * (distal - point['level']) >= 0
-              and side * (entry - point['level']) <= zone_risk_bounds(a, cfg)[1] - tick]
-    structural = min(swings, key=lambda level: abs(level - distal), default=distal)
-    stop, risk, safe = normalized_zone_stop(entry, structural, side, a, cfg, engine)
+    near_swings = [point['level'] for point in engine.pivots(closed15)
+                   if point['kind'] == ('LOW' if side == 1 else 'HIGH')
+                   and point['known_ts'] + 900_000 <= known
+                   and 0 <= side * (distal - point['level']) <= .25 * a]
+    structural = min(near_swings, key=lambda level: abs(level - distal), default=distal)
+    entry, stop, risk, basis, wide, inside = zone_entry_geometry(
+        low, high, snapshot.price, structural, side, a, cfg, engine)
+    floor, cap = zone_risk_bounds(a, cfg)
+    safe = floor - 1e-8 <= risk <= cap + 1e-8
     frozen = False
     if geometry and all(valid(geometry.get(k)) and geometry[k] > 0 for k in ('entry', 'stop', 'tp1', 'tp2')):
         ge, gs, g1, g2 = (geometry[k] for k in ('entry', 'stop', 'tp1', 'tp2'))
@@ -222,7 +271,8 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         return None
     available = (engine.full_targets(context or {}, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
                  if targets is None else targets)
-    destination = zone_targets(entry, risk, side, available, snapshot.now, tick, engine)
+    destination = zone_targets(entry, risk, side, available, snapshot.now, tick, engine,
+                               quote=snapshot.price if not frozen else None)
     if frozen:
         tp1, tp2 = geometry['tp1'], geometry['tp2']
         tp1_source = tp2_source = 'ENGINE_PLAN'
@@ -246,7 +296,9 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     departure=[c for c in rows if known-2*step<=c.ts<known+3*step]
     displacement=('FVG' in zone['kind'] or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
-    room = rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8 and destination['path_clear']
+    barrier = destination['barrier_price']
+    room = (rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8 and
+            (barrier is None or side * (tp1 - barrier) <= 1e-8))
     if frozen:
         structural_tp1 = structural_target_price(
             geometry.get('tp1_alignment'), snapshot.now, side, tick, engine) == round(tp1, 10)
@@ -263,23 +315,32 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     import entry_adverse_selection as adverse
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
-    gate=('STOP_ALREADY_BREACHED' if stop_breached else
-          'STOP_OUTSIDE_RISK_BOUNDS' if not safe else
+    gate=('STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
+          'RISK_BELOW_FLOOR' if risk < floor - 1e-8 else
+          'RISK_TOO_WIDE' if not safe else
+          zone_error if zone_error else
           'INSUFFICIENT_ROOM' if not room else
           'DISTANT_ZONE' if abs(snapshot.price-entry)>max_zone_distance(a,cfg)+tick else
           'FORMATION_VOLUME_REQUIRED' if not volume['confirmed'] else
           'STRUCTURAL_TP1_REQUIRED' if not structural_tp1 else
           'STRUCTURAL_TP2_REQUIRED' if not structural_tp2 else None)
+    breaker = m5_breaker(zone, snapshot, tick)
+    reaction_only = inside or bool(breaker) or bool((geometry or {}).get('reaction_only'))
+    condition = ('IN_ZONE_M5_RECLAIM' if inside else 'M5_BREAKER_RETEST' if breaker else
+                 (geometry or {}).get('entry_condition', 'RETEST'))
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
         'score':score,'grade':'A' if score>=65 else 'B+' if score>=60 else 'C',
         'score_source':'ZONE_HEURISTIC','score_model':'ZONE_5_FACTOR_V2',
         'score_cap':score_cap, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
-        'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else 'EQUILIBRIUM' if wide else 'PROXIMAL_PLUS_0_03',
+        'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else basis, 'in_zone':inside,
+        'entry_condition':condition, 'm5_breaker':breaker,
+        'risk_floor':floor, 'risk_cap':cap, 'target_barrier':barrier,
         'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
         'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),
-        'tactic':'OBSERVE' if gate or brake['blocked'] else 'LIMIT' if score>=65 and not brake['blocked'] else 'REACTION_M5' if score>=60 else 'OBSERVE',
+        'tactic':('OBSERVE' if gate or brake['blocked'] or score < 60 else
+                  'REACTION_M5' if reaction_only or score < 65 else 'LIMIT'),
         'calculated_ts':snapshot.now}
 
 
@@ -307,6 +368,27 @@ def closed_five_minutes(snapshot):
             low=min(c.low for c in bars), close=bars[-1].close,
             volume=sum(c.volume for c in bars), confirmed=True))
     return result
+
+
+def m5_breaker(zone, snapshot, tick):
+    """A closed M5 body break inside a native zone, usable only as timing evidence."""
+    rows = closed_five_minutes(snapshot)[-12:]
+    side = zone['side']
+    step = 300_000
+    for i in range(len(rows) - 1, 2, -1):
+        previous = rows[i - 3:i]
+        bar = rows[i]
+        known = bar.ts + step
+        if known <= zone['known_ts'] or snapshot.now - known > 3 * step:
+            break
+        if any(y.ts - x.ts != step for x, y in zip(previous, [*previous[1:], bar])):
+            continue
+        level = (max(c.high for c in previous) if side == 1 else min(c.low for c in previous))
+        if not zone['low'] <= level <= zone['high']:
+            continue
+        if side * (bar.open - level) <= tick / 2 and side * (bar.close - level) >= tick:
+            return {'level': level, 'known_ts': known, 'side': side}
+    return None
 
 
 def event_rvol(snapshot, timeframe, known_ts):
@@ -394,7 +476,7 @@ def closed_reaction(snapshot, side, zone, touch_ts):
     return None
 
 
-ORGANIC_MOMENTUM = frozenset({'BREAKER_FLIP_15M', 'DISPLACEMENT_CATCHER_15M'})
+ORGANIC_MOMENTUM = frozenset({'BREAKER_FLIP_15M', 'DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M'})
 
 ORGANIC_REVERSAL = 'SESSION_SWEEP_ENGULFING_15M'
 ORGANIC_FORMATIONS = ORGANIC_MOMENTUM | {ORGANIC_REVERSAL}
@@ -409,7 +491,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         side = setup['side']
         family = setup['family']
         proximal = zone['high'] if side == 1 else zone['low']
-        raw_entry = (zone['low'] + zone['high']) / 2 if family == 'DISPLACEMENT_CATCHER_15M' else proximal
+        raw_entry = (zone['low'] + zone['high']) / 2 if family in ('DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M') else proximal
         entry = engine.round_tick(round(raw_entry + cfg.tick/2, 10), cfg.tick)
         if family == ORGANIC_REVERSAL:
             name = 'SWEEP_RECLAIM' if side == 1 else 'LIQUIDITY_SWEEP_REVERSAL_SHORT'

@@ -13,7 +13,7 @@ let state, quote, chart, series, chartRequest = () => {}, priceLines = [], frame
 let history = [], currentBar, lastSampleTime = 0, audio, sound = false, feedError = false;
 let socket, socketAttempt = 0, socketPing;
 let selectedZone = null;
-const reactions=new Map();
+const reactions=new Map(), m5Proofs=new Map();
 const invalidZones=new Set(), selectedPlanIds=new Map();
 let m5Market=null, previousLiveSample=null, velocity=null, m5Busy=false;
 let stateError = false, stateBusy = false, tickerBusy = false, candlesBusy = false;
@@ -130,7 +130,7 @@ function distanceText(entry, price) {
     ' · ' + Math.round(Math.abs(d) / (state.tick || .01)) + ' тіків';
 }
 function scoreText(row) {
-  return number(row.score) ? formatScore(row.score) + '/100' + (row.grade ? ' ' + row.grade : '') : 'Не оцінено';
+  return number(row.score) ? formatScore(row.score) + '/100' + (row.grade ? ' ' + row.grade : '') : '—';
 }
 const formatScore = n => Number(n.toFixed(1)).toString();
 function statusText(row, price) {
@@ -150,8 +150,15 @@ function statusText(row, price) {
     FORMATION_VOLUME_REQUIRED: 'Імпульсу бракує підтвердження обсягом',
     STRUCTURAL_TP1_REQUIRED: 'Бракує структурної цілі для часткової фіксації',
     STRUCTURAL_TP2_REQUIRED: 'Бракує наступної структурної цілі',
-    INSUFFICIENT_ROOM: 'До цілі замало простору',
-    STOP_OUTSIDE_RISK_BOUNDS: 'Для стопа за структурою замало допустимого ризику',
+    INSUFFICIENT_ROOM: number(row.target_barrier) ?
+      'Перешкода біля ' + format(row.target_barrier) + ' обмежує шлях до цілі' :
+      'Відстані до цілей поки не покривають потрібне співвідношення до ризику',
+    RISK_TOO_WIDE: 'Структурний стоп потребує ' + format(row.risk) + ' $, ліміт ' + format(row.risk_cap) + ' $',
+    RISK_BELOW_FLOOR: 'Стоп вужчий за мінімум ' + format(row.risk_floor) + ' $',
+    STOP_OUTSIDE_RISK_BOUNDS: 'Структурний стоп поза межами ризику',
+    RANGE_ZONE_TOO_CLOSE: 'У діапазоні рівень надто близько до ціни',
+    NOT_IN_FINAL_REACTION_PLANS: 'Чекаємо підтвердження умов допуску',
+    SCORE_BELOW_60: 'Сетап поки не набрав 60 балів',
     BLOCKED_BY_TREND: 'Зона проти поточного тренду',
     DISTANT_ZONE: 'Зона поки далеко від ціни',
     ZONE_NOT_AHEAD_OF_PRICE: 'Ціна вже пройшла точку входу',
@@ -168,7 +175,7 @@ function validCandidate(row) {
     SUPPLY_OB:-1,FVG_BEAR:-1,BEARISH_BREAKER:-1,BEAR_BREAKER:-1,BREAKER_BEAR:-1,SWEEP_HIGH:-1,IFVG_BEAR:-1};
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
-    'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB'];
+    'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
@@ -215,8 +222,8 @@ function radarRows(price = displayedPrice()) {
     const choices = poolRows().filter(row => row.side === side && actionablePlan(row, price));
     // A witnessed touch owns the live check until resolved; do not chase another zone mid-rejection.
     const held=choices.find(row=>selectedPlanIds.get(side)===row.id&&['TOUCHED','READY'].includes(livePlanState(row,price)));
-    choices.sort((a,b) => b.score - a.score ||
-      Math.abs(a.entry - price) - Math.abs(b.entry - price) || b.rr1 - a.rr1);
+    choices.sort((a,b) => Math.abs(a.entry - price) - Math.abs(b.entry - price) ||
+      b.score - a.score || b.rr1 - a.rr1);
     const selected=held??choices[0]??null;
     if (selected) selectedPlanIds.set(side,selected.id); else selectedPlanIds.delete(side);
     return selected;
@@ -230,7 +237,7 @@ function mainPlan(rows=radarRows().filter(Boolean)) {
   return rows.find(r=>r.id===state.primary_candidate_id)||rows.find(r=>r.side===state.primary_bias)||[...rows].sort((a,b)=>b.score-a.score)[0]||null;
 }
 function reactionRows() {
-  if (state.cockpit_schema !== 4 || state.orders.some(o=>o.status==='OPEN') || !ready(Date.now())) return [];
+  if (![4,5].includes(state.cockpit_schema) || state.orders.some(o=>o.status==='OPEN') || !ready(Date.now())) return [];
   let rows=radarRows().filter(r=>r?.reaction_eligible);
   for (const order of state.orders) {
     if (order.status!=='PENDING' || order.expires_ts<=Date.now()) continue;
@@ -279,9 +286,14 @@ function updateReaction(row, market) {
   }
   if (t.stage==='READY') {
     if (market.ts-t.readyTs>(cfg.ready_ttl_ms??15000) || row.side*(price-row.entry)>(cfg.max_chase_r??.25)*risk ||
-        row.side*(price-t.readyPrice)<-tick) {
+        row.side*(price-t.readyPrice)<-tick || (state.cockpit_schema === 5 && !m5QuotePlan(row, price))) {
       t.stage='MISSED';t.message='Реакція втратила актуальність. Не наздоганяємо ціну.';
     }
+    return t;
+  }
+  if (state.cockpit_schema === 5) {
+    t.stage = row.low <= price && price <= row.high ? 'TOUCHED' : 'ARMED';
+    t.message = 'Чекаємо закриття M5 з відбоєм, поглинанням або ретестом зламу.';
     return t;
   }
   const outside=row.side*(price-proximal)>0;
@@ -350,7 +362,7 @@ function reactionPresentation(usable, live) {
   const expired=t.stage==='READY' && (Date.now()-t.readyTs>(state.reaction_config?.ready_ttl_ms??15000)||Math.floor(Date.now()/300000)!==t.bucket);
   const stage=expired?'MISSED':t.stage;
   return {stage,row,tracker:t,title:({UNARMED:'Чекаємо свіжий підхід',ARMED:'План підготовлено · чекаємо дотик',
-    TOUCHED:'У ЗОНІ · чекаємо реакцію M5',READY:'🎯 СНАЙПЕРСЬКИЙ СИГНАЛ · LIVE РЕАКЦІЯ M5',INVALID:'ЛОКАЛЬНИЙ ВХІД ЗАБЛОКОВАНО',
+    TOUCHED:'У ЗОНІ · чекаємо реакцію M5',READY:state.cockpit_schema === 5 ? 'РЕАКЦІЮ M5 ПІДТВЕРДЖЕНО' : '🎯 СНАЙПЕРСЬКИЙ СИГНАЛ · LIVE РЕАКЦІЯ M5',INVALID:'ЛОКАЛЬНИЙ ВХІД ЗАБЛОКОВАНО',
     MISSED:'Вікно реакції минуло'})[stage],detail:expired?'Не наздоганяємо ціну після завершення вікна реакції.':t.message};
 }
 function renderReaction(usable,live) {
@@ -364,21 +376,141 @@ function renderReaction(usable,live) {
   if (view.stage==='READY') $('reaction-detail').textContent+=' '+sideLabel(view.row.side)+' @ '+format(view.tracker.readyPrice)+
     ' | SL '+format(view.row.stop)+' | TP1 '+format(view.row.tp1)+' | TP2 '+format(view.row.tp2)+' | R:R '+view.tracker.rr.toFixed(2);
 }
+function closedM5Pattern(row, bars, tick) {
+  const last = bars.at(-1), prev = bars.at(-2);
+  if (!last || !prev || last.ts - prev.ts !== 300000 || last.ts < row.known_ts ||
+      last.low > row.high || last.high < row.low ||
+      row.side * (last.close - row.entry) < tick - 1e-8 ||
+      row.side * ((row.side === 1 ? last.low : last.high) - row.stop) <= 0 ||
+      row.side * (last.close - last.open) <= 0) return null;
+  const side = row.side;
+  const wick = side === 1 ? Math.min(last.open, last.close) - last.low :
+    last.high - Math.max(last.open, last.close);
+  if (wick >= Math.max(.06, 3*tick) - 1e-8 && wick >= .35 * (last.high - last.low)) return 'Відбій із тінню';
+  if (side * (prev.close - prev.open) < 0 && side * (last.open - prev.close) <= tick &&
+      side * (last.close - prev.open) >= tick - 1e-8) return 'Поглинання';
+  const prior = bars.slice(-5,-2);
+  const contiguous = prior.length === 3 && [prior[1],prior[2],prev].every((bar,i)=>bar.ts-prior[i].ts===300000);
+  const level = row.m5_breaker?.known_ts <= last.ts ? row.m5_breaker.level :
+    contiguous ? (side === 1 ? Math.max(...prior.map(bar=>bar.high)) : Math.min(...prior.map(bar=>bar.low))) : null;
+  if (!number(level) || level < row.low || level > row.high) return null;
+  const broke = row.m5_breaker?.known_ts <= last.ts ||
+    (side * (prev.open - level) <= tick / 2 && side * (prev.close - level) >= tick - 1e-8);
+  if (broke && last.low <= level + tick && last.high >= level - tick &&
+      side * (last.close - level) >= tick - 1e-8) return 'Ретест зламу';
+  return null;
+}
+function m5QuotePlan(row, price) {
+  const settings = state.reaction_config ?? {};
+  const risk = row.side * (price - row.stop);
+  const rr = risk > 0 ? row.side * (row.tp1 - price) / risk : 0;
+  const rr2 = risk > 0 ? row.side * (row.tp2 - price) / risk : 0;
+  const costs = (price + row.tp2) * (settings.taker_fee ?? 0);
+  const plannedRisk = row.side * (row.entry - row.stop);
+  const move = row.side * (price - row.entry);
+  const maxChase = (settings.max_chase_r ?? .25) * plannedRisk;
+  if (move < 0 || move > maxChase || risk < (row.risk_floor ?? .22) - 1e-8 ||
+      risk > (row.risk_cap ?? .65) + 1e-8 || rr < 1.4 - 1e-8 || rr2 < 2.2 - 1e-8 ||
+      rr2 - costs / risk < (settings.min_net_rr ?? 1.8) - 1e-8) return null;
+  return {rr};
+}
+function observeClosedM5(bars) {
+  const now = Date.now(), known = bars.at(-1)?.ts + 300000;
+  if (state.cockpit_schema !== 5 || document.hidden || !ready(now) || !quote ||
+      !number(known) || known > now || now - known > 60_000 ||
+      quote.ts < known || quote.ts > now + 3000 || now - quote.ts > QUOTE_MAX_AGE) return;
+  for (const [key, ts] of m5Proofs) if (now - ts > 60_000) m5Proofs.delete(key);
+  for (const row of reactionRows()) {
+    if (row.id.startsWith('order:')) continue;
+    const tracker = reactionTracker(row);
+    if (['READY','MISSED','INVALID'].includes(tracker.stage)) continue;
+    const pattern = closedM5Pattern(row, bars, state.tick || .01);
+    const fingerprint = zoneFingerprint(row);
+    if (!pattern || m5Proofs.get(fingerprint) === known) continue;
+    const geometry = m5QuotePlan(row, quote.price);
+    if (!geometry) continue;
+    Object.assign(tracker, {stage:'READY', readyTs:quote.ts, readyPrice:quote.price, rr:geometry.rr,
+      lastTs:quote.ts, bucket:Math.floor(quote.ts/300000),
+      message:pattern + ' на закритій M5. Рівень за свіжою ціною пройшов перевірку ризику.'});
+    m5Proofs.set(fingerprint, known);
+    notify(row, tracker, 'M5:' + known, pattern + ' M5 · ' + sideLabel(row.side) + ' @ ' + format(quote.price));
+  }
+}
 async function pollM5() {
-  if (!state||m5Busy||document.hidden) return;
-  m5Busy=true;const instrument=state.instrument;
+  if (!state || m5Busy || document.hidden) return;
+  m5Busy = true;
+  const instrument = state.instrument;
   try {
-    const body=await json(OKX+'/candles?'+new URLSearchParams({instId:instrument,bar:'5m',limit:'2'}));
-    if (body.code!=='0'||state.instrument!==instrument) return;
-    const bucket=Math.floor(Date.now()/300000)*300;
-    const raw=body.data?.find(r=>Number(r[0])/1000===bucket);
-    if (!raw) return;
-    const [ms,open,high,low,close]=raw.slice(0,5).map(Number);
-    if (![ms,open,high,low,close].every(number)||Math.min(open,high,low,close)<=0||low>Math.min(open,close)||high<Math.max(open,close)) return;
-    // This OHLC supplies metrics only. It cannot retroactively prove an observed touch/rejection.
-    m5Market={time:ms/1000,open,high,low,close,source:'OKX_M5',received:Date.now()};
+    const body = await json(OKX + '/candles?' + new URLSearchParams({instId:instrument,bar:'5m',limit:'8'}));
+    if (body.code !== '0' || state.instrument !== instrument) return;
+    const now = Date.now(), bucket = Math.floor(now / 300000) * 300000;
+    const closed = [];
+    for (const raw of body.data ?? []) {
+      const [ts,open,high,low,close] = raw.slice(0,5).map(Number);
+      if (![ts,open,high,low,close].every(number) || ts % 300000 !== 0 ||
+          Math.min(open,high,low,close) <= 0 || low > Math.min(open,close) || high < Math.max(open,close)) continue;
+      if (ts === bucket) m5Market = {time:ts/1000,open,high,low,close,source:'OKX_M5',received:now};
+      if (String(raw[8]) === '1' && ts + 300000 <= now) closed.push({ts,open,high,low,close});
+    }
+    observeClosedM5(closed.sort((a,b)=>a.ts-b.ts));
   } catch { /* Tick observations remain explicitly partial. */ }
-  finally {m5Busy=false;}
+  finally { m5Busy = false; }
+}
+
+function zoneName(kind) {
+  if (typeof kind !== 'string') return 'Структурна зона';
+  if (kind.includes('OTE')) return 'Відкат імпульсу OTE';
+  if (kind?.includes('BREAKER')) return 'Ретест зламаного рівня';
+  if (kind?.includes('FVG')) return 'Імбаланс';
+  if (kind?.includes('SWEEP') || kind?.includes('RAID')) return 'Хибний пробій';
+  return ({DEMAND_OB:'Зона попиту', SUPPLY_OB:'Зона пропозиції',
+           DISPLACEMENT_CATCHER_15M:'Відкат після імпульсу',
+           MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';
+}
+function watchable(row, price) {
+  return row && ['entry','stop','tp1','tp2','risk','rr1','rr2','score','low','high'].every(key=>number(row[key])) &&
+    !row.order_id && !invalidZones.has(zoneFingerprint(row)) && row.risk_gate !== 'STOP_ALREADY_BREACHED' &&
+    row.side * (price - (row.side === 1 ? row.low : row.high)) >= 0 &&
+    row.side * (price - row.stop) > 0;
+}
+function advisoryLevel(side, price, exclude = null) {
+  if (state.cockpit_schema !== 5) return null;
+  const label = sideLabel(side);
+  const preset = exclude ? state.reserve_levels?.[label] : state.watch_levels?.[label];
+  const deeper = row => !exclude || (side === 1 ? row.high <= exclude.low : row.low >= exclude.high);
+  const available = poolRows().filter(row=>row.side === side && watchable(row,price) && deeper(row));
+  return available.find(row=>row.id===preset) ??
+    available.sort((a,b)=>Math.abs(a.entry-price)-Math.abs(b.entry-price) || b.score-a.score)[0] ?? null;
+}
+function nextTarget(price = displayedPrice()) {
+  const approved = chartPlan();
+  if (approved) return approved;
+  if (state.primary_bias) return advisoryLevel(state.primary_bias, price) ?? advisoryLevel(-state.primary_bias, price);
+  const levels = [1,-1].map(side=>advisoryLevel(side,price)).filter(Boolean);
+  return levels.find(row=>row.id===state.watch_primary_id) ??
+    levels.sort((a,b)=>Math.abs(a.entry-price)-Math.abs(b.entry-price))[0] ?? null;
+}
+function planText(row) {
+  const source1 = row.tp1_source === 'QUOTE_REFERENCE' ? ', ціна зліпка' :
+    row.tp1_source?.startsWith('R_MULTIPLE') ? ', розрахунок' : '';
+  const source2 = row.tp2_source?.startsWith('R_MULTIPLE') ? ', розрахунок' : '';
+  const risk = row.side * (row.entry - row.stop);
+  const rr = level => risk > 0 && number(level) ? (row.side * (level - row.entry) / risk).toFixed(2) + 'R' : '—';
+  return 'Вхід ' + format(row.entry) + ' · Стоп ' + format(row.stop) + ' (' + format(risk) + ' $) · ' +
+    'Тейк 1 ' + format(row.tp1) + ' (' + rr(row.tp1) + source1 + ') · Тейк 2 ' +
+    format(row.tp2) + ' (' + rr(row.tp2) + source2 + ')';
+}
+function conditionText(row, price) {
+  if (state.primary_bias && row.side !== state.primary_bias) {
+    return 'Лімітка проти тренду заборонена. Сценарій переглядається після хибного пробою та розвороту M5/M15.';
+  }
+  if (!ready(Date.now()) || !actionablePlan(row, price)) {
+    return 'Орієнтир для спостереження. ' + statusText(row, price) +
+      (row.low <= price && price <= row.high ? '. Для входу потрібні допуск і закрита реакція M5.' : '.');
+  }
+  if (row.low <= price && price <= row.high) return 'Ціна в зоні. Чекаємо відбою на закритій M5.';
+  if (row.entry_condition === 'M5_BREAKER_RETEST') return 'Чекаємо ретесту зламаного рівня на закритій M5.';
+  return row.tactic === 'REACTION_M5' ? 'Чекаємо підходу та відбою на закритій M5.' : 'Чекаємо підходу до рівня лімітки.';
 }
 
 function chartOrders() {
@@ -394,6 +526,10 @@ function visibleZones() {
   if (orders.length) return state.zones.filter(zone => orders.some(order => order.id === zone.order_id));
   const primary = chartPlan();
   if (primary) return [primary];
+  const watch = nextTarget();
+  if (watch && (watch.id === selectedZone ||
+      Math.max(watch.low - displayedPrice(), displayedPrice() - watch.high, 0) <=
+      Math.max(.60, 2.5 * (state.atr15 ?? 0)))) return [watch];
   const price = displayedPrice();
   return (state.context_bands ?? []).filter(zone => !invalidZones.has(zoneFingerprint(zone)) &&
     zone.side * (price - (zone.side === 1 ? zone.low : zone.high)) > 0).slice(0, 2);
@@ -406,17 +542,26 @@ function renderZones(price) {
   const container = $('zones');
   container.replaceChildren();
   $('zone-count').textContent = state.zones.length + ' зон';
-  const focusable = chartPlan()?.id;
+  const focusable = nextTarget(price)?.id;
+  const reserves = new Set(Object.values(state.reserve_levels ?? {}));
   for (const z of state.zones) {
     const row = element('tr');
     if (z.id === selectedZone) row.classList.add('selected');
     const name = td('');
-    name.append(element('strong', (z.timeframe ?? '') + ' ' + z.kind),
+    name.append(element('strong', (z.timeframe ?? '') + ' ' + zoneName(z.kind)),
       element('small', sideLabel(z.side) + ' · ' + format(z.low) + '–' + format(z.high)));
     const approved = ready(Date.now()) && actionablePlan(z, price);
-    const score = td(approved ? scoreText(z) : '—');
-    const entry = td(statusText(z, price));
-    if (approved) {
+    const score = td(scoreText(z));
+    const counter = state.primary_bias && z.side !== state.primary_bias;
+    const inside = z.low <= price && price <= z.high;
+    const status = counter ? (z.side === -1 ? 'Опір проти тренду' : 'Підтримка проти тренду') :
+      inside ? (approved ? 'Ціна в зоні · чекаємо M5' : 'Ціна в зоні · спостерігаємо') : z.id === focusable ?
+      (approved ? 'Головна ціль' : 'Головний орієнтир') : reserves.has(z.id) ? 'Резерв по тренду' : statusText(z, price);
+    const entry = td(status);
+    if (state.cockpit_schema === 5 && number(z.rr1) && number(z.rr2)) {
+      entry.append(element('small', planText(z)));
+      if (status !== statusText(z, price)) entry.append(element('small', statusText(z, price)));
+    } else if (approved) {
       entry.append(element('small', 'Вхід ' + format(z.entry) + ' · SL ' + format(z.stop) +
         ' · TP1 ' + format(z.tp1) + ' · TP2 ' + format(z.tp2)));
     }
@@ -425,7 +570,7 @@ function renderZones(price) {
       const focus = element('button', '◎');
       focus.type = 'button'; focus.dataset.zone = z.id;
       focus.dataset.focus = 'zone-' + z.id;
-      focus.setAttribute('aria-label', 'Підсвітити ' + z.kind + ' ' + (z.timeframe ?? '') + ' ' + sideLabel(z.side));
+      focus.setAttribute('aria-label', 'Підсвітити ' + zoneName(z.kind) + ' ' + (z.timeframe ?? '') + ' ' + sideLabel(z.side));
       focus.setAttribute('aria-pressed', String(z.id === selectedZone));
       action.append(focus);
     }
@@ -559,16 +704,24 @@ function setBannerMode(mode) {
 function renderBanner(price, usable, live) {
   const active = state.orders.find(order => order.status === 'OPEN');
   const pending = state.orders.find(order => order.status === 'PENDING');
-  const candidate = chartPlan();
+  const candidate = nextTarget(price);
   const closed = state.last_closed;
   let mode = 'WAITING';
-  let pill = 'ПОШУК ТОЧКИ ВХОДУ';
+  let pill = state.primary_bias ? 'ОЧІКУВАННЯ • ПРІОРИТЕТ ' + sideLabel(state.primary_bias) : 'ПОШУК ТОЧКИ ВХОДУ';
   let title = 'ОЧІКУЄМО УГОДУ' +
     (state.primary_bias ? ' • Пошук за трендом (' + sideLabel(state.primary_bias) + ')' : '');
   let detail = 'Чекаємо підтвердженого сетапу.';
   if (candidate) {
-    detail = (candidate.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5 біля ' : 'Чекаємо підходу до ') +
-      format(candidate.entry) + ' для ' + (candidate.side === 1 ? 'купівлі' : 'продажу') + '.';
+    if (state.cockpit_schema === 5) {
+      const approved = usable && actionablePlan(candidate, price);
+      title = (approved ? 'ЧЕКАЄМО ' : 'ОРІЄНТИР ') + sideLabel(candidate.side) + ' ВІД ' +
+        format(candidate.entry) + ' • ' + candidate.timeframe + ' ' + zoneName(candidate.kind);
+      detail = 'Зона ' + format(candidate.low) + '–' + format(candidate.high) + ' · Δ ' +
+        signed(candidate.entry - price, ' $') + ' (' + signed((candidate.entry-price)*100, '¢') + ') · ' +
+        planText(candidate) + ' · ' + scoreText(candidate) + '. ' + conditionText(candidate, price);
+    } else {
+      detail = 'Чекаємо підходу до ' + format(candidate.entry) + '.';
+    }
   }
   if (active) {
     const tracker = orderTracker(active);
@@ -616,19 +769,39 @@ function renderBanner(price, usable, live) {
 function renderRadar(price, live) {
   $('radar-source').textContent=live ? 'Live Δ ціни' : 'Δ за зліпком';
   const container=$('radar'); container.replaceChildren();
-  radarRows(price).forEach((row,index) => {
+  radarRows(price).forEach((approved,index) => {
     const side=index===0 ? 1 : -1;
+    const row = approved ?? advisoryLevel(side, price);
     const card=element('article',null,'candidate'); card.dataset.side=side;
     card.append(element('h3',sideLabel(side),side===1?'long':'short'));
     card.dataset.priority=state.primary_bias===side?'PRIMARY':state.primary_bias?'COUNTER':'RANGE';
     if (!row) {card.append(element('p',state.primary_bias&&state.primary_bias!==side?
       'Очікуємо підтвердженої зміни тренду.':
-      'Чекаємо підтвердженого плану.','reason'));container.append(card);return;}
+      (side === 1 ? 'Сканер шукає підтримку нижче ціни.' : 'Сканер шукає опір вище ціни.'),
+      'reason'));container.append(card);return;}
     card.dataset.reaction=reactions.get(reactionKey(row))?.stage??'WAIT';
-    card.append(element('p', format(row.entry), 'candidate-entry'),
-      element('p', (row.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5' : 'Чекаємо підходу до входу') +
-        ' · клас ' + row.grade, 'reason'),
-      element('p', 'SL ' + format(row.stop) + ' · TP1 ' + format(row.tp1) + ' · TP2 ' + format(row.tp2), 'reason'));
+    if (state.cockpit_schema === 5) {
+      const tag = approved ? 'Допущений план' : 'Орієнтир';
+      card.append(element('p', tag + ' · ' + row.timeframe + ' ' + zoneName(row.kind) +
+        ' · ' + scoreText(row), 'candidate-status'),
+        element('p',format(row.entry),'candidate-entry'),
+        element('p','Зона ' + format(row.low) + '–' + format(row.high) + ' · Δ ' +
+          signed(row.entry-price, ' $') + ' (' + signed((row.entry-price)*100,'¢') + ')','reason'),
+        element('p',planText(row),'reason'),
+        element('p',conditionText(row,price),'reason'),
+        copyButtons(row));
+      const reserve = advisoryLevel(side, price, row);
+      if (reserve && (!state.primary_bias || state.primary_bias === side)) {
+        card.append(element('p','Резерв ' + (side === 1 ? 'нижче' : 'вище') + ' · ' +
+          zoneName(reserve.kind) + ' @ ' + format(reserve.entry) + ' · Стоп ' + format(reserve.stop) +
+          ' · Тейк 1 ' + format(reserve.tp1) + ' · ' + scoreText(reserve),'candidate-reserve'));
+      }
+    } else {
+      card.append(element('p', format(row.entry), 'candidate-entry'),
+        element('p', (row.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5' : 'Чекаємо підходу до входу') +
+          ' · клас ' + row.grade, 'reason'),
+        element('p', 'SL ' + format(row.stop) + ' · TP1 ' + format(row.tp1) + ' · TP2 ' + format(row.tp2), 'reason'));
+    }
     container.append(card);
   });
 }
@@ -725,6 +898,7 @@ function initChart() {
     target.useMediaCoordinateSpace(({ context, mediaSize }) => {
       const scale = chart.timeScale();
       const occupiedLabels=[];
+      const focusId = nextTarget()?.id;
       for (const zone of visibleZones()) {
         const y1 = series.priceToCoordinate(zone.high), y2 = series.priceToCoordinate(zone.low);
         const floor = Math.floor((zone.known_ts ?? 0) / (chartFrames[frame] * 1000)) * chartFrames[frame];
@@ -733,14 +907,18 @@ function initChart() {
         if (y1 === null || y2 === null) continue;
         const left = Math.max(0, x ?? 0);
         if (left >= mediaSize.width-30) continue;
-        context.fillStyle = zone.side === 1 ? 'rgba(56,195,159,.13)' : 'rgba(255,112,132,.13)';
+        context.fillStyle = zone.id === focusId ? 'rgba(92,163,255,.18)' :
+          zone.side === 1 ? 'rgba(56,195,159,.13)' : 'rgba(255,112,132,.13)';
         const top=Math.min(y1,y2), bottom=Math.max(y1,y2);
         context.fillRect(left, top, Math.max(0, mediaSize.width-left), Math.max(1,bottom-top));
         if (zone.id===selectedZone) {
           context.strokeStyle='#92dff0'; context.lineWidth=2;
           context.strokeRect(left+1,top,Math.max(0,mediaSize.width-left-2),Math.max(1,bottom-top));
         }
-        const label=(zone.timeframe ?? '')+' '+zone.kind+' '+sideLabel(zone.side)+' ['+format(zone.low)+'–'+format(zone.high)+'] · '+scoreText(zone);
+        const focus = zone.id === focusId;
+        const label = (focus ? (zone.actionable ? 'ЦІЛЬ ' : 'ОРІЄНТИР ') + sideLabel(zone.side) + ' · ' : '') +
+          (zone.timeframe ?? '') + ' ' + zoneName(zone.kind) + ' [' + format(zone.low) + '–' + format(zone.high) + ']' +
+          (number(zone.score) ? ' · ' + scoreText(zone) : '');
         let labelY=Math.max(16,Math.min(mediaSize.height-12,(top+bottom)/2));
         // Separate nearby labels so two overlapping zones remain identifiable.
         for (const y of occupiedLabels) if (Math.abs(labelY-y)<20) labelY=y+20;
@@ -779,9 +957,10 @@ function drawLevels() {
   }
   const candidate = chartPlan();
   if (candidate) {
-    add(candidate.entry, 'ОЧІКУЄМО ВХІД @ ' + format(candidate.entry), '#aebed0');
-    add(candidate.stop, 'SL @ ' + format(candidate.stop), '#ff8994', false);
-    add(candidate.tp1, 'TP1 @ ' + format(candidate.tp1), '#7db7ff');
+    add(candidate.entry, 'ОЧІКУЄМО ВХІД ' + sideLabel(candidate.side) + ' @ ' + format(candidate.entry) +
+      ' (Δ ' + signed(candidate.entry - price,' $') + ')', '#589aff');
+    add(candidate.stop, 'СТОП-ЛОС @ ' + format(candidate.stop) + ' (' + signed(-candidate.side * (candidate.entry - candidate.stop),' $') + ')', '#ff8994', false);
+    add(candidate.tp1, 'ТЕЙК-ПРОФІТ 1 @ ' + format(candidate.tp1) + ' (' + signed((candidate.tp1 - candidate.entry) / (candidate.entry - candidate.stop),'R') + ')', '#7db7ff');
   }
   series.applyOptions({priceFormat:{type:'price',precision:Math.max(2,(String(state.tick).split('.')[1] ?? '').length),minMove:state.tick || .01}});
   series.applyOptions({lastValueVisible:!candidate});
@@ -930,7 +1109,7 @@ async function pollState() {
     if (first) {
       quote = undefined; lastSampleTime = 0; history = []; currentBar = undefined;
       if (series) series.setData([]);
-      position.clear(); selectedZone=null; reactions.clear(); invalidZones.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
+      position.clear(); selectedZone=null; reactions.clear(); m5Proofs.clear(); invalidZones.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
       disconnectSocket();
     }
     const previousSnapshot = state?.snapshot_ts;
@@ -986,13 +1165,13 @@ for (const key of Object.keys(chartFrames)) $(key).addEventListener('click', asy
 
 $('zones').addEventListener('click', event => {
   const button=event.target.closest('button[data-zone]');
-  if (!button || chartPlan()?.id !== button.dataset.zone) return;
+  if (!button || nextTarget()?.id !== button.dataset.zone) return;
   selectedZone=selectedZone===button.dataset.zone ? null : button.dataset.zone;
   chart?.priceScale('right').applyOptions({autoScale:true});
   render();
   if (window.innerWidth<=760) $('chart-title').scrollIntoView({block:'center',behavior:'smooth'});
 });
-$('orders').addEventListener('click', async event => {
+async function copyLevel(event) {
   const button=event.target.closest('button[data-copy]');
   if (!button) return;
   const value=format(Number(button.dataset.copy));
@@ -1006,7 +1185,9 @@ $('orders').addEventListener('click', async event => {
     catch { $('copy-status').textContent='Скопіюйте рівень вручну: '+value; }
     field.remove();button.focus();
   }
-});
+}
+$('orders').addEventListener('click', copyLevel);
+$('radar').addEventListener('click', copyLevel);
 initChart();
 void pollState();
 setInterval(() => {

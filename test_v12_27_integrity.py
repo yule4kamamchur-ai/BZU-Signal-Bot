@@ -117,13 +117,13 @@ class IntegrityTests(unittest.TestCase):
         for side in (1,-1):
             row=self.row(side,100.)
             out=self.project([row])
-            self.assertFalse(out['zones'])
+            self.assertTrue(out['zones'])
             self.assertFalse(out['candidates'])
 
-    def test_closed_body_at_60_percent_removes_spent_zone(self):
+    def test_closed_body_through_distal_edge_removes_spent_zone(self):
         row=self.row(-1,100.2);row['entry_zone'].update(low=100.1,high=100.4,known_ts=self.snap.now-1_800_000)
-        self.snap.candles['15m']=[engine.Candle(self.snap.now-900_000,100.1,100.4,100.,100.30)]
-        # 60% depth is 100.28, so the confirmed 100.30 close has consumed the zone.
+        self.snap.candles['15m']=[engine.Candle(self.snap.now-900_000,100.1,100.5,100.,100.41)]
+        # The confirmed close beyond the upper edge invalidates this short zone.
         out=self.project([row])
         self.assertFalse(out['zones'])
         self.assertFalse(out['candidates'])

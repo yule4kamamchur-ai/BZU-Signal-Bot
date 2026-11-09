@@ -1,4 +1,4 @@
-"""Allowlisted, read-only public projection for the v12.29 actionable plans and live tracking.
+"""Allowlisted, read-only public projection for the v12.30 observation and admitted plans and live tracking.
 
 Candidate geometry is copied from the planner, never recalculated by the UI.
 Unassessed market zones remain explicitly unassessed, not zero-score signals.
@@ -66,7 +66,7 @@ def build(state, snapshot, result, cfg, engine):
     regime = engine.policy.market_regime(snapshot, cfg.tick, engine) if healthy else {}
     mode = {'BULLISH_TREND':'BULLISH_ACTIVE', 'BEARISH_TREND':'BEARISH_ACTIVE',
             'RANGE_LIQUIDITY_ROTATION':'RANGE'}.get(regime.get('state'), regime.get('state', 'UNKNOWN'))
-    zones, context_zones = {}, []
+    zones, context_keys = {}, set()
     admitted_geometry = {p['id']: p for p in analysis.get('admitted_plans', [])}
     rejected = []
     atr15 = engine.atr([c for c in snapshot.candles.get('15m', [])
@@ -87,8 +87,9 @@ def build(state, snapshot, result, cfg, engine):
         known = zone.get('known_ts')
         if not engine.scanner.zone_direction_matches(zone, side):
             return None
-        if engine.scanner.standalone_zone_error(
-                {**zone, 'side': side}, snapshot, cfg, engine, atr15, mode):
+        error = engine.scanner.standalone_zone_error(
+            {**zone, 'side': side}, snapshot, cfg, engine, atr15, mode)
+        if error and error != 'RANGE_ZONE_TOO_CLOSE':
             return None
         result = {'kind': zone['kind'], 'timeframe': zone.get('timeframe'), 'side': side,
                   'low': low, 'high': high, 'known_ts': known, 'source_low':low, 'source_high':high}
@@ -109,7 +110,7 @@ def build(state, snapshot, result, cfg, engine):
                    distance_ticks=round(abs(delta) / cfg.tick) if delta is not None else None)
         return row
 
-    # Raw structure is useful context, but it has no executable entry or quality score.
+    # Raw structure receives reference geometry in the same projection pass.
     market_zones = analysis.get('full_context', {}).get('zones', {})
     for name in ('order_blocks', 'fvg'):
         for zone in market_zones.get(name, []):
@@ -125,7 +126,7 @@ def build(state, snapshot, result, cfg, engine):
                          status='OBSERVING', reason='NO_EVALUATED_SETUP', stop=None, tp1=None, tp2=None)
                 zones[zone_key(z)] = distance(z)
                 if z['timeframe'] in ('15m', '1H'):
-                    context_zones.append({k: z[k] for k in ('id', 'kind', 'timeframe', 'side', 'low', 'high', 'known_ts')})
+                    context_keys.add(zone_key(z))
 
     # Low-detail paths first; real planner proposals take precedence. Never export internals.
     sources = [*analysis.get('watch', state.get('watch', [])),
@@ -213,7 +214,7 @@ def build(state, snapshot, result, cfg, engine):
             continue
         z.update(engine_score=original.get('score'),engine_reason=original.get('reason'))
         z.update(calc)
-        z['id']=engine.ident('ZONE_PLAN_V29',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
+        z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
         z['priority']='PRIMARY' if not primary_side or z['side']==primary_side else 'COUNTER_TREND'
@@ -241,7 +242,8 @@ def build(state, snapshot, result, cfg, engine):
         actionable = gate is None and order is None
         z.update(gate_reason=gate, status='CANDIDATE' if actionable else 'REFERENCE',
                  actionable=actionable, display_eligible=actionable, reaction_eligible=actionable,
-                 map_state='AHEAD' if z['side'] * (snapshot.price - z['entry']) > 0 else 'AT_OR_THROUGH_ENTRY')
+                 map_state=('IN_ZONE' if z['in_zone'] else
+                            'AHEAD' if z['side'] * (snapshot.price - z['entry']) > 0 else 'AT_OR_THROUGH_ENTRY'))
         if not actionable:
             z['tactic'] = 'OBSERVE'
         elif entry_mode == 'LIVE_REACTION':
@@ -258,19 +260,45 @@ def build(state, snapshot, result, cfg, engine):
                          reason_text='Повний попередній план зони; неповний план ордера наведено окремо за журналом.')
             z.update(order_id=order['id'],display_eligible=False,reaction_eligible=False,execution_admitted=True)
         planned.append(distance(z))
-    all_zones=sorted(planned,key=lambda z:abs(z['distance']))
-    candidate_rows=[z for z in all_zones if z['actionable']]
-    def priority(z):
-        return (-z['score'], abs(z['distance']), -z['rr1'])
-    candidate_rows.sort(key=priority)
-    radar={label:next((z for z in candidate_rows if z['side']==side),None) for label,side in (('LONG',1),('SHORT',-1))}
-    left,right=radar['LONG'],radar['SHORT']
-    if left and right and (right['entry']-left['entry']<minimum_spread or left['high']>=right['low']):
-        keep=min((left,right),key=priority)
-        radar['SHORT' if keep is left else 'LONG']=None
-    primary=next((z for z in radar.values() if z and z['side']==primary_side),None)
-    if not primary and not primary_side: primary=min((z for z in radar.values() if z),key=priority,default=None)
-    reference_rows=[z for z in all_zones if z.get('gate_reason')]
+    def priority(zone):
+        return (abs(zone['distance']), -zone['score'], -zone['rr1'])
+
+    def zone_order(zone):
+        return (zone['priority'] == 'COUNTER_TREND', not zone['actionable'],
+                not zone['in_zone'], *priority(zone))
+
+    all_zones = sorted(planned, key=zone_order)
+    candidate_rows = sorted((z for z in all_zones if z['actionable']), key=priority)
+    radar = {label: next((z for z in candidate_rows if z['side'] == side), None)
+             for label, side in (('LONG', 1), ('SHORT', -1))}
+    left, right = radar['LONG'], radar['SHORT']
+    if left and right and (right['entry'] - left['entry'] < minimum_spread or left['high'] >= right['low']):
+        keep = min((left, right), key=priority)
+        radar['SHORT' if keep is left else 'LONG'] = None
+    primary = next((z for z in radar.values() if z and z['side'] == primary_side), None)
+    if not primary and not primary_side:
+        primary = min((z for z in radar.values() if z), key=priority, default=None)
+
+    # Advisory tiers are deliberately separate from the executable radar.
+    watch_levels, reserves = {}, {}
+    for label, side in (('LONG', 1), ('SHORT', -1)):
+        intact = [z for z in all_zones if z['side'] == side and not z.get('order_id')
+                  and z['risk_gate'] != 'STOP_ALREADY_BREACHED'
+                  and side * (snapshot.price - (z['low'] if side == 1 else z['high'])) >= 0]
+        watch = radar[label] or min(intact, key=lambda z: (not z['in_zone'], *priority(z)), default=None)
+        watch_levels[label] = watch['id'] if watch else None
+        deeper = [] if not watch else [z for z in intact if z['id'] != watch['id'] and
+                   (z['high'] <= watch['low'] if side == 1 else z['low'] >= watch['high'])]
+        reserve = min(deeper, key=lambda z: (not 1.0 * atr15 <= abs(z['distance']) <= 2.5 * atr15,
+                                            *priority(z)), default=None)
+        reserves[label] = reserve['id'] if reserve else None
+    if primary_side:
+        preferred, opposite = ('LONG', 'SHORT') if primary_side == 1 else ('SHORT', 'LONG')
+        watch_id = watch_levels[preferred] or watch_levels[opposite]
+    else:
+        watch_id = primary['id'] if primary else next((z['id'] for z in all_zones
+                                                       if z['id'] in watch_levels.values()), None)
+    reference_rows = [z for z in all_zones if z.get('gate_reason')]
 
     records = {row['id']:row for row in [*state.get('orders', []), *state.get('trades', [])]}
     recent = []
@@ -288,15 +316,15 @@ def build(state, snapshot, result, cfg, engine):
     last_closed = next((e for e in reversed(recent) if e['kind'] == 'CLOSED'), None)
     def context_distance(zone):
         return max(zone['low'] - snapshot.price, snapshot.price - zone['high'], 0)
-    # Only independently observed market bands may appear as quiet chart context.
-    context_zones = [z for z in context_zones
-                     if context_distance(z) <= engine.scanner.max_zone_distance(atr15, cfg)]
-    context_zones.sort(key=lambda z: (context_distance(z), z['timeframe'] != '1H'))
+    context_zones = sorted((z for z in all_zones if zone_key(z) in context_keys and
+                            context_distance(z) <= engine.scanner.max_zone_distance(atr15, cfg)),
+                           key=lambda z: (context_distance(z), z['timeframe'] != '1H'))
     context_bands = []
     for side in (1, -1):
         nearest = next((z for z in context_zones if z['side'] == side), None)
         if nearest:
-            context_bands.append(nearest)
+            context_bands.append({k: nearest[k] for k in
+                ('id', 'kind', 'timeframe', 'side', 'low', 'high', 'known_ts', 'score', 'grade')})
 
     def candles(rows, step):
         return [{'time':c.ts//1000,'open':c.open,'high':c.high,'low':c.low,'close':c.close}
@@ -305,7 +333,7 @@ def build(state, snapshot, result, cfg, engine):
     system_mode = ('DATA_HOLD' if not healthy else 'ACTIVE' if any(o['status']=='OPEN' for o in orders) else
                    'PENDING' if any(o['status']=='PENDING' for o in orders) else
                    'CANCELLING' if orders else 'SCANNING')
-    return {'schema':1, 'cockpit_schema':4, 'version':engine.REPORT_RELEASE,
+    return {'schema':1, 'cockpit_schema':5, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
@@ -314,13 +342,15 @@ def build(state, snapshot, result, cfg, engine):
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),
             'recent_events':recent[-20:], 'last_event':recent[-1] if recent else None,
             'last_closed':last_closed, 'context_bands':context_bands,
+            'watch_levels':watch_levels, 'watch_primary_id':watch_id, 'reserve_levels':reserves,
             'candidates':candidate_rows, 'plan_pool':all_zones, 'unplanned_zones':unplanned, 'radar':radar, 'primary_candidate_id':primary['id'] if primary else None,
             'primary_bias':primary_side,'atr15':atr15,'min_structural_spread':minimum_spread,
             'entry_mode':entry_mode,'reference_levels':reference_rows[:48],
             'candidate_rejections':rejected[:100],
-            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':1.4,'max_zone_atr':1.5,'mitigation_depth':.6},
+            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':1.4,'wide_zone_usd':.45,'wide_zone_atr':.8},
             'reaction_config':{'retracement':max(.06,3*cfg.tick),'max_sample_gap_ms':15000,
-                               'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25},
-            'zones':sorted(all_zones,key=lambda z:abs(z['distance'])),
+                               'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25,
+                               'min_net_rr':cfg.min_net_rr, 'taker_fee':engine.fee_rate(cfg,'taker')},
+            'zones':all_zones,
             'candles':{'5m':candles(engine.scanner.closed_five_minutes(snapshot),300_000),
                        '15m':candles(snapshot.candles.get('15m',[]),900_000)}}

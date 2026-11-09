@@ -65,7 +65,7 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
     """
     sign=cfg.core.side_sign(side);native=context.get('analysis_timeframe','15m')
     targets=[]
-    for tf in dict.fromkeys((native,'1H','4H')):
+    for tf in dict.fromkeys((native,'15m','1H','4H')):
         rows=closed(snapshot,tf)
         if not rows:
             continue
@@ -79,6 +79,14 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
                 targets.append({'kind':tf+'_LIQUIDITY','level':level,
                                 'timeframe':tf,'known_ts':point['known_ts']+TF[tf],
                                 'hard_barrier':False,'freshness':'UNSWEPT'})
+        if tf in ('15m', '1H'):
+            recent = rows[-48:]
+            extreme = max(recent, key=lambda c: c.high) if sign == 1 else min(recent, key=lambda c: c.low)
+            level = extreme.high if sign == 1 else extreme.low
+            if sign * (level - entry) > 2 * cfg.tick:
+                targets.append({'kind': tf + '_48_EXTREME', 'level': level,
+                                'timeframe': tf, 'known_ts': extreme.ts + TF[tf],
+                                'hard_barrier': False, 'freshness': 'RECENT_EXTREME'})
         volatility=max(engine.atr(rows),cfg.tick)
         gaps=cfg.core.detect_fvg(rows,volatility,limit=64)
         # The original FVG helper discards any gap crossed by a wick. Restore
@@ -121,6 +129,13 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
                                 'freshness':life['state'],'role':life['role'],
                                 'entry_inside_zone':inside,
                                 'zone_lifecycle':life})
+                # A soft resistance/support band can supply its far edge too.
+                # A hard barrier remains at its first encountered edge.
+                far_edge = remaining_high if sign == 1 else remaining_low
+                if not inside and not life['hard_barrier'] and sign * (far_edge - level) >= cfg.tick:
+                    targets.append({'kind': zone.kind + '_FAR_EDGE', 'level': far_edge,
+                                    'timeframe': tf, 'known_ts': known, 'hard_barrier': False,
+                                    'freshness': life['state']})
     # Session reference levels remain valid targets, but a current day's
     # evolving extrema must not redefine the original fixed entry.
     session=context.get('session',{})
@@ -130,6 +145,14 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
         if level>0 and sign*(level-entry)>2*cfg.tick:
             targets.append({'kind':name.upper(),'level':level,'timeframe':native,
                             'hard_barrier':False,'freshness':'SESSION_REFERENCE'})
+    from ict_methodology import session_liquidity
+
+    suffix = '_HIGH' if sign == 1 else '_LOW'
+    for pool in session_liquidity(snapshot)['pools']:
+        if pool['name'].endswith(suffix) and sign * (pool['level'] - entry) > 2 * cfg.tick:
+            targets.append({'kind': pool['name'], 'level': pool['level'], 'timeframe': '15m',
+                            'known_ts': pool['known_ts'], 'hard_barrier': False,
+                            'freshness': 'SESSION_REFERENCE'})
     unique={}
     for target in targets:
         target['distance']=sign*(target['level']-entry)

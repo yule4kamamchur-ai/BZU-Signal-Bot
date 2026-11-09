@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.29.1-pro-quant"
-REPORT_RELEASE = 'v12.29.1'
+VERSION = "full-ict-v12.30.0-institutional-pro"
+REPORT_RELEASE = 'v12.30.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -2001,10 +2001,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             continue
         candidate['zone_quality'] = assessment
         confirmed.append(candidate)
-    valid = confirmed
+    # Inside-zone and M5 breaker plans require a closed reaction, even in passive mode.
+    valid = [p for p in confirmed if p['zone_quality']['entry_condition'] == 'RETEST']
     watch_allowed = can_place
     if entry_mode == 'HYBRID':
-        valid = [p for p in confirmed if p['zone_quality']['tactic'] == 'LIMIT']
+        valid = [p for p in valid if p['zone_quality']['tactic'] == 'LIMIT']
     elif entry_mode == 'LIVE_REACTION':
         can_place = False
     active=active_plans(state)
@@ -2244,10 +2245,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     # Publish only plans that survived admission and the current portfolio lock.
     # A valid reaction watch can be actionable without a placed paper order.
     watch = []
-    if watch_allowed and not open_plans(state) and entry_mode in ('HYBRID', 'LIVE_REACTION'):
+    if watch_allowed and not open_plans(state):
         watches = [p for p in confirmed if p.get('action_type') != 'ACTIVE_ENTRY'
                    and p.get('setup') != 'SESSION_MEAN_RECLAIM'
-                   and (entry_mode == 'LIVE_REACTION' or p['zone_quality']['tactic'] == 'REACTION_M5')]
+                   and (entry_mode == 'LIVE_REACTION' or p['zone_quality']['entry_condition'] != 'RETEST'
+                        or (entry_mode == 'HYBRID' and p['zone_quality']['tactic'] == 'REACTION_M5'))]
         watch_side, _, _ = policy.choose(watches, s.price, cfg.tick, cfg.conflict_margin)
         watch = [p for p in watches if p['side'] == watch_side]
         if watch:
@@ -2480,6 +2482,8 @@ REASON_UA = {
     'DATA_HOLD':'відновлення повних актуальних даних',
     'LIMIT_WOULD_CROSS_SPREAD':'поточні ASK/BID не дозволяють пасивний ліміт',
     'FORMATION_VOLUME_REQUIRED':'імпульсу бракує підтвердження обсягом',
+    'RISK_TOO_WIDE':'стоп за структурою перевищує допустимий ризик',
+    'RISK_BELOW_FLOOR':'стоп вужчий за мінімальну відстань',
     'STRUCTURAL_TP1_REQUIRED':'немає структурної цілі TP1 від 1.40R',
     'STRUCTURAL_TP2_REQUIRED':'немає наступної структурної цілі TP2 від 2.20R',
     'SESSION_MEAN_LIMIT_DISABLED':'лімітні входи від середньої сесії вимкнено',
@@ -3223,7 +3227,7 @@ def main(core) -> int:
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
                  'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity',
-                 'test_v12_28_quant', 'test_v12_29_quant', 'test_v12_29_1_checklist')
+                 'test_v12_28_quant', 'test_v12_29_quant', 'test_v12_29_1_checklist', 'test_v12_30_institutional')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

@@ -49,7 +49,7 @@ class ZonePlanTests(unittest.TestCase):
             self.assertAlmostEqual(p['stop'],98.67 if side==1 else 101.33)
             self.assertGreaterEqual(p['rr1'],1.50-1e-8)
             self.assertGreaterEqual(p['rr2'],2.20-1e-8)
-            self.assertEqual(p['tp1_source'],'R_MULTIPLE_1_50')
+            self.assertEqual(p['tp1_source'],'QUOTE_REFERENCE')
             self.assertGreater(side*(p['entry']-p['stop']),0)
 
     def test_wide_zone_uses_equilibrium_without_an_invented_distal_third(self):

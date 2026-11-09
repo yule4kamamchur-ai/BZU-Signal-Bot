@@ -213,9 +213,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     aligned = direction.momentum_aligned(snapshot, side)
     momentum_zone = zone.get('kind') in scanner.ORGANIC_MOMENTUM
     countertrend = active_side != side and any(regime[key] == -side for key in ('side_1h', 'side_4h'))
-    deep = countertrend or high - low > .55 + 1e-9
     organic_formation = momentum_zone or zone.get('kind') == scanner.ORGANIC_REVERSAL
-    front_run = .03
     tf = zone['timeframe']
     distal = low if side == 1 else high
     structural = min(anchor.invalidation, distal) if side == 1 else max(anchor.invalidation, distal)
@@ -227,9 +225,13 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         structural = (min if side == 1 else max)(
             anchor.invalidation, low if side == 1 else high,
             swings[-1]['level'] if swings else anchor.invalidation)
-    entry, stop, risk, legs = technical_geometry(
-        low, high, structural, side, a15, cfg, engine, deep=deep, front_run=front_run,
-        exact_entry=anchor.level if organic_formation else None)
+    preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
+    entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
+        low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred)
+    legs = [{'name':'L1', 'price':entry, 'fraction':1., 'status':'PENDING'}]
+    breaker = scanner.m5_breaker({**zone, 'side': side}, snapshot, cfg.tick)
+    reaction_only = inside or bool(breaker)
+    entry_condition = 'IN_ZONE_M5_RECLAIM' if inside else 'M5_BREAKER_RETEST' if breaker else 'RETEST'
     raw_stop=stop
     min_risk, max_risk = scanner.zone_risk_bounds(a15, cfg)
     if oil_round_protection(cfg):
@@ -241,7 +243,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
     approach = adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop)
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
-                approach=approach, planning_policy=POLICY)
+                approach=approach, planning_policy=POLICY, entry_basis=entry_basis,
+                entry_condition=entry_condition)
     valid_stop = (min_risk - 1e-9 <= risk <= max_risk + 1e-9
                   and side * (structural - stop) >= max(cfg.tick, .25 * a15) - 1e-9)
     mark('VALID_STOP', valid_stop)
@@ -279,7 +282,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     passive = scanner.passive_gate(entry, side, snapshot.bid, snapshot.ask, cfg.tick)['passive']
     confirmed_retest = bool(passive and audit['touched'] and
                             (approach.get('confirmation_known_ts') or 0) > audit['touch_ts'])
-    can_wait = passive and (not audit['touched'] or confirmed_retest)
+    can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only)
+    if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
+        return None, 'ZONE_NOT_AHEAD_OF_PRICE'
     allowed, why = direction.regime_admission(side, entry, regime, snapshot, cfg.tick, engine, zone)
     mark('HTF_ALIGNMENT', allowed)
     if not allowed:
@@ -288,8 +293,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     organic = bool(anchor.evidence.get('organic_confluence') or momentum_zone)
     trending = active_side == side or (aligned and (organic or 'FVG' in zone.get('kind', '')))
     direct = strategy_direct_entries.momentum_quote(
-        snapshot, side, entry, stop, zone, origin, cfg.tick) if trending and not organic_formation else None
-    if not organic_formation and not can_wait and direct is None:
+        snapshot, side, entry, stop, zone, origin, cfg.tick) if trending and not organic_formation and not reaction_only else None
+    if not organic_formation and not can_wait and direct is None and not reaction_only:
         catchup = scanner.catch_up(snapshot, entry, stop, side, zone['known_ts'], cfg.tick, zone)
         diag['catch_up'] = catchup
         if catchup['allowed']:
@@ -364,6 +369,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'direct_entry':diag.get('direct_entry'),
          'anchor_known_ts':zone['known_ts'], 'zone_created_ts':zone['known_ts'],
          'entry_zone':zone, 'zone_audit':audit, 'zone_origin':origin, 'approach':approach,
+         'entry_basis':entry_basis, 'entry_condition':entry_condition, 'reaction_only':reaction_only,
          'round_level_protection':copy.deepcopy(diag['round_level_protection']),
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
