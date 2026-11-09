@@ -1,4 +1,4 @@
-"""Allowlisted, read-only public projection for the v12.30 observation and admitted plans and live tracking.
+"""Paper journal synchronization and an allowlisted public cockpit projection.
 
 Candidate geometry is copied from the planner, never recalculated by the UI.
 Unassessed market zones remain explicitly unassessed, not zero-score signals.
@@ -23,6 +23,18 @@ def zone_rank(zone):
             sum(numeric(zone.get(k)) for k in ('stop', 'tp1', 'tp2')), zone.get('score') or 0)
 
 
+def sync_active_signal_to_journal(state, snapshot, result, cfg, engine, *, state_path, journal_path, live_path=None):
+    """Commit the selected paper order and its UI projection under the engine lock."""
+    engine.atomic_write(state_path, state)
+    engine.export_journal(journal_path, state, cfg.core)
+    if live_path:
+        duplicate = result['action'] == 'DUPLICATE_OR_OUT_OF_ORDER'
+        recover_projection = (duplicate and snapshot.now == state.get('last_run_ts')
+                              and engine.read_json(live_path).get('ledger_ts') != snapshot.now)
+        if not duplicate or recover_projection:
+            engine.atomic_write(live_path, build(state, snapshot, result, cfg, engine))
+
+
 def build(state, snapshot, result, cfg, engine):
     reasons = {**engine.REASON_UA,
         'NO_EVALUATED_SETUP':'сетап для цієї зони ще не оцінено',
@@ -37,6 +49,7 @@ def build(state, snapshot, result, cfg, engine):
     orders = []
     for plan in plans:
         active = plan.get('status') == 'OPEN'
+        order_type = plan.get('order_type') or ('MARKET' if plan.get('action_type') == 'ACTIVE_ENTRY' else 'LIMIT')
         stop_amendment = engine.bzu_policy.protective_amendment(plan) or {}
         partial = bool(active and 0 < plan.get('remaining', 1.) < plan.get('filled_fraction', 1.)
                        and any(leg.get('target') == 'TP1' and leg.get('fraction', 0) > 0
@@ -44,7 +57,9 @@ def build(state, snapshot, result, cfg, engine):
         orders.append({
             'id': plan['id'], 'number': plan.get('order_number'),
             'status': 'OPEN' if active else 'CANCELLING' if plan.get('cancel_requested_ts') else 'PENDING',
-            'side': plan['side'], 'type': 'DIRECT' if plan.get('action_type') == 'ACTIVE_ENTRY' else 'LIMIT',
+            'side': plan['side'],
+            'type': order_type, 'order_type': order_type,
+            'market_trigger': plan.get('market_trigger'), 'admission_status': plan.get('admission_status'),
             'setup': plan.get('source_strategy') or plan.get('setup'),
             'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
             'tp1': plan.get('tp1', plan.get('tp')), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
@@ -53,7 +68,7 @@ def build(state, snapshot, result, cfg, engine):
             'tp2_source': plan.get('tp2_source'), 'cancel_reason': plan.get('cancel_reason'),
             'trend_rel': plan.get('trend_rel'), 'trend_phase': plan.get('trend_phase'),
             'entry_max_distance': plan.get('entry_max_distance'),
-            'min_score': engine.scanner.min_plan_score(plan.get('trend_rel')),
+            'min_score': engine.scanner.min_plan_score(plan.get('trend_rel'), plan.get('market_trigger')),
             'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
             'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
@@ -247,7 +262,7 @@ def build(state, snapshot, result, cfg, engine):
             gate = 'BLOCKED_BY_TREND'
         elif not healthy:
             gate = 'DATA_HOLD'
-        elif z['side'] * (snapshot.price - z['entry']) <= cfg.tick / 2:
+        elif not engine.scanner.market_plan(z) and z['side'] * (snapshot.price - z['entry']) <= cfg.tick / 2:
             gate = 'ZONE_NOT_AHEAD_OF_PRICE'
         elif z['valid_until'] <= snapshot.now:
             gate = 'EXPIRED'
@@ -264,6 +279,7 @@ def build(state, snapshot, result, cfg, engine):
         actionable = gate is None and order is None
         z.update(gate_reason=gate, status='CANDIDATE' if actionable else 'REFERENCE',
                  limit_ready=bool(actionable and calc['tactic'] == 'LIMIT' and entry_mode != 'LIVE_REACTION'),
+                 market_now=bool(actionable and calc['tactic'] == 'MARKET' and entry_mode != 'LIVE_REACTION'),
                  actionable=actionable, display_eligible=actionable,
                  reaction_eligible=actionable and (z.get('trend_rel') != 'WITH_TREND' or entry_mode == 'LIVE_REACTION'),
                  map_state=('IN_ZONE' if z['in_zone'] else
@@ -293,8 +309,9 @@ def build(state, snapshot, result, cfg, engine):
 
     all_zones = sorted(planned, key=zone_order)
     candidate_rows = sorted((z for z in all_zones if z['actionable'] and
-                             engine.scanner.entry_window(z['side'], snapshot.price, z['entry'], atr15, cfg,
-                                                         trend=z.get('trend_rel') == 'WITH_TREND') is None),
+                             (engine.scanner.market_plan(z) or
+                              engine.scanner.entry_window(z['side'], snapshot.price, z['entry'], atr15, cfg,
+                                                          trend=z.get('trend_rel') == 'WITH_TREND') is None)),
                             key=priority)
     radar = {label: next((z for z in candidate_rows if z['side'] == side), None)
              for label, side in (('LONG', 1), ('SHORT', -1))}

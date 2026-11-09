@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.33.0-trend-pullback"
-REPORT_RELEASE = 'v12.33.0'
+VERSION = "full-ict-v12.34.0-dual-execution"
+REPORT_RELEASE = 'v12.34.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -552,7 +552,15 @@ def retire_distant_anchor(state: dict, anchor, key: str, snapshot: Snapshot, cfg
 
 
 def full_targets(ctx: dict, s: Snapshot, side: str, entry: float, cfg: Config) -> list[dict]:
-    return limit_structure.structural_targets(ctx,s,side,entry,cfg,sys.modules[__name__])
+    if not ctx.get('organic_oil_targets'):
+        return limit_structure.structural_targets(ctx,s,side,entry,cfg,sys.modules[__name__])
+    # Macro targets depend on closed snapshot data, the side and the entry.
+    # Several overlapping detectors can share the same bid/ask entry.
+    cache = vars(s).setdefault('_organic_targets', {})
+    key = (s.now, cfg.tick, side, entry)
+    if key not in cache:
+        cache[key] = limit_structure.structural_targets(ctx,s,side,entry,cfg,sys.modules[__name__])
+    return cache[key]
 
 
 def stop_geometry(a, ctx, cfg):
@@ -2035,20 +2043,22 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
         if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
-                                        min_score=scanner.min_plan_score(relation), min_rr=1.40):
+                                        min_score=scanner.min_plan_score(relation, candidate.get('market_trigger')), min_rr=1.40):
             continue
         assessment = scanner.calculate_zone_trade_plan(
             zone, s, cfg, sys.modules[__name__], dominant, analysis.get('full_context', {}),
             geometry=candidate, regime=regime)
-        if not assessment or assessment['score'] < scanner.min_plan_score(relation) or assessment['tactic'] == 'OBSERVE':
+        if not assessment or assessment['score'] < scanner.min_plan_score(relation, candidate.get('market_trigger')) or assessment['tactic'] == 'OBSERVE':
             continue
         candidate['zone_quality'] = assessment
+        if relation == 'WITH_TREND':
+            candidate['admission_status'] = 'ADMITTED_LIVE'
         confirmed.append(candidate)
     # Inside-zone and M5 breaker plans require a closed reaction, even in passive mode.
     valid = [p for p in confirmed if p['zone_quality']['entry_condition'] == 'RETEST']
     watch_allowed = can_place
     if entry_mode == 'HYBRID':
-        valid = [p for p in valid if p['zone_quality']['tactic'] == 'LIMIT']
+        valid = [p for p in valid if p['zone_quality']['tactic'] in ('LIMIT', 'MARKET')]
     elif entry_mode == 'LIVE_REACTION':
         can_place = False
     active=active_plans(state)
@@ -2187,7 +2197,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     if can_place and selected_side:
         # Only one order may reserve a new entry, including pending cancellation.
         plans=[p for p in valid if p['side']==selected_side]
-        plans=sorted(plans,key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+        plans=sorted(plans,key=lambda p:(scanner.market_plan(p), policy.ranking(p,s.price,cfg.tick)),reverse=True)
         intent=state.get('portfolio_rotation_intent')
         if intent and not any(p.get('cancel_requested_ts') for p in pending_plans(state)):
             # Revalidate right NOW; a plan saved in a previous cycle is never
@@ -2226,6 +2236,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     policy.ranking(existing[0],s.price,cfg.tick)[0]-cfg.conflict_margin:
                 continue
             plan=copy.deepcopy(top)
+            plan['execution'] = 'PAPER_SIGNAL'
             plan.setdefault('queue_execution_policy','PASSIVE_ARM_V2')
             if plan.get('outcome_forecast'):
                 lifecycle_forecast.select_full_exit(plan,s,cfg,sys.modules[__name__])
@@ -2246,13 +2257,16 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                      decision_ts=intent['decided_ts'],no_third_limit=True)
                 state.pop('portfolio_rotation_intent',None)
             emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
-                 stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'])
+                 stop=plan['stop'],tp=plan['tp'],effective_ts=plan['effective_ts'],
+                 order_type=plan.get('order_type', 'LIMIT'))
             if plan.get('action_type')=='ACTIVE_ENTRY':
                 park_pending(state,[p for p in pending_plans(state) if p['id']!=plan['id']])
                 book={**state,'pending':plan,'active':None,'reconciliation':None}
                 direct = plan.get('direct_entry') or {}
                 reason = ('CURRENT_QUOTE_MOMENTUM' if direct.get('pattern') in ('BREAKOUT', 'ZONE_REACTION')
                           else 'CURRENT_QUOTE_CATCH_UP')
+                if scanner.market_plan(plan):
+                    reason = 'PAPER_MARKET_' + plan['market_trigger']['pattern']
                 end_order(book,plan,'FILLED',reason,s.now)
                 quote=Candle(s.now,plan['entry'],plan['entry'],plan['entry'],plan['entry'])
                 filled=bzu_policy.first_fill(plan,quote,sys.modules[__name__],cfg,60_000)
@@ -2486,6 +2500,10 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'PAPER_MARKET_IN_ZONE_TOUCH':'паперовий вхід MARKET у межах допуску зони',
+    'PAPER_MARKET_POST_TOUCH_REJECTION':'паперовий вхід MARKET після відбою від зони',
+    'PAPER_MARKET_BREAKOUT_CONTINUATION':'паперовий вхід MARKET після імпульсного пробою',
+    'MARKET_CHASE_LIMIT':'ціна вийшла за робочу відстань входу MARKET',
     'ROUND_LEVEL_TARGET_COLLAPSED':'після корекції круглих рівнів TP1/TP2 не мають коректного порядку',
     'ROUND_LEVEL_RR_TOO_LOW':'після корекції перед круглим рівнем потенціал TP/SL недостатній',
     'TREND_M5_SPIKE':'аномальна свічка M5 проти трендового входу',
@@ -3217,14 +3235,12 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             state['market_history_status']={'status':'FAILED','error':str(exc)}
             print('Market evidence recording failed: '+str(exc),file=sys.stderr)
         stage('research_archive')
-        atomic_write(state_path,state)
-        stage('save_state')
-        export_journal(journal_path,state,core)
-        stage('save_journal')
-        live_path = os.environ.get('LIVE_STATE_FILE')
-        if live_path and snapshot_path is None and result['action'] != 'DUPLICATE_OR_OUT_OF_ORDER':
-            import live_terminal
-            atomic_write(Path(live_path), live_terminal.build(state,snap,result,cfg,sys.modules[__name__]))
+        import live_terminal
+        live_path = os.environ.get('LIVE_STATE_FILE') if snapshot_path is None else None
+        live_terminal.sync_active_signal_to_journal(
+            state, snap, result, cfg, sys.modules[__name__], state_path=state_path,
+            journal_path=journal_path, live_path=Path(live_path) if live_path else None)
+        stage('save_state_journal_and_terminal')
 
         if checkpoint_path.exists():
             checkpoint_path.unlink()
@@ -3293,7 +3309,7 @@ def main(core) -> int:
                 # ledger contracts. The Brent suites exercise both swing risk and trend entry.
                 with patch.object(oil_risk, 'enabled', return_value=False):
                     compatibility = runner.run(suite)
-                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback')))
+                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback', 'test_v12_34_dual_execution')))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:

@@ -13,6 +13,14 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import market_wave as wave
 import oil_risk
 
+TREND_TP1_R = 1.10
+TREND_LIMIT_MIN = .08
+TREND_LIMIT_MAX = 2.20
+MARKET_CHASE_R = .45
+MARKET_ZONE_TOLERANCE = .08
+MARKET_TOUCH_TOLERANCE = .06
+MARKET_PATTERNS = frozenset({'IN_ZONE_TOUCH', 'POST_TOUCH_REJECTION', 'BREAKOUT_CONTINUATION'})
+
 PRIMARY = ('15m', '1H', '4H')
 MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
@@ -81,7 +89,15 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
             return 'ORGANIC_TARGET_RANGE'
     elif side*(tp1-entry)/risk < min_rr-1e-8:
         return 'RR_BELOW_1_35'
-    if not low-1e-8 <= entry <= high+1e-8:
+    if market_plan(row):
+        trigger = row['market_trigger']
+        proximal = high if side == 1 else low
+        if trigger['pattern'] == 'IN_ZONE_TOUCH':
+            if not low - MARKET_ZONE_TOLERANCE - 1e-8 <= entry <= high + MARKET_ZONE_TOLERANCE + 1e-8:
+                return 'ENTRY_OUTSIDE_ZONE'
+        elif not 0 <= side * (entry - proximal) <= MARKET_CHASE_R * risk + 1e-8:
+            return 'MARKET_CHASE_LIMIT'
+    elif not low-1e-8 <= entry <= high+1e-8:
         # Planner front-running of a narrow zone is explicit, bounded and causal.
         proximal = high if side == 1 else low
         if not 0 <= side*(entry-proximal) <= .03000001:
@@ -137,16 +153,60 @@ def target_crossed(side, snapshot, target, known):
                for bar in (*minute, *m15))
 
 
-def min_plan_score(relation):
+def market_plan(plan):
+    return (plan.get('trend_rel') == 'WITH_TREND' and plan.get('order_type') == 'MARKET'
+            and (plan.get('market_trigger') or {}).get('pattern') in MARKET_PATTERNS)
+
+
+def min_plan_score(relation, market_trigger=None):
+    if relation == 'WITH_TREND' and (market_trigger or {}).get('pattern') == 'BREAKOUT_CONTINUATION':
+        return 60
     return {'WITH_TREND': 52, 'COUNTER_TREND': 78}.get(relation, 60)
 
 
 def entry_window(side, price, entry, atr15, cfg, *, minimum=True, trend=False):
     distance = side * (price - entry)
-    if abs(distance) > (.02 * entry if trend else max_zone_distance(atr15, cfg)) + 1e-8:
+    if abs(distance) > (TREND_LIMIT_MAX if trend else max_zone_distance(atr15, cfg)) + 1e-8:
         return 'DISTANT_ZONE'
-    if minimum and distance < (cfg.tick if trend else .10) - 1e-8:
+    if minimum and distance < (TREND_LIMIT_MIN if trend else .10) - 1e-8:
         return 'ZONE_NOT_AHEAD_OF_PRICE' if distance <= 0 else 'ENTRY_TOO_CLOSE'
+    return None
+
+
+def trend_market_trigger(snapshot, zone, side, quote, risk, tick, engine):
+    """Classify a current executable quote using only already observed evidence."""
+    low, high, known = (zone[k] for k in ('low', 'high', 'known_ts'))
+    as_of = snapshot.ticker_ts or snapshot.now
+    if not snapshot.trusted or not isfinite(quote) or quote <= 0 or not known <= as_of <= snapshot.now:
+        return None
+    if low - MARKET_ZONE_TOLERANCE - 1e-8 <= quote <= high + MARKET_ZONE_TOLERANCE + 1e-8:
+        return {'pattern': 'IN_ZONE_TOUCH', 'known_ts': as_of}
+    proximal = high if side == 1 else low
+    if not 0 < side * (quote - proximal) <= MARKET_CHASE_R * risk + 1e-8:
+        return None
+    m5 = [c for c in closed_five_minutes(snapshot) if c.ts + wave.M5 <= as_of]
+    m15 = [c for c in snapshot.candles.get('15m', []) if c.confirmed and c.ts + wave.M15 <= as_of]
+    for rows, step, count in ((m5, wave.M5, 6), (m15, wave.M15, 3)):
+        for bar in reversed(rows[-count:]):
+            if (bar.ts >= known and as_of - (bar.ts + step) < count * step
+                    and bar.low <= high + MARKET_TOUCH_TOLERANCE + 1e-8
+                    and bar.high >= low - MARKET_TOUCH_TOLERANCE - 1e-8):
+                return {'pattern': 'POST_TOUCH_REJECTION', 'known_ts': bar.ts + step, 'touch_ts': bar.ts}
+    proof = zone.get('wave_proof') or {}
+    if zone['kind'] not in ('BREAKER_BLOCK', 'FLAG_RETEST') or proof.get('timeframe') not in ('5m', '15m'):
+        return None
+    rows, step = (m5, wave.M5) if proof['timeframe'] == '5m' else (m15, wave.M15)
+    prefix = [c for c in rows if c.ts + step <= known]
+    if len(prefix) < 5 or prefix[-1].ts + step != known or as_of - known >= step:
+        return None
+    bar = prefix[-1]
+    atr = engine.atr(prefix[:-1])
+    width = max(tick, bar.high - bar.low)
+    body = side * (bar.close - bar.open)
+    volume = mean(c.volume for c in prefix[-21:-1])
+    if (atr > 0 and body >= .60 * width and side * (bar.close - proximal) >= tick - 1e-8
+            and (body >= .85 * atr or (volume > 0 and bar.volume >= 1.20 * volume))):
+        return {'pattern': 'BREAKOUT_CONTINUATION', 'known_ts': known}
     return None
 
 
@@ -323,7 +383,8 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
             levels.append((side * (price - entry) / risk, price, target))
     levels.sort(key=lambda x: x[0])
     barrier = next((price for _, price, target in levels if target.get('hard_barrier')), None)
-    first = next((x for x in levels if oil_risk.TP1_MIN - 1e-8 <= x[0] <= oil_risk.TP1_MAX + 1e-8
+    first_floor = TREND_TP1_R if trend else oil_risk.TP1_MIN
+    first = next((x for x in levels if first_floor - 1e-8 <= x[0] <= oil_risk.TP1_MAX + 1e-8
                   and (x[2]['timeframe'] != 'D1' or x[2]['kind'].startswith('PD_'))), None)
     second = next((x for x in levels if oil_risk.TP2_MIN - 1e-8 <= x[0] <= oil_risk.TP2_MAX + 1e-8
                    and x[2]['timeframe'] in ('4H', 'D1')), None)
@@ -331,25 +392,34 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
     def projected(multiplier):
         return engine.round_tick(round(entry + side * multiplier * risk, 10), tick, up=side == 1)
 
-    tp1 = first[1] if first else projected(1.05 if trend else oil_risk.TARGET_1_FALLBACK)
+    tp1 = first[1] if first else projected(TREND_TP1_R if trend else oil_risk.TARGET_1_FALLBACK)
     tp2 = second[1] if second else projected(1.90 if trend else 2.)
+    checkpoints = []
     if trend:
         first_exit = tp1 if fixed_tp1 is None else fixed_tp1
+        checkpoints = {price for rr, price, _ in levels if rr < 1.05}
+        m15 = [bar for bar in snapshot.candles.get('15m', [])
+               if bar.confirmed and bar.ts + wave.M15 <= snapshot.now]
+        for point in engine.pivots(m15[-48:], strength=1):
+            if point['kind'] == ('HIGH' if side == 1 else 'LOW') and 0 < side * (point['level'] - entry) < 1.05 * risk:
+                checkpoints.add(point['level'])
+        checkpoints = sorted(checkpoints, key=lambda price: side * (price - entry))[:8]
         # Tested opposing zones and runner obstacles remain visible. A fresh
         # barrier before the first exit or one containing entry still vetoes.
         clear = not any(target.get('hard_barrier') and
-                        (target.get('entry_inside_zone') or
-                         (target.get('freshness') != 'TESTED' and side * (first_exit - price) > 1e-8))
+                        target.get('freshness') != 'TESTED' and
+                        (target.get('entry_inside_zone') or side * (first_exit - price) > 1e-8)
                         for _, price, target in levels)
     else:
         clear = barrier is None or side * (tp2 - barrier) <= 1e-8
     return {'tp1': tp1, 'tp2': tp2,
-            'tp1_source': first[2]['kind'] if first else ('R_MULTIPLE_1_05' if trend else 'R_MULTIPLE_1_15'),
+            'tp1_source': first[2]['kind'] if first else ('R_MULTIPLE_1_10' if trend else 'R_MULTIPLE_1_15'),
             'tp2_source': second[2]['kind'] if second else ('R_MULTIPLE_1_90' if trend else 'REFERENCE_2R'),
             'tp1_alignment': first[2] if first else None, 'tp2_alignment': second[2] if second else None,
             'structural_tp1': bool(first), 'structural_tp2': bool(second),
             'target_projection': {'tp1': not first, 'tp2': trend and not second},
             'barrier_price': barrier,
+            'checkpoints': checkpoints,
             'path_clear': clear}
 
 
@@ -377,7 +447,9 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         return None
     relation = (geometry or {}).get('trend_rel')
     trend = relation == 'WITH_TREND'
-    score_floor = min_plan_score(relation)
+    market = market_plan(geometry or {})
+    trigger = (geometry or {}).get('market_trigger') if market else None
+    score_floor = min_plan_score(relation, trigger)
     distal = low if side == 1 else high
     near_swings = [point['level'] for point in engine.pivots(closed15)
                    if point['kind'] == ('LOW' if side == 1 else 'HIGH')
@@ -456,8 +528,11 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     projection = (geometry if frozen else destination).get('target_projection') or {}
     if oil:
         if projection.get('tp1'):
+            multiple = oil_risk.TARGET_1_FALLBACK
+            if trend:
+                multiple = 1.05 if tp1_source == 'R_MULTIPLE_1_05' else TREND_TP1_R
             structural_tp1 = abs(tp1 - engine.round_tick(
-                round(entry + side * (1.05 if trend else oil_risk.TARGET_1_FALLBACK) * risk, 10), tick, up=side == 1)) < 1e-8
+                round(entry + side * multiple * risk, 10), tick, up=side == 1)) < 1e-8
         if frozen:
             structural_tp2 = structural_tp2 and (geometry.get('tp2_alignment') or {}).get('timeframe') in ('4H', 'D1')
         if trend and projection.get('tp2'):
@@ -486,9 +561,9 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=trend)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     tracking_only = inside or (geometry or {}).get('reaction_only')
-    window = entry_window(side, snapshot.price, entry, a, cfg,
+    window = None if market else entry_window(side, snapshot.price, entry, a, cfg,
                           minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only, trend=trend)
-    gate=('EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, known) else
+    gate=('EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, trigger['known_ts'] if trigger else known) else
           'STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
           profile['gate'] if profile and profile['gate'] else
           'RISK_BELOW_FLOOR' if risk < floor - 1e-8 else
@@ -505,7 +580,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
         'score':score,'grade':'A' if score>=65 else 'B+' if score>=score_floor else 'C',
         'trend_rel': relation, 'trend_phase': (geometry or {}).get('trend_phase'),
-        'min_score': score_floor, 'entry_max_distance': .02 * entry if trend else max_zone_distance(a, cfg),
+        'min_score': score_floor, 'entry_max_distance': TREND_LIMIT_MAX if trend else max_zone_distance(a, cfg),
+        'order_type': 'MARKET' if market else 'LIMIT', 'market_trigger': trigger,
+        'entry_status': 'MARKET_NOW' if market else 'LIMIT_READY',
+        'checkpoints': (geometry or {}).get('checkpoints', destination.get('checkpoints', [])),
         'score_source':'ZONE_HEURISTIC','score_model':'ZONE_ORGANIC_OIL_V32' if oil else 'ZONE_WAVE_V31',
         'score_cap':100, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
@@ -517,6 +595,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
         'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),
         'tactic':('OBSERVE' if gate or brake['blocked'] or score < score_floor else
+                  'MARKET' if market else
                   'REACTION_M5' if reaction_only or (relation is None and score < 65) else 'LIMIT'),
         'calculated_ts':snapshot.now}
 

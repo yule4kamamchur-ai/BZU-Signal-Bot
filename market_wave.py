@@ -188,9 +188,14 @@ def _m5_continuations(rows, side, a15, tick, engine):
                             ob_ts=anchor.ts, leg_end=end)
 
 
-def trend_zone(zone, regime):
-    return (zone.get('kind') in TREND_ZONES and bool(zone.get('wave_proof'))
-            and regime.get('trend_anchor_side') == zone.get('side'))
+def trend_zone(zone, regime, origin=None):
+    kind = zone.get('kind')
+    witnessed = (kind in TREND_ZONES | {'FLAG_RETEST', 'BEARISH_BREAKER', 'BULLISH_BREAKER'}
+                 and bool(zone.get('wave_proof')))
+    native = (kind in ('DEMAND_OB', 'SUPPLY_OB', 'FVG_BULL', 'FVG_BEAR', 'IMPULSE_OTE_15M',
+                       'DISPLACEMENT_CATCHER_15M', 'BREAKER_FLIP_15M', 'CONTINUATION_PULLBACK')
+              and bool((origin or {}).get('break_known_ts')))
+    return (witnessed or native) and regime.get('trend_anchor_side') == zone.get('side')
 
 
 def _trend_zone(kind, side, bounds, bar, step, reference, **proof):

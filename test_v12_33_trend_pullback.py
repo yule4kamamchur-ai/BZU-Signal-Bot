@@ -86,7 +86,7 @@ class TrendPullback(unittest.TestCase):
         self.assertEqual(pending['entry_condition'], 'RETEST')
         self.assertEqual(pending['approach']['brake_model'], 'TREND_M5_SPIKE_1_20')
         self.assertGreater(snap.price - pending['entry'], .65)
-        self.assertAlmostEqual(public['orders'][0]['entry_max_distance'], .02 * pending['entry'])
+        self.assertAlmostEqual(public['orders'][0]['entry_max_distance'], scanner.TREND_LIMIT_MAX)
         self.assertEqual(public['orders'][0]['min_score'], 52)
         self.assertEqual(arbitration.decision([pending], [], snap, cfg, direction)['decision'],
                          'KEEP_TREND_PRELIMIT')

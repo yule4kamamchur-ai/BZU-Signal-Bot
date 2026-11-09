@@ -14,7 +14,9 @@ COOLDOWN_MS=15*60_000
 
 
 def loss_cooldown(plan, trades, now):
-    """One hour after a same-side stop; only a NEW A+ raid can override."""
+    """Legacy cooldown; current verified trend execution uses the zone and slot guards."""
+    if plan.get('trend_rel') == 'WITH_TREND' and plan.get('order_type') in ('MARKET', 'LIMIT'):
+        return {'allowed': True, 'reason': 'TREND_EXECUTION_POLICY'}
     losses=[t for t in trades if t.get('side')==plan.get('side')
             and t.get('close_reason') in ('STOP','STOP_GAP','SL','STOP_LOSS')
             and t.get('net_r',0)<0 and 0<t.get('closed_ts',0)<=now]

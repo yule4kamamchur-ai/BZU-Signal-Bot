@@ -145,6 +145,7 @@ function statusText(row, price) {
   if (row.status === 'PENDING') return 'Лімітка виставлена';
   if (row.status === 'CANCELLING') return 'Скасовуємо лімітку';
   if (actionablePlan(row, price)) {
+    if (marketCandidate(row)) return 'Підтверджено сигнал MARKET';
     return row.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5' : 'Чекаємо підходу до входу';
   }
   const reasons = {
@@ -189,6 +190,10 @@ function targetRatiosValid(row, rr1, rr2) {
     rr1 >= 1 - 1e-8 && rr1 <= 1.45 + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
     rr1 >= 1.4 - 1e-8 && rr2 >= 2.2 - 1e-8;
 }
+function marketCandidate(row) {
+  return row.order_type === 'MARKET' && row.trend_rel === 'WITH_TREND' &&
+    ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern);
+}
 function validCandidate(row) {
   if (!row || ![1,-1].includes(row.side) || !['15m','1H','4H'].includes(row.timeframe)) return false;
   const locked={DEMAND_OB:1,FVG_BULL:1,BULLISH_BREAKER:1,BULL_BREAKER:1,BREAKER_BULL:1,SWEEP_LOW:1,IFVG_BULL:1,
@@ -203,12 +208,17 @@ function validCandidate(row) {
   const risk=row.side*(row.entry-row.stop);
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
+  const withinZone = marketCandidate(row) ?
+    (row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
+      row.entry >= row.low - .08000001 && row.entry <= row.high + .08000001 :
+      row.side * (row.entry - proximal) >= 0 && row.side * (row.entry - proximal) <= .45 * risk + 1e-8) :
+    (!outside || (row.side * (row.entry - proximal) >= 0 &&
+      row.side * (row.entry - proximal) <= .03000001 + (state.tick || .01)));
   return row.low < row.high && risk > 0 &&
     targetRatiosValid(row, row.side * (row.tp1 - row.entry) / risk, row.side * (row.tp2 - row.entry) / risk) &&
     row.side * (row.tp2 - row.tp1) > 0 && row.score >= (row.min_score ?? 60) && row.score <= 100 &&
     number(row.known_ts) && row.known_ts <= state.snapshot_ts &&
-    (!outside || (row.side * (row.entry - proximal) >= 0 &&
-      row.side * (row.entry - proximal) <= .03000001 + (state.tick || .01)));
+    withinZone;
 }
 function maximumDistance(row) {
   if (number(row?.entry_max_distance) && row.entry_max_distance > 0) return row.entry_max_distance;
@@ -216,7 +226,7 @@ function maximumDistance(row) {
 }
 function inEntryWindow(row, price) {
   const distance = row.side * (price - row.entry);
-  const minimum = row.trend_rel === 'WITH_TREND' ? state.tick : state.candidate_rules?.min_distance ?? .10;
+  const minimum = row.trend_rel === 'WITH_TREND' ? .08 : state.candidate_rules?.min_distance ?? .10;
   return distance >= minimum - 1e-8 && distance <= maximumDistance(row) + 1e-8;
 }
 function exhaustionKey(row) {
@@ -233,10 +243,18 @@ function followsBias(row) {
 }
 function actionablePlan(row, price, tracking = false) {
   if (row.actionable !== true || row.execution_admitted !== true || !['A','B+'].includes(row.grade) ||
-      row.status !== 'CANDIDATE' || row.gate_reason || !['LIMIT','REACTION_M5'].includes(row.tactic) ||
+      row.status !== 'CANDIDATE' || row.gate_reason || !['LIMIT','REACTION_M5','MARKET'].includes(row.tactic) ||
       !followsBias(row) || !validCandidate(row) ||
       (state.organic_risk_profile?.model === 'ORGANIC_OIL_V32' && !organicPlan(row))) return false;
   const stage = livePlanState(row, price);
+  if (marketCandidate(row)) {
+    const risk = row.side * (row.entry - row.stop);
+    const proximal = row.side === 1 ? row.high : row.low;
+    const nearZone = price >= row.low - .08000001 && price <= row.high + .08000001;
+    const distance = row.side * (price - proximal);
+    return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
+      (nearZone || (row.market_trigger.pattern !== 'IN_ZONE_TOUCH' && distance > 0 && distance <= .45 * risk + 1e-8));
+  }
   return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
     (inEntryWindow(row, price) || stage === 'READY' ||
       (tracking && Math.abs(price - row.entry) <= maximumDistance(row) + 1e-8));
@@ -585,6 +603,10 @@ function conditionText(row, price) {
     return 'Орієнтир для спостереження. ' + statusText(row, price) +
       (row.low <= price && price <= row.high ? '. Для входу потрібні допуск і закрита реакція M5.' : '.');
   }
+  if (marketCandidate(row)) {
+    return row.market_trigger.pattern === 'POST_TOUCH_REJECTION' ? 'Зафіксовано відбій від зони.' :
+      row.market_trigger.pattern === 'BREAKOUT_CONTINUATION' ? 'Підтверджено імпульсний пробій.' : 'Ціна в межах допуску зони.';
+  }
   if (row.low <= price && price <= row.high) return 'Ціна в зоні. Чекаємо відбою на закритій M5.';
   if (row.entry_condition === 'M5_BREAKER_RETEST') return 'Чекаємо ретесту зламаного рівня на закритій M5.';
   return row.tactic === 'REACTION_M5' ? 'Чекаємо підходу та відбою на закритій M5.' : 'Чекаємо підходу до рівня лімітки.';
@@ -794,7 +816,7 @@ function renderBanner(price, usable, live) {
   let detail = 'Чекаємо підтвердженого сетапу.';
   if (candidate) {
     if (state.cockpit_schema === 5) {
-      title = 'ГОТУЄМО ' + sideLabel(candidate.side) + ' ВІД ' +
+      title = (candidate.market_now ? 'СИГНАЛ MARKET ' : 'ГОТУЄМО ') + sideLabel(candidate.side) + ' ВІД ' +
         format(candidate.entry) + ' • ' + candidate.timeframe + ' ' + zoneName(candidate.kind);
       detail = 'Зона ' + format(candidate.low) + '–' + format(candidate.high) + ' · Δ ' +
         signed(candidate.entry - price, ' $') + ' (' + signed((candidate.entry-price)*100, '¢') + ') · ' +
@@ -808,13 +830,14 @@ function renderBanner(price, usable, live) {
     const managing = active.tp1_partial === true;
     mode = managing ? 'MANAGING' : 'ENTERED';
     pill = managing ? 'В СУПРОВОДІ • КОНТРОЛЬ ПОЗИЦІЇ' : 'В УГОДІ • ПОЗИЦІЮ ВІДКРИТО';
+    const entryType = active.order_type ?? active.type;
     title = (managing ? 'В СУПРОВОДІ' : 'В УГОДІ') + ' • ' +
-      sideLabel(active.side) + ' @ ' + format(active.entry);
+      (entryType ? entryType + ' ' : '') + sideLabel(active.side) + ' @ ' + format(active.entry);
     detail = management(active, tracker, price, usable);
   } else if (pending) {
     const tracker = orderTracker(pending);
     pill = 'ЛІМІТКА ВИСТАВЛЕНА';
-    title = 'ОЧІКУЄМО ВХІД • ' + sideLabel(pending.side) + ' @ ' + format(pending.entry);
+    title = 'ОЧІКУЄМО ВХІД • LIMIT ' + sideLabel(pending.side) + ' @ ' + format(pending.entry);
     detail = 'Очікуємо виконання лімітки.';
     if (tracker.touch) detail = 'Ціна торкнулася входу, чекаємо підтвердження виконання.';
     if (tracker.end) detail = management(pending, tracker, price, usable);
@@ -919,7 +942,7 @@ function render() {
     card.dataset.tone=tracker.end==='SL' || order.status==='CANCELLING' ? 'danger' :
       tracker.tp1 ? 'target' : order.status==='OPEN' ? 'entry' : 'approach';
     if (now-tracker.flash<900) card.classList.add('pulse');
-    card.append(element('h3',(order.number ? '#'+order.number+' · ' : '') + sideLabel(order.side) + ' · ' + order.type + ' @ ' + format(order.entry)),
+    card.append(element('h3',(order.number ? '#'+order.number+' · ' : '') + sideLabel(order.side) + ' · ' + (order.order_type ?? order.type) + ' @ ' + format(order.entry)),
       element('p',order.status==='OPEN' ? 'Позиція за журналом' : order.status==='CANCELLING' ? 'Скасування за журналом' : 'Лімітка за журналом','order-label'));
     if (order.status==='OPEN') card.append(element('p',signed(move,' $/од.') + (order.risk>0 ? ' · '+signed(move/order.risk)+'R' : ''), 'pnl '+(move>=0?'long':'short')),
       element('small',(live ? 'Live' : 'Зліпок') + ' · ціновий рух без комісій; грошовий PnL залежить від обсягу'), lifecycle(order,price));
@@ -1041,7 +1064,7 @@ function drawLevels() {
   const price=displayedPrice();
   for (const order of chartOrders()) {
     const prefix=(order.number ? '#'+order.number+' ' : '')+sideLabel(order.side)+' ';
-    add(order.entry,prefix+(order.status==='OPEN'?'В УГОДІ':order.status==='CANCELLING'?'СКАСУВАННЯ':'LIMIT')+
+    add(order.entry,prefix+(order.status==='OPEN'?(order.order_type ?? order.type ?? 'В УГОДІ'):order.status==='CANCELLING'?'СКАСУВАННЯ':'LIMIT')+
       ' @ '+format(order.entry)+(order.status==='PENDING'?' · Δ '+signed(order.entry-price,' $'):''),'#55d6ad');
     add(order.stop,prefix+'SL @ '+format(order.stop)+' ('+signed(order.side*(order.stop-order.entry)/order.risk)+'R)','#ff8994',false);
     add(order.tp1,prefix+'TP1 · '+Math.round(order.tp1_fraction*100)+'% ('+signed(order.side*(order.tp1-order.entry)/order.risk)+'R)','#7db7ff');
@@ -1049,7 +1072,7 @@ function drawLevels() {
   }
   const candidate = chartPlan();
   if (candidate) {
-    add(candidate.entry, 'ОЧІКУЄМО ВХІД ' + sideLabel(candidate.side) + ' @ ' + format(candidate.entry) +
+    add(candidate.entry, (candidate.market_now ? 'СИГНАЛ MARKET ' : 'ОЧІКУЄМО ВХІД ') + sideLabel(candidate.side) + ' @ ' + format(candidate.entry) +
       ' (Δ ' + signed(candidate.entry - price,' $') + ')', '#589aff');
     add(candidate.stop, 'СТОП-ЛОС @ ' + format(candidate.stop) + ' (' + signed(-candidate.side * (candidate.entry - candidate.stop),' $') + ')', '#ff8994', false);
     add(candidate.tp1, 'ТЕЙК-ПРОФІТ 1 @ ' + format(candidate.tp1) + ' (' + signed((candidate.tp1 - candidate.entry) / (candidate.entry - candidate.stop),'R') + ')', '#7db7ff');

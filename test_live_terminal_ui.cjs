@@ -89,6 +89,11 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  run('state.status="READY";state.orders=[{...orderFixture,status:"OPEN",side:-1,entry:100.15,stop:100.55,risk:.4,tp1:99.55,tp2:99.05}];quote={price:99.9,ts:Date.now()+6};render();');
  assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');assert.match(text('state-title'),/SHORT/);assert.match(text('orders'),/\+0.25/);
  assert.ok(priceLines.some(l=>l.title.includes('SL')&&l.title.includes('−1.00R')));
+ run('state.orders[0].order_type="MARKET";render();');
+ assert.match(text('state-title'),/MARKET SHORT/);
+ assert.match(text('orders'),/MARKET/);
+ assert.ok(priceLines.some(l=>l.title.includes('MARKET @ 100.15')));
+
  run('state.snapshot_ts=Date.now()-28*60000;render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
  run('state.snapshot_ts=Date.now();quote={price:100.1,ts:Date.now()-20000};render();');assert.match(text('state-title'),/В УГОДІ/);
  run('state.orders=[];state.zones=[];state.candidates=[];state.recent_events=[];render();');assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);
@@ -134,6 +139,17 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
    assert.equal(run('currentReaction().tracker.events.size'),1);
    feed(100-side*.22,1000);assert.equal(run('currentReaction().tracker.events.size'),1);
  }
+ reset(-1,{entry:93.77,low:93.86,high:94.14,stop:95.87,tp1:91.46,tp2:89.78,
+   trend_rel:'WITH_TREND',tactic:'MARKET',order_type:'MARKET',market_now:true,
+   organic_risk:{model:'ORGANIC_OIL_V32'},market_trigger:{pattern:'POST_TOUCH_REJECTION'}});
+ run('state.cockpit_schema=5;state.price=93.77;render();');
+ assert.match(text('state-title'),/СИГНАЛ MARKET SHORT ВІД 93.77/);
+ assert.match(text('state-detail'),/відбій від зони/);
+ assert.equal(nodes.get('state-banner').dataset.mode,'WAITING');
+ assert.ok(priceLines.some(l=>l.title.includes('MARKET SHORT')));
+ run('state.price=92.90;render();');
+ assert.equal(run('radarRows().filter(Boolean).length'),0);
+ assert.equal(priceLines.length,0);
  reset();feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY'); // Started inside, no witnessed approach.
  reset();feed(100);feed(99.73);feed(99.70);feed(99.77,20000);assert.notEqual(stage(),'READY'); // Data gap revokes touch proof.
  reset();feed(100);feed(99.29);assert.equal(run('radarRows().filter(Boolean).length'),0);feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);

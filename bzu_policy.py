@@ -149,14 +149,14 @@ def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, fro
     return first, stop, risk, legs
 
 
-def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, zone=None, *, trend=False):
+def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, zone=None, *, trend=False, market_trigger=None):
     """Price structural targets on the final entry and execution fee contract."""
     risk = side * (entry - stop)
     organic = oil_risk.enabled(cfg)
     targets = engine.full_targets({**context, 'organic_oil_targets': organic}, snapshot, anchor.side, entry, cfg)
     geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine, trend=trend) if organic else
                 scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
-    known = (zone or {}).get('known_ts', snapshot.now)
+    known = market_trigger['known_ts'] if market_trigger else (zone or {}).get('known_ts', snapshot.now)
     if scanner.target_crossed(side, snapshot, geometry['tp1'], known):
         return None, 'EXHAUSTED_MOVE'
     projection = geometry.get('target_projection', {})
@@ -217,7 +217,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             return None, origin['reason']
         zone, origin = sweep_zone, sweep_origin
     impulse_known = origin.get('displacement_known_ts') or zone['known_ts']
-    zone = {**zone, 'impulse_known_ts': impulse_known}
+    zone = {**zone, 'side': side, 'impulse_known_ts': impulse_known}
     low, high = zone['low'], zone['high']
     # Preserve the observed zone even when Impulse Brake stops planning early.
     diag['entry_zone'] = dict(zone)
@@ -225,7 +225,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     zone_error = scanner.standalone_zone_error({**zone, 'side': side}, snapshot, cfg, engine, a15, regime.get('state'))
     if zone_error:
         return None, zone_error
-    trend = scanner.wave.trend_zone(zone, regime)
+    trend = oil_risk.enabled(cfg) and scanner.wave.trend_zone(zone, regime, origin)
     relation = 'WITH_TREND' if trend else None
     counter_confirmation = None
     if oil_risk.enabled(cfg):
@@ -270,9 +270,15 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             swings[-1]['level'] if swings else anchor.invalidation)
     preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
-    entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
-        low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil)
-    organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)[2] if oil else None
+    if trend:
+        entry = engine.round_tick(high if side == 1 else low, cfg.tick, up=side == -1)
+        stop, risk, organic_risk = oil_risk.stop_geometry(
+            entry, structural, side, *oil, cfg.tick, engine, allow_local=True)
+        entry_basis, inside = 'ZONE_EDGE', low <= snapshot.price <= high
+    else:
+        entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
+            low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil)
+        organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)[2] if oil else None
     legs = [{'name':'L1', 'price':entry, 'fraction':1., 'status':'PENDING'}]
     breaker = scanner.m5_breaker({**zone, 'side': side}, snapshot, cfg.tick)
     reaction_only = relation is None and (inside or bool(breaker))
@@ -321,13 +327,15 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'ANCHOR_INVALIDATED'
     distance = abs(snapshot.price-entry)
     diag['distance_atr'] = distance/a15
-    if scanner.entry_window(side, snapshot.price, entry, a15, cfg, minimum=False, trend=trend) == 'DISTANT_ZONE':
+    quote = snapshot.ask if side == 1 else snapshot.bid
+    market_trigger = scanner.trend_market_trigger(snapshot, zone, side, quote, risk, cfg.tick, engine) if trend else None
+    if not market_trigger and scanner.entry_window(side, snapshot.price, entry, a15, cfg, minimum=False, trend=trend) == 'DISTANT_ZONE':
         return None, 'DISTANT_ZONE'
     test_zone = {**zone, 'low': entry, 'high': entry} if trend else zone
     audit = zones.first_test(test_zone, minute, side, entry, risk, snapshot.now)
     diag['zone_audit'] = audit
-    mark('FRESH_LEVEL', not audit['mitigated'])
-    if audit['mitigated'] or (trend and audit['touched']):
+    mark('FRESH_LEVEL', bool(market_trigger) or not audit['mitigated'])
+    if not market_trigger and (audit['mitigated'] or (trend and audit['touched'])):
         return None, 'ZONE_MITIGATED'
     passive = scanner.passive_gate(entry, side, snapshot.bid, snapshot.ask, cfg.tick)['passive']
     confirmed_retest = bool(passive and audit['touched'] and
@@ -353,6 +361,31 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                       'move_r': catchup['move_r'], 'pattern': 'CONFIRMED_RETEST'}
     action = 'NEW_PENDING_LIMIT'
     geometry = None
+    if market_trigger:
+        # Re-price at executable bid/ask. Retain the structural boundary and
+        # preserve the original stop whenever it still fits the risk budget.
+        quote_stop, quote_risk, quote_profile = oil_risk.stop_geometry(
+            quote, organic_risk['boundary'], side, *oil, cfg.tick, engine, allow_local=True)
+        if quote_profile['gate']:
+            return None, quote_profile['gate']
+        fixed_risk = side * (quote - stop)
+        if (quote_profile['floor'] - 1e-8 <= fixed_risk <= quote_profile['cap'] + 1e-8
+                and side * (quote_profile['boundary'] - stop) >= quote_profile['buffer'] - 1e-8):
+            quote_stop, quote_risk = stop, fixed_risk
+        if market_trigger['pattern'] != 'IN_ZONE_TOUCH' and side * (quote - (high if side == 1 else low)) > scanner.MARKET_CHASE_R * quote_risk + 1e-8:
+            return None, 'MARKET_CHASE_LIMIT'
+        geometry, why = protected_targets(
+            context, snapshot, anchor, cfg, engine, quote, quote_stop, side, a15, active=True,
+            zone=zone, trend=True, market_trigger=market_trigger)
+        if geometry is None:
+            return None, why
+        entry, stop, risk = quote, quote_stop, quote_risk
+        organic_risk = quote_profile
+        action = 'ACTIVE_ENTRY'
+        entry_basis = 'EXECUTABLE_QUOTE'
+        legs = [{'name': 'ACTIVE', 'price': entry, 'fraction': 1., 'status': 'PENDING'}]
+        diag.update(entry=entry, level=entry, stop=stop, risk=risk, organic_risk=organic_risk,
+                    entry_basis=entry_basis, market_trigger=market_trigger)
     if direct:
         quote = direct['price']
         quote_stop, quote_risk, quote_profile = (oil_risk.stop_geometry(
@@ -420,7 +453,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'micro_timeframe':'3m', 'formation_timeframe':zone['timeframe'],
          'formation_micro_timeframe':anchor.evidence.get('formation_micro_timeframe','3m'),
          'entry_route':anchor.evidence.get('entry_route','NATIVE_PATTERN'),
-         'source_strategy':anchor.evidence.get('source_strategy'),
+         'source_strategy':anchor.evidence.get('source_strategy') or (zone['kind'] if trend else None),
          'planning_policy':POLICY, 'entry_policy':'CHECKLIST_CONFIRMED',
          'detector_confirmed':True, 'anchor_id':anchor.id, 'anchor_kind':anchor.kind,
          'anchor_proof':proof, 'pattern_proof':copy.deepcopy(proof.get('recovery_proof',{})),
@@ -432,6 +465,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'entry_basis':entry_basis, 'entry_condition':entry_condition, 'reaction_only':reaction_only,
          'round_level_protection':copy.deepcopy(diag['round_level_protection']),
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
+         'order_type':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
+         'market_trigger':market_trigger, 'checkpoints':geometry.get('checkpoints', []),
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
          'risk':risk, 'organic_risk':organic_risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
          'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
@@ -455,13 +490,13 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'time_exit_enabled':False,
          'placement_price':snapshot.price, 'target_cancel_armed':side*(snapshot.price-tp1)<0,
          'action_type':action, 'execution_source':action, 'entry_stage':'CORE',
-         'preposition_window':'tick..2% of entry' if trend else '.10..min(.65,1.2*ATR15)', 'preposition_distance':distance,
+         'preposition_window':'.08..2.20' if trend else '.10..min(.65,1.2*ATR15)', 'preposition_distance':distance,
          'queue_execution_policy':'PASSIVE_ARM_V2', 'execution_timeframe':'1m',
          'readiness_pct':100., 'entry_checks':copy.deepcopy(diag['entry_checks']),
          'htf_1h':regime['side_1h'], 'htf_4h':regime['side_4h'],
          'market_regime':regime, 'session_liquidity':ict.session_liquidity(snapshot),
          'trend_rel':relation, 'trend_phase':regime.get('trend_phase'),
-         'counter_confirmation':counter_confirmation, 'entry_max_distance':.02 * entry if trend else scanner.max_zone_distance(a15, cfg),
+         'counter_confirmation':counter_confirmation, 'entry_max_distance':scanner.TREND_LIMIT_MAX if trend else scanner.max_zone_distance(a15, cfg),
          'score':0., 'probability':None, 'probability_status':'UNVALIDATED_SCORE_NOT_WR',
          'evidence':[anchor.reason], 'candidate':{}, 'parent_keys':[],
          'status':'PENDING', 'last_bar':-1, 'version':engine.VERSION}

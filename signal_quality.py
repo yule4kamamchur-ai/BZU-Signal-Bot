@@ -268,7 +268,7 @@ def confluence(plan, snapshot, proof, cfg, engine):
     zone = plan.get('entry_zone', {})
     origin = plan.get('zone_origin', {})
     fresh = (zone.get('high', 0) > zone.get('low', 0)
-             and not plan.get('zone_audit', {}).get('mitigated')
+             and (scanner.market_plan(plan) or not plan.get('zone_audit', {}).get('mitigated'))
              and (origin.get('confirmed') or 'FVG' in zone.get('kind', '')
                   or 'OB' in zone.get('kind', '')))
     sweeps = ict_methodology.session_sweeps(snapshot, plan['side'], cfg.tick, engine)
@@ -303,7 +303,7 @@ def confluence(plan, snapshot, proof, cfg, engine):
     if not trigger:
         parts = {'base': 25}
     score = min(100, sum(parts.values()))
-    threshold = scanner.min_plan_score(relation) if relation else max(60, cfg.min_score)
+    threshold = scanner.min_plan_score(relation, plan.get('market_trigger')) if relation else max(60, cfg.min_score)
     active = plan.get('market_regime', {}).get('active_structure', {}).get('side')
     countertrend = active != plan['side'] and any(
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))
@@ -347,7 +347,7 @@ def volume_footprint(plan, snapshot, proof, session_sweeps):
 
 
 PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','organic_risk','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
-             'approach','market_regime','ict_evidence','confluence','trend_rel','trend_phase','counter_confirmation','entry_max_distance',
+             'approach','market_regime','ict_evidence','confluence','trend_rel','trend_phase','counter_confirmation','entry_max_distance','order_type','market_trigger','checkpoints',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',

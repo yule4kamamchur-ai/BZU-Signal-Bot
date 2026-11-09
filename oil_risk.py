@@ -124,7 +124,7 @@ def macro_anchors(snapshot, cfg, engine, side):
     return cache[key]
 
 
-def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine):
+def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine, *, allow_local=False):
     """A cap can clip volatility. A cap cannot move SL through a structural buffer."""
     floor, cap = price_bounds(entry)
     macro = min((a for a in anchors if 1.20 - 1e-8 <= side * (entry - a['level']) <= 1.80 + 1e-8),
@@ -142,11 +142,12 @@ def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine):
         stop = engine.round_tick(round(entry - side * cap, 10), tick, up=side == 1)
         risk = side * (entry - stop)
     reason = ('OIL_VOLATILITY_UNAVAILABLE' if not profile['atr_1h'] else
-              'MACRO_STOP_ANCHOR_REQUIRED' if macro is None else
+              'MACRO_STOP_ANCHOR_REQUIRED' if macro is None and not allow_local else
               'STRUCTURAL_STOP_TOO_WIDE' if stop <= 0 or risk > cap + 1e-8 or
               risk < max(floor, structural_distance) - 1e-8 else None)
     return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': cap, 'target': volatility_target,
-                        'macro_anchor': macro, 'boundary': boundary, 'buffer': buffer,
+                        'macro_anchor': macro, 'anchor_source': 'HTF' if macro else 'CONFIRMED_ZONE' if allow_local else None,
+                        'boundary': boundary, 'buffer': buffer,
                         'structural_distance': structural_distance, 'gate': reason}
 
 
