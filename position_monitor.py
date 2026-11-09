@@ -8,6 +8,7 @@ from __future__ import annotations
 
 
 import strategy_organics
+import oil_risk
 
 STEPS = {'3m': 180_000, '15m': 900_000, '1H': 3_600_000, '4H': 14_400_000}
 
@@ -67,7 +68,9 @@ def review(position, snapshot):
         status, reason = 'INTACT', 'Завершені 15m/1H свічки не підтверджують розворот проти позиції'
     return {'status': status, 'reason': reason, 'adverse': status in ('REVERSAL_RISK', 'WEAKENING'),
             'break_15m': adverse_15m, 'break_1h': adverse_1h,
-            'regime': regime.state, 'as_of_ts': snapshot.now}
+            'regime': regime.state, 'as_of_ts': snapshot.now,
+            'entry_risk_model': oil_risk.MODEL if oil_risk.is_organic(position) else 'LEGACY',
+            'initial_risk': position.get('risk')}
 
 
 def confirmed_m5_structure(snapshot, after, as_of, side, stop, tick):

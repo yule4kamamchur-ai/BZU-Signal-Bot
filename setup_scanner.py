@@ -11,6 +11,7 @@ from math import isfinite
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 import market_wave as wave
+import oil_risk
 
 PRIMARY = ('15m', '1H', '4H')
 MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
@@ -73,7 +74,12 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         return 'SCORE_BELOW_65'
     if row.get('score_source') != 'CONTEXT':
         return 'CONTEXT_NOT_EVALUATED'
-    if side*(tp1-entry)/risk < min_rr-1e-8:
+    if oil_risk.is_organic(row):
+        rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
+        if not (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
+                oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8):
+            return 'ORGANIC_TARGET_RANGE'
+    elif side*(tp1-entry)/risk < min_rr-1e-8:
         return 'RR_BELOW_1_35'
     if not low-1e-8 <= entry <= high+1e-8:
         # Planner front-running of a narrow zone is explicit, bounded and causal.
@@ -164,7 +170,7 @@ def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
     return stop, risk, safe
 
 
-def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None):
+def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None, oil=None):
     """Work inside the native zone without shrinking its structural falsifier."""
     width = high - low
     wide = width > .45 + 1e-8 or width > .80 * atr15 + 1e-8
@@ -191,13 +197,20 @@ def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, 
         entry = engine.round_tick(round(raw, 10), cfg.tick, up=(side == 1 and not inside) or (side == -1 and inside))
         if inside and (not low - 1e-8 <= entry <= high + 1e-8 or side * (price - entry) < cfg.tick - 1e-8):
             continue
-        stop, risk, safe = normalized_zone_stop(entry, structural, side, atr15, cfg, engine)
+        if oil:
+            stop, risk, details = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)
+            safe = details['gate'] is None
+        else:
+            stop, risk, safe = normalized_zone_stop(entry, structural, side, atr15, cfg, engine)
         if safe:
             return entry, stop, risk, basis, wide, inside
         fallback = (entry, basis)
     if fallback is None:
         fallback = (engine.round_tick(round(distal, 10), cfg.tick, up=side == 1), 'DISTAL_EDGE')
     entry, basis = fallback
+    if oil:
+        stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)
+        return entry, stop, risk, basis, wide, inside
     floor, _ = zone_risk_bounds(atr15, cfg)
     # Show the real required protection in a reference plan even when it exceeds the cap.
     buffer = max(cfg.tick, .25 * atr15)
@@ -295,6 +308,37 @@ def planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone, atr
                                   'tp2': not destination['structural_tp2']}}
 
 
+def organic_targets(entry, risk, side, targets, snapshot, tick, engine):
+    """Pick macro targets in R windows. TP1 alone may use a projection."""
+    levels = []
+    for target in targets:
+        if target.get('timeframe') not in ('1H', '4H', 'D1', 'SESSION') or target.get('known_ts') is None:
+            continue
+        price = structural_target_price(target, snapshot.now, side, tick, engine)
+        if price is not None and side * (price - entry) > 0:
+            levels.append((side * (price - entry) / risk, price, target))
+    levels.sort(key=lambda x: x[0])
+    barrier = next((price for _, price, target in levels if target.get('hard_barrier')), None)
+    first = next((x for x in levels if oil_risk.TP1_MIN - 1e-8 <= x[0] <= oil_risk.TP1_MAX + 1e-8
+                  and (x[2]['timeframe'] != 'D1' or x[2]['kind'].startswith('PD_'))), None)
+    second = next((x for x in levels if oil_risk.TP2_MIN - 1e-8 <= x[0] <= oil_risk.TP2_MAX + 1e-8
+                   and x[2]['timeframe'] in ('4H', 'D1')), None)
+
+    def projected(multiplier):
+        return engine.round_tick(round(entry + side * multiplier * risk, 10), tick, up=side == 1)
+
+    tp1 = first[1] if first else projected(oil_risk.TARGET_1_FALLBACK)
+    tp2 = second[1] if second else projected(2.)
+    return {'tp1': tp1, 'tp2': tp2,
+            'tp1_source': first[2]['kind'] if first else 'R_MULTIPLE_1_15',
+            'tp2_source': second[2]['kind'] if second else 'REFERENCE_2R',
+            'tp1_alignment': first[2] if first else None, 'tp2_alignment': second[2] if second else None,
+            'structural_tp1': bool(first), 'structural_tp2': bool(second),
+            'target_projection': {'tp1': not first, 'tp2': False},
+            'barrier_price': barrier,
+            'path_clear': barrier is None or side * (tp2 - barrier) <= 1e-8}
+
+
 def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                               context=None, geometry=None, targets=None, regime=None):
     """Causal geometric pre-plan + transparent 5-factor ranking, never execution.
@@ -323,28 +367,35 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                    and point['known_ts'] + 900_000 <= known
                    and 0 <= side * (distal - point['level']) <= .25 * a]
     structural = min(near_swings, key=lambda level: abs(level - distal), default=distal)
+    oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     entry, stop, risk, basis, wide, inside = zone_entry_geometry(
-        low, high, snapshot.price, structural, side, a, cfg, engine)
-    floor, cap = zone_risk_bounds(a, cfg)
-    safe = floor - 1e-8 <= risk <= cap + 1e-8
+        low, high, snapshot.price, structural, side, a, cfg, engine, oil=oil)
+    profile = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)[2] if oil else None
+    floor, cap = (profile['floor'], profile['cap']) if profile else zone_risk_bounds(a, cfg)
+    safe = (profile['gate'] is None if profile else floor - 1e-8 <= risk <= cap + 1e-8)
     frozen = False
     if geometry and all(valid(geometry.get(k)) and geometry[k] > 0 for k in ('entry', 'stop', 'tp1', 'tp2')):
         ge, gs, g1, g2 = (geometry[k] for k in ('entry', 'stop', 'tp1', 'tp2'))
         if side * (ge - gs) > 0 and side * (g1 - ge) > 0 and side * (g2 - g1) >= -tick / 2:
             entry, stop = ge, gs
             risk = side * (entry - stop)
-            floor, cap = zone_risk_bounds(a, cfg)
-            boundary = geometry.get('invalidation', distal)
-            buffer = max(tick, .25 * a)
+            if oil:
+                profile = geometry.get('organic_risk') or {**profile, 'gate': 'LEGACY_MICRO_RISK'}
+            floor, cap = (profile['floor'], profile['cap']) if profile else zone_risk_bounds(a, cfg)
+            boundary = profile['boundary'] if profile else geometry.get('invalidation', distal)
+            buffer = profile['buffer'] if profile else max(tick, .25 * a)
             safe = (floor - 1e-8 <= risk <= cap + 1e-8 and valid(boundary) and
-                    min(side * (distal - stop), side * (boundary - stop)) >= buffer - 1e-8)
+                    min(side * (distal - stop), side * (boundary - stop)) >= buffer - 1e-8 and
+                    (not profile or profile['gate'] is None))
             frozen = True
     if risk <= 0 or stop <= 0:
         return None
-    available = (engine.full_targets(context or {}, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
+    target_context = {**(context or {}), 'organic_oil_targets': bool(oil)}
+    available = (engine.full_targets(target_context, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
                  if targets is None else targets)
-    destination = planned_targets(entry, risk, side, available, snapshot, cfg, engine, zone, a,
-                                  quote=snapshot.price if not frozen else None)
+    destination = (organic_targets(entry, risk, side, available, snapshot, tick, engine) if oil else
+                   planned_targets(entry, risk, side, available, snapshot, cfg, engine, zone, a,
+                                   quote=snapshot.price if not frozen else None))
     if frozen:
         tp1, tp2 = geometry['tp1'], geometry['tp2']
         tp1_source = geometry.get('tp1_source') or 'ENGINE_PLAN'
@@ -371,8 +422,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                   or (zone.get('wave_proof') and zone['kind'] in wave.CONTINUATIONS) or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
     barrier = destination['barrier_price']
-    room = (rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8 and
-            (barrier is None or side * (tp2 - barrier) <= 1e-8))
+    target_range = (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
+                    oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8) if oil else (
+                    rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8)
+    room = target_range and (barrier is None or side * (tp2 - barrier) <= 1e-8)
     if frozen:
         structural_tp1 = structural_target_price(
             geometry.get('tp1_alignment'), snapshot.now, side, tick, engine) == round(tp1, 10)
@@ -382,14 +435,20 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         structural_tp1 = destination['structural_tp1']
         structural_tp2 = destination['structural_tp2']
     projection = (geometry if frozen else destination).get('target_projection') or {}
-    if projection and zone.get('wave_proof') and zone.get('kind') in wave.CONTINUATIONS:
+    if oil:
+        if projection.get('tp1'):
+            structural_tp1 = abs(tp1 - engine.round_tick(
+                round(entry + side * oil_risk.TARGET_1_FALLBACK * risk, 10), tick, up=side == 1)) < 1e-8
+        if frozen:
+            structural_tp2 = structural_tp2 and (geometry.get('tp2_alignment') or {}).get('timeframe') in ('4H', 'D1')
+    elif projection and zone.get('wave_proof') and zone.get('kind') in wave.CONTINUATIONS:
         if projection.get('tp1'):
             structural_tp1 = abs(tp1 - engine.round_tick(
                 round(entry + side * 1.50 * risk, 10), tick, up=side == 1)) < 1e-8
         if projection.get('tp2'):
             structural_tp2 = abs(tp2 - engine.round_tick(
                 round(entry + side * 2.30 * risk, 10), tick, up=side == 1)) < 1e-8
-    reversal = wave.reversal_override(side, zone, snapshot, tick)
+    reversal = wave.reversal_override(side, zone, snapshot, tick, require_macro=bool(oil))
     volume = formation_volume(zone, snapshot)
     criteria = [('REGIME_ALIGNMENT', 25, primary_side == side or reversal),
                 ('UNTESTED', 20, freshness == 'UNTESTED'), ('HTF_OR_SWEEP', 20, htf_or_sweep),
@@ -405,6 +464,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                           minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only)
     gate=('EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, known) else
           'STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
+          profile['gate'] if profile and profile['gate'] else
           'RISK_BELOW_FLOOR' if risk < floor - 1e-8 else
           'RISK_TOO_WIDE' if not safe else
           zone_error if zone_error else
@@ -418,13 +478,13 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                  (geometry or {}).get('entry_condition', 'RETEST'))
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
         'score':score,'grade':'A' if score>=65 else 'B+' if score>=60 else 'C',
-        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_WAVE_V31',
+        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_ORGANIC_OIL_V32' if oil else 'ZONE_WAVE_V31',
         'score_cap':100, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
         'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else basis, 'in_zone':inside,
         'entry_condition':condition, 'm5_breaker':breaker,
-        'risk_floor':floor, 'risk_cap':cap, 'target_barrier':barrier,
+        'risk_floor':floor, 'risk_cap':cap, 'target_barrier':barrier, 'organic_risk':profile,
         'target_projection':projection or None, 'reversal_override':reversal,
         'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
         'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),

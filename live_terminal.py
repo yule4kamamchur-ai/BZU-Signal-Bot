@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from math import isfinite
 
+import oil_risk
+
 RETIRED = frozenset({'ZONE_MITIGATED', 'ANCHOR_INVALIDATED', 'ANCHOR_TOO_OLD_TO_PLACE',
     'ANCHOR_EXPIRED_AWAITING_NEW_EVENT', 'LEVEL_ALREADY_VISITED_AFTER_OBSERVATION',
     'LEVEL_OR_EVENT_COOLDOWN'})
@@ -47,6 +49,8 @@ def build(state, snapshot, result, cfg, engine):
             'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
             'tp1': plan.get('tp1', plan.get('tp')), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),
+            'organic_risk': plan.get('organic_risk'), 'tp1_source': plan.get('tp1_source'),
+            'tp2_source': plan.get('tp2_source'), 'cancel_reason': plan.get('cancel_reason'),
             'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
             'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
@@ -73,7 +77,9 @@ def build(state, snapshot, result, cfg, engine):
                        if c.confirmed and c.ts + 900_000 <= snapshot.now])
     atr15 = atr15 if numeric(atr15) and atr15 > 0 else 0
     primary_side = engine.policy.regime_side(regime)
-    minimum_spread = max(.65, 1.2 * atr15)
+    profile = oil_risk.snapshot_profile(snapshot) if oil_risk.enabled(cfg) else None
+    minimum_spread = (max(1., .8 * min(profile['target'], profile['cap'])) if profile else
+                      max(.65, 1.2 * atr15))
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
     admitted = analysis.get('admitted_plans', [])
     admitted_rows = {id(plan) for plan in admitted}
@@ -286,7 +292,9 @@ def build(state, snapshot, result, cfg, engine):
     radar = {label: next((z for z in candidate_rows if z['side'] == side), None)
              for label, side in (('LONG', 1), ('SHORT', -1))}
     left, right = radar['LONG'], radar['SHORT']
-    if left and right and (right['entry'] - left['entry'] < minimum_spread or left['high'] >= right['low']):
+    if left and right and (right['entry'] - left['entry'] < max(
+            minimum_spread, .8 * max(left['risk'], right['risk']) if profile else 0.)
+            or left['high'] >= right['low']):
         keep = min((left, right), key=priority)
         radar['SHORT' if keep is left else 'LONG'] = None
     primary = next((z for z in radar.values() if z and z['side'] == primary_side), None)
@@ -303,8 +311,11 @@ def build(state, snapshot, result, cfg, engine):
             side, snapshot.price, z['entry'], atr15, cfg) is None]
         watch = radar[label] or min(nearby, key=priority, default=None)
         watch_levels[label] = watch['id'] if watch else None
+        leader = radar[label]
         distant = [z for z in intact if side * (snapshot.price - z['entry']) >
-                   engine.scanner.max_zone_distance(atr15, cfg) + 1e-8]
+                   engine.scanner.max_zone_distance(atr15, cfg) + 1e-8 and
+                   (not profile or not leader or abs(z['entry'] - leader['entry']) >=
+                    max(1., .8 * max(z['risk'], leader['risk'])) - 1e-8)]
         reserve = min(distant, key=priority, default=None)
         reserves[label] = reserve['id'] if reserve else None
     watch_id = primary['id'] if primary else None
@@ -351,6 +362,7 @@ def build(state, snapshot, result, cfg, engine):
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
             'execution':'SIGNAL_LEDGER','daily':engine.day_stats(state,snapshot.now,cfg),
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),
+            'max_new_pending': 1 if profile else 2, 'organic_risk_profile': profile,
             'recent_events':recent[-20:], 'last_event':recent[-1] if recent else None,
             'last_closed':last_closed, 'context_bands':context_bands,
             'watch_levels':watch_levels, 'watch_primary_id':watch_id, 'reserve_levels':reserves,
@@ -358,7 +370,8 @@ def build(state, snapshot, result, cfg, engine):
             'primary_bias':primary_side,'atr15':atr15,'min_structural_spread':minimum_spread,
             'entry_mode':entry_mode,'reference_levels':reference_rows[:48],
             'candidate_rejections':rejected[:100],
-            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':1.4,'wide_zone_usd':.45,'wide_zone_atr':.8,
+            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':oil_risk.TP1_MIN if profile else 1.4,
+                               'min_rr2':oil_risk.TP2_MIN if profile else 2.2,'wide_zone_usd':.45,'wide_zone_atr':.8,
                                'min_distance':.10,'max_distance':engine.scanner.max_zone_distance(atr15, cfg)},
             'reaction_config':{'retracement':max(.06,3*cfg.tick),'max_sample_gap_ms':15000,
                                'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25,

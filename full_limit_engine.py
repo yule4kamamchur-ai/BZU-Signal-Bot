@@ -29,8 +29,10 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.31.0-market-wave"
-REPORT_RELEASE = 'v12.31.0'
+VERSION = "full-ict-v12.32.0-organic-oil"
+REPORT_RELEASE = 'v12.32.0'
+PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
+LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -42,6 +44,7 @@ import trade_dependencies
 import setup_paths
 import execution_atlas
 import directional_policy as policy
+import oil_risk
 import entry_adverse_selection
 import edge_intelligence
 import entry_playbooks
@@ -1076,8 +1079,8 @@ def new_state(cfg: Config) -> dict:
             "anchor_memory": {}, "level_cooldown": {}, "setup_statistics": {},
             "ledger_revision": 2, "order_sequence": 0,
             "second_slot": {"pending": None, "active": None, "reconciliation": None},
-            "pending_orders": [], "pending_policy":"ONE_DIRECTION_TWO_PENDING_MAX",
-            "portfolio_policy":"ONE_DIRECTION_TWO_PENDING_MAX"}
+            "pending_orders": [], "pending_policy":PENDING_POLICY if oil_risk.enabled(cfg) else LEGACY_PENDING_POLICY,
+            "portfolio_policy":PENDING_POLICY if oil_risk.enabled(cfg) else LEGACY_PENDING_POLICY}
 
 
 def slot_views(state: dict):
@@ -1139,7 +1142,8 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int =
     # A filled position owns the directional thesis: never fill another limit
     # before the next 15m review, even if it shares the same direction.
     new_book=all(bzu_policy.is_new(p) for p in open_plans(state))
-    capacity=0 if active else (max(0,2-occupied_slots(state)) if new_book else 1)
+    single = state.get('pending_policy') == PENDING_POLICY
+    capacity=0 if active else (max(0, (1 if single else 2)-occupied_slots(state)) if new_book else 1)
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
@@ -1630,7 +1634,7 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
         if p.get('last_bar',-1)>=0 and old_step!=step:
             p['last_bar'] += old_step-step
         p['last_execution_step_ms']=step
-    if state.get('pending_policy') not in ('UNBOUNDED_QUEUE_ACTIVE_CAP_2','ONE_DIRECTION_TWO_PENDING_MAX'):
+    if state.get('pending_policy') not in ('UNBOUNDED_QUEUE_ACTIVE_CAP_2','ONE_DIRECTION_TWO_PENDING_MAX',PENDING_POLICY):
         # Catch up the old contract before changing future queue behavior.
         for number,view in slot_views(state):
             _advance_slot_lifecycle(view,s,cfg)
@@ -1744,7 +1748,9 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
     step=state.get('execution_step_ms',180_000)
     if p.get("cancel_requested_ts"):
         return
-    if now % step == 0:
+    before_effective = (reason == 'LEGACY_MICRO_RISK' and p.get('action_type') != 'ACTIVE_ENTRY'
+                        and p.get('effective_ts', 0) >= now)
+    if now % step == 0 or before_effective:
         if 'pending_orders' in state:
             waiting=[other for other in pending_plans(state) if other['id']!=p['id']]
             book={**state,'pending':p,'active':None,'reconciliation':None}
@@ -1759,6 +1765,15 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
         if 'effective_ts' in p:
             p['cancel_effective_ts'] = ((now+step-1)//step)*step
         emit(state, "CANCEL_REQUESTED", now, order_id=p["id"], reason=reason)
+
+
+def migrate_organic_pending(state, snapshot, cfg):
+    """Retire superseded paper limits after lifecycle reconciliation."""
+    if not oil_risk.enabled(cfg):
+        return
+    for order in pending_plans(state):
+        if not oil_risk.is_organic(order):
+            request_cancel(state, order, 'LEGACY_MICRO_RISK', snapshot.now)
 
 
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
@@ -1787,7 +1802,7 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
             cooldown=arbitration.loss_cooldown(pending,state['trades'],snapshot.now)
             regime=policy.market_regime(snapshot,cfg.tick,sys.modules[__name__])
             local_ok,local_reason=policy.regime_admission(pending['side'],pending['entry'],regime,
-                                   snapshot,cfg.tick,sys.modules[__name__],pending.get('entry_zone'))
+                                   snapshot,cfg.tick,sys.modules[__name__],pending.get('entry_zone'), require_macro=oil_risk.enabled(cfg))
             reason=(session['reason'] if not session['allowed'] else
                     'IMPULSE_CONFIRMATION_REQUIRED' if approach.get('blocked') else
                     cooldown['reason'] if not cooldown['allowed'] else
@@ -1880,8 +1895,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             pending['queue_execution_policy']='PASSIVE_ARM_V2'
             pending['entry_policy_migrated_ts']=s.now
             pending['queue_policy_effective_ts']=((s.now+TF['3m']-1)//TF['3m'])*TF['3m']
-    # Preserve existing positions' frozen exit terms; new plans carry v12.21 terms.
-    state['pending_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
+    # Reconcile any historical fill using its original order before migration.
+    migrate_organic_pending(state, s, cfg)
+    single_limit = oil_risk.enabled(cfg)
+    order_limit = 1 if single_limit else 2
+    state['pending_policy'] = PENDING_POLICY if single_limit else LEGACY_PENDING_POLICY
     state.setdefault('pending_orders',[])
     amend_at_report(state, s, cfg)
     quality.advance(state,s,cfg,sys.modules[__name__])
@@ -1999,7 +2017,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
         if (dominant and candidate['side'] != dominant
                 and not (candidate.get('zone_origin', {}).get('wave_confirmed')
-                         and scanner.wave.reversal_override(candidate['side'], zone, s, cfg.tick))):
+                         and scanner.wave.reversal_override(candidate['side'], zone, s, cfg.tick, require_macro=single_limit))):
+            continue
+        if single_limit and not oil_risk.is_organic(candidate):
             continue
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
@@ -2022,27 +2042,16 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place = False
     active=active_plans(state)
     pending=pending_plans(state)
-    # The older router may have persisted many waiting orders. Do not admit
-    # any new risk until the legacy surplus has been cancelled. At an
-    # in-progress 3m candle the cancel becomes effective on its next boundary.
-    # Reserves must include filled positions and unresolved fills: an old
-    # archive may contain two pending limits PLUS an active position. Cancel
-    # only surplus waiting orders, never erase an existing filled position.
-    # Up to two waiting plans are allowed when flat; only one may FILL while
-    # the current position is open. Legacy pending states are reconciled first.
-    pending_capacity=max(0,2-occupied_slots(state))
+    # Legacy fills and uncertain executions retain their slots. Cancel excess
+    # waiting orders before admitting a single new thesis.
+    pending_capacity=max(0,order_limit-occupied_slots(state))
     awaiting=[p for p in pending if not p.get('cancel_requested_ts')]
     if len(awaiting)>pending_capacity:
-        ranked_legacy=sorted(awaiting,
-                             key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
+        ranked_legacy=sorted(awaiting, key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
         for obsolete in ranked_legacy[pending_capacity:]:
-            request_cancel(state,obsolete,'LEGACY_PENDING_EXCESS_CAP_2',s.now)
+            request_cancel(state,obsolete,'PENDING_SINGLE_LIMIT_CAP' if single_limit else 'LEGACY_PENDING_EXCESS_CAP_2',s.now)
         can_place=False
         pending=pending_plans(state)
-    # Predictive limit rotation: compare eligible challengers in parallel with
-    # both occupied orders. At a fully reconciled 3m boundary, the cancelled
-    # PAPER plan and its replacement may change in the SAME cycle. At any
-    # other timestamp the unresolved part-bar remains reserved until proven.
     arbitration_audit={'decision':'SKIPPED','reason':'NO_PENDING_OR_UNSAFE_BOOK'}
     rotation=state.get('portfolio_rotation_intent')
     if rotation and (s.now>rotation.get('expires_ts',0) or active):
@@ -2162,11 +2171,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         'arbitration_decision':arbitration_audit.get('decision'),
         'occupied_slots':occupied_slots(state),
         'reserved_pending':len(pending_plans(state)),
-        'free_slots':max(0,2-occupied_slots(state)-len(pending_plans(state)))}
-    state['portfolio_policy']='ONE_DIRECTION_TWO_PENDING_MAX'
+        'free_slots':max(0,order_limit-occupied_slots(state)-len(pending_plans(state)))}
+    state['portfolio_policy']=state['pending_policy']
     if can_place and selected_side:
-        # At most TWO waiting limit orders TOTAL. This is the user's risk book,
-        # not a pile of unbounded candidates competing after the next quote.
+        # Only one order may reserve a new entry, including pending cancellation.
         plans=[p for p in valid if p['side']==selected_side]
         plans=sorted(plans,key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
         intent=state.get('portfolio_rotation_intent')
@@ -2183,7 +2191,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             existing=pending_plans(state)
             # Each waiting limit may fill before the next 15m scan. Count it
             # together with already open/uncertain positions, not separately.
-            if occupied_slots(state)+len(existing)>=2:
+            if occupied_slots(state)+len(existing)>=order_limit:
                 break
             if any(p.get('cancel_requested_ts') for p in existing):
                 break
@@ -2496,8 +2504,14 @@ REASON_UA = {
     'FORMATION_VOLUME_REQUIRED':'імпульсу бракує підтвердження обсягом',
     'RISK_TOO_WIDE':'стоп за структурою перевищує допустимий ризик',
     'RISK_BELOW_FLOOR':'стоп вужчий за мінімальну відстань',
-    'STRUCTURAL_TP1_REQUIRED':'немає структурної цілі TP1 від 1.40R',
-    'STRUCTURAL_TP2_REQUIRED':'немає наступної структурної цілі TP2 від 2.20R',
+    'STRUCTURAL_TP1_REQUIRED':'перша ціль не відповідає правилам плану',
+    'STRUCTURAL_TP2_REQUIRED':'бракує структурної цілі для залишку позиції',
+    'LEGACY_MICRO_RISK':'лімітка зі старим стопом замінюється новим розрахунком',
+    'PENDING_SINGLE_LIMIT_CAP':'у журналі дозволено одну лімітку',
+    'MACRO_STOP_ANCHOR_REQUIRED':'бракує підтвердженого макрорівня для стопа',
+    'MACRO_REVERSAL_REQUIRED':'контртрендовий вхід потребує відбою від екстремуму 1H, 4H або попередньої доби',
+    'ORGANIC_TARGET_RANGE':'цілі поза свінговим діапазоном R',
+    'OIL_VOLATILITY_UNAVAILABLE':'бракує закритих свічок для розрахунку годинного ATR',
     'SESSION_MEAN_LIMIT_DISABLED':'лімітні входи від середньої сесії вимкнено',
     'MICRO_ZONE_EXCLUDED':'мікрозона без рівня старшого таймфрейму',
     'RANGE_ZONE_TOO_CLOSE':'зона занадто близько до ціни в діапазоні',
@@ -2726,6 +2740,7 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "second_slot": state.get('second_slot'), "pending_orders":state.get("pending_orders",[]),
                       "open_plans": open_plans(state),
                       "occupied_slots": occupied_slots(state), "max_slots": 2,
+                      "max_pending": 1 if state.get('pending_policy') == PENDING_POLICY else 2,
                       "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
                       "setup_matrix": state.get("setup_matrix",[]), "watch":state.get("watch",[]),
                       "best_scenario":state.get("best_scenario"), "include_commission":state.get("include_commission",False),
@@ -3235,6 +3250,7 @@ def main(core) -> int:
     cfg = replace(Config.from_env(),core=core)
     if args.self_test:
         import unittest
+        from unittest.mock import patch
         # Active release contracts. Superseded entry/exit policies remain
         # available explicitly through --all-archived-tests.
         modules=('test_full_limit_engine.DataTests','test_v12_20_3_telegram_delivery',
@@ -3255,7 +3271,15 @@ def main(core) -> int:
             os.environ['MARKET_HISTORY_FILE'] = str(Path(directory)/'market.json')
             os.environ['RESEARCH_ARCHIVE_FILE'] = str(Path(directory)/'research.json')
             try:
-                return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+                runner = unittest.TextTestRunner(verbosity=2)
+                if args.all_archived_tests:
+                    return 0 if runner.run(suite).wasSuccessful() else 1
+                # Older exact-price fixtures verify the legacy geometry and
+                # ledger contracts. The Brent suite exercises the live v12.32 policy.
+                with patch.object(oil_risk, 'enabled', return_value=False):
+                    compatibility = runner.run(suite)
+                organic = runner.run(unittest.defaultTestLoader.loadTestsFromName('test_v12_32_organic_oil'))
+                return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:
                     os.environ['BZU_ENTRY_MODE'] = previous_entry_mode

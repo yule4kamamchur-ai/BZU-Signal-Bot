@@ -220,14 +220,19 @@ def local_structure(snapshot, tick, engine):
     return {'side':0,'ema50':ema,'known_ts':rows[-1].ts+900_000}
 
 
-def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
+def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None, *, require_macro=True):
     from market_wave import reversal_override
 
-    if reversal_override(side, zone, snapshot, tick):
+    if reversal_override(side, zone, snapshot, tick, require_macro=require_macro):
         return True, 'CONFIRMED_EXTREME_REVERSAL'
-    sweep = (zone or {}).get('sweep')
-    if sweep and sweep.get('pattern') == 'ENGULFING' and sweep.get('side') == side:
-        return True, 'SESSION_SWEEP_ENGULFING'
+    if require_macro:
+        dominant = regime_side(regime) or regime_side({'state': regime.get('trend_state')})
+        if dominant == -side or (not dominant and regime.get('side_1h') == regime.get('side_4h') == -side):
+            return False, 'MACRO_REVERSAL_REQUIRED'
+    else:
+        sweep = (zone or {}).get('sweep')
+        if sweep and sweep.get('pattern') == 'ENGULFING' and sweep.get('side') == side:
+            return True, 'SESSION_SWEEP_ENGULFING'
     active = regime.get('active_structure', {}).get('side', 0)
     if active == side:
         return True, 'LTF_STRUCTURE_OVERRIDE'
@@ -240,7 +245,7 @@ def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
         if not reached_htf:
             return False,'LOCAL_STRUCTURE_CONFLICT'
     contrary=(state=='BULLISH_TREND' and side!=1) or (state=='BEARISH_TREND' and side!=-1)
-    if contrary:
+    if contrary and not require_macro:
         # A high score alone cannot unlock a countertrend order. Require a
         # real reversal on 1H, or a reached HTF POI with a 15m sweep then MSS.
         template={'side':side,'entry':entry}

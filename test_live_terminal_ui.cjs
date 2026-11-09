@@ -255,5 +255,18 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.equal(run('state.orders.length'),0);
  const observed=run('m5Proofs.size');await run('pollM5()');assert.equal(run('m5Proofs.size'),observed);
  feed(99.95,1000);assert.notEqual(stage(),'READY');
+ // The organic plan uses gross targets and the same risk window for a live recheck.
+ const oil = reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.22, tp2:102.43,
+   organic_risk:{model:'ORGANIC_OIL_V32',atr_1h:.8,adr_d1:3.1,adr_days:14,
+     session_multiplier:1.2,macro_anchor:{timeframe:'1H',level:98.4}}});
+ run('state.cockpit_schema=5;state.organic_risk_profile={model:"ORGANIC_OIL_V32"};state.plan_pool=state.candidates;');
+ feed(100);
+ assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')));
+ assert.match(text('radar'),/Органічний стоп 98.20/);
+ assert.match(text('radar'),/1.88× ATR 1H.*ADR 3.10/);
+ assert.match(text('radar'),/1.01R.*1.82R/);
+ assert.ok(run('m5QuotePlan(state.plan_pool[0],99.7)'));
+ assert.equal(run('m5QuotePlan(state.plan_pool[0],99.76)'),null);
+ oil.organic_risk=null;run('render()');assert.equal(priceLines.length,0);
  console.log('PASS: offline UI lifecycle, actionable radar, chart cleanup and reaction scenarios.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -2,6 +2,7 @@
 from dataclasses import replace
 
 import ict_methodology as ict
+import oil_risk
 
 M15 = 900_000
 M5 = 300_000
@@ -44,7 +45,7 @@ def _zone(kind, side, low, high, bar, step, reference, **evidence):
             'wave_proof': {'timeframe': '5m' if step == M5 else '15m', **evidence}}
 
 
-def _reversals(snapshot, rows, step, tick, engine, atr15):
+def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
     if len(rows) < 2:
         return
     pivots = engine.pivots(rows[-80:], strength=1)
@@ -72,11 +73,12 @@ def _reversals(snapshot, rows, step, tick, engine, atr15):
             suffix = 'LOW' if side == 1 else 'HIGH'
             extreme = bar.low if side == 1 else bar.high
             wick_edge = min(bar.open, bar.close) if side == 1 else max(bar.open, bar.close)
-            eligible = [p for p in pools if p['name'].endswith(suffix)
+            macro = oil_risk.macro_extrema(snapshot, bar.ts, engine, side) if require_macro else []
+            eligible = [p for p in (*macro, *pools) if p['name'].endswith(suffix)
                         and p['known_ts'] <= bar.ts
                         and side * (p['level'] - extreme) >= tick - 1e-8
                         and abs(p['level'] - extreme) <= max(.20, .8 * atr15)]
-            for pool in sorted(eligible, key=lambda p: abs(p['level'] - extreme)):
+            for pool in sorted(eligible, key=lambda p: (not p.get('timeframe'), abs(p['level'] - extreme))):
                 level = pool['level']
                 swept = (side * (wick_edge - level) >= -tick / 2
                          and side * (bar.close - level) >= tick - 1e-8)
@@ -100,7 +102,9 @@ def _reversals(snapshot, rows, step, tick, engine, atr15):
                 low, high = sorted((level, extreme))
                 sweep = {'pool': pool['name'], 'level': level, 'extreme': extreme, 'side': side,
                          'known_ts': confirmation.ts + step, 'reference_known_ts': pool['known_ts'],
-                         'pattern': 'WICK_RECLAIM' if swept else 'EXTREME_CHOCH'}
+                         'pattern': 'WICK_RECLAIM' if swept else 'EXTREME_CHOCH',
+                         'macro_timeframe': pool.get('timeframe'), 'raid_ts': bar.ts,
+                         'reclaim_close': confirmation.close}
                 zone = _zone(kind, side, low, high, confirmation, step, level, pool=pool,
                              raid_ts=bar.ts, shift_level=shift['level'] if shift else None)
                 yield {**zone, 'sweep': sweep}
@@ -188,7 +192,7 @@ def zones(snapshot, cfg, engine, regime):
     import setup_scanner as scanner
 
     cache = vars(snapshot).setdefault('_wave_zones', {})
-    key = (snapshot.now, cfg.tick, direction.regime_side(regime))
+    key = (snapshot.now, cfg.tick, direction.regime_side(regime), oil_risk.enabled(cfg))
     if key in cache:
         return cache[key]
     m15 = direction.closed(snapshot, '15m')
@@ -197,8 +201,8 @@ def zones(snapshot, cfg, engine, regime):
     if atr <= 0:
         return []
     tick = cfg.tick
-    results = [*_reversals(snapshot, m15, M15, tick, engine, atr),
-               *_reversals(snapshot, m5, M5, tick, engine, atr), *_breakers(m15, cfg, engine)]
+    results = [*_reversals(snapshot, m15, M15, tick, engine, atr, oil_risk.enabled(cfg)),
+               *_reversals(snapshot, m5, M5, tick, engine, atr, oil_risk.enabled(cfg)), *_breakers(m15, cfg, engine)]
     side = direction.regime_side(regime)
     if side and (regime.get('active_structure') or direction.momentum_aligned(snapshot, side)):
         results.extend(_m5_continuations(m5, side, atr, tick, engine))
@@ -213,11 +217,14 @@ def witnessed(zone, snapshot, cfg, engine, regime):
                  if all(z.get(k) == zone.get(k) for k in keys)), None)
 
 
-def reversal_override(side, zone, snapshot, tick):
+def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
     """Consume the sweep that the planner already reconstructed from candles."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
     return (zone.get('kind') in REVERSALS and sweep.get('side') == side
+            and (not require_macro or (sweep.get('macro_timeframe') in ('1H', '4H', 'D1')
+                 and sweep.get('reference_known_ts', 0) <= sweep.get('raid_ts', -1)
+                 and side * (sweep.get('reclaim_close', sweep['level']) - sweep['level']) >= tick - 1e-8))
             and sweep.get('pattern') in ('WICK_RECLAIM', 'EXTREME_CHOCH')
             and 0 < sweep.get('reference_known_ts', 0) <= zone.get('known_ts', 0)
             and 0 <= snapshot.now - zone.get('known_ts', 0) < 30 * 60_000

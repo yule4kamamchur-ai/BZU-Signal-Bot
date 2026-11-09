@@ -5,6 +5,8 @@ strong opposing displacement zone can still block the path to a distant TP.
 """
 from __future__ import annotations
 
+import oil_risk
+
 TF={'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 MICRO={'15m':'3m','1H':'15m','4H':'1H'}
 SESSION_SETUPS={'OPENING_RANGE_BREAKOUT','FAILED_OPENING_RANGE_BREAKOUT',
@@ -65,7 +67,8 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
     """
     sign=cfg.core.side_sign(side);native=context.get('analysis_timeframe','15m')
     targets=[]
-    for tf in dict.fromkeys((native,'15m','1H','4H')):
+    macro = context.get('organic_oil_targets', False)
+    for tf in ('1H', '4H') if macro else dict.fromkeys((native,'15m','1H','4H')):
         rows=closed(snapshot,tf)
         if not rows:
             continue
@@ -138,7 +141,7 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
                                     'freshness': life['state']})
     # Session reference levels remain valid targets, but a current day's
     # evolving extrema must not redefine the original fixed entry.
-    session=context.get('session',{})
+    session={} if macro else context.get('session',{})
     names=('day_high','week_high','prev_day_high') if sign==1 else ('day_low','week_low','prev_day_low')
     for name in names:
         level=float(session.get(name,0) or 0)
@@ -148,17 +151,40 @@ def structural_targets(context,snapshot,side,entry,cfg,engine):
     from ict_methodology import session_liquidity
 
     suffix = '_HIGH' if sign == 1 else '_LOW'
-    for pool in session_liquidity(snapshot)['pools']:
-        if pool['name'].endswith(suffix) and sign * (pool['level'] - entry) > 2 * cfg.tick:
-            targets.append({'kind': pool['name'], 'level': pool['level'], 'timeframe': '15m',
-                            'known_ts': pool['known_ts'], 'hard_barrier': False,
-                            'freshness': 'SESSION_REFERENCE'})
+    pools = session_liquidity(snapshot)['pools']
+    if macro:
+        daily = oil_risk.daily_ranges(*[oil_risk.closed(snapshot.candles.get(tf, []), step, snapshot.now)
+                                        for tf, step in (('15m', oil_risk.M15), ('1H', oil_risk.H1), ('4H', oil_risk.H4))])
+        for start, (high, low, _) in list(daily.items())[-14:]:
+            level = high if sign == 1 else low
+            # A newer complete day penetrating the level consumes this pool.
+            if any(sign * ((r[0] if sign == 1 else r[1]) - level) > cfg.tick
+                   for day, r in daily.items() if day > start):
+                continue
+            name = 'PD' if start + oil_risk.DAY == snapshot.now // oil_risk.DAY * oil_risk.DAY else 'DAILY'
+            targets.append({'kind': name + suffix, 'level': level, 'timeframe': 'D1',
+                            'known_ts': start + oil_risk.DAY, 'hard_barrier': False})
+        for high in (p for p in pools if p['name'].endswith('_HIGH') and p['name'] != 'PD_HIGH'):
+            low = next((p for p in pools if p['name'] == high['name'].replace('_HIGH', '_LOW')), None)
+            if low:
+                targets.append({'kind': 'SESSION_EQUILIBRIUM', 'level': (high['level'] + low['level']) / 2,
+                                'timeframe': 'SESSION', 'known_ts': max(high['known_ts'], low['known_ts']),
+                                'hard_barrier': False})
+    else:
+        for pool in pools:
+            if pool['name'].endswith(suffix) and sign * (pool['level'] - entry) > 2 * cfg.tick:
+                targets.append({'kind': pool['name'], 'level': pool['level'], 'timeframe': '15m',
+                                'known_ts': pool['known_ts'], 'hard_barrier': False,
+                                'freshness': 'SESSION_REFERENCE'})
     unique={}
     for target in targets:
         target['distance']=sign*(target['level']-entry)
+        if target['distance'] <= 2 * cfg.tick:
+            continue
         key=round(target['level']/cfg.tick)
         previous=unique.get(key)
-        if previous is None or (target['hard_barrier'],TF.get(target['timeframe'],0))>(previous['hard_barrier'],TF.get(previous['timeframe'],0)):
+        if previous is None or (target['hard_barrier'], target['timeframe'] == 'D1', TF.get(target['timeframe'],0)) > (
+                previous['hard_barrier'], previous['timeframe'] == 'D1', TF.get(previous['timeframe'],0)):
             unique[key]=target
     return sorted(unique.values(),key=lambda t:t['distance'])
 

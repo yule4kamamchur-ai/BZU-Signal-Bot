@@ -15,6 +15,7 @@ import ict_methodology as ict
 import limit_structure as structure
 import research_zone_policy_1220 as zones
 import setup_scanner as scanner
+import oil_risk
 import strategy_direct_entries
 
 POLICY = 'BZU_LIVE_V12_25'
@@ -151,8 +152,10 @@ def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, fro
 def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, zone=None):
     """Price structural targets on the final entry and execution fee contract."""
     risk = side * (entry - stop)
-    targets = engine.full_targets(context, snapshot, anchor.side, entry, cfg)
-    geometry = scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15)
+    organic = oil_risk.enabled(cfg)
+    targets = engine.full_targets({**context, 'organic_oil_targets': organic}, snapshot, anchor.side, entry, cfg)
+    geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine) if organic else
+                scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
     known = (zone or {}).get('known_ts', snapshot.now)
     if scanner.target_crossed(side, snapshot, geometry['tp1'], known):
         return None, 'EXHAUSTED_MOVE'
@@ -168,7 +171,14 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     exit_fee = engine.fee_rate(cfg, 'taker')
     rr2 = side * (tp2 - entry) / risk
     costs = (entry * entry_fee + tp2 * exit_fee) / risk
-    if rr2 - costs + 1e-9 < cfg.min_net_rr:
+    rr1 = side * (tp1 - entry) / risk
+    if organic:
+        if not (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
+                oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8):
+            return None, 'ORGANIC_TARGET_RANGE'
+        if rr1 <= (entry * entry_fee + tp1 * exit_fee) / risk:
+            return None, 'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'
+    elif rr2 - costs + 1e-9 < cfg.min_net_rr:
         return None, 'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'
     return {**geometry, 'rr2': rr2, 'costs_r': costs, 'entry_fee': entry_fee,
             'exit_fee': exit_fee, 'raw_targets': {'tp1': tp1, 'tp2': tp2}}, 'ACCEPTED'
@@ -215,6 +225,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     zone_error = scanner.standalone_zone_error({**zone, 'side': side}, snapshot, cfg, engine, a15, regime.get('state'))
     if zone_error:
         return None, zone_error
+    if oil_risk.enabled(cfg):
+        permitted, reason = direction.regime_admission(side, (low + high) / 2, regime, snapshot, cfg.tick, engine, zone)
+        if not permitted and reason == 'MACRO_REVERSAL_REQUIRED':
+            return None, reason
     active_side = regime.get('active_structure', {}).get('side')
     aligned = direction.momentum_aligned(snapshot, side)
     momentum_zone = zone.get('kind') in scanner.ORGANIC_MOMENTUM
@@ -232,15 +246,18 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             anchor.invalidation, low if side == 1 else high,
             swings[-1]['level'] if swings else anchor.invalidation)
     preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
+    oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
-        low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred)
+        low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil)
+    organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)[2] if oil else None
     legs = [{'name':'L1', 'price':entry, 'fraction':1., 'status':'PENDING'}]
     breaker = scanner.m5_breaker({**zone, 'side': side}, snapshot, cfg.tick)
     reaction_only = inside or bool(breaker)
     entry_condition = 'IN_ZONE_M5_RECLAIM' if inside else 'M5_BREAKER_RETEST' if breaker else 'RETEST'
     raw_stop=stop
-    min_risk, max_risk = scanner.zone_risk_bounds(a15, cfg)
-    if oil_round_protection(cfg):
+    min_risk, max_risk = ((organic_risk['floor'], organic_risk['cap']) if organic_risk else
+                         scanner.zone_risk_bounds(a15, cfg))
+    if not oil and oil_round_protection(cfg):
         protected_stop = round_stop(stop, side, cfg.tick)
         if side * (entry - protected_stop) <= max_risk + 1e-9:
             stop = protected_stop
@@ -250,8 +267,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     approach = adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop)
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
                 approach=approach, planning_policy=POLICY, entry_basis=entry_basis,
-                entry_condition=entry_condition)
-    valid_stop = (min_risk - 1e-9 <= risk <= max_risk + 1e-9
+                entry_condition=entry_condition, organic_risk=organic_risk)
+    if organic_risk and organic_risk['gate']:
+        mark('VALID_STOP', False)
+        return None, organic_risk['gate']
+    valid_stop = bool(organic_risk) or (min_risk - 1e-9 <= risk <= max_risk + 1e-9
                   and side * (structural - stop) >= max(cfg.tick, .25 * a15) - 1e-9)
     mark('VALID_STOP', valid_stop)
     if not valid_stop:
@@ -290,7 +310,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only)
     if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
         return None, 'ZONE_NOT_AHEAD_OF_PRICE'
-    allowed, why = direction.regime_admission(side, entry, regime, snapshot, cfg.tick, engine, zone)
+    allowed, why = direction.regime_admission(
+        side, entry, regime, snapshot, cfg.tick, engine, zone, require_macro=bool(oil))
     mark('HTF_ALIGNMENT', allowed)
     if not allowed:
         return None, why
@@ -309,21 +330,25 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     geometry = None
     if direct:
         quote = direct['price']
-        quote_risk = side * (quote - stop)
+        quote_stop, quote_risk, quote_profile = (oil_risk.stop_geometry(
+            quote, structural, side, *oil, cfg.tick, engine) if oil else (stop, side * (quote - stop), None))
         direct_allowed, why = direction.regime_admission(
-            side, quote, regime, snapshot, cfg.tick, engine, zone)
+            side, quote, regime, snapshot, cfg.tick, engine, zone, require_macro=bool(oil))
         if not direct_allowed:
             direct_failure = why
-        elif not min_risk - 1e-9 <= quote_risk <= max_risk + 1e-9:
+        elif quote_profile and (quote_profile['gate'] or side * (quote_stop - stop) > 1e-8):
+            direct_failure = quote_profile['gate'] or 'STRUCTURAL_STOP_TOO_WIDE'
+        elif not quote_profile and not min_risk - 1e-9 <= quote_risk <= max_risk + 1e-9:
             direct_failure = 'STRUCTURAL_STOP_TOO_WIDE'
         else:
             geometry, direct_failure = protected_targets(
-                context, snapshot, anchor, cfg, engine, quote, stop, side, a15, active=True, zone=zone)
+                context, snapshot, anchor, cfg, engine, quote, quote_stop, side, a15, active=True, zone=zone)
         if geometry:
-            entry, risk = quote, quote_risk
+            entry, stop, risk = quote, quote_stop, quote_risk
+            organic_risk = quote_profile
             action = 'ACTIVE_ENTRY'
             legs = [{'name': 'ACTIVE', 'price': entry, 'fraction': 1., 'status': 'PENDING'}]
-            diag.update(entry=entry, level=entry, risk=risk, direct_entry=direct)
+            diag.update(entry=entry, level=entry, stop=stop, risk=risk, direct_entry=direct, organic_risk=organic_risk)
         elif not can_wait:
             return None, direct_failure
     if geometry is None:
@@ -382,7 +407,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'round_level_protection':copy.deepcopy(diag['round_level_protection']),
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
-         'risk':risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
+         'risk':risk, 'organic_risk':organic_risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
          'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
          'partials':{'TP1':.5,'TP2':.5} if has_runner else {'TP1':1.},
          'exit_policy':EXIT, 'tp1_alignment':geometry['tp1_alignment'],
@@ -390,7 +415,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'tp1_source':geometry['tp1_source'], 'tp2_source':geometry['tp2_source'],
          'target_projection':geometry.get('target_projection'),
          'reversal_override':bool(origin.get('wave_confirmed') and
-                                  scanner.wave.reversal_override(side, zone, snapshot, cfg.tick)),
+                                  scanner.wave.reversal_override(side, zone, snapshot, cfg.tick, require_macro=bool(oil))),
          'breakeven_trigger_r':side*(tp1-entry)/risk,
          'target_management':EXIT, 'tp1_decision_gate':False,
          'exit_path_barriers':[], 'full_exit_candidates':[],
@@ -477,7 +502,8 @@ def partial_tp1_time(position):
     tp1 = position.get('tp1')
     if not position.get('tp1_hit') or not 0 < remaining < filled or tp1 is None:
         return None
-    if position['side'] * (tp1 - position['entry']) < 1.40 * position['risk'] - 1e-8:
+    minimum = oil_risk.TP1_MIN if oil_risk.is_organic(position) else 1.40
+    if position['side'] * (tp1 - position['entry']) < minimum * position['risk'] - 1e-8:
         return None
     return next((leg['ts'] for leg in position.get('realized_legs', [])
                  if leg.get('target') == 'TP1' and 0 < leg.get('fraction', 0) < filled
