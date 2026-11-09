@@ -72,6 +72,11 @@ def active_structure(snapshot, tick, engine):
         return {}
     if any(b.ts - a.ts != TF['15m'] for a, b in zip(rows[-20:-1], rows[-19:])):
         return {}
+    from market_wave import fast_structure
+
+    fast = fast_structure(rows, tick, engine)
+    if fast:
+        return fast
     breaks = list(organic.body_breaks(rows, tick, engine))
     if not breaks:
         return _trend_structure(snapshot, rows, tick, engine)
@@ -137,6 +142,28 @@ def momentum_aligned(snapshot, side, max_age=1):
                and side * (snapshot.price - line) > 0 for line in (ema, vwap))
 
 
+def day_extrema(snapshot):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo('Europe/Kyiv')
+    day = datetime.fromtimestamp(snapshot.now / 1000, tz).date()
+    rows = [c for c in closed(snapshot, '15m')
+            if datetime.fromtimestamp(c.ts / 1000, tz).date() == day]
+    if not rows:
+        return []
+    return [{'name': 'DAY_' + kind, 'level': getattr(candle, kind.lower()),
+             'known_ts': candle.ts + TF['15m']}
+            for kind, candle in (('LOW', min(rows, key=lambda c: c.low)),
+                                 ('HIGH', max(rows, key=lambda c: c.high)))]
+
+
+def regime_side(regime):
+    state = regime.get('state', '')
+    return 1 if state in ('BULLISH_TREND', 'BULLISH_ACTIVE') else (
+        -1 if state in ('BEARISH_TREND', 'BEARISH_ACTIVE') else 0)
+
+
 def market_regime(snapshot, tick, engine):
     import strategy_organics
     r=strategy_organics.classify(snapshot)
@@ -194,6 +221,10 @@ def local_structure(snapshot, tick, engine):
 
 
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None):
+    from market_wave import reversal_override
+
+    if reversal_override(side, zone, snapshot, tick):
+        return True, 'CONFIRMED_EXTREME_REVERSAL'
     sweep = (zone or {}).get('sweep')
     if sweep and sweep.get('pattern') == 'ENGULFING' and sweep.get('side') == side:
         return True, 'SESSION_SWEEP_ENGULFING'

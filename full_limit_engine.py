@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.30.0-institutional-pro"
-REPORT_RELEASE = 'v12.30.0'
+VERSION = "full-ict-v12.31.0-market-wave"
+REPORT_RELEASE = 'v12.31.0'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -456,7 +456,8 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         zone=anchor_zone_key(a,cfg)
         previous=by_zone.get(zone)
         event=None
-        organic = a.evidence.get('source_strategy') in scanner.ORGANIC_FORMATIONS
+        organic = (a.evidence.get('source_strategy') in scanner.ORGANIC_FORMATIONS
+                   or bool((a.evidence.get('entry_zone') or {}).get('wave_proof')))
         if organic and previous and previous.get('evidence', {}).get('episode_ts') != a.evidence['episode_ts']:
             previous = None
         if previous and not organic and zone not in live_zones and contexts:
@@ -503,7 +504,8 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
         a=core.anchor_from_dict(raw)
         if a is None or not (a.created_ts<=s.now<a.expires_ts):continue
         native=(contexts or {}).get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
-        if a.evidence.get('source_strategy') in scanner.ORGANIC_FORMATIONS:
+        if (a.evidence.get('source_strategy') in scanner.ORGANIC_FORMATIONS
+                or (a.evidence.get('entry_zone') or {}).get('wave_proof')):
             continue
         if a.setup_type in setup_paths.BREAK_RETEST and 'activation_phase' not in a.evidence:
             if key not in {p['event_key'] for p in open_plans(state)}:
@@ -796,7 +798,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 if not p and reason == 'LIMIT_UNREACHABLE':
                     retire_distant_anchor(state, a, key, s, cfg)
                     diagnostics['refresh_policy'] = 'NEW_CONFIRMED_STRUCTURE_ONLY'
-                if not p and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
+                if not p and 'entry' not in diagnostics and reason in ('LIMIT_WOULD_CROSS_SPREAD','LIMIT_UNREACHABLE'):
                     diagnostics.update(preview_geometry(a,native,s,cfg))
             admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
                 'entry':diagnostics.get('entry', a.level),'reason':reason,'event_key':key,
@@ -864,7 +866,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                           src.get('strategy_signal_ts') is not None and
                           src.get('strategy_event_ts') is not None)
             if p.get('policy') == bzu_policy.POLICY:
-                admitted = admitted and ict_methodology.entry_trigger(p, proof)
+                admitted = admitted and (p.get('zone_origin', {}).get('wave_confirmed') or
+                                         ict_methodology.entry_trigger(p, proof))
             ict_reason='DIRECT_STRATEGY_EVENT' if admitted else 'DIRECT_STRATEGY_PROOF_MISSING'
             p['ict_contract']={'source':'STRATEGY_EVENT', 'source_strategy':src.get('source_strategy'),
                                'signal_ts':src.get('strategy_signal_ts'),
@@ -1768,10 +1771,18 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     if (pending.get('setup') or pending.get('setup_type')) == 'SESSION_MEAN_RECLAIM':
         request_cancel(state, pending, 'SESSION_MEAN_LIMIT_DISABLED', snapshot.now)
         return
+    a15 = atr(policy.closed(snapshot, '15m'))
+    if scanner.exhausted_move(pending['side'], snapshot.price, pending.get('tp1') or pending.get('tp')):
+        request_cancel(state, pending, 'EXHAUSTED_MOVE', snapshot.now)
+        return
+    if a15 > 0 and scanner.entry_window(pending['side'], snapshot.price, pending['entry'], a15, cfg,
+                                        minimum=False) == 'DISTANT_ZONE':
+        request_cancel(state, pending, 'LIMIT_UNREACHABLE', snapshot.now)
+        return
     if bzu_policy.is_new(pending):
         if bzu_policy.is_precision(pending):
             session=bzu_policy.session_gate(snapshot.now)
-            approach=entry_adverse_selection.approach(snapshot,atr(policy.closed(snapshot,'15m')),
+            approach=entry_adverse_selection.approach(snapshot,a15,
                         pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'))
             cooldown=arbitration.loss_cooldown(pending,state['trades'],snapshot.now)
             regime=policy.market_regime(snapshot,cfg.tick,sys.modules[__name__])
@@ -1982,12 +1993,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     analysis['entry_mode'] = entry_mode
     market = policy.market_regime(s, cfg.tick, sys.modules[__name__])
     regime = market.get('state')
-    dominant = (1 if regime in ('BULLISH_ACTIVE', 'BULLISH_TREND') else
-                -1 if regime in ('BEARISH_ACTIVE', 'BEARISH_TREND') else 0)
+    dominant = policy.regime_side(market)
     confirmed = []
     for candidate in valid:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
-        if dominant and candidate['side'] != dominant:
+        if (dominant and candidate['side'] != dominant
+                and not (candidate.get('zone_origin', {}).get('wave_confirmed')
+                         and scanner.wave.reversal_override(candidate['side'], zone, s, cfg.tick))):
             continue
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
@@ -2490,6 +2502,8 @@ REASON_UA = {
     'MICRO_ZONE_EXCLUDED':'мікрозона без рівня старшого таймфрейму',
     'RANGE_ZONE_TOO_CLOSE':'зона занадто близько до ціни в діапазоні',
     'LIMIT_UNREACHABLE':'рівень далі допустимої відстані у ATR',
+    'EXHAUSTED_MOVE':'перша ціль уже пройдена без входу',
+    'ENTRY_TOO_CLOSE':'ціна вже надто близько до рівня для нового ліміту',
     'INVALID_STRUCTURAL_FALSIFIER':'немає коректного рівня скасування сетапу',
     'ANCHOR_INVALIDATED':'структура сетапу порушена',
     'LEVEL_ALREADY_VISITED_AFTER_OBSERVATION':'рівень уже відвідано після виявлення',
@@ -3227,7 +3241,7 @@ def main(core) -> int:
                  'test_v12_18_speed','test_v12_23_master.MicroBrake','test_v12_23_master.Vwap',
                  'test_v12_22_precision.Precision.test_all_24_precision_contracts_reject_empty_trigger',
                  'test_v12_25_live_terminal', 'test_v12_26_pro_cockpit', 'test_v12_27_integrity',
-                 'test_v12_28_quant', 'test_v12_29_quant', 'test_v12_29_1_checklist', 'test_v12_30_institutional')
+                 'test_v12_28_quant', 'test_v12_29_quant', 'test_v12_29_1_checklist', 'test_v12_30_institutional', 'test_v12_31_market_wave')
         suite=(unittest.defaultTestLoader.discover(str(ROOT),pattern='test_*.py')
                if args.all_archived_tests else unittest.defaultTestLoader.loadTestsFromNames(modules))
         if not suite.countTestCases():

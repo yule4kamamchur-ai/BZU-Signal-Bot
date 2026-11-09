@@ -23,7 +23,7 @@ class QuantAdmissionTests(unittest.TestCase):
                 with patch.object(engine, 'atr', return_value=.60):
                     plan = scanner.calculate_zone_trade_plan(
                         zone, snap, cfg, engine, side, targets=[
-                            {'level': entry + side * .45, 'kind':'SWING'},
+                            {'level': entry + side * .56, 'kind':'SWING'},
                             {'level': entry + side * .70, 'kind':'SWING'}])
                 self.assertAlmostEqual(plan['risk'], .24)
                 self.assertGreater(side * (entry - plan['stop']), .02)
@@ -93,8 +93,8 @@ class QuantAdmissionTests(unittest.TestCase):
                     'entry_zone': {'kind': 'FVG_BULL', 'timeframe': '1H', 'low': entry - .04,
                                    'high': entry + .04, 'known_ts': snap.now}}, cfg.tick)
         blocked = plan('same-id', .10)
-        admitted = plan('same-id', .52)
-        with patch.object(engine, 'atr', return_value=.1),              patch.object(engine, 'full_targets', return_value=[]),              patch.object(engine.policy, 'market_regime', return_value={'state': 'BULLISH_ACTIVE'}):
+        admitted = plan('same-id', .26)
+        with patch.object(engine, 'atr', return_value=.25),              patch.object(engine, 'full_targets', return_value=[]),              patch.object(engine.policy, 'market_regime', return_value={'state': 'BULLISH_ACTIVE'}):
             out = live_terminal.build(engine.new_state(cfg), snap,
                 {'analysis': {'candidate_plans': [blocked], 'admitted_plans': [admitted]}}, cfg, engine)
         self.assertEqual(len(out['candidates']), 1)
@@ -105,7 +105,7 @@ class QuantAdmissionTests(unittest.TestCase):
     def test_context_bands_are_not_trade_plans(self):
         snap, cfg, _ = fixture()
         zones = [SimpleNamespace(kind='FVG_BULL', side='LONG', timeframe='1H',
-                                 low=snap.price-.45, high=snap.price-.38,
+                                 low=snap.price-.29, high=snap.price-.22,
                                  created_ts=snap.now-2*engine.TF['1H'], mitigated=False)]
         with patch.object(engine.policy, 'market_regime', return_value={'state': 'BULLISH_ACTIVE'}):
             out = live_terminal.build(engine.new_state(cfg), snap,

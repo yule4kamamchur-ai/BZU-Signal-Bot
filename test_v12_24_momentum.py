@@ -35,7 +35,7 @@ def fixture(side=1, pivot=74.50, quote_offset=None, staircase=False, now=NOW):
         return engine.Candle(ts, 150 - o - shift, 150 - l - shift,
                              150 - h - shift, 150 - c - shift, volume)
 
-    rows = [bar(now - (80 - i) * STEP, 74.33, 74.40, 74.28, 74.35) for i in range(80)]
+    rows = [bar(now - (80 - i) * STEP, 74.33, 74.40, 74.15, 74.35) for i in range(80)]
     rows[-5] = bar(now - 5 * STEP, 74.36, 74.50, 74.33, 74.43)
     rows[-1] = bar(now - STEP, 74.38, 74.82, 74.34, 74.78, 200.)
     if staircase:

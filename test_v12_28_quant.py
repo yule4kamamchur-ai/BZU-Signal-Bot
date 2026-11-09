@@ -61,8 +61,8 @@ class ZonePlanTests(unittest.TestCase):
 
     def test_five_score_components_add_up_and_are_not_a_probability(self):
         p=self.plan()
-        self.assertEqual(p['score'],80)
-        self.assertEqual([c['maximum'] for c in p['score_breakdown']],[25,20,20,20,15])
+        self.assertEqual(p['score'],86)
+        self.assertEqual([c['maximum'] for c in p['score_breakdown']],[25,20,20,20,15,6,10])
         self.assertEqual(p['score'],sum(c['earned'] for c in p['score_breakdown']))
         self.assertEqual(p['score_source'],'ZONE_HEURISTIC')
         self.assertNotIn('probability',p)
@@ -70,6 +70,8 @@ class ZonePlanTests(unittest.TestCase):
         self.assertEqual(htf['score'],100)
 
     def test_grade_b_plus_has_complete_geometry_and_reaction_tactic(self):
+        self.snap.price = 99.61
+        self.snap.candles['15m'][-1] = replace(self.snap.candles['15m'][-1], volume=100.)
         p=self.plan({**self.zone,'kind':'DEMAND_OB'},
                     targets=[{'level':99.64,'kind':'SWING'}, {'level':99.94,'kind':'SWING'}])
         self.assertEqual(p['score'],60)
@@ -86,6 +88,7 @@ class ZonePlanTests(unittest.TestCase):
         self.assertEqual(unknown['freshness'],'UNKNOWN_HISTORY')
 
     def test_hard_barrier_blocks_target_projection(self):
+        self.snap.price = 99.50
         p=self.plan(targets=[{'level':99.15,'kind':'NEAR_LIQUIDITY','known_ts':NOW,'hard_barrier':True}])
         self.assertGreaterEqual(p['rr1'],1.50-1e-8)
         self.assertEqual(p['risk_gate'],'INSUFFICIENT_ROOM')
@@ -114,7 +117,8 @@ class ZonePlanTests(unittest.TestCase):
             self.assertIsNone(scanner.calculate_zone_trade_plan(self.zone,self.snap,self.cfg,engine))
 
     def test_distant_zone_is_planned_but_cannot_win_an_actionable_radar(self):
-        p=self.plan({**self.zone,'kind':'FVG_BEAR','side':-1,'low':110.,'high':110.2},-1)
+        p=self.plan({**self.zone,'kind':'FVG_BEAR','side':-1,'low':110.,'high':110.2},-1,
+                    targets=[{'level':99.50,'kind':'SWING'}, {'level':99.10,'kind':'SWING'}])
         self.assertEqual(p['risk_gate'],'DISTANT_ZONE')
         self.assertIsInstance(p['tp1'],float)
 

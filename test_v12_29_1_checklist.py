@@ -35,18 +35,19 @@ class FormationVolumeTests(unittest.TestCase):
                 bars.pop(5)
                 self.assertFalse(scanner.formation_volume(zone, snap)['confirmed'])
 
-    def test_weak_impulse_blocks_real_plan_and_caps_public_score(self):
+    def test_ordinary_volume_allows_a_proven_plan_without_bonus(self):
         snap, cfg, context = fixture()
         anchor = anchor_for(snap, cfg, context)
         snap.candles['15m'][-1] = replace(snap.candles['15m'][-1], volume=135.)
         with patch.object(engine, 'full_targets', return_value=target_for(1)):
             plan, reason = engine.full_plan(anchor, context, snap, cfg, {})
-            self.assertIsNone(plan)
-            self.assertEqual(reason, 'FORMATION_VOLUME_REQUIRED')
+            self.assertIsNotNone(plan, reason)
+            self.assertFalse(plan['formation_volume']['confirmed'])
             preview = scanner.calculate_zone_trade_plan(
-                {**anchor.evidence['entry_zone'], 'side': 1}, snap, cfg, engine, 1)
-        self.assertLess(preview['score'], 60)
-        self.assertEqual(preview['tactic'], 'OBSERVE')
+                {**anchor.evidence['entry_zone'], 'side': 1}, snap, cfg, engine, 1, geometry=plan)
+        self.assertGreaterEqual(preview['score'], 60)
+        self.assertEqual(next(c['earned'] for c in preview['score_breakdown']
+                              if c['criterion'] == 'VOLUME_BONUS'), 0)
 
     def test_no_structural_target_means_no_executable_tp1_or_runner(self):
         for side in (1, -1):

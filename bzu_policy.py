@@ -148,16 +148,20 @@ def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, fro
     return first, stop, risk, legs
 
 
-def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, organic=False):
+def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, zone=None):
     """Price structural targets on the final entry and execution fee contract."""
     risk = side * (entry - stop)
     targets = engine.full_targets(context, snapshot, anchor.side, entry, cfg)
-    geometry = scanner.zone_targets(entry, risk, side, targets, snapshot.now, cfg.tick, engine)
+    geometry = scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15)
+    known = (zone or {}).get('known_ts', snapshot.now)
+    if scanner.target_crossed(side, snapshot, geometry['tp1'], known):
+        return None, 'EXHAUSTED_MOVE'
+    projection = geometry.get('target_projection', {})
     if not geometry['path_clear']:
         return None, 'INSUFFICIENT_ROOM'
-    if not geometry['structural_tp1']:
+    if not geometry['structural_tp1'] and not projection.get('tp1'):
         return None, 'STRUCTURAL_TP1_REQUIRED'
-    if not geometry['structural_tp2']:
+    if not geometry['structural_tp2'] and not projection.get('tp2'):
         return None, 'STRUCTURAL_TP2_REQUIRED'
     tp1, tp2 = geometry['tp1'], geometry['tp2']
     entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')
@@ -192,8 +196,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'MICRO_ZONE_EXCLUDED'
     if not scanner.zone_direction_matches(zone, side):
         return None, 'ZONE_DIRECTION_MISMATCH'
-    origin = scanner.zone_origin(zone, snapshot, side, cfg.tick, engine)
+    regime = direction.market_regime(snapshot, cfg.tick, engine)
+    origin = scanner.zone_origin(zone, snapshot, side, cfg.tick, engine, cfg, regime)
     if not origin['confirmed']:
+        if zone.get('wave_proof'):
+            return None, origin['reason']
         sweep_zone, sweep_origin = scanner.sweep_reclaim_zone(anchor, snapshot, side, cfg, engine)
         if sweep_origin is None:
             diag['zone_origin'] = origin
@@ -205,7 +212,6 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     # Preserve the observed zone even when Impulse Brake stops planning early.
     diag['entry_zone'] = dict(zone)
     diag['zone_origin'] = origin
-    regime = direction.market_regime(snapshot, cfg.tick, engine)
     zone_error = scanner.standalone_zone_error({**zone, 'side': side}, snapshot, cfg, engine, a15, regime.get('state'))
     if zone_error:
         return None, zone_error
@@ -213,7 +219,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     aligned = direction.momentum_aligned(snapshot, side)
     momentum_zone = zone.get('kind') in scanner.ORGANIC_MOMENTUM
     countertrend = active_side != side and any(regime[key] == -side for key in ('side_1h', 'side_4h'))
-    organic_formation = momentum_zone or zone.get('kind') == scanner.ORGANIC_REVERSAL
+    organic_formation = momentum_zone or zone.get('kind') == scanner.ORGANIC_REVERSAL or origin.get('wave_confirmed')
     tf = zone['timeframe']
     distal = low if side == 1 else high
     structural = min(anchor.invalidation, distal) if side == 1 else max(anchor.invalidation, distal)
@@ -271,9 +277,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'ANCHOR_INVALIDATED'
     distance = abs(snapshot.price-entry)
     diag['distance_atr'] = distance/a15
-    if distance > scanner.max_zone_distance(a15, cfg) + 1e-9:
-        diag['needs_new_structural_event'] = True
-        return None, 'LIMIT_UNREACHABLE'
+    if scanner.entry_window(side, snapshot.price, entry, a15, cfg, minimum=False) == 'DISTANT_ZONE':
+        return None, 'DISTANT_ZONE'
     audit = zones.first_test(zone, minute, side, entry, risk, snapshot.now)
     diag['zone_audit'] = audit
     mark('FRESH_LEVEL', not audit['mitigated'])
@@ -313,7 +318,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             direct_failure = 'STRUCTURAL_STOP_TOO_WIDE'
         else:
             geometry, direct_failure = protected_targets(
-                context, snapshot, anchor, cfg, engine, quote, stop, side, a15, active=True)
+                context, snapshot, anchor, cfg, engine, quote, stop, side, a15, active=True, zone=zone)
         if geometry:
             entry, risk = quote, quote_risk
             action = 'ACTIVE_ENTRY'
@@ -327,13 +332,17 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if not can_wait:
             return None, 'WAIT_RETEST'
         geometry, why = protected_targets(
-            context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, organic=organic_formation)
+            context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, zone=zone)
         if geometry is None:
             mark('TARGET_RR', False)
             return None, why
+        distance_gate = scanner.entry_window(side, snapshot.price, entry, a15, cfg)
+        if (zone.get('wave_proof') and zone['kind'] in ('BULLISH_BREAKER', 'BEARISH_BREAKER')
+                and distance < .20 - 1e-8 and not reaction_only):
+            distance_gate = distance_gate or 'ENTRY_TOO_CLOSE'
+        if distance_gate and not (reaction_only and distance_gate == 'ENTRY_TOO_CLOSE'):
+            return None, distance_gate
     volume = scanner.formation_volume(zone, snapshot)
-    if not volume['confirmed']:
-        return None, 'FORMATION_VOLUME_REQUIRED'
     mark('PASSIVE_LIMIT', True)
     mark('TARGET_RR', True)
     tp1, tp2, rr2 = geometry['tp1'], geometry['tp2'], geometry['rr2']
@@ -378,6 +387,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'partials':{'TP1':.5,'TP2':.5} if has_runner else {'TP1':1.},
          'exit_policy':EXIT, 'tp1_alignment':geometry['tp1_alignment'],
          'tp2_alignment':geometry['tp2_alignment'], 'formation_volume':volume,
+         'tp1_source':geometry['tp1_source'], 'tp2_source':geometry['tp2_source'],
+         'target_projection':geometry.get('target_projection'),
+         'reversal_override':bool(origin.get('wave_confirmed') and
+                                  scanner.wave.reversal_override(side, zone, snapshot, cfg.tick)),
          'breakeven_trigger_r':side*(tp1-entry)/risk,
          'target_management':EXIT, 'tp1_decision_gate':False,
          'exit_path_barriers':[], 'full_exit_candidates':[],
@@ -391,7 +404,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'time_exit_enabled':False,
          'placement_price':snapshot.price, 'target_cancel_armed':side*(snapshot.price-tp1)<0,
          'action_type':action, 'execution_source':action, 'entry_stage':'CORE',
-         'preposition_window':'.15..1.20', 'preposition_distance':distance,
+         'preposition_window':'.10..min(.65,1.2*ATR15)', 'preposition_distance':distance,
          'queue_execution_policy':'PASSIVE_ARM_V2', 'execution_timeframe':'1m',
          'readiness_pct':100., 'entry_checks':copy.deepcopy(diag['entry_checks']),
          'htf_1h':regime['side_1h'], 'htf_4h':regime['side_4h'],
@@ -625,7 +638,7 @@ def merge_plans(plans, snapshot, cfg, engine):
     result=[]
     for group in groups:
         best = copy.deepcopy(max(group, key=lambda p: (
-            p['score'], -abs(snapshot.price - p['entry']))))
+            p.get('reversal_override', False), p['score'], -abs(snapshot.price - p['entry']))))
         best['supporting_setups'] = sorted({p['setup'] for p in group})
         best['supporting_families'] = sorted({p['canonical_setup_family'] for p in group})
         best['parent_keys'] = sorted({p['event_key'] for p in group if p['event_key']!=best['event_key']})

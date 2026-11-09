@@ -113,7 +113,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
    ctx.scenario={...cleanFixture,price:100,snapshot_ts:clock.value,orders:[],candidates:[row],zones:[row],
      primary_bias:side,primary_candidate_id:row.id,radar:{LONG:side===1?row:null,SHORT:side===-1?row:null},
      reaction_config:{retracement:.06,min_samples:3,max_sample_gap_ms:15000,ready_ttl_ms:15000,max_chase_r:.25}};
-   run('state=scenario;stateError=false;quote=undefined;reactions.clear();m5Proofs.clear();invalidZones.clear();selectedPlanIds.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
+   run('state=scenario;stateError=false;quote=undefined;reactions.clear();m5Proofs.clear();invalidZones.clear();exhaustedPlans.clear();selectedPlanIds.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
    return row;
  };
  const feed=(price,step=3000)=>{
@@ -185,14 +185,14 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  // Ordinary deep penetration is not a terminal invalidation until the actual SL is breached.
  approvedReaction();feed(100);feed(99.68);assert.equal(stage(),'TOUCHED');feed(99.77);assert.equal(stage(),'READY');
  // SL invalidation immediately selects the next resistance from the existing cached pool.
- const first=approvedReaction(-1);const second={...first,id:'higher-resistance',entry:101.3,low:101.25,high:101.35,stop:101.7,tp1:100.5,tp2:100.1};
+ const first=approvedReaction(-1);const second={...first,id:'higher-resistance',entry:101.3,low:101.25,high:101.35,stop:101.7,tp1:99.98,tp2:99.82};
  ctx.second=second;run('state.plan_pool.push(second);state.zones.push(second);');
  feed(100);assert.equal(run('radarRows()[1].id'),first.id);
  feed(100.71);assert.equal(run('radarRows()[1].id'),'higher-resistance');
  assert.match(text('radar'),/101.30/);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&Math.abs(l.price-101.7)<.0001));
  assert.match(text('zones'),/SL ПРОБИТО/);
  // The same invalidated zone cannot reappear simply because the quote returns below it.
- feed(100.2);assert.equal(run('radarRows()[1].id'),'higher-resistance');
+ feed(100.67);assert.equal(run('radarRows()[1].id'),'higher-resistance');
  // A weak or blocked plan remains in the table and cannot add chart lines.
  const weak=approvedReaction();weak.score=40;weak.grade='C';weak.tactic='OBSERVE';weak.reaction_eligible=false;
  feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостерігаємо за зоною/);assert.match(text('zones'),/40\/100/);
@@ -204,37 +204,40 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  // Null, blank, boolean and zero API fields do not become valid quote numbers.
  reset();for(const value of [null,'',false,'0','   ']){ctx.badQuote={instId:'BZ-USDT-SWAP',last:value,ts:String(clock.value)};assert.equal(run('acceptTicker(badQuote)'),false);}
  // The main plan's exact Entry, SL and TP1 are drawn even while Entry is near the live quote.
- approvedReaction();feed(99.73);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&l.axisLabelVisible));
+ approvedReaction();feed(99.82);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&l.axisLabelVisible));
  assert.ok(priceLines.some(l=>l.title.includes('ТЕЙК-ПРОФІТ 1')&&l.axisLabelVisible));
  assert.ok(priceLines.some(l=>Math.abs(l.price-99.7)<.0001&&l.axisLabelVisible));
  // A high-score plan with a valid shape but no admission must remain hidden.
  approvedReaction();run('state.plan_pool[0].actionable=false;render();');
  assert.equal(priceLines.length,0);assert.doesNotMatch(text('state-detail'),/Робоча зона/);
  assert.equal(run('radarRows().filter(Boolean).length'),0);
- // Old admissible-looking rows cannot bypass the formation-volume proof.
- approvedReaction();run('delete state.plan_pool[0].formation_volume;state.plan_pool[0].gate_reason="FORMATION_VOLUME_REQUIRED";render();');
- assert.equal(priceLines.length,0);assert.equal(run('radarRows().filter(Boolean).length'),0);
- assert.match(text('zones'),/бракує підтвердження обсягом/);
- assert.doesNotMatch(text('zones'),/FORMATION_VOLUME_REQUIRED|Довідковий план/);
- // The context bands are rendered as zones only, with no entry/stop/target levels.
- run('state.context_bands=[{id:"context",side:1,kind:"DEMAND_OB",timeframe:"1H",low:98.8,high:99.1}];render();');
+ // Ordinary volume earns no points but does not veto an admitted plan.
+ approvedReaction();run('state.plan_pool[0].formation_volume={confirmed:false};render();');
+ assert.ok(priceLines.length);assert.equal(run('radarRows().filter(Boolean).length'),1);
+ // Once TP1 has traded, bouncing back does not resurrect the same plan.
+ feed(100.5);assert.equal(priceLines.length,0);
+ assert.match(text('zones'),/ціль пройдена/);
+ feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);
+ // Context bands have no entry/stop/target lines.
+ run('state.context_bands=[{id:"context",side:1,kind:"DEMAND_OB",timeframe:"1H",low:99.4,high:99.5}];render();');
  assert.equal(run('visibleZones().length'),1);assert.equal(priceLines.length,0);
- // v12.30 exposes actionable and reference layers independently.
- const primaryRef=reset(1,{actionable:false,score:59,grade:'C',risk:.4,rr1:2,rr2:3,
-   gate_reason:'FORMATION_VOLUME_REQUIRED',tp1_source:'QUOTE_REFERENCE'});
- const reserveRef={...primaryRef,id:'reserve',kind:'DEMAND_OB',entry:98.7,low:98.6,high:98.8,
-   stop:98.3,tp1:99.5,tp2:99.9};
- const opposite={...primaryRef,id:'opposite',kind:'SUPPLY_OB',side:-1,entry:100.6,low:100.5,high:100.7,
-   stop:101,tp1:99.8,tp2:99.4,gate_reason:'BLOCKED_BY_TREND'};
- ctx.refRows=[primaryRef,reserveRef,opposite];
- run('state.cockpit_schema=5;state.plan_pool=refRows;state.zones=refRows;state.watch_levels={LONG:refRows[0].id,SHORT:"opposite"};state.reserve_levels={LONG:"reserve"};render();');
- assert.match(text('state-title'),/ОРІЄНТИР LONG ВІД 99.70/);
- assert.match(text('state-detail'),/ціна зліпка/);
- assert.match(text('radar'),/Резерв нижче.*98.70/);
- assert.match(text('radar'),/100.60.*Лімітка проти тренду заборонена/);
+ // Blocked and distant reference rows stay out of the headline and chart.
+ const blocked=reset(1,{actionable:false,score:59,grade:'C',risk:.4,rr1:2,rr2:3,
+   gate_reason:'BLOCKED_BY_TREND'});
+ const reserve={...blocked,id:'reserve',kind:'DEMAND_OB',entry:98.7,low:98.6,high:98.8,
+   stop:98.3,tp1:100.2,tp2:100.9,gate_reason:'DISTANT_ZONE'};
+ ctx.refRows=[blocked,reserve];
+ run('state.cockpit_schema=5;state.plan_pool=refRows;state.zones=refRows;render();');
+ assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);
+ assert.doesNotMatch(text('state-title'),/99.70|98.70/);
+ assert.match(text('radar'),/Далекий резерв @ 98.70/);
  assert.equal(priceLines.length,0);assert.equal(run('reactionRows().length'),0);
- const watchCopy=document.querySelectorAll('[data-focus]').find(x=>x.dataset.focus==='copy-'+primaryRef.id+'-entry');
- await nodes.get('radar').listeners.click({target:watchCopy});assert.equal(clipboard,'99.70');
+ // Only a server-admitted reversal may oppose the displayed trend.
+ approvedReaction(-1);
+ run('state.primary_bias=1;state.plan_pool[0].kind="SWEEP_REVERSAL";render();');
+ assert.equal(priceLines.length,0);
+ run('state.plan_pool[0].reversal_override=true;render();');
+ assert.ok(priceLines.length);
 
  // A newly opened tab already inside the zone still waits for a closed M5.
  const boundary=Math.floor(clock.value/300000)*300000+300000;

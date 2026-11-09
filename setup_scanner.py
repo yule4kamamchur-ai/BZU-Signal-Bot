@@ -10,6 +10,8 @@ from dataclasses import replace
 from math import isfinite
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
+import market_wave as wave
+
 PRIMARY = ('15m', '1H', '4H')
 MICRO = {'15m': '3m', '1H': '15m', '4H': '1H'}
 MINUTES = {'15m': 15, '1H': 60, '4H': 240}
@@ -26,7 +28,7 @@ ZONE_DIRECTION = {
 DIRECTIONAL_FORMATIONS = frozenset({'CONFIRMED_FVG', 'BREAKER_FLIP_15M',
     'MOMENTUM_STAIRCASE_15M', 'DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M', 'STRUCTURAL_LEVEL', 'SESSION_SWEEP_ENGULFING',
-    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB', 'IMPULSE_OTE_15M'})
+    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB', 'IMPULSE_OTE_15M'}) | wave.REVERSALS | wave.CONTINUATIONS
 PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'zone_origin', 'approach', 'session_gate', 'planning_policy', 'entry_checks',
     'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition')
@@ -111,7 +113,35 @@ def standalone_zone_error(zone, snapshot, cfg, engine, atr15, regime):
 
 
 def max_zone_distance(atr15, cfg):
-    return max(.60, cfg.max_entry_distance_atr * atr15)
+    return min(.65, min(1.2, cfg.max_entry_distance_atr) * atr15)
+
+
+def exhausted_move(side, price, target):
+    return (isinstance(target, (int, float)) and isfinite(target)
+            and side * (price - target) >= -1e-8)
+
+
+def target_crossed(side, snapshot, target, known):
+    if exhausted_move(side, snapshot.price, target):
+        return True
+    minute = audit_rows(snapshot, after=known)
+    m15 = (bar for bar in snapshot.candles.get('15m', ()) if bar.confirmed
+           and known <= bar.ts and bar.ts + wave.M15 <= snapshot.now)
+    return any(exhausted_move(side, bar.high if side == 1 else bar.low, target)
+               for bar in (*minute, *m15))
+
+
+def entry_window(side, price, entry, atr15, cfg, *, minimum=True):
+    distance = side * (price - entry)
+    if abs(distance) > max_zone_distance(atr15, cfg) + 1e-8:
+        return 'DISTANT_ZONE'
+    if minimum and distance < .10 - 1e-8:
+        return 'ZONE_NOT_AHEAD_OF_PRICE' if distance <= 0 else 'ENTRY_TOO_CLOSE'
+    return None
+
+
+def proximity_bonus(side, price, entry, aligned):
+    return 10 if aligned and .15 - 1e-8 <= side * (price - entry) <= .55 + 1e-8 else 0
 
 
 def zone_risk_bounds(atr15, cfg):
@@ -223,6 +253,48 @@ def zone_targets(entry, risk, side, targets, now, tick, engine, quote=None):
             'path_clear': barrier is None or side * (tp1 - entry) <= barrier[0] + 1e-8}
 
 
+def planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone, atr15, quote=None):
+    """Permit a fresh projection near a confirmed day extreme with clear runway."""
+    base = zone_targets(entry, risk, side, targets, snapshot.now, cfg.tick, engine, quote=quote)
+    if not zone.get('wave_proof') or zone.get('kind') not in wave.CONTINUATIONS:
+        return base
+    import directional_policy as direction
+
+    extreme = next((p for p in direction.day_extrema(snapshot)
+                    if p['name'] == ('DAY_HIGH' if side == 1 else 'DAY_LOW')), None)
+    # The running M5 leg may confirm a newer session extreme before M15 closes.
+    m5 = [c for c in closed_five_minutes(snapshot) if c.ts >= zone['known_ts'] - 6 * wave.M5]
+    if extreme and m5:
+        candle = max(m5, key=lambda c: c.high) if side == 1 else min(m5, key=lambda c: c.low)
+        level = candle.high if side == 1 else candle.low
+        if side * (level - extreme['level']) > 0:
+            extreme = {**extreme, 'level': level, 'known_ts': candle.ts + wave.M5}
+    if (not extreme or snapshot.now - extreme['known_ts'] >= 60 * 60_000
+            or abs(snapshot.price - extreme['level']) > max(.15, .45 * atr15) + 1e-8):
+        return base
+    ahead = [t for t in targets
+             if (p := structural_target_price(t, snapshot.now, side, cfg.tick, engine)) is not None
+             and (t.get('hard_barrier') or not exhausted_move(side, snapshot.price, p))]
+    destination = zone_targets(entry, risk, side, ahead, snapshot.now, cfg.tick, engine)
+    if destination['structural_tp1'] and destination['structural_tp2'] and destination['path_clear']:
+        return destination
+    projections = [engine.round_tick(round(entry + side * risk * r, 10), cfg.tick, up=side == 1)
+                   for r in (1.50, 2.30)]
+    tp1 = destination['tp1'] if destination['structural_tp1'] else projections[0]
+    tp2 = destination['tp2'] if destination['structural_tp2'] else projections[1]
+    barrier = destination['barrier_price']
+    if (min(tp1, tp2) <= 0 or exhausted_move(side, snapshot.price, tp1)
+            or side * (tp2 - tp1) < cfg.tick - 1e-8
+            or (barrier is not None and side * (tp2 - barrier) > 1e-8)):
+        return base
+    return {**destination, 'tp1': tp1, 'tp2': tp2, 'path_clear': True,
+            'tp1_source': destination['tp1_source'] if destination['structural_tp1'] else 'R_MULTIPLE_1_50',
+            'tp2_source': destination['tp2_source'] if destination['structural_tp2'] else 'R_MULTIPLE_2_30',
+            'target_projection': {'as_of_ts': snapshot.now, 'extreme': extreme,
+                                  'tp1': not destination['structural_tp1'],
+                                  'tp2': not destination['structural_tp2']}}
+
+
 def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                               context=None, geometry=None, targets=None, regime=None):
     """Causal geometric pre-plan + transparent 5-factor ranking, never execution.
@@ -271,11 +343,12 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         return None
     available = (engine.full_targets(context or {}, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
                  if targets is None else targets)
-    destination = zone_targets(entry, risk, side, available, snapshot.now, tick, engine,
-                               quote=snapshot.price if not frozen else None)
+    destination = planned_targets(entry, risk, side, available, snapshot, cfg, engine, zone, a,
+                                  quote=snapshot.price if not frozen else None)
     if frozen:
         tp1, tp2 = geometry['tp1'], geometry['tp2']
-        tp1_source = tp2_source = 'ENGINE_PLAN'
+        tp1_source = geometry.get('tp1_source') or 'ENGINE_PLAN'
+        tp2_source = geometry.get('tp2_source') or 'ENGINE_PLAN'
     else:
         tp1, tp2 = destination['tp1'], destination['tp2']
         tp1_source, tp2_source = destination['tp1_source'], destination['tp2_source']
@@ -294,11 +367,12 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     explicit_sweep=zone.get('sweep_known_ts')
     htf_or_sweep=native in ('1H','4H') or (valid(explicit_sweep) and explicit_sweep<=snapshot.now) or bool(sweep and any(k in sweep for k in ('known_ts','sweep_ts')) and valid(sweep_ts) and sweep_ts<=snapshot.now)
     departure=[c for c in rows if known-2*step<=c.ts<known+3*step]
-    displacement=('FVG' in zone['kind'] or any(side*(c.close-c.open)>=.6*a and
+    displacement=('FVG' in zone['kind']
+                  or (zone.get('wave_proof') and zone['kind'] in wave.CONTINUATIONS) or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
     barrier = destination['barrier_price']
     room = (rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8 and
-            (barrier is None or side * (tp1 - barrier) <= 1e-8))
+            (barrier is None or side * (tp2 - barrier) <= 1e-8))
     if frozen:
         structural_tp1 = structural_target_price(
             geometry.get('tp1_alignment'), snapshot.now, side, tick, engine) == round(tp1, 10)
@@ -307,21 +381,35 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     else:
         structural_tp1 = destination['structural_tp1']
         structural_tp2 = destination['structural_tp2']
-    criteria=[('REGIME_ALIGNMENT',25,primary_side==side),('UNTESTED',20,freshness=='UNTESTED'),
-              ('HTF_OR_SWEEP',20,htf_or_sweep),('DISPLACEMENT_OR_FVG',20,displacement),('ROOM_TO_RUN',15,room)]
+    projection = (geometry if frozen else destination).get('target_projection') or {}
+    if projection and zone.get('wave_proof') and zone.get('kind') in wave.CONTINUATIONS:
+        if projection.get('tp1'):
+            structural_tp1 = abs(tp1 - engine.round_tick(
+                round(entry + side * 1.50 * risk, 10), tick, up=side == 1)) < 1e-8
+        if projection.get('tp2'):
+            structural_tp2 = abs(tp2 - engine.round_tick(
+                round(entry + side * 2.30 * risk, 10), tick, up=side == 1)) < 1e-8
+    reversal = wave.reversal_override(side, zone, snapshot, tick)
     volume = formation_volume(zone, snapshot)
-    score_cap = 100 if volume['confirmed'] else 59
-    score = min(score_cap, sum(weight for _, weight, passed in criteria if passed))
+    criteria = [('REGIME_ALIGNMENT', 25, primary_side == side or reversal),
+                ('UNTESTED', 20, freshness == 'UNTESTED'), ('HTF_OR_SWEEP', 20, htf_or_sweep),
+                ('DISPLACEMENT_OR_FVG', 20, displacement), ('ROOM_TO_RUN', 15, room),
+                ('VOLUME_BONUS', 6, volume['confirmed']),
+                ('PROXIMITY_BONUS', 10, bool(proximity_bonus(side, snapshot.price, entry, primary_side == side)))]
+    score = min(100, sum(weight for _, weight, passed in criteria if passed))
     import entry_adverse_selection as adverse
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
-    gate=('STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
+    tracking_only = inside or (geometry or {}).get('reaction_only')
+    window = entry_window(side, snapshot.price, entry, a, cfg,
+                          minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only)
+    gate=('EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, known) else
+          'STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
           'RISK_BELOW_FLOOR' if risk < floor - 1e-8 else
           'RISK_TOO_WIDE' if not safe else
           zone_error if zone_error else
           'INSUFFICIENT_ROOM' if not room else
-          'DISTANT_ZONE' if abs(snapshot.price-entry)>max_zone_distance(a,cfg)+tick else
-          'FORMATION_VOLUME_REQUIRED' if not volume['confirmed'] else
+          window if window else
           'STRUCTURAL_TP1_REQUIRED' if not structural_tp1 else
           'STRUCTURAL_TP2_REQUIRED' if not structural_tp2 else None)
     breaker = m5_breaker(zone, snapshot, tick)
@@ -330,13 +418,14 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                  (geometry or {}).get('entry_condition', 'RETEST'))
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
         'score':score,'grade':'A' if score>=65 else 'B+' if score>=60 else 'C',
-        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_5_FACTOR_V2',
-        'score_cap':score_cap, 'formation_volume':volume,
+        'score_source':'ZONE_HEURISTIC','score_model':'ZONE_WAVE_V31',
+        'score_cap':100, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
         'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else basis, 'in_zone':inside,
         'entry_condition':condition, 'm5_breaker':breaker,
         'risk_floor':floor, 'risk_cap':cap, 'target_barrier':barrier,
+        'target_projection':projection or None, 'reversal_override':reversal,
         'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
         'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),
         'tactic':('OBSERVE' if gate or brake['blocked'] or score < 60 else
@@ -399,7 +488,8 @@ def event_rvol(snapshot, timeframe, known_ts):
             'sma_volume_20':None,'status':'EVENT_OR_HISTORY_MISSING'}
     if not step or not isinstance(known_ts,(int,float)) or known_ts>snapshot.now:
         return result
-    rows={c.ts:c for c in snapshot.candles.get(timeframe,[])
+    bars = closed_five_minutes(snapshot) if timeframe == '5m' else snapshot.candles.get(timeframe, [])
+    rows={c.ts:c for c in bars
           if c.confirmed and c.ts+step<=known_ts}
     event=rows.get(known_ts-step)
     prior=[rows.get(known_ts-step-i*step) for i in range(20,0,-1)]
@@ -417,10 +507,10 @@ def event_rvol(snapshot, timeframe, known_ts):
 
 def formation_volume(zone, snapshot):
     """Validate only the closed impulse that formed this native zone."""
-    timeframe = zone.get('timeframe')
+    timeframe = (zone.get('wave_proof') or {}).get('timeframe', zone.get('timeframe'))
     known = zone.get('impulse_known_ts', zone.get('known_ts'))
     result = event_rvol(snapshot, timeframe, known)
-    confirmed = (timeframe in PRIMARY and result['status'] == 'AVAILABLE'
+    confirmed = (result['status'] == 'AVAILABLE'
                  and result['volume'] > 1.35 * result['sma_volume_20'])
     return {**result, 'confirmed': confirmed}
 
@@ -485,24 +575,32 @@ ORGANIC_FORMATIONS = ORGANIC_MOMENTUM | {ORGANIC_REVERSAL}
 def organic_anchors(snapshot, cfg, context, engine):
     import strategy_organics as organic
 
+    import directional_policy as direction
+
     anchors = []
-    for setup in organic.formations(snapshot, cfg.tick, engine):
+    wave_setups = [{'entry_zone': zone, 'side': zone['side'], 'family': zone['kind'],
+                    'signal_ts': zone['known_ts'],
+                    'invalidation': zone['low'] if zone['side'] == 1 else zone['high'],
+                    'organic_confluence': True}
+                   for zone in wave.zones(snapshot, cfg, engine,
+                                         direction.market_regime(snapshot, cfg.tick, engine))]
+    for setup in [*wave_setups, *organic.formations(snapshot, cfg.tick, engine)]:
         zone = setup['entry_zone']
         side = setup['side']
         family = setup['family']
         proximal = zone['high'] if side == 1 else zone['low']
-        raw_entry = (zone['low'] + zone['high']) / 2 if family in ('DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M') else proximal
+        raw_entry = (zone['low'] + zone['high']) / 2 if family in ('DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M', 'CONTINUATION_PULLBACK') else proximal
         entry = engine.round_tick(round(raw_entry + cfg.tick/2, 10), cfg.tick)
-        if family == ORGANIC_REVERSAL:
+        if family == ORGANIC_REVERSAL or family in wave.REVERSALS:
             name = 'SWEEP_RECLAIM' if side == 1 else 'LIQUIDITY_SWEEP_REVERSAL_SHORT'
         else:
-            name = 'BREAKOUT_RETEST' if family == 'BREAKER_FLIP_15M' else 'PULLBACK_CONTINUATION'
+            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST') else 'PULLBACK_CONTINUATION'
         known = setup['signal_ts']
         evidence = {**setup, 'entry_route': 'STRATEGY_EVENT', 'setup_timeframe': '15m',
                     'formation_timeframe': '15m', 'source_strategy': family,
                     'strategy_signal_ts': known, 'strategy_event_ts': known,
                     'episode_ts': known,
-                    'setup_conditions': [{'condition': 'Закритий патерн M15 підтверджено',
+                    'setup_conditions': [{'condition': 'Патерн підтверджено закритими свічками',
                                           'met': True}]}
         anchor = cfg.core.make_anchor(
             name,
@@ -561,12 +659,22 @@ def sweep_reclaim_zone(anchor, snapshot, side, cfg, engine):
     return zone, origin
 
 
-def zone_origin(zone, snapshot, side, tick, engine):
+def zone_origin(zone, snapshot, side, tick, engine, cfg=None, regime=None):
     """Prove departure from this zone broke a pre-existing local reference.
 
     The reference is frozen before formation. Neither a later pivot nor an
     unrelated break elsewhere can turn a weak historical bounce into an OB.
     """
+    if zone.get('wave_proof'):
+        witness = wave.witnessed(zone, snapshot, cfg, engine, regime) if cfg and regime else None
+        if witness:
+            sweep = witness.get('sweep') or {}
+            return {'confirmed': True, 'timeframe': witness['wave_proof']['timeframe'],
+                    'reference': witness['reference'], 'sweep': sweep,
+                    'break_known_ts': witness['known_ts'] if sweep.get('pattern') != 'WICK_RECLAIM' else None,
+                    'displacement_known_ts': witness['known_ts'],
+                    'wave_confirmed': True, 'reason': 'CURRENT_WAVE_CONFIRMED'}
+        return {'confirmed': False, 'reason': 'CURRENT_WAVE_PROOF_EXPIRED'}
     if zone.get('kind') in ORGANIC_FORMATIONS:
         return organic_zone_origin(zone, snapshot, side, tick, engine)
     tf=zone.get('timeframe','15m');step=engine.TF.get(tf)

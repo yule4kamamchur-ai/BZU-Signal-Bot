@@ -22,7 +22,7 @@ class IntegrityTests(unittest.TestCase):
         self.book=engine.new_state(self.cfg)
 
     def row(self,side=1,entry=None,score=75):
-        entry=entry if entry is not None else 99. if side==1 else 101.
+        entry=entry if entry is not None else 99.63 if side==1 else 100.37
         return structural_witnesses({'id':'candidate-'+str(side),'side':side,'entry':entry,'stop':entry-side*.3,
                 'tp1':entry+side*.6,'tp2':entry+side*.9,'risk':.3,'score':score,'rating':'A',
                 'setup':'VALID_PLAN','quality':{'accepted':True,'reason':'ACCEPTED'},
@@ -92,7 +92,7 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(row,before)
 
     def test_bearish_primary_is_short_even_if_long_is_nearer_or_higher_score(self):
-        out=self.project([self.row(1,99.5,95),self.row(-1,101,75)],'BEARISH_ACTIVE')
+        out=self.project([self.row(1,99.5,95),self.row(-1,100.53,75)],'BEARISH_ACTIVE')
         self.assertEqual(out['primary_bias'],-1)
         self.assertIsNone(out['radar']['LONG'])
         self.assertEqual(out['radar']['SHORT']['side'],-1)

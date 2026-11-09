@@ -70,7 +70,8 @@ class EntryTests(unittest.TestCase):
             self.assertLessEqual(setup['entry_zone']['sweep']['reference_known_ts'], rows[-1].ts)
             state = engine.new_state(cfg)
             with patch.object(engine, 'full_targets', return_value=target_for(side)):
-                result = engine.analyze(snap,cfg,state)
+                with patch.object(scanner.wave, 'zones', return_value=[]):
+                    result = engine.analyze(snap,cfg,state)
             plan = next((p for p in result['plans'] if p['source_strategy'] == scanner.ORGANIC_REVERSAL),None)
             self.assertIsNotNone(plan,result['rejections'])
             self.assertGreaterEqual(plan['score'], 65)

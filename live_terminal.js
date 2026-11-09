@@ -14,7 +14,7 @@ let history = [], currentBar, lastSampleTime = 0, audio, sound = false, feedErro
 let socket, socketAttempt = 0, socketPing;
 let selectedZone = null;
 const reactions=new Map(), m5Proofs=new Map();
-const invalidZones=new Set(), selectedPlanIds=new Map();
+const invalidZones=new Set(), exhaustedPlans=new Set(), selectedPlanIds=new Map();
 let m5Market=null, previousLiveSample=null, velocity=null, m5Busy=false;
 let stateError = false, stateBusy = false, tickerBusy = false, candlesBusy = false;
 
@@ -136,6 +136,7 @@ const formatScore = n => Number(n.toFixed(1)).toString();
 function statusText(row, price) {
   if (row.actionable === true && validCandidate(row)) {
     const stage = livePlanState(row, price);
+    if (stage === 'EXHAUSTED') return 'Перша ціль уже пройдена';
     if (stage === 'INVALID') return 'SL ПРОБИТО · ЗОНУ СПИСАНО';
     if (stage === 'MISSED') return 'Вікно реакції минуло';
     if (stage === 'EXPIRED') return 'Строк дії плану минув';
@@ -147,7 +148,8 @@ function statusText(row, price) {
     return row.tactic === 'REACTION_M5' ? 'Чекаємо реакції M5' : 'Чекаємо підходу до входу';
   }
   const reasons = {
-    FORMATION_VOLUME_REQUIRED: 'Імпульсу бракує підтвердження обсягом',
+    EXHAUSTED_MOVE: 'Перша ціль уже пройдена',
+    ENTRY_TOO_CLOSE: 'Ціна вже надто близько до рівня для нового ліміту',
     STRUCTURAL_TP1_REQUIRED: 'Бракує структурної цілі для часткової фіксації',
     STRUCTURAL_TP2_REQUIRED: 'Бракує наступної структурної цілі',
     INSUFFICIENT_ROOM: number(row.target_barrier) ?
@@ -175,7 +177,8 @@ function validCandidate(row) {
     SUPPLY_OB:-1,FVG_BEAR:-1,BEARISH_BREAKER:-1,BEAR_BREAKER:-1,BREAKER_BEAR:-1,SWEEP_HIGH:-1,IFVG_BEAR:-1};
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
-    'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M'];
+    'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
+    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
@@ -189,18 +192,41 @@ function validCandidate(row) {
     (!outside || (row.side * (row.entry - proximal) >= 0 &&
       row.side * (row.entry - proximal) <= .03000001 + (state.tick || .01)));
 }
-function actionablePlan(row, price) {
-  return row.actionable === true && row.execution_admitted === true &&
-    row.formation_volume?.confirmed === true && ['A','B+'].includes(row.grade) &&
-    row.status === 'CANDIDATE' && !row.gate_reason && ['LIMIT','REACTION_M5'].includes(row.tactic) &&
-    (!state.primary_bias || row.side === state.primary_bias) && validCandidate(row) &&
-    !['INVALID','EXPIRED','MISSED'].includes(livePlanState(row, price));
+function maximumDistance() {
+  return state.candidate_rules?.max_distance ?? Math.min(.65, 1.2 * (state.atr15 ?? .55));
+}
+function inEntryWindow(row, price) {
+  const distance = row.side * (price - row.entry);
+  return distance >= (state.candidate_rules?.min_distance ?? .10) - 1e-8 &&
+    distance <= maximumDistance() + 1e-8;
+}
+function exhaustionKey(row) {
+  return row.status === 'PENDING' || row.status === 'CANCELLING' ? 'order:' + (row.order_id ?? row.id) :
+    zoneFingerprint(row);
+}
+function targetExhausted(row, price) {
+  return row.gate_reason === 'EXHAUSTED_MOVE' || exhaustedPlans.has(exhaustionKey(row)) ||
+    (number(row.tp1) && number(price) && row.side * (price - row.tp1) >= -1e-8);
+}
+function followsBias(row) {
+  return !state.primary_bias || row.side === state.primary_bias ||
+    (row.reversal_override === true && ['SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH'].includes(row.kind));
+}
+function actionablePlan(row, price, tracking = false) {
+  if (row.actionable !== true || row.execution_admitted !== true || !['A','B+'].includes(row.grade) ||
+      row.status !== 'CANDIDATE' || row.gate_reason || !['LIMIT','REACTION_M5'].includes(row.tactic) ||
+      !followsBias(row) || !validCandidate(row)) return false;
+  const stage = livePlanState(row, price);
+  return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
+    (inEntryWindow(row, price) || stage === 'READY' ||
+      (tracking && Math.abs(price - row.entry) <= maximumDistance() + 1e-8));
 }
 function poolRows() { return state.plan_pool??state.candidates??[]; }
 function zoneFingerprint(row) {
   return [state.instrument,row.kind,row.timeframe,row.side,row.source_low??row.low,row.source_high??row.high,row.known_ts].join('|');
 }
 function livePlanState(row,price) {
+  if (targetExhausted(row, price)) return 'EXHAUSTED';
   if (invalidZones.has(zoneFingerprint(row)) || row.side*(price-row.stop)<=0) return 'INVALID';
   if (number(row.valid_until)&&row.valid_until<=Date.now()) return 'EXPIRED';
   const tracker=reactions.get(reactionKey(row));
@@ -238,11 +264,15 @@ function mainPlan(rows=radarRows().filter(Boolean)) {
 }
 function reactionRows() {
   if (![4,5].includes(state.cockpit_schema) || state.orders.some(o=>o.status==='OPEN') || !ready(Date.now())) return [];
-  let rows=radarRows().filter(r=>r?.reaction_eligible);
+  const price = displayedPrice();
+  const chosen = radarRows(price).filter(r => r?.reaction_eligible);
+  let rows = [1, -1].map(side => chosen.find(r => r.side === side) ??
+    poolRows().filter(r => r.side === side && r.reaction_eligible && actionablePlan(r, price, true))
+      .sort((a,b) => Math.abs(a.entry - price) - Math.abs(b.entry - price))[0]).filter(Boolean);
   for (const order of state.orders) {
     if (order.status!=='PENDING' || order.expires_ts<=Date.now()) continue;
     const row={...order,...order.zone,id:'order:'+order.id,score_source:'CONTEXT',reaction_eligible:true,valid_until:order.expires_ts};
-    if (validCandidate(row) && (!state.primary_bias || row.side===state.primary_bias)) {
+    if (validCandidate(row) && pendingIsCurrent(order, price)) {
       rows=rows.filter(r=>!(r.side===row.side && r.entry===row.entry && r.stop===row.stop && r.low===row.low && r.high===row.high));
       rows.unshift(row);
     }
@@ -343,6 +373,11 @@ function observeLive(market) {
   for (const row of poolRows()) if (row.actionable===true&&validCandidate(row)&&row.status==='CANDIDATE'&&row.side*(market.price-row.stop)<=0&&!invalidZones.has(zoneFingerprint(row))) {
     invalidZones.add(zoneFingerprint(row));const t=reactionTracker(row);t.stage='INVALID';
     notify(row,t,'ZONE_SL','SL плану '+format(row.stop)+' пробито · зону списано локально');
+  }
+  for (const row of [...poolRows().filter(row => !row.order_id), ...state.orders.filter(order => order.status === 'PENDING')]) {
+    if (number(row.tp1) && row.side * (market.price - row.tp1) >= -1e-8) {
+      exhaustedPlans.add(exhaustionKey(row));
+    }
   }
   const keep=new Set();
   for (const row of reactionRows()) {keep.add(reactionKey(row));updateReaction(row,market);}
@@ -465,30 +500,23 @@ function zoneName(kind) {
   if (kind?.includes('SWEEP') || kind?.includes('RAID')) return 'Хибний пробій';
   return ({DEMAND_OB:'Зона попиту', SUPPLY_OB:'Зона пропозиції',
            DISPLACEMENT_CATCHER_15M:'Відкат після імпульсу',
-           MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';
+           SWEEP_REVERSAL:'Зняття ліквідності й розворот',
+           M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
+           CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
+           FLAG_RETEST:'Ретест пробою прапора', BEARISH_BREAKER:'Дзеркальний опір',
+           BULLISH_BREAKER:'Дзеркальна підтримка', MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';
 }
 function watchable(row, price) {
   return row && ['entry','stop','tp1','tp2','risk','rr1','rr2','score','low','high'].every(key=>number(row[key])) &&
-    !row.order_id && !invalidZones.has(zoneFingerprint(row)) && row.risk_gate !== 'STOP_ALREADY_BREACHED' &&
+    !row.order_id && !targetExhausted(row, price) && !invalidZones.has(zoneFingerprint(row)) && row.risk_gate !== 'STOP_ALREADY_BREACHED' &&
     row.side * (price - (row.side === 1 ? row.low : row.high)) >= 0 &&
     row.side * (price - row.stop) > 0;
 }
-function advisoryLevel(side, price, exclude = null) {
-  if (state.cockpit_schema !== 5) return null;
-  const label = sideLabel(side);
-  const preset = exclude ? state.reserve_levels?.[label] : state.watch_levels?.[label];
-  const deeper = row => !exclude || (side === 1 ? row.high <= exclude.low : row.low >= exclude.high);
-  const available = poolRows().filter(row=>row.side === side && watchable(row,price) && deeper(row));
-  return available.find(row=>row.id===preset) ??
-    available.sort((a,b)=>Math.abs(a.entry-price)-Math.abs(b.entry-price) || b.score-a.score)[0] ?? null;
-}
-function nextTarget(price = displayedPrice()) {
-  const approved = chartPlan();
-  if (approved) return approved;
-  if (state.primary_bias) return advisoryLevel(state.primary_bias, price) ?? advisoryLevel(-state.primary_bias, price);
-  const levels = [1,-1].map(side=>advisoryLevel(side,price)).filter(Boolean);
-  return levels.find(row=>row.id===state.watch_primary_id) ??
-    levels.sort((a,b)=>Math.abs(a.entry-price)-Math.abs(b.entry-price))[0] ?? null;
+function reserveLevel(side, price) {
+  if (state.cockpit_schema !== 5 || (state.primary_bias && side !== state.primary_bias)) return null;
+  return poolRows().filter(row => row.side === side && watchable(row, price) &&
+    side * (price - row.entry) > maximumDistance() + 1e-8)
+    .sort((a,b) => Math.abs(a.entry - price) - Math.abs(b.entry - price) || b.score - a.score)[0] ?? null;
 }
 function planText(row) {
   const source1 = row.tp1_source === 'QUOTE_REFERENCE' ? ', ціна зліпка' :
@@ -501,7 +529,7 @@ function planText(row) {
     format(row.tp2) + ' (' + rr(row.tp2) + source2 + ')';
 }
 function conditionText(row, price) {
-  if (state.primary_bias && row.side !== state.primary_bias) {
+  if (!followsBias(row)) {
     return 'Лімітка проти тренду заборонена. Сценарій переглядається після хибного пробою та розвороту M5/M15.';
   }
   if (!ready(Date.now()) || !actionablePlan(row, price)) {
@@ -513,9 +541,15 @@ function conditionText(row, price) {
   return row.tactic === 'REACTION_M5' ? 'Чекаємо підходу та відбою на закритій M5.' : 'Чекаємо підходу до рівня лімітки.';
 }
 
+function pendingIsCurrent(order, price) {
+  return number(order.entry) && !targetExhausted(order, price) &&
+    Math.abs(price - order.entry) <= maximumDistance() + 1e-8;
+}
 function chartOrders() {
+  const price = displayedPrice();
   return state.orders.filter(order => order.status === 'OPEN' ||
-    (order.status === 'PENDING' && (!number(order.expires_ts) || order.expires_ts > Date.now())));
+    (order.status === 'PENDING' && pendingIsCurrent(order, price) &&
+      (!number(order.expires_ts) || order.expires_ts > Date.now())));
 }
 function chartPlan() {
   if (state.orders.length) return null;
@@ -526,12 +560,10 @@ function visibleZones() {
   if (orders.length) return state.zones.filter(zone => orders.some(order => order.id === zone.order_id));
   const primary = chartPlan();
   if (primary) return [primary];
-  const watch = nextTarget();
-  if (watch && (watch.id === selectedZone ||
-      Math.max(watch.low - displayedPrice(), displayedPrice() - watch.high, 0) <=
-      Math.max(.60, 2.5 * (state.atr15 ?? 0)))) return [watch];
   const price = displayedPrice();
   return (state.context_bands ?? []).filter(zone => !invalidZones.has(zoneFingerprint(zone)) &&
+    !targetExhausted(poolRows().find(row => row.id === zone.id) ?? zone, price) &&
+    Math.max(zone.low - price, price - zone.high, 0) <= maximumDistance() &&
     zone.side * (price - (zone.side === 1 ? zone.low : zone.high)) > 0).slice(0, 2);
 }
 function displayedPrice() {
@@ -542,7 +574,7 @@ function renderZones(price) {
   const container = $('zones');
   container.replaceChildren();
   $('zone-count').textContent = state.zones.length + ' зон';
-  const focusable = nextTarget(price)?.id;
+  const focusable = chartPlan()?.id;
   const reserves = new Set(Object.values(state.reserve_levels ?? {}));
   for (const z of state.zones) {
     const row = element('tr');
@@ -552,9 +584,9 @@ function renderZones(price) {
       element('small', sideLabel(z.side) + ' · ' + format(z.low) + '–' + format(z.high)));
     const approved = ready(Date.now()) && actionablePlan(z, price);
     const score = td(scoreText(z));
-    const counter = state.primary_bias && z.side !== state.primary_bias;
+    const counter = !followsBias(z);
     const inside = z.low <= price && price <= z.high;
-    const status = counter ? (z.side === -1 ? 'Опір проти тренду' : 'Підтримка проти тренду') :
+    const status = targetExhausted(z, price) ? 'Відпрацьовано · ціль пройдена' : counter ? (z.side === -1 ? 'Опір проти тренду' : 'Підтримка проти тренду') :
       inside ? (approved ? 'Ціна в зоні · чекаємо M5' : 'Ціна в зоні · спостерігаємо') : z.id === focusable ?
       (approved ? 'Головна ціль' : 'Головний орієнтир') : reserves.has(z.id) ? 'Резерв по тренду' : statusText(z, price);
     const entry = td(status);
@@ -704,7 +736,7 @@ function setBannerMode(mode) {
 function renderBanner(price, usable, live) {
   const active = state.orders.find(order => order.status === 'OPEN');
   const pending = state.orders.find(order => order.status === 'PENDING');
-  const candidate = nextTarget(price);
+  const candidate = chartPlan();
   const closed = state.last_closed;
   let mode = 'WAITING';
   let pill = state.primary_bias ? 'ОЧІКУВАННЯ • ПРІОРИТЕТ ' + sideLabel(state.primary_bias) : 'ПОШУК ТОЧКИ ВХОДУ';
@@ -713,8 +745,7 @@ function renderBanner(price, usable, live) {
   let detail = 'Чекаємо підтвердженого сетапу.';
   if (candidate) {
     if (state.cockpit_schema === 5) {
-      const approved = usable && actionablePlan(candidate, price);
-      title = (approved ? 'ЧЕКАЄМО ' : 'ОРІЄНТИР ') + sideLabel(candidate.side) + ' ВІД ' +
+      title = 'ГОТУЄМО ' + sideLabel(candidate.side) + ' ВІД ' +
         format(candidate.entry) + ' • ' + candidate.timeframe + ' ' + zoneName(candidate.kind);
       detail = 'Зона ' + format(candidate.low) + '–' + format(candidate.high) + ' · Δ ' +
         signed(candidate.entry - price, ' $') + ' (' + signed((candidate.entry-price)*100, '¢') + ') · ' +
@@ -738,6 +769,12 @@ function renderBanner(price, usable, live) {
     detail = 'Очікуємо виконання лімітки.';
     if (tracker.touch) detail = 'Ціна торкнулася входу, чекаємо підтвердження виконання.';
     if (tracker.end) detail = management(pending, tracker, price, usable);
+    if (!pendingIsCurrent(pending, price)) {
+      title = 'ЧЕКАЄМО ЗВІРКИ ЛІМІТКИ';
+      detail = targetExhausted(pending, price) ?
+        'Першу ціль уже пройдено. Статус лімітки уточнюється за журналом.' :
+        'Рівень лімітки вийшов за робочу відстань. Чекаємо оновлення журналу.';
+    }
   } else if (state.orders.length) {
     title = 'СКАСУВАННЯ ЛІМІТКИ';
     detail = 'Чекаємо підтвердження скасування за журналом.';
@@ -757,7 +794,7 @@ function renderBanner(price, usable, live) {
   }
   const banner = setBannerMode(mode);
   const isNear=Boolean(usable && live && !active && pending?.status==='PENDING' && number(pending.entry) && pending.entry>0 &&
-    !orderTracker(pending).touch && !orderTracker(pending).end && Math.abs(price-pending.entry)<=.08000001);
+    pendingIsCurrent(pending, price) && !orderTracker(pending).touch && !orderTracker(pending).end && Math.abs(price-pending.entry)<=.08000001);
   banner.classList.toggle('near',isNear);
   $('state-title').textContent=title; $('state-detail').textContent=detail; $('state-pill').textContent=pill;
   $('state-eyebrow').textContent=banner.classList.contains('near') ? 'ЦІНА БІЛЯ ЛІМІТКИ · ПРИГОТУЙТЕСЯ ДО ПЕРЕВІРКИ ВХОДУ' : 'ПОТОЧНИЙ СТАН СИСТЕМИ';
@@ -771,17 +808,20 @@ function renderRadar(price, live) {
   const container=$('radar'); container.replaceChildren();
   radarRows(price).forEach((approved,index) => {
     const side=index===0 ? 1 : -1;
-    const row = approved ?? advisoryLevel(side, price);
+    const row = approved;
+    const reserve = reserveLevel(side, price);
     const card=element('article',null,'candidate'); card.dataset.side=side;
     card.append(element('h3',sideLabel(side),side===1?'long':'short'));
     card.dataset.priority=state.primary_bias===side?'PRIMARY':state.primary_bias?'COUNTER':'RANGE';
     if (!row) {card.append(element('p',state.primary_bias&&state.primary_bias!==side?
       'Очікуємо підтвердженої зміни тренду.':
       (side === 1 ? 'Сканер шукає підтримку нижче ціни.' : 'Сканер шукає опір вище ціни.'),
-      'reason'));container.append(card);return;}
+      'reason'));
+      if (reserve) card.append(element('p', 'Далекий резерв @ ' + format(reserve.entry), 'candidate-reserve'));
+      container.append(card);return;}
     card.dataset.reaction=reactions.get(reactionKey(row))?.stage??'WAIT';
     if (state.cockpit_schema === 5) {
-      const tag = approved ? 'Допущений план' : 'Орієнтир';
+      const tag = row.reversal_override ? 'Підтверджений розворот' : 'Допущений план';
       card.append(element('p', tag + ' · ' + row.timeframe + ' ' + zoneName(row.kind) +
         ' · ' + scoreText(row), 'candidate-status'),
         element('p',format(row.entry),'candidate-entry'),
@@ -790,7 +830,6 @@ function renderRadar(price, live) {
         element('p',planText(row),'reason'),
         element('p',conditionText(row,price),'reason'),
         copyButtons(row));
-      const reserve = advisoryLevel(side, price, row);
       if (reserve && (!state.primary_bias || state.primary_bias === side)) {
         card.append(element('p','Резерв ' + (side === 1 ? 'нижче' : 'вище') + ' · ' +
           zoneName(reserve.kind) + ' @ ' + format(reserve.entry) + ' · Стоп ' + format(reserve.stop) +
@@ -898,7 +937,7 @@ function initChart() {
     target.useMediaCoordinateSpace(({ context, mediaSize }) => {
       const scale = chart.timeScale();
       const occupiedLabels=[];
-      const focusId = nextTarget()?.id;
+      const focusId = chartPlan()?.id;
       for (const zone of visibleZones()) {
         const y1 = series.priceToCoordinate(zone.high), y2 = series.priceToCoordinate(zone.low);
         const floor = Math.floor((zone.known_ts ?? 0) / (chartFrames[frame] * 1000)) * chartFrames[frame];
@@ -1109,11 +1148,15 @@ async function pollState() {
     if (first) {
       quote = undefined; lastSampleTime = 0; history = []; currentBar = undefined;
       if (series) series.setData([]);
-      position.clear(); selectedZone=null; reactions.clear(); m5Proofs.clear(); invalidZones.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
+      position.clear(); selectedZone=null; reactions.clear(); m5Proofs.clear(); invalidZones.clear(); exhaustedPlans.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
       disconnectSocket();
     }
     const previousSnapshot = state?.snapshot_ts;
     state = next;
+    const knownZones = new Set([...poolRows().map(zoneFingerprint), ...next.orders.map(exhaustionKey)]);
+    for (const cache of [invalidZones, exhaustedPlans]) {
+      for (const fingerprint of cache) if (!knownZones.has(fingerprint)) cache.delete(fingerprint);
+    }
     if (!first) {
       for (const event of next.recent_events ?? []) {
         const tracker = position.get(event.order_id);
@@ -1165,7 +1208,7 @@ for (const key of Object.keys(chartFrames)) $(key).addEventListener('click', asy
 
 $('zones').addEventListener('click', event => {
   const button=event.target.closest('button[data-zone]');
-  if (!button || nextTarget()?.id !== button.dataset.zone) return;
+  if (!button || chartPlan()?.id !== button.dataset.zone) return;
   selectedZone=selectedZone===button.dataset.zone ? null : button.dataset.zone;
   chart?.priceScale('right').applyOptions({autoScale:true});
   render();

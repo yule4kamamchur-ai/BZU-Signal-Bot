@@ -263,6 +263,7 @@ def confluence(plan, snapshot, proof, cfg, engine):
     """Score reversal and trend evidence independently."""
     import directional_policy as direction
     import ict_methodology
+    import setup_scanner as scanner
 
     zone = plan.get('entry_zone', {})
     origin = plan.get('zone_origin', {})
@@ -280,6 +281,8 @@ def confluence(plan, snapshot, proof, cfg, engine):
     aligned = plan.get('m15_momentum_aligned')
     if aligned is None:
         aligned = direction.momentum_aligned(snapshot, plan['side'])
+    regime_side = direction.regime_side(plan.get('market_regime', {}))
+    aligned = aligned or regime_side == plan['side']
     reversal = {'base': 25, 'liquidity_reversal': 30 * int(sweep),
                 'fresh_zone': 15 * int(fresh)}
     trend = {'base': 25, 'structure_break': 25 * int(bos),
@@ -289,11 +292,13 @@ def confluence(plan, snapshot, proof, cfg, engine):
               ('ORGANIC_TREND', trend, bos and aligned and fresh)]
     route, components, trigger = max(routes, key=lambda item: (item[2], sum(item[1].values())))
     volume = volume_footprint(plan, snapshot, proof, sweeps)
-    parts = {**components, 'relative_volume_bonus': volume['bonus']}
+    parts = {**components, 'relative_volume_bonus': volume['bonus'],
+             'proximity_bonus': scanner.proximity_bonus(
+                 plan['side'], snapshot.price, plan.get('entry', snapshot.price), regime_side == plan['side'])}
     if not trigger:
         parts = {'base': 25}
-    score = sum(parts.values())
-    threshold = max(65, cfg.min_score)
+    score = min(100, sum(parts.values()))
+    threshold = max(60, cfg.min_score)
     active = plan.get('market_regime', {}).get('active_structure', {}).get('side')
     countertrend = active != plan['side'] and any(
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))
@@ -309,7 +314,7 @@ def confluence(plan, snapshot, proof, cfg, engine):
 
 
 def volume_footprint(plan, snapshot, proof, session_sweeps):
-    """Score event volumes only; several correlated events earn at most +15."""
+    """A forming impulse above 1.35 SMA adds six points."""
     import setup_scanner as scanner
     events=[]
     origin=plan.get('zone_origin',{})
@@ -327,14 +332,16 @@ def volume_footprint(plan, snapshot, proof, session_sweeps):
         events.append((proof_tf,proof['latest_structure_shift']['known_ts'],'BOS'))
     evidence=[{**scanner.event_rvol(snapshot,timeframe,known),'kind':kind}
               for timeframe,known,kind in dict.fromkeys(events)]
-    bonus = 10 if any(e['rvol'] is not None and e['rvol'] >= 1.3 for e in evidence) else 0
+    zone = plan.get('entry_zone') or {}
+    formation = scanner.formation_volume(zone, snapshot)
+    bonus = 6 if formation['confirmed'] else 0
     return {'bonus': bonus, 'penalty': 0, 'events': evidence,
             'status': 'AVAILABLE' if any(e['rvol'] is not None for e in evidence) else 'NO_EVENT_VOLUME'}
 
 
 
 
-PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','formation_volume','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
+PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
              'approach','market_regime','ict_evidence','confluence',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',

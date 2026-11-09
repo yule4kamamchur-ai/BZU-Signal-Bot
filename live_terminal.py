@@ -72,7 +72,7 @@ def build(state, snapshot, result, cfg, engine):
     atr15 = engine.atr([c for c in snapshot.candles.get('15m', [])
                        if c.confirmed and c.ts + 900_000 <= snapshot.now])
     atr15 = atr15 if numeric(atr15) and atr15 > 0 else 0
-    primary_side = 1 if mode == 'BULLISH_ACTIVE' else -1 if mode == 'BEARISH_ACTIVE' else 0
+    primary_side = engine.policy.regime_side(regime)
     minimum_spread = max(.65, 1.2 * atr15)
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
     admitted = analysis.get('admitted_plans', [])
@@ -93,6 +93,8 @@ def build(state, snapshot, result, cfg, engine):
             return None
         result = {'kind': zone['kind'], 'timeframe': zone.get('timeframe'), 'side': side,
                   'low': low, 'high': high, 'known_ts': known, 'source_low':low, 'source_high':high}
+        if zone.get('wave_proof'):
+            result.update(wave_proof=zone['wave_proof'], sweep=zone.get('sweep'))
         if numeric(zone.get('impulse_known_ts')):
             result['impulse_known_ts'] = zone['impulse_known_ts']
         sweep=zone.get('sweep') or {}
@@ -199,14 +201,17 @@ def build(state, snapshot, result, cfg, engine):
     # Whole geometries are copied or calculated; partial plans are never spliced.
     planned=[];unplanned=[]
     by_order={o['id']:o for o in orders}
+    ledger_geometry={p['id']:p for p in plans}
     context=analysis.get('full_context', {})
     for original in zones.values():
         z=dict(original)
         order=by_order.get(z.get('order_id'))
-        geometry = (dict(z) if order else admitted_geometry.get(z.get('engine_plan_id'))
-                    if z.get('engine_accepted') else None)
+        geometry = (dict(ledger_geometry[order['id']]) if order else
+                    admitted_geometry.get(z.get('engine_plan_id')) if z.get('engine_accepted') else None)
         if order and order['status'] == 'OPEN':
             geometry['stop'] = order['initial_stop']
+        if order:
+            geometry.setdefault('tp2', order.get('tp2'))
         calc = engine.scanner.calculate_zone_trade_plan(
             z, snapshot, cfg, engine, primary_side, context, geometry, regime=mode)
         if not calc:
@@ -217,12 +222,19 @@ def build(state, snapshot, result, cfg, engine):
         z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
-        z['priority']='PRIMARY' if not primary_side or z['side']==primary_side else 'COUNTER_TREND'
+        z['reversal_override'] = bool(calc['reversal_override'] and geometry and
+                                      (geometry.get('zone_origin') or {}).get('wave_confirmed'))
+        z['priority'] = ('REVERSAL' if z['reversal_override'] else
+                         'PRIMARY' if not primary_side or z['side'] == primary_side else 'COUNTER_TREND')
         z['execution_admitted']=bool(original.get('engine_accepted'))
         gate = calc['risk_gate']
+        if original.get('reason') == 'EXHAUSTED_MOVE':
+            z['risk_gate'] = gate = 'EXHAUSTED_MOVE'
         if z.get('setup') == 'SESSION_MEAN_RECLAIM':
             gate = 'SESSION_MEAN_LIMIT_DISABLED'
-        if z['priority'] == 'COUNTER_TREND':
+        if gate == 'EXHAUSTED_MOVE':
+            pass
+        elif z['priority'] == 'COUNTER_TREND':
             gate = 'BLOCKED_BY_TREND'
         elif not healthy:
             gate = 'DATA_HOLD'
@@ -268,7 +280,9 @@ def build(state, snapshot, result, cfg, engine):
                 not zone['in_zone'], *priority(zone))
 
     all_zones = sorted(planned, key=zone_order)
-    candidate_rows = sorted((z for z in all_zones if z['actionable']), key=priority)
+    candidate_rows = sorted((z for z in all_zones if z['actionable'] and
+                             engine.scanner.entry_window(z['side'], snapshot.price, z['entry'], atr15, cfg) is None),
+                            key=priority)
     radar = {label: next((z for z in candidate_rows if z['side'] == side), None)
              for label, side in (('LONG', 1), ('SHORT', -1))}
     left, right = radar['LONG'], radar['SHORT']
@@ -276,28 +290,24 @@ def build(state, snapshot, result, cfg, engine):
         keep = min((left, right), key=priority)
         radar['SHORT' if keep is left else 'LONG'] = None
     primary = next((z for z in radar.values() if z and z['side'] == primary_side), None)
-    if not primary and not primary_side:
+    if not primary:
         primary = min((z for z in radar.values() if z), key=priority, default=None)
 
     # Advisory tiers are deliberately separate from the executable radar.
     watch_levels, reserves = {}, {}
     for label, side in (('LONG', 1), ('SHORT', -1)):
         intact = [z for z in all_zones if z['side'] == side and not z.get('order_id')
-                  and z['risk_gate'] != 'STOP_ALREADY_BREACHED'
+                  and z['risk_gate'] not in ('STOP_ALREADY_BREACHED', 'EXHAUSTED_MOVE')
                   and side * (snapshot.price - (z['low'] if side == 1 else z['high'])) >= 0]
-        watch = radar[label] or min(intact, key=lambda z: (not z['in_zone'], *priority(z)), default=None)
+        nearby = [z for z in intact if engine.scanner.entry_window(
+            side, snapshot.price, z['entry'], atr15, cfg) is None]
+        watch = radar[label] or min(nearby, key=priority, default=None)
         watch_levels[label] = watch['id'] if watch else None
-        deeper = [] if not watch else [z for z in intact if z['id'] != watch['id'] and
-                   (z['high'] <= watch['low'] if side == 1 else z['low'] >= watch['high'])]
-        reserve = min(deeper, key=lambda z: (not 1.0 * atr15 <= abs(z['distance']) <= 2.5 * atr15,
-                                            *priority(z)), default=None)
+        distant = [z for z in intact if side * (snapshot.price - z['entry']) >
+                   engine.scanner.max_zone_distance(atr15, cfg) + 1e-8]
+        reserve = min(distant, key=priority, default=None)
         reserves[label] = reserve['id'] if reserve else None
-    if primary_side:
-        preferred, opposite = ('LONG', 'SHORT') if primary_side == 1 else ('SHORT', 'LONG')
-        watch_id = watch_levels[preferred] or watch_levels[opposite]
-    else:
-        watch_id = primary['id'] if primary else next((z['id'] for z in all_zones
-                                                       if z['id'] in watch_levels.values()), None)
+    watch_id = primary['id'] if primary else None
     reference_rows = [z for z in all_zones if z.get('gate_reason')]
 
     records = {row['id']:row for row in [*state.get('orders', []), *state.get('trades', [])]}
@@ -317,7 +327,8 @@ def build(state, snapshot, result, cfg, engine):
     def context_distance(zone):
         return max(zone['low'] - snapshot.price, snapshot.price - zone['high'], 0)
     context_zones = sorted((z for z in all_zones if zone_key(z) in context_keys and
-                            context_distance(z) <= engine.scanner.max_zone_distance(atr15, cfg)),
+                            z['risk_gate'] not in ('EXHAUSTED_MOVE', 'STOP_ALREADY_BREACHED') and
+                            engine.scanner.entry_window(z['side'], snapshot.price, z['entry'], atr15, cfg) is None),
                            key=lambda z: (context_distance(z), z['timeframe'] != '1H'))
     context_bands = []
     for side in (1, -1):
@@ -347,7 +358,8 @@ def build(state, snapshot, result, cfg, engine):
             'primary_bias':primary_side,'atr15':atr15,'min_structural_spread':minimum_spread,
             'entry_mode':entry_mode,'reference_levels':reference_rows[:48],
             'candidate_rejections':rejected[:100],
-            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':1.4,'wide_zone_usd':.45,'wide_zone_atr':.8},
+            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':1.4,'wide_zone_usd':.45,'wide_zone_atr':.8,
+                               'min_distance':.10,'max_distance':engine.scanner.max_zone_distance(atr15, cfg)},
             'reaction_config':{'retracement':max(.06,3*cfg.tick),'max_sample_gap_ms':15000,
                                'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25,
                                'min_net_rr':cfg.min_net_rr, 'taker_fee':engine.fee_rate(cfg,'taker')},

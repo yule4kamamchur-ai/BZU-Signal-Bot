@@ -123,7 +123,7 @@ class InstitutionalPlans(unittest.TestCase):
         self.assertFalse(engine.pending_plans(book))
         self.assertEqual(out['analysis']['reaction_plans'][0]['id'],plan['id'])
 
-    def test_reference_radar_has_numbers_reserve_and_opposite_without_arming(self):
+    def test_reference_zones_remain_scored_without_becoming_primary(self):
         snap, cfg, _ = fixture()
         snap.price = 99.51
         zones = [SimpleNamespace(kind=kind, side=side, timeframe='15m', low=low, high=high,
@@ -136,8 +136,8 @@ class InstitutionalPlans(unittest.TestCase):
             out = live_terminal.build(engine.new_state(cfg),snap,{'analysis':analysis},cfg,engine)
         self.assertFalse(out['candidates'])
         self.assertFalse(out['orders'])
-        self.assertEqual(out['watch_primary_id'], out['watch_levels']['LONG'])
-        self.assertTrue(out['watch_levels']['SHORT'] and out['reserve_levels']['LONG'])
+        self.assertIsNone(out['watch_primary_id'])
+        self.assertIsNone(out['radar']['SHORT'])
         self.assertTrue(all(isinstance(z['score'], int) and z['entry'] and z['stop'] for z in out['zones']))
         self.assertTrue(all(isinstance(z['score'],int) for z in out['context_bands']))
 
