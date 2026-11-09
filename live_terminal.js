@@ -155,6 +155,10 @@ function statusText(row, price) {
     LEGACY_MICRO_RISK: 'Скасовуємо стару лімітку перед новим розрахунком',
     OIL_VOLATILITY_UNAVAILABLE: 'Бракує закритих свічок для розрахунку ATR',
     ORGANIC_TARGET_RANGE: 'Цілі поза діапазоном свінгового плану',
+    TREND_M5_SPIKE: 'Пауза після аномальної свічки M5 проти напряму',
+    SCORE_BELOW_THRESHOLD: 'Бал нижче порога для цього типу входу',
+    COUNTER_CHOCH_REQUIRED: 'Потрібен підтверджений CHoCH на M15 або 1H',
+    COUNTER_M5_REQUIRED: 'Після CHoCH потрібне підтвердження M5',
     ENTRY_TOO_CLOSE: 'Ціна вже надто близько до рівня для нового ліміту',
     STRUCTURAL_TP1_REQUIRED: 'Бракує структурної цілі для часткової фіксації',
     STRUCTURAL_TP2_REQUIRED: 'Бракує наступної структурної цілі',
@@ -192,7 +196,8 @@ function validCandidate(row) {
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
-    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST'];
+    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
+    'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
@@ -200,18 +205,19 @@ function validCandidate(row) {
   const outside=row.entry<row.low || row.entry>row.high;
   return row.low < row.high && risk > 0 &&
     targetRatiosValid(row, row.side * (row.tp1 - row.entry) / risk, row.side * (row.tp2 - row.entry) / risk) &&
-    row.side * (row.tp2 - row.tp1) > 0 && row.score >= 60 && row.score <= 100 &&
+    row.side * (row.tp2 - row.tp1) > 0 && row.score >= (row.min_score ?? 60) && row.score <= 100 &&
     number(row.known_ts) && row.known_ts <= state.snapshot_ts &&
     (!outside || (row.side * (row.entry - proximal) >= 0 &&
       row.side * (row.entry - proximal) <= .03000001 + (state.tick || .01)));
 }
-function maximumDistance() {
+function maximumDistance(row) {
+  if (number(row?.entry_max_distance) && row.entry_max_distance > 0) return row.entry_max_distance;
   return state.candidate_rules?.max_distance ?? Math.min(.65, 1.2 * (state.atr15 ?? .55));
 }
 function inEntryWindow(row, price) {
   const distance = row.side * (price - row.entry);
-  return distance >= (state.candidate_rules?.min_distance ?? .10) - 1e-8 &&
-    distance <= maximumDistance() + 1e-8;
+  const minimum = row.trend_rel === 'WITH_TREND' ? state.tick : state.candidate_rules?.min_distance ?? .10;
+  return distance >= minimum - 1e-8 && distance <= maximumDistance(row) + 1e-8;
 }
 function exhaustionKey(row) {
   return row.status === 'PENDING' || row.status === 'CANCELLING' ? 'order:' + (row.order_id ?? row.id) :
@@ -233,7 +239,7 @@ function actionablePlan(row, price, tracking = false) {
   const stage = livePlanState(row, price);
   return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
     (inEntryWindow(row, price) || stage === 'READY' ||
-      (tracking && Math.abs(price - row.entry) <= maximumDistance() + 1e-8));
+      (tracking && Math.abs(price - row.entry) <= maximumDistance(row) + 1e-8));
 }
 function poolRows() { return state.plan_pool??state.candidates??[]; }
 function zoneFingerprint(row) {
@@ -285,7 +291,7 @@ function reactionRows() {
     poolRows().filter(r => r.side === side && r.reaction_eligible && actionablePlan(r, price, true))
       .sort((a,b) => Math.abs(a.entry - price) - Math.abs(b.entry - price))[0]).filter(Boolean);
   for (const order of state.orders) {
-    if (order.status!=='PENDING' || order.expires_ts<=Date.now()) continue;
+    if (order.status!=='PENDING' || order.trend_rel === 'WITH_TREND' || order.expires_ts<=Date.now()) continue;
     const row={...order,...order.zone,id:'order:'+order.id,score_source:'CONTEXT',reaction_eligible:true,valid_until:order.expires_ts};
     if (validCandidate(row) && pendingIsCurrent(order, price)) {
       rows=rows.filter(r=>!(r.side===row.side && r.entry===row.entry && r.stop===row.stop && r.low===row.low && r.high===row.high));
@@ -522,6 +528,8 @@ function zoneName(kind) {
            DISPLACEMENT_CATCHER_15M:'Відкат після імпульсу',
            SWEEP_REVERSAL:'Зняття ліквідності й розворот',
            M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
+           BREAKER_BLOCK:'Дзеркальний рівень', FVG_PULLBACK:'Відкат у FVG',
+           FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            FLAG_RETEST:'Ретест пробою прапора', BEARISH_BREAKER:'Дзеркальний опір',
            BULLISH_BREAKER:'Дзеркальна підтримка', MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';
@@ -535,7 +543,7 @@ function watchable(row, price) {
 function reserveLevel(side, price, leader) {
   if (state.cockpit_schema !== 5 || (state.primary_bias && side !== state.primary_bias)) return null;
   return poolRows().filter(row => row.side === side && watchable(row, price) &&
-    side * (price - row.entry) > maximumDistance() + 1e-8 &&
+    side * (price - row.entry) > maximumDistance(row) + 1e-8 &&
     (!state.organic_risk_profile || !leader || Math.abs(row.entry - leader.entry) >=
       Math.max(1, .8 * Math.max(row.risk, leader.risk)) - 1e-8))
     .sort((a,b) => Math.abs(a.entry - price) - Math.abs(b.entry - price) || b.score - a.score)[0] ?? null;
@@ -584,7 +592,7 @@ function conditionText(row, price) {
 
 function pendingIsCurrent(order, price) {
   return number(order.entry) && !targetExhausted(order, price) &&
-    Math.abs(price - order.entry) <= maximumDistance() + 1e-8;
+    Math.abs(price - order.entry) <= maximumDistance(order) + 1e-8;
 }
 function chartOrders() {
   const price = displayedPrice();
@@ -862,7 +870,8 @@ function renderRadar(price, live) {
       container.append(card);return;}
     card.dataset.reaction=reactions.get(reactionKey(row))?.stage??'WAIT';
     if (state.cockpit_schema === 5) {
-      const tag = row.reversal_override ? 'Підтверджений розворот' : 'Допущений план';
+      const tag = row.limit_ready ? 'Рівень допущено до лімітки' :
+      row.reversal_override ? 'Підтверджений розворот' : 'Допущений план';
       card.append(element('p', tag + ' · ' + row.timeframe + ' ' + zoneName(row.kind) +
         ' · ' + scoreText(row), 'candidate-status'),
         element('p',format(row.entry),'candidate-entry'),
@@ -894,7 +903,8 @@ function render() {
   $('price').textContent=format(price);
   $('quote-status').textContent=live ? 'Live · ' + stamp(quote.ts) : (feedError ? 'OKX недоступний' : 'Котирування застаріло') + ' · зліпок';
   $('stamp').textContent=stamp(state.snapshot_ts); $('instrument').textContent=state.instrument;
-  $('regime').textContent=({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
+  $('regime').textContent=({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
+    BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
   $('state-status').textContent=usable ? 'Журнал актуальний' : state.status==='DATA_HOLD' ? 'Дані на перевірці' : 'Потрібен новий зліпок';
   $('capacity').textContent=(state.occupied_slots ?? state.orders.length) + '/' + (state.max_new_pending ?? 2) + ' місць';
   $('daily').textContent=state.daily ? state.daily.entries + ' уг. · ' + signed(state.daily.net_r) + 'R' : '—';

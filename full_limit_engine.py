@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.32.0-organic-oil"
-REPORT_RELEASE = 'v12.32.0'
+VERSION = "full-ict-v12.33.0-trend-pullback"
+REPORT_RELEASE = 'v12.33.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -498,7 +498,8 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
                         a.evidence[name]=previous['evidence'][name]
         a.evidence['zone_identity']=zone
         key=anchor_key(a,cfg)
-        a.expires_ts = min(a.expires_ts, a.created_ts+cfg.setup_age_minutes*scanner.MINUTES[a.evidence.get("setup_timeframe","15m")]//15*60_000)
+        if a.evidence.get('source_strategy') not in scanner.wave.TREND_ZONES:
+            a.expires_ts = min(a.expires_ts, a.created_ts+cfg.setup_age_minutes*scanner.MINUTES[a.evidence.get("setup_timeframe","15m")]//15*60_000)
         memory[key] = core.anchor_to_dict(a)
         by_zone[zone]=memory[key]
     # Retain tombstones beyond setup lifetime to prevent a detector refreshing age.
@@ -1791,20 +1792,26 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
         request_cancel(state, pending, 'EXHAUSTED_MOVE', snapshot.now)
         return
     if a15 > 0 and scanner.entry_window(pending['side'], snapshot.price, pending['entry'], a15, cfg,
-                                        minimum=False) == 'DISTANT_ZONE':
+                                        minimum=False, trend=pending.get('trend_rel') == 'WITH_TREND') == 'DISTANT_ZONE':
         request_cancel(state, pending, 'LIMIT_UNREACHABLE', snapshot.now)
         return
     if bzu_policy.is_new(pending):
         if bzu_policy.is_precision(pending):
             session=bzu_policy.session_gate(snapshot.now)
             approach=entry_adverse_selection.approach(snapshot,a15,
-                        pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'))
+                        pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'), trend=pending.get('trend_rel') == 'WITH_TREND')
             cooldown=arbitration.loss_cooldown(pending,state['trades'],snapshot.now)
-            regime=policy.market_regime(snapshot,cfg.tick,sys.modules[__name__])
+            regime=policy.execution_regime(snapshot,cfg,sys.modules[__name__])
             local_ok,local_reason=policy.regime_admission(pending['side'],pending['entry'],regime,
                                    snapshot,cfg.tick,sys.modules[__name__],pending.get('entry_zone'), require_macro=oil_risk.enabled(cfg))
+            trend = pending.get('trend_rel') == 'WITH_TREND'
+            zone_error = scanner.standalone_zone_error({**zone, 'side': pending['side']},
+                snapshot, cfg, sys.modules[__name__], a15, regime['state']) if trend else None
             reason=(session['reason'] if not session['allowed'] else
+                    'TREND_M5_SPIKE' if approach.get('blocked') and trend else
                     'IMPULSE_CONFIRMATION_REQUIRED' if approach.get('blocked') else
+                    'HTF_TREND_LOST' if trend and regime.get('trend_anchor_side') != pending['side'] else
+                    zone_error if zone_error else
                     cooldown['reason'] if not cooldown['allowed'] else
                     local_reason if not local_ok else None)
             if reason:
@@ -1818,7 +1825,7 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
             flip_frames = ('15m',)
         flip=policy.structural_flip(snapshot,-pending['side'],pending['placed_ts'],cfg.tick,
                                     sys.modules[__name__],timeframes=flip_frames)
-        if flip['confirmed']:
+        if flip['confirmed'] and pending.get('trend_rel') != 'WITH_TREND':
             request_cancel(state,pending,'STRUCTURE_FLIPPED',snapshot.now)
         elif pending.get('policy') not in (bzu_policy.POLICY, bzu_policy.MOMENTUM_POLICY) and snapshot.now>=session_cutoff(snapshot.now,cfg):
             request_cancel(state,pending,'SESSION_ENDED',snapshot.now)
@@ -2009,7 +2016,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     valid=cooled
     valid.sort(key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
     analysis['entry_mode'] = entry_mode
-    market = policy.market_regime(s, cfg.tick, sys.modules[__name__])
+    market = policy.execution_regime(s, cfg, sys.modules[__name__])
     regime = market.get('state')
     dominant = policy.regime_side(market)
     confirmed = []
@@ -2021,15 +2028,19 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             continue
         if single_limit and not oil_risk.is_organic(candidate):
             continue
+        relation = candidate.get('trend_rel')
+        if single_limit and dominant == -candidate['side'] and (
+                relation != 'COUNTER_TREND' or not candidate.get('counter_confirmation')):
+            continue
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
         if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
-                                        min_score=60, min_rr=1.40):
+                                        min_score=scanner.min_plan_score(relation), min_rr=1.40):
             continue
         assessment = scanner.calculate_zone_trade_plan(
             zone, s, cfg, sys.modules[__name__], dominant, analysis.get('full_context', {}),
             geometry=candidate, regime=regime)
-        if not assessment or assessment['score'] < 60 or assessment['tactic'] == 'OBSERVE':
+        if not assessment or assessment['score'] < scanner.min_plan_score(relation) or assessment['tactic'] == 'OBSERVE':
             continue
         candidate['zone_quality'] = assessment
         confirmed.append(candidate)
@@ -2477,6 +2488,10 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 REASON_UA = {
     'ROUND_LEVEL_TARGET_COLLAPSED':'після корекції круглих рівнів TP1/TP2 не мають коректного порядку',
     'ROUND_LEVEL_RR_TOO_LOW':'після корекції перед круглим рівнем потенціал TP/SL недостатній',
+    'TREND_M5_SPIKE':'аномальна свічка M5 проти трендового входу',
+    'HTF_TREND_LOST':'старший тренд більше не підтверджений',
+    'COUNTER_CHOCH_REQUIRED':'контртрендовий вхід потребує CHoCH M15/1H',
+    'COUNTER_M5_REQUIRED':'контртрендовий вхід потребує підтвердження M5 після CHoCH',
     'IMPULSE_CONFIRMATION_REQUIRED':'після імпульсу чекаємо закриту свічку гальмування або відкупу',
     'ZONE_ORIGIN_BOS_REQUIRED':'імпульс із цієї зони не підтвердив злам структури',
     'ZONE_ORIGIN_HISTORY_MISSING':'бракує історії для перевірки походження зони',
@@ -3275,10 +3290,10 @@ def main(core) -> int:
                 if args.all_archived_tests:
                     return 0 if runner.run(suite).wasSuccessful() else 1
                 # Older exact-price fixtures verify the legacy geometry and
-                # ledger contracts. The Brent suite exercises the live v12.32 policy.
+                # ledger contracts. The Brent suites exercise both swing risk and trend entry.
                 with patch.object(oil_risk, 'enabled', return_value=False):
                     compatibility = runner.run(suite)
-                organic = runner.run(unittest.defaultTestLoader.loadTestsFromName('test_v12_32_organic_oil'))
+                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback')))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:

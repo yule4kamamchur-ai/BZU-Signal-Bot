@@ -281,6 +281,7 @@ def confluence(plan, snapshot, proof, cfg, engine):
     aligned = plan.get('m15_momentum_aligned')
     if aligned is None:
         aligned = direction.momentum_aligned(snapshot, plan['side'])
+    relation = plan.get('trend_rel')
     regime_side = direction.regime_side(plan.get('market_regime', {}))
     aligned = aligned or regime_side == plan['side']
     reversal = {'base': 25, 'liquidity_reversal': 30 * int(sweep),
@@ -295,10 +296,14 @@ def confluence(plan, snapshot, proof, cfg, engine):
     parts = {**components, 'relative_volume_bonus': volume['bonus'],
              'proximity_bonus': scanner.proximity_bonus(
                  plan['side'], snapshot.price, plan.get('entry', snapshot.price), regime_side == plan['side'])}
+    if relation == 'WITH_TREND':
+        parts['trend_pullback'] = 12 * int((plan.get('trend_phase') or '').endswith('PULLBACK_OPPORTUNITY'))
+    if relation == 'COUNTER_TREND':
+        parts['confirmed_choch_m5'] = 12 * int(bool(plan.get('counter_confirmation')))
     if not trigger:
         parts = {'base': 25}
     score = min(100, sum(parts.values()))
-    threshold = max(60, cfg.min_score)
+    threshold = scanner.min_plan_score(relation) if relation else max(60, cfg.min_score)
     active = plan.get('market_regime', {}).get('active_structure', {}).get('side')
     countertrend = active != plan['side'] and any(
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))
@@ -342,7 +347,7 @@ def volume_footprint(plan, snapshot, proof, session_sweeps):
 
 
 PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','organic_risk','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
-             'approach','market_regime','ict_evidence','confluence',
+             'approach','market_regime','ict_evidence','confluence','trend_rel','trend_phase','counter_confirmation','entry_max_distance',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',

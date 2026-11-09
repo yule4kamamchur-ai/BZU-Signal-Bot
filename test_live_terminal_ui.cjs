@@ -268,5 +268,16 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.ok(run('m5QuotePlan(state.plan_pool[0],99.7)'));
  assert.equal(run('m5QuotePlan(state.plan_pool[0],99.76)'),null);
  oil.organic_risk=null;run('render()');assert.equal(priceLines.length,0);
+ // A scored trend pre-limit stays visible beyond the old distance and skips the M5 watch.
+ reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.22, tp2:102.43, kind:'BREAKER_BLOCK',
+   trend_rel:'WITH_TREND', score:52, min_score:52, entry_max_distance:1.994, limit_ready:true,
+   organic_risk:{model:'ORGANIC_OIL_V32',atr_1h:.8,adr_d1:3.1,adr_days:14}});
+ run('state.cockpit_schema=5;state.plan_pool=state.candidates;state.candidate_rules={max_distance:.65};');
+ feed(100.9);
+ assert.match(text('radar'),/Рівень допущено до лімітки/);
+ run('state.orders=[{...state.plan_pool[0],number:201,status:"PENDING",type:"LIMIT",expires_ts:Date.now()+3600000}];state.plan_pool=[];render();');
+ assert.match(text('orders'),/201.*99.70/);
+ assert.equal(run('reactionRows().length'),0);
+ assert.equal(run('chartOrders().length'),1);
  console.log('PASS: offline UI lifecycle, actionable radar, chart cleanup and reaction scenarios.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

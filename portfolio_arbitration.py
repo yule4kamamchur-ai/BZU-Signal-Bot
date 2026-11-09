@@ -89,6 +89,9 @@ def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=
     if not current:
         audit['decision']='EMPTY_BOOK'
         return audit
+    if len(current) == 1 and current[0].get('trend_rel') == 'WITH_TREND':
+        audit.update(decision='KEEP_TREND_PRELIMIT', capacity=1)
+        return audit
     if len(current)>2:
         audit['decision']='LEGACY_EXCESS_QUEUED'
         return audit

@@ -149,12 +149,12 @@ def technical_geometry(low, high, swing, side, a15, cfg, engine, deep=False, fro
     return first, stop, risk, legs
 
 
-def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, zone=None):
+def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active, zone=None, *, trend=False):
     """Price structural targets on the final entry and execution fee contract."""
     risk = side * (entry - stop)
     organic = oil_risk.enabled(cfg)
     targets = engine.full_targets({**context, 'organic_oil_targets': organic}, snapshot, anchor.side, entry, cfg)
-    geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine) if organic else
+    geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine, trend=trend) if organic else
                 scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
     known = (zone or {}).get('known_ts', snapshot.now)
     if scanner.target_crossed(side, snapshot, geometry['tp1'], known):
@@ -206,7 +206,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'MICRO_ZONE_EXCLUDED'
     if not scanner.zone_direction_matches(zone, side):
         return None, 'ZONE_DIRECTION_MISMATCH'
-    regime = direction.market_regime(snapshot, cfg.tick, engine)
+    regime = direction.execution_regime(snapshot, cfg, engine)
     origin = scanner.zone_origin(zone, snapshot, side, cfg.tick, engine, cfg, regime)
     if not origin['confirmed']:
         if zone.get('wave_proof'):
@@ -225,10 +225,33 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     zone_error = scanner.standalone_zone_error({**zone, 'side': side}, snapshot, cfg, engine, a15, regime.get('state'))
     if zone_error:
         return None, zone_error
+    trend = scanner.wave.trend_zone(zone, regime)
+    relation = 'WITH_TREND' if trend else None
+    counter_confirmation = None
     if oil_risk.enabled(cfg):
-        permitted, reason = direction.regime_admission(side, (low + high) / 2, regime, snapshot, cfg.tick, engine, zone)
-        if not permitted and reason == 'MACRO_REVERSAL_REQUIRED':
-            return None, reason
+        anchor_side = (regime.get('trend_anchor_side') or direction.regime_side(regime) or
+                       direction.regime_side({'state': regime.get('trend_state')}))
+        if anchor_side == -side:
+            if not scanner.wave.reversal_override(side, zone, snapshot, cfg.tick):
+                return None, 'MACRO_REVERSAL_REQUIRED'
+            sweep = zone['sweep']
+            shift = direction.structural_flip(snapshot, side, sweep['raid_ts'], cfg.tick, engine)
+            if not shift['confirmed']:
+                return None, 'COUNTER_CHOCH_REQUIRED'
+            bars = scanner.closed_five_minutes(snapshot)
+            boundary = high if side == 1 else low
+            if len(bars) < 2:
+                return None, 'COUNTER_M5_REQUIRED'
+            previous, confirm = bars[-2:]
+            m5_known = confirm.ts + 300_000
+            previous_edge = previous.high if side == 1 else previous.low
+            if (m5_known < shift['known_ts'] or snapshot.now - m5_known >= 2 * 300_000
+                    or confirm.ts - previous.ts != 300_000 or side * (confirm.close - confirm.open) <= 0
+                    or side * (confirm.close - boundary) < cfg.tick - 1e-8
+                    or side * (confirm.close - previous_edge) < cfg.tick - 1e-8):
+                return None, 'COUNTER_M5_REQUIRED'
+            relation = 'COUNTER_TREND'
+            counter_confirmation = {'choch': shift, 'm5_known_ts': m5_known}
     active_side = regime.get('active_structure', {}).get('side')
     aligned = direction.momentum_aligned(snapshot, side)
     momentum_zone = zone.get('kind') in scanner.ORGANIC_MOMENTUM
@@ -252,8 +275,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)[2] if oil else None
     legs = [{'name':'L1', 'price':entry, 'fraction':1., 'status':'PENDING'}]
     breaker = scanner.m5_breaker({**zone, 'side': side}, snapshot, cfg.tick)
-    reaction_only = inside or bool(breaker)
-    entry_condition = 'IN_ZONE_M5_RECLAIM' if inside else 'M5_BREAKER_RETEST' if breaker else 'RETEST'
+    reaction_only = relation is None and (inside or bool(breaker))
+    entry_condition = ('IN_ZONE_M5_RECLAIM' if reaction_only and inside else
+                       'M5_BREAKER_RETEST' if reaction_only and breaker else 'RETEST')
     raw_stop=stop
     min_risk, max_risk = ((organic_risk['floor'], organic_risk['cap']) if organic_risk else
                          scanner.zone_risk_bounds(a15, cfg))
@@ -264,7 +288,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             risk = side * (entry - stop)
     if side*(entry-anchor.invalidation)<=0:
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
-    approach = adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop)
+    approach = adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop,trend=trend)
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
                 approach=approach, planning_policy=POLICY, entry_basis=entry_basis,
                 entry_condition=entry_condition, organic_risk=organic_risk)
@@ -278,7 +302,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
     if approach.get('blocked'):
         diag['status']='WATCHING'
-        return None,'IMPULSE_CONFIRMATION_REQUIRED'
+        return None, 'TREND_M5_SPIKE' if trend else 'IMPULSE_CONFIRMATION_REQUIRED'
     # Intrabar High/Low, including an unfinished current minute, can invalidate
     # a stop. Open bars never establish a positive setup confirmation or fill.
     minute = scanner.audit_rows(snapshot, after=zone['known_ts'])
@@ -297,17 +321,18 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'ANCHOR_INVALIDATED'
     distance = abs(snapshot.price-entry)
     diag['distance_atr'] = distance/a15
-    if scanner.entry_window(side, snapshot.price, entry, a15, cfg, minimum=False) == 'DISTANT_ZONE':
+    if scanner.entry_window(side, snapshot.price, entry, a15, cfg, minimum=False, trend=trend) == 'DISTANT_ZONE':
         return None, 'DISTANT_ZONE'
-    audit = zones.first_test(zone, minute, side, entry, risk, snapshot.now)
+    test_zone = {**zone, 'low': entry, 'high': entry} if trend else zone
+    audit = zones.first_test(test_zone, minute, side, entry, risk, snapshot.now)
     diag['zone_audit'] = audit
     mark('FRESH_LEVEL', not audit['mitigated'])
-    if audit['mitigated']:
+    if audit['mitigated'] or (trend and audit['touched']):
         return None, 'ZONE_MITIGATED'
     passive = scanner.passive_gate(entry, side, snapshot.bid, snapshot.ask, cfg.tick)['passive']
     confirmed_retest = bool(passive and audit['touched'] and
                             (approach.get('confirmation_known_ts') or 0) > audit['touch_ts'])
-    can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only)
+    can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only or counter_confirmation)
     if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
         return None, 'ZONE_NOT_AHEAD_OF_PRICE'
     allowed, why = direction.regime_admission(
@@ -319,8 +344,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     organic = bool(anchor.evidence.get('organic_confluence') or momentum_zone)
     trending = active_side == side or (aligned and (organic or 'FVG' in zone.get('kind', '')))
     direct = strategy_direct_entries.momentum_quote(
-        snapshot, side, entry, stop, zone, origin, cfg.tick) if trending and not organic_formation and not reaction_only else None
-    if not organic_formation and not can_wait and direct is None and not reaction_only:
+        snapshot, side, entry, stop, zone, origin, cfg.tick) if trending and not organic_formation and not reaction_only and relation is None else None
+    if not organic_formation and not can_wait and direct is None and not reaction_only and relation is None:
         catchup = scanner.catch_up(snapshot, entry, stop, side, zone['known_ts'], cfg.tick, zone)
         diag['catch_up'] = catchup
         if catchup['allowed']:
@@ -357,11 +382,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if not can_wait:
             return None, 'WAIT_RETEST'
         geometry, why = protected_targets(
-            context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, zone=zone)
+            context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, zone=zone, trend=trend)
         if geometry is None:
             mark('TARGET_RR', False)
             return None, why
-        distance_gate = scanner.entry_window(side, snapshot.price, entry, a15, cfg)
+        distance_gate = scanner.entry_window(side, snapshot.price, entry, a15, cfg, trend=trend)
         if (zone.get('wave_proof') and zone['kind'] in ('BULLISH_BREAKER', 'BEARISH_BREAKER')
                 and distance < .20 - 1e-8 and not reaction_only):
             distance_gate = distance_gate or 'ENTRY_TOO_CLOSE'
@@ -378,7 +403,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     # not veto the setup. All 24 named ICT confirmations are still validated.
     effective = snapshot.now if action == 'ACTIVE_ENTRY' else ((snapshot.now+MINUTE-1)//MINUTE)*MINUTE
     cutoff = entry_cutoff(snapshot.now)
-    expires = min(effective+cfg.ttl_minutes*60_000, cutoff)
+    horizon = anchor.expires_ts if trend else effective + cfg.ttl_minutes * 60_000
+    expires = min(horizon, cutoff)
     if expires <= effective:
         return None, 'SESSION_CLOSED'
     event = engine.anchor_key(anchor,cfg)
@@ -429,11 +455,13 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'time_exit_enabled':False,
          'placement_price':snapshot.price, 'target_cancel_armed':side*(snapshot.price-tp1)<0,
          'action_type':action, 'execution_source':action, 'entry_stage':'CORE',
-         'preposition_window':'.10..min(.65,1.2*ATR15)', 'preposition_distance':distance,
+         'preposition_window':'tick..2% of entry' if trend else '.10..min(.65,1.2*ATR15)', 'preposition_distance':distance,
          'queue_execution_policy':'PASSIVE_ARM_V2', 'execution_timeframe':'1m',
          'readiness_pct':100., 'entry_checks':copy.deepcopy(diag['entry_checks']),
          'htf_1h':regime['side_1h'], 'htf_4h':regime['side_4h'],
          'market_regime':regime, 'session_liquidity':ict.session_liquidity(snapshot),
+         'trend_rel':relation, 'trend_phase':regime.get('trend_phase'),
+         'counter_confirmation':counter_confirmation, 'entry_max_distance':.02 * entry if trend else scanner.max_zone_distance(a15, cfg),
          'score':0., 'probability':None, 'probability_status':'UNVALIDATED_SCORE_NOT_WR',
          'evidence':[anchor.reason], 'candidate':{}, 'parent_keys':[],
          'status':'PENDING', 'last_bar':-1, 'version':engine.VERSION}

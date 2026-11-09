@@ -6,6 +6,8 @@ import oil_risk
 
 M15 = 900_000
 M5 = 300_000
+TREND_ZONE_AGE = 6 * 60 * 60_000
+TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION'})
 REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH'})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
@@ -186,13 +188,124 @@ def _m5_continuations(rows, side, a15, tick, engine):
                             ob_ts=anchor.ts, leg_end=end)
 
 
+def trend_zone(zone, regime):
+    return (zone.get('kind') in TREND_ZONES and bool(zone.get('wave_proof'))
+            and regime.get('trend_anchor_side') == zone.get('side'))
+
+
+def _trend_zone(kind, side, bounds, bar, step, reference, **proof):
+    timeframe = {M5: '5m', M15: '15m', oil_risk.H1: '1H'}[step]
+    return {'kind': kind, 'side': side, 'timeframe': '15m' if step == M5 else timeframe,
+            'low': min(bounds), 'high': max(bounds), 'reference': reference,
+            'known_ts': bar.ts + step, 'wave_proof': {'timeframe': timeframe, **proof}}
+
+
+def _trend_breakers(rows, side, tick, engine):
+    pivots = engine.pivots(rows[-80:], strength=1)
+    for i in range(max(8, len(rows) - 26), len(rows)):
+        bar = rows[i]
+        atr = engine.atr(rows[:i])
+        if atr <= 0 or rows[i - 1].ts + M15 != bar.ts:
+            continue
+        # Several moderate candles can deliver the displacement together.
+        leg = rows[i - 3:i + 1]
+        if (any(a.ts + M15 != b.ts for a, b in zip(leg, leg[1:]))
+                or side * (bar.close - bar.open) <= tick
+                or (side * (bar.close - bar.open) < .55 * atr
+                    and (side * (bar.close - leg[0].open) < .8 * atr
+                         or sum(side * (c.close - c.open) > tick for c in leg) < 2))):
+            continue
+        point = ict.body_break(rows, i, pivots, side, tick, M15)
+        if point:
+            level = point['level']
+            yield _trend_zone('BREAKER_BLOCK', side, (level, level - side * max(tick, .12 * atr)),
+                              bar, M15, level, structure='PIVOT',
+                              pivot_ts=point['ts'], reference_known_ts=point['known_ts'] + M15)
+        # Two near-equal tests can form a shelf even if neither is a strict pivot.
+        for j in range(i - 2, max(i - 7, 0), -1):
+            prior = rows[j:i]
+            if prior[0].ts + len(prior) * M15 != bar.ts:
+                continue
+            tests = [c.high if side == 1 else c.low for c in prior]
+            edge = tests[-1]
+            near = [level for level in tests if abs(level - edge) <= max(2 * tick, .18 * atr)]
+            if len(near) < 2 or max(near) - min(near) < tick - 1e-8:
+                continue
+            threshold = max(near) if side == 1 else min(near)
+            if (side * (bar.close - threshold) <= tick or side * (bar.open - threshold) > tick / 2
+                    or any(side * (c.close - threshold) >= 0 for c in prior)):
+                continue
+            entry = min(near) if side == 1 else max(near)
+            yield _trend_zone('BREAKER_BLOCK', side, near, bar, M15, entry, structure='SHELF',
+                              reference_known_ts=prior[-1].ts + M15, shelf_start_ts=prior[0].ts)
+            break
+
+
+def _trend_fvgs(rows, side, step, tick, engine):
+    for i in range(max(2, len(rows) - TREND_ZONE_AGE // step), len(rows)):
+        first, middle, last = rows[i - 2:i + 1]
+        if first.ts + step != middle.ts or middle.ts + step != last.ts:
+            continue
+        low, high = (first.high, last.low) if side == 1 else (last.high, first.low)
+        atr = engine.atr(rows[:i - 1])
+        if high - low < max(tick, .12 * atr) - 1e-8 or side * (middle.close - middle.open) < max(tick, .45 * atr):
+            continue
+        if any((c.low <= low if side == 1 else c.high >= high) for c in rows[i + 1:]):
+            continue
+        yield _trend_zone('FVG_PULLBACK', side, (low, high), last, step,
+                          (low + high) / 2, impulse_ts=middle.ts)
+
+
+def _trend_ote(rows, side, tick, engine):
+    pivots = engine.pivots(rows[-48:], strength=1)
+    for i in range(max(10, len(rows) - 9), len(rows) - 1):
+        end, confirm = rows[i:i + 2]
+        if end.ts + M15 != confirm.ts:
+            continue
+        tip = end.high if side == 1 else end.low
+        if side * (tip - (confirm.high if side == 1 else confirm.low)) <= tick:
+            continue
+        origins = [p for p in pivots if p['kind'] == ('LOW' if side == 1 else 'HIGH')
+                   and end.ts - 12 * M15 <= p['ts'] and p['known_ts'] + M15 <= end.ts]
+        atr = engine.atr(rows[:i])
+        if not origins or atr <= 0:
+            continue
+        origin = origins[-1]
+        size = side * (tip - origin['level'])
+        leg = [c for c in rows if origin['ts'] <= c.ts <= end.ts]
+        if (size < max(.65, 1.5 * atr) or len(leg) < 3 or
+                side * (end.close - leg[0].close) < .8 * atr or
+                any(a.ts + M15 != b.ts for a, b in zip(leg, leg[1:])) or
+                any(side * ((c.high if side == 1 else c.low) - tip) > tick for c in rows[i + 1:])):
+            continue
+        bounds = tuple(tip - side * size * ratio for ratio in (.50, .618))
+        yield _trend_zone('FIB_OTE_ZONE', side, bounds, confirm, M15, bounds[0],
+                          leg_start_ts=origin['ts'], leg_end_ts=end.ts)
+        return
+
+
+def _trend_sweep(rows, side, step, tick, engine):
+    points = engine.pivots(rows[-32:], strength=1)
+    for bar in rows[-2:]:
+        pivot = next((p for p in reversed(points) if p['kind'] == ('LOW' if side == 1 else 'HIGH')
+                      and p['known_ts'] + step <= bar.ts), None)
+        if not pivot:
+            continue
+        level = pivot['level']
+        extreme = bar.low if side == 1 else bar.high
+        if (side * (level - extreme) >= tick - 1e-8 and side * (bar.close - level) >= tick - 1e-8
+                and side * (bar.close - bar.open) >= 0):
+            yield _trend_zone('SWEEP_CONTINUATION', side, (level, extreme), bar, step, level,
+                              pivot_ts=pivot['ts'], reference_known_ts=pivot['known_ts'] + step)
+
+
 def zones(snapshot, cfg, engine, regime):
     """Use M5 only inside an established M15/HTF direction or a witnessed raid."""
     import directional_policy as direction
     import setup_scanner as scanner
 
     cache = vars(snapshot).setdefault('_wave_zones', {})
-    key = (snapshot.now, cfg.tick, direction.regime_side(regime), oil_risk.enabled(cfg))
+    key = (snapshot.now, cfg.tick, direction.regime_side(regime), regime.get('trend_anchor_side'), oil_risk.enabled(cfg))
     if key in cache:
         return cache[key]
     m15 = direction.closed(snapshot, '15m')
@@ -206,8 +319,16 @@ def zones(snapshot, cfg, engine, regime):
     side = direction.regime_side(regime)
     if side and (regime.get('active_structure') or direction.momentum_aligned(snapshot, side)):
         results.extend(_m5_continuations(m5, side, atr, tick, engine))
+    trend = regime.get('trend_anchor_side')
+    if trend:
+        results.extend(_trend_breakers(m15, trend, tick, engine))
+        results.extend(_trend_fvgs(m15, trend, M15, tick, engine))
+        results.extend(_trend_fvgs(direction.closed(snapshot, '1H'), trend, oil_risk.H1, tick, engine))
+        results.extend(_trend_ote(m15, trend, tick, engine))
+        results.extend(_trend_sweep(m15, trend, M15, tick, engine))
+        results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     cache[key] = [z for z in results if z['high'] - z['low'] >= tick - 1e-8
-                  and 0 <= snapshot.now - z['known_ts'] < 30 * 60_000]
+                  and 0 <= snapshot.now - z['known_ts'] < (TREND_ZONE_AGE if z['kind'] in TREND_ZONES else 30 * 60_000)]
     return cache[key]
 
 

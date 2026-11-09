@@ -188,6 +188,26 @@ def market_regime(snapshot, tick, engine):
             'range_high':max((c.high for c in rows),default=snapshot.price)}
 
 
+def execution_regime(snapshot, cfg, engine):
+    """Keep the confirmed hourly direction through an intraday retracement."""
+    import oil_risk
+
+    regime = market_regime(snapshot, cfg.tick, engine)
+    if not oil_risk.enabled(cfg):
+        return regime
+    one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
+    side = one or four
+    if not side or (one and four and one != four):
+        return regime
+    m15 = closed(snapshot, '15m')
+    local = regime.get('active_structure', {}).get('side') or regime.get('local_structure', {}).get('side')
+    pullback = local == -side or (len(m15) >= 3 and side * (snapshot.price - m15[-3].close) < -cfg.tick)
+    return {**regime, 'state': 'BULLISH_ACTIVE' if side == 1 else 'BEARISH_ACTIVE',
+            'trend_anchor_side': side, 'trend_anchor_timeframe': '1H' if one else '4H',
+            'trend_phase': ('BULLISH_PULLBACK_OPPORTUNITY' if side == 1 else 'BEARISH_PULLBACK_OPPORTUNITY')
+                           if pullback else 'TREND_CONTINUATION'}
+
+
 def structural_flip(snapshot, side, since, tick, engine, timeframes=('15m', '1H')):
     """Only a newly observed CLOSED 15m/1H BOS authorizes a pending flip."""
     for tf in timeframes:
@@ -226,6 +246,8 @@ def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None, *, 
     if reversal_override(side, zone, snapshot, tick, require_macro=require_macro):
         return True, 'CONFIRMED_EXTREME_REVERSAL'
     if require_macro:
+        if regime.get('trend_anchor_side') == side:
+            return True, 'HTF_TREND_ANCHOR'
         dominant = regime_side(regime) or regime_side({'state': regime.get('trend_state')})
         if dominant == -side or (not dominant and regime.get('side_1h') == regime.get('side_4h') == -side):
             return False, 'MACRO_REVERSAL_REQUIRED'

@@ -51,6 +51,9 @@ def build(state, snapshot, result, cfg, engine):
             'score': plan.get('score'), 'grade': plan.get('rating'),
             'organic_risk': plan.get('organic_risk'), 'tp1_source': plan.get('tp1_source'),
             'tp2_source': plan.get('tp2_source'), 'cancel_reason': plan.get('cancel_reason'),
+            'trend_rel': plan.get('trend_rel'), 'trend_phase': plan.get('trend_phase'),
+            'entry_max_distance': plan.get('entry_max_distance'),
+            'min_score': engine.scanner.min_plan_score(plan.get('trend_rel')),
             'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
             'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
@@ -67,7 +70,7 @@ def build(state, snapshot, result, cfg, engine):
 
     analysis = result.get('analysis', {})
     healthy = not analysis.get('health') and result.get('action') != 'DATA_HOLD'
-    regime = engine.policy.market_regime(snapshot, cfg.tick, engine) if healthy else {}
+    regime = engine.policy.execution_regime(snapshot, cfg, engine) if healthy else {}
     mode = {'BULLISH_TREND':'BULLISH_ACTIVE', 'BEARISH_TREND':'BEARISH_ACTIVE',
             'RANGE_LIQUIDITY_ROTATION':'RANGE'}.get(regime.get('state'), regime.get('state', 'UNKNOWN'))
     zones, context_keys = {}, set()
@@ -248,18 +251,21 @@ def build(state, snapshot, result, cfg, engine):
             gate = 'ZONE_NOT_AHEAD_OF_PRICE'
         elif z['valid_until'] <= snapshot.now:
             gate = 'EXPIRED'
-        elif gate is None and (z['score'] < 60 or (z['execution_admitted'] and (z['engine_score'] or 0) < 60)):
-            gate = 'SCORE_BELOW_60'
+        elif gate is None and (z['score'] < z['min_score'] or
+                                (z['execution_admitted'] and (z['engine_score'] or 0) < z['min_score'])):
+            gate = 'SCORE_BELOW_THRESHOLD' if z.get('trend_rel') else 'SCORE_BELOW_60'
         elif calc['impulse_blocked']:
-            gate = 'IMPULSE_CONFIRMATION_REQUIRED'
+            gate = 'TREND_M5_SPIKE' if z.get('trend_rel') == 'WITH_TREND' else 'IMPULSE_CONFIRMATION_REQUIRED'
         elif not z['execution_admitted'] or calc['plan_basis'] != 'ENGINE_GEOMETRY':
             gate = gate or 'NOT_IN_FINAL_REACTION_PLANS'
         elif engine.scanner.candidate_plan_error({**z, 'score_source': 'CONTEXT'},
-                                                min_score=60, min_rr=1.40):
+                                                min_score=z['min_score'], min_rr=1.40):
             gate = gate or 'INVALID_PLAN_GEOMETRY'
         actionable = gate is None and order is None
         z.update(gate_reason=gate, status='CANDIDATE' if actionable else 'REFERENCE',
-                 actionable=actionable, display_eligible=actionable, reaction_eligible=actionable,
+                 limit_ready=bool(actionable and calc['tactic'] == 'LIMIT' and entry_mode != 'LIVE_REACTION'),
+                 actionable=actionable, display_eligible=actionable,
+                 reaction_eligible=actionable and (z.get('trend_rel') != 'WITH_TREND' or entry_mode == 'LIVE_REACTION'),
                  map_state=('IN_ZONE' if z['in_zone'] else
                             'AHEAD' if z['side'] * (snapshot.price - z['entry']) > 0 else 'AT_OR_THROUGH_ENTRY'))
         if not actionable:
@@ -287,7 +293,8 @@ def build(state, snapshot, result, cfg, engine):
 
     all_zones = sorted(planned, key=zone_order)
     candidate_rows = sorted((z for z in all_zones if z['actionable'] and
-                             engine.scanner.entry_window(z['side'], snapshot.price, z['entry'], atr15, cfg) is None),
+                             engine.scanner.entry_window(z['side'], snapshot.price, z['entry'], atr15, cfg,
+                                                         trend=z.get('trend_rel') == 'WITH_TREND') is None),
                             key=priority)
     radar = {label: next((z for z in candidate_rows if z['side'] == side), None)
              for label, side in (('LONG', 1), ('SHORT', -1))}
@@ -308,12 +315,12 @@ def build(state, snapshot, result, cfg, engine):
                   and z['risk_gate'] not in ('STOP_ALREADY_BREACHED', 'EXHAUSTED_MOVE')
                   and side * (snapshot.price - (z['low'] if side == 1 else z['high'])) >= 0]
         nearby = [z for z in intact if engine.scanner.entry_window(
-            side, snapshot.price, z['entry'], atr15, cfg) is None]
+            side, snapshot.price, z['entry'], atr15, cfg, trend=z.get('trend_rel') == 'WITH_TREND') is None]
         watch = radar[label] or min(nearby, key=priority, default=None)
         watch_levels[label] = watch['id'] if watch else None
         leader = radar[label]
         distant = [z for z in intact if side * (snapshot.price - z['entry']) >
-                   engine.scanner.max_zone_distance(atr15, cfg) + 1e-8 and
+                   z['entry_max_distance'] + 1e-8 and
                    (not profile or not leader or abs(z['entry'] - leader['entry']) >=
                     max(1., .8 * max(z['risk'], leader['risk'])) - 1e-8)]
         reserve = min(distant, key=priority, default=None)
@@ -359,6 +366,7 @@ def build(state, snapshot, result, cfg, engine):
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
+            'trend_phase':regime.get('trend_phase'),
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
             'execution':'SIGNAL_LEDGER','daily':engine.day_stats(state,snapshot.now,cfg),
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),

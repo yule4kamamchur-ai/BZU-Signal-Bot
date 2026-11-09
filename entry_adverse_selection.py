@@ -19,13 +19,25 @@ MIN_REJECTIONS=2
 RECENT_HOURS=6
 
 
-def approach(snapshot, atr15, side=0, zone=None, tick=.001, stop=None):
+def approach(snapshot, atr15, side=0, zone=None, tick=.001, stop=None, *, trend=False):
     """Brake only a fresh, dominant adverse candle closing near the planned SL.
 
     The last candle is compared with the prior ATR, excluding that candle.
     Ordinary pullbacks and two aggregated moderate candles are not shocks.
     Closed M5 can release an observed shock; open candles never confirm entry.
     """
+    if trend:
+        import setup_scanner as scanner
+
+        bars = scanner.closed_five_minutes(snapshot)
+        bar = bars[-1] if bars else None
+        blocked = bool(bar and 0 <= snapshot.now - (bar.ts + 300_000) < 300_000
+                       and bar.high - bar.low > 1.20 + 1e-8 and side * (bar.close - bar.open) < 0)
+        return {'blocked': blocked, 'fast': blocked, 'evaluated_timeframe': '5m',
+                'shock_known_ts': bar.ts + 300_000 if blocked else None,
+                'brake_model': 'TREND_M5_SPIKE_1_20',
+                'action': 'CONFIRMATION_REQUIRED' if blocked else 'PRECISION_ENTRY'}
+
     rows=sorted((c for c in snapshot.candles.get('15m',[])
                  if c.confirmed and c.ts+900_000<=snapshot.now),key=lambda c:c.ts)
     base={'fast':False,'range_atr15':0.,'blocked':False,'action':'PRECISION_ENTRY',
