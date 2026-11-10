@@ -1,11 +1,8 @@
-"""Read-only, as-of structural review of a single filled position.
-
-This is NOT a price forecast, position exit command, or training label. The
-existing TP/SL lifecycle retains authority; review reports adverse structure
-from already closed bars without retroactively adjusting risk or fills.
-"""
+"""Causal position excursions and protective decisions from observed prices."""
 from __future__ import annotations
 
+
+from dataclasses import replace
 
 import strategy_organics
 import oil_risk
@@ -71,6 +68,162 @@ def review(position, snapshot):
             'regime': regime.state, 'as_of_ts': snapshot.now,
             'entry_risk_model': oil_risk.MODEL if oil_risk.is_organic(position) else 'LEGACY',
             'initial_risk': position.get('risk')}
+
+
+ROUND_TRIP_MFE = .55
+ROUND_TRIP_BARS = 6
+STALE_MFE = .60
+STALE_BARS = 24
+REPLACEMENT_BARS = 16
+EPS = 1e-8
+
+
+def duration(position, ts):
+    entered = position.get('filled_ts') or position.get('placed_ts') or ts
+    elapsed = max(0, ts - entered)
+    return elapsed, elapsed // STEPS['15m']
+
+
+def metrics(position, ts):
+    elapsed, bars = duration(position, ts)
+    return {'max_favorable_r': position.get('max_favorable_r', position.get('mfe_r', 0.)),
+            'max_adverse_r': position.get('max_adverse_r', position.get('mae_r', 0.)),
+            'bars_in_trade': bars, 'time_in_trade_ms': elapsed}
+
+
+def current_r(position, price):
+    return position['side'] * (price - position['entry']) / position['risk']
+
+
+def track(position, ts, favorable, adverse):
+    values = metrics(position, ts)
+    favorable_r, adverse_r = current_r(position, favorable), -current_r(position, adverse)
+    new_peak = favorable_r > values['max_favorable_r'] + EPS
+    if new_peak:
+        values.update(max_favorable_r=favorable_r, max_favorable_ts=ts)
+    values['max_adverse_r'] = max(values['max_adverse_r'], adverse_r)
+    position.update(values, mfe_r=values['max_favorable_r'], mae_r=values['max_adverse_r'])
+    return new_peak
+
+
+def backfill(position, snapshot, checkpoint):
+    """Migrate excursions of an existing fill through its processed cursor."""
+    if 'max_adverse_r' in position or not position.get('filled_ts') or position.get('last_bar', -1) < 0:
+        return
+    step = position.get('last_execution_step_ms', STEPS['3m'])
+    as_of = min(snapshot.now, checkpoint, position['last_bar'] + step)
+    entered = position['filled_ts']
+    if position['risk'] <= 0 or as_of <= entered:
+        return
+    rows = [bar for bar in snapshot.candles.get('15m', []) if bar.confirmed and
+            entered <= bar.ts and bar.ts + STEPS['15m'] <= as_of]
+    if rows:
+        high, low = max(bar.high for bar in rows), min(bar.low for bar in rows)
+        favorable, adverse = (high, low) if position['side'] == 1 else (low, high)
+        track(position, as_of, favorable, adverse)
+    else:
+        position.update(metrics(position, as_of))
+
+
+def _stale_stop(position, snapshot, ts, price, cfg, engine):
+    step = STEPS['15m']
+    rows = [bar for bar in snapshot.candles.get('15m', []) if bar.confirmed and
+            ts - 8 * step <= bar.ts and bar.ts + step <= ts]
+    side, entry, risk = position['side'], position['entry'], position['risk']
+    kind = 'LOW' if side == 1 else 'HIGH'
+    for point in reversed(engine.pivots(rows, strength=1)):
+        if point['kind'] != kind:
+            continue
+        stop = engine.round_tick(round(point['level'] - side * cfg.tick, 10), cfg.tick, up=side == -1)
+        if (side * (stop - entry) >= -.35 * risk - EPS
+                and side * (stop - position['stop']) >= cfg.tick - EPS
+                and side * (price - stop) >= cfg.tick - EPS):
+            return stop
+    return None
+
+
+def guard(position, ts):
+    values = metrics(position, ts)
+    peak, bars = values['max_favorable_r'], values['bars_in_trade']
+    if position.get('tp1_hit'):
+        return {**values, 'mode': 'POST_TP1', 'entry_price': position['entry']}
+    if position.get('adverse_choch_ts'):
+        mode = 'ADVERSE_CHOCH'
+    elif bars >= STALE_BARS and peak < STALE_MFE:
+        mode = 'STALE_TIMEOUT'
+    elif bars >= ROUND_TRIP_BARS and peak >= ROUND_TRIP_MFE - EPS:
+        mode = 'ROUND_TRIP'
+    elif bars >= REPLACEMENT_BARS and peak < STALE_MFE:
+        mode = 'STALE_WARNING'
+    elif peak >= ROUND_TRIP_MFE - EPS:
+        mode = 'ROUND_TRIP_TIMER'
+    else:
+        mode = 'OBSERVING'
+    entered = position.get('filled_ts') or position.get('placed_ts') or ts
+    return {**values, 'mode': mode, 'entry_price': position['entry'],
+            'round_trip_at': entered + ROUND_TRIP_BARS * STEPS['15m'],
+            'stale_at': entered + STALE_BARS * STEPS['15m'],
+            'stale_stop': position.get('stale_stop'),
+            'retest_radius': .10 * position['risk']}
+
+
+def protect(state, position, snapshot, ts, price, cfg, engine, *, new_peak=False):
+    """Evaluate after hard SL and TP. Exits use an observed price and normal costs."""
+    if position.get('tp1_hit') or position['risk'] <= 0:
+        return
+    info = guard(position, ts)
+    side, entry = position['side'], position['entry']
+    rr = current_r(position, price)
+    reason = None
+    if (position.get('adverse_choch_ts', ts) < ts and -.10 - EPS <= rr <= EPS):
+        reason = 'CLOSED_ADVERSE_CHOCH'
+    elif info['bars_in_trade'] >= STALE_BARS and info['max_favorable_r'] < STALE_MFE and abs(price-entry) <= cfg.tick/2 + EPS:
+        reason = 'CLOSED_STALE_TIMEOUT'
+    elif (info['bars_in_trade'] >= ROUND_TRIP_BARS and info['max_favorable_r'] >= ROUND_TRIP_MFE - EPS
+          and abs(rr) <= .10 + EPS and not new_peak and position.get('max_favorable_ts', 0) < ts):
+        reason = 'CLOSED_ROUND_TRIP_BE'
+    if reason:
+        actual = engine.execution_config(position, cfg)
+        engine.close_trade(state, position, price * (1 - side * actual.slippage_bps / 10_000), ts, reason, cfg)
+        return
+    if snapshot is None:
+        return
+    bucket = ts // STEPS['15m']
+    if position.get('protection_structure_bucket') != bucket:
+        import directional_policy as direction
+
+        position['protection_structure_bucket'] = bucket
+        proof = direction.structural_flip(replace(snapshot, now=ts), -side,
+                    position.get('filled_ts', ts), cfg.tick, engine, timeframes=('15m',))
+        if proof['confirmed'] and proof['known_ts'] > position.get('adverse_choch_ts', 0):
+            position.update(adverse_choch_ts=proof['known_ts'], adverse_choch_level=proof['level'])
+    if info['bars_in_trade'] >= STALE_BARS and info['max_favorable_r'] < STALE_MFE and abs(rr) <= .25 + EPS:
+        stop = _stale_stop(position, snapshot, ts, price, cfg, engine)
+        if stop is not None:
+            position.update(stop=stop, stale_stop=stop, stale_stop_ts=ts)
+            engine.emit(state, 'PAPER_STOP_AMENDED', ts, order_id=position['id'], stop=stop, reason='STALE_SWING_STOP')
+
+
+def observe_quote(state, snapshot, cfg, engine):
+    """Observe executable bid/ask after all intervening bars have reconciled."""
+    if not snapshot.trusted or not 0 <= snapshot.now - snapshot.ticker_ts <= 120_000:
+        return
+    if not 0 < snapshot.bid <= snapshot.ask:
+        return
+    for number, view in engine.slot_views(state):
+        p = view.get('active')
+        if not p or p['risk'] <= 0:
+            continue
+        price = snapshot.bid if p['side'] == 1 else snapshot.ask
+        closed_through = p.get('last_bar', -1) + p.get('last_execution_step_ms', 0)
+        if snapshot.ticker_ts < max(closed_through, p.get('filled_ts', 0)):
+            continue
+        peak = track(p, snapshot.ticker_ts, price, price)
+        if p['side'] * (price - p['stop']) <= 0:
+            # The resting stop has priority. Let the normal lifecycle reconcile it.
+            continue
+        protect(view, p, snapshot, snapshot.ticker_ts, price, cfg, engine, new_peak=peak)
+        engine.store_slot(state, number, view)
 
 
 def confirmed_m5_structure(snapshot, after, as_of, side, stop, tick):

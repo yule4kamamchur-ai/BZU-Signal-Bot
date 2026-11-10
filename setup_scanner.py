@@ -177,7 +177,7 @@ def trend_market_trigger(snapshot, zone, side, quote, risk, tick, engine):
     """Classify a current executable quote using only already observed evidence."""
     low, high, known = (zone[k] for k in ('low', 'high', 'known_ts'))
     as_of = snapshot.ticker_ts or snapshot.now
-    if not snapshot.trusted or not isfinite(quote) or quote <= 0 or not known <= as_of <= snapshot.now:
+    if zone['kind'] == 'BOS_CONTINUATION' or not snapshot.trusted or not isfinite(quote) or quote <= 0 or not known <= as_of <= snapshot.now:
         return None
     if low - MARKET_ZONE_TOLERANCE - 1e-8 <= quote <= high + MARKET_ZONE_TOLERANCE + 1e-8:
         return {'pattern': 'IN_ZONE_TOUCH', 'known_ts': as_of}
@@ -234,7 +234,7 @@ def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
     return stop, risk, safe
 
 
-def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None, oil=None):
+def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None, oil=None, allow_local=False):
     """Work inside the native zone without shrinking its structural falsifier."""
     width = high - low
     wide = width > .45 + 1e-8 or width > .80 * atr15 + 1e-8
@@ -262,7 +262,7 @@ def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, 
         if inside and (not low - 1e-8 <= entry <= high + 1e-8 or side * (price - entry) < cfg.tick - 1e-8):
             continue
         if oil:
-            stop, risk, details = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)
+            stop, risk, details = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine, allow_local=allow_local)
             safe = details['gate'] is None
         else:
             stop, risk, safe = normalized_zone_stop(entry, structural, side, atr15, cfg, engine)
@@ -273,7 +273,7 @@ def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, 
         fallback = (engine.round_tick(round(distal, 10), cfg.tick, up=side == 1), 'DISTAL_EDGE')
     entry, basis = fallback
     if oil:
-        stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)
+        stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine, allow_local=allow_local)
         return entry, stop, risk, basis, wide, inside
     floor, _ = zone_risk_bounds(atr15, cfg)
     # Show the real required protection in a reference plan even when it exceeds the cap.
@@ -763,7 +763,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         if family == ORGANIC_REVERSAL or family in wave.REVERSALS:
             name = 'SWEEP_RECLAIM' if side == 1 else 'LIQUIDITY_SWEEP_REVERSAL_SHORT'
         else:
-            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST', 'BREAKER_BLOCK') else 'PULLBACK_CONTINUATION'
+            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST', 'BREAKER_BLOCK', 'BOS_CONTINUATION') else 'PULLBACK_CONTINUATION'
         known = setup['signal_ts']
         evidence = {**setup, 'entry_route': 'STRATEGY_EVENT', 'setup_timeframe': '15m',
                     'formation_timeframe': zone['timeframe'], 'source_strategy': family,

@@ -228,7 +228,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     trend = oil_risk.enabled(cfg) and scanner.wave.trend_zone(zone, regime, origin)
     relation = 'WITH_TREND' if trend else None
     counter_confirmation = None
-    if oil_risk.enabled(cfg):
+    local_reversal = (direction.reversal_sweep_override(side, zone, snapshot, cfg.tick)
+                      and regime.get('trend_anchor_side') != -side
+                      and not regime.get('side_1h') == regime.get('side_4h') == -side)
+    if oil_risk.enabled(cfg) and not local_reversal:
         anchor_side = (regime.get('trend_anchor_side') or direction.regime_side(regime) or
                        direction.regime_side({'state': regime.get('trend_state')}))
         if anchor_side == -side:
@@ -271,14 +274,19 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     if trend:
-        entry = engine.round_tick(high if side == 1 else low, cfg.tick, up=side == -1)
+        shallow = adverse.confirmed_breakout_limit(zone)
+        breaker_edge = zone['kind'] in ('BREAKER_BLOCK', 'BULLISH_BREAKER', 'BEARISH_BREAKER')
+        raw_entry = zone['reference'] if shallow else high if breaker_edge or side == 1 else low
+        entry = (engine.round_tick(round(raw_entry + cfg.tick/2, 10), cfg.tick) if shallow else
+                 engine.round_tick(raw_entry, cfg.tick, up=side == -1 and not breaker_edge))
         stop, risk, organic_risk = oil_risk.stop_geometry(
             entry, structural, side, *oil, cfg.tick, engine, allow_local=True)
-        entry_basis, inside = 'ZONE_EDGE', low <= snapshot.price <= high
+        entry_basis, inside = ('SHALLOW_BOS_30' if shallow else 'BREAKER_UPPER_EDGE' if breaker_edge else 'ZONE_EDGE'), low <= snapshot.price <= high
     else:
         entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
-            low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil)
-        organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)[2] if oil else None
+            low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil, allow_local=local_reversal)
+        organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine,
+                                             allow_local=local_reversal)[2] if oil else None
     legs = [{'name':'L1', 'price':entry, 'fraction':1., 'status':'PENDING'}]
     breaker = scanner.m5_breaker({**zone, 'side': side}, snapshot, cfg.tick)
     reaction_only = relation is None and (inside or bool(breaker))
@@ -475,7 +483,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'tp2_alignment':geometry['tp2_alignment'], 'formation_volume':volume,
          'tp1_source':geometry['tp1_source'], 'tp2_source':geometry['tp2_source'],
          'target_projection':geometry.get('target_projection'),
-         'reversal_override':bool(origin.get('wave_confirmed') and
+         'reversal_sweep_override': local_reversal,
+         'reversal_override':local_reversal or bool(origin.get('wave_confirmed') and
                                   scanner.wave.reversal_override(side, zone, snapshot, cfg.tick, require_macro=bool(oil))),
          'breakeven_trigger_r':side*(tp1-entry)/risk,
          'target_management':EXIT, 'tp1_decision_gate':False,
@@ -510,7 +519,8 @@ def first_fill(plan, candle, engine, cfg, step):
     p.update(status='OPEN', filled_ts=candle.ts, opened_at=engine.iso(candle.ts),
         fill_time_status=f'WITHIN_{step//60_000}M_BAR', last_bar=-1,
         remaining=0., filled_fraction=0., realized_gross_r=0., realized_exit_fees_r=0.,
-        realized_legs=[], mfe_r=0., mae_r=0., strong_closes=0,
+        realized_legs=[], mfe_r=0., mae_r=0., max_favorable_r=0., max_adverse_r=0.,
+        bars_in_trade=0, time_in_trade_ms=0, strong_closes=0,
         entry_version=p.get('version',engine.VERSION), entry_cost=0., risk_budget=0.)
     p['exit_deadline'] = min(candle.ts+cfg.max_hold_minutes*60_000,
                              engine.session_cutoff(candle.ts,cfg))
@@ -623,6 +633,9 @@ def arm_breakeven(state, position, snapshot, bar_end, close_price, cfg, engine):
 
 
 def close(state, p, price, ts, reason, cfg, engine, ambiguous=False):
+    from position_monitor import track
+
+    track(p, ts, price, price)
     actual = engine.execution_config(p,cfg)
     denominator = p['risk_budget']
     remaining = p['remaining']
@@ -705,6 +718,7 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
 
 def merge_plans(plans, snapshot, cfg, engine):
     """Merge confirmed, accepted same-side zones within half the real 15m ATR."""
+    import portfolio_arbitration as arbitration
     import trade_dependencies
     groups = []
     threshold = .5*engine.atr(structure.closed(snapshot,'15m'))
@@ -726,8 +740,7 @@ def merge_plans(plans, snapshot, cfg, engine):
             group.append(p)
     result=[]
     for group in groups:
-        best = copy.deepcopy(max(group, key=lambda p: (
-            p.get('reversal_override', False), p['score'], -abs(snapshot.price - p['entry']))))
+        best = copy.deepcopy(max(group, key=lambda p: arbitration.cluster_rank(p, snapshot, cfg.tick)))
         best['supporting_setups'] = sorted({p['setup'] for p in group})
         best['supporting_families'] = sorted({p['canonical_setup_family'] for p in group})
         best['parent_keys'] = sorted({p['event_key'] for p in group if p['event_key']!=best['event_key']})

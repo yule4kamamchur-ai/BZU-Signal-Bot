@@ -8,6 +8,7 @@ from __future__ import annotations
 from math import isfinite
 
 import oil_risk
+import position_monitor
 
 RETIRED = frozenset({'ZONE_MITIGATED', 'ANCHOR_INVALIDATED', 'ANCHOR_TOO_OLD_TO_PLACE',
     'ANCHOR_EXPIRED_AWAITING_NEW_EVENT', 'LEVEL_ALREADY_VISITED_AFTER_OBSERVATION',
@@ -80,6 +81,8 @@ def build(state, snapshot, result, cfg, engine):
             'expires_ts': plan.get('expires_ts'), 'filled_ts': plan.get('filled_ts'),
             'pending_stop': stop_amendment.get('price'),
             'pending_stop_effective_ts': stop_amendment.get('effective_ts'),
+            **({**position_monitor.metrics(plan, snapshot.now),
+                'position_guard': position_monitor.guard(plan, snapshot.now)} if active else {}),
             'zone': {k:(plan.get('entry_zone') or {}).get(k) for k in ('kind','low','high','timeframe','known_ts')},
         })
 

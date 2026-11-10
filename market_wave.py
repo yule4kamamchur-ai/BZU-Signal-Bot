@@ -7,7 +7,7 @@ import oil_risk
 M15 = 900_000
 M5 = 300_000
 TREND_ZONE_AGE = 6 * 60 * 60_000
-TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION'})
+TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION'})
 REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH'})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
@@ -51,7 +51,8 @@ def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
     if len(rows) < 2:
         return
     pivots = engine.pivots(rows[-80:], strength=1)
-    for i in range(max(1, len(rows) - (4 if step == M5 else 2)), len(rows)):
+    delay = 2 if step == M5 else ict.SWEEP_TO_BOS_M15_BARS
+    for i in range(max(1, len(rows) - (4 if step == M5 else delay + 2)), len(rows)):
         bar = rows[i]
         if rows[i - 1].ts + step != bar.ts:
             continue
@@ -89,7 +90,7 @@ def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
                 if swept:
                     kind = 'SWEEP_REVERSAL'
                 else:
-                    for j in range(i, min(i + 3, len(rows))):
+                    for j in range(i, min(i + delay + 1, len(rows))):
                         test = rows[j]
                         test_extreme = test.low if side == 1 else test.high
                         if test.ts != bar.ts + (j - i) * step or side * (test_extreme - extreme) < -tick:
@@ -106,7 +107,8 @@ def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
                          'known_ts': confirmation.ts + step, 'reference_known_ts': pool['known_ts'],
                          'pattern': 'WICK_RECLAIM' if swept else 'EXTREME_CHOCH',
                          'macro_timeframe': pool.get('timeframe'), 'raid_ts': bar.ts,
-                         'reclaim_close': confirmation.close}
+                         'reclaim_close': confirmation.close,
+                         'wick_ratio': ict.wick_reclaim(bar, side, level, tick)}
                 zone = _zone(kind, side, low, high, confirmation, step, level, pool=pool,
                              raid_ts=bar.ts, shift_level=shift['level'] if shift else None)
                 yield {**zone, 'sweep': sweep}
@@ -206,6 +208,8 @@ def _trend_zone(kind, side, bounds, bar, step, reference, **proof):
 
 
 def _trend_breakers(rows, side, tick, engine):
+    from strategy_direct_entries import shallow_bos_retest
+
     pivots = engine.pivots(rows[-80:], strength=1)
     for i in range(max(8, len(rows) - 26), len(rows)):
         bar = rows[i]
@@ -226,6 +230,13 @@ def _trend_breakers(rows, side, tick, engine):
             yield _trend_zone('BREAKER_BLOCK', side, (level, level - side * max(tick, .12 * atr)),
                               bar, M15, level, structure='PIVOT',
                               pivot_ts=point['ts'], reference_known_ts=point['known_ts'] + M15)
+            retest = shallow_bos_retest(bar, side, atr, tick)
+            if retest:
+                low, high, entry = retest
+                yield _trend_zone('BOS_CONTINUATION', side, (low, high), bar, M15, entry,
+                                  structure='PIVOT', break_level=level, pivot_ts=point['ts'],
+                                  reference_known_ts=point['known_ts'] + M15, retracement=.30)
+
         # Two near-equal tests can form a shelf even if neither is a strict pivot.
         for j in range(i - 2, max(i - 7, 0), -1):
             prior = rows[j:i]

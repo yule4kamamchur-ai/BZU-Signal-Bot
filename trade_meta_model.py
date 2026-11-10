@@ -37,6 +37,26 @@ def _bounded(value, lo, hi, default=0.0):
         return default
 
 
+def execution_composite(plan, price, tick, as_of):
+    """A transparent fill-proximity proxy plus witnessed swing protection."""
+    side = plan['side']
+    entry, stop = plan['entry'], plan['stop']
+    distance = abs(entry - price) / max(abs(entry - stop), tick)
+    proximity = 1. / (1. + distance)
+    macro = (plan.get('organic_risk') or {}).get('macro_anchor') or {}
+    level = macro.get('level')
+    wave = (plan.get('entry_zone') or {}).get('wave_proof') or {}
+    swing = (isinstance(level, (float, int)) and str(macro.get('kind', '')).startswith('SWING_')
+             and 0 < macro.get('known_ts', 0) <= as_of
+             and side * (entry - level) > 0 and side * (level - stop) >= tick - 1e-8)
+    if not swing and wave.get('pivot_ts') is not None:
+        level = wave.get('break_level', (plan.get('entry_zone') or {}).get('reference'))
+        swing = (isinstance(level, (float, int)) and 0 < wave.get('reference_known_ts', 0) <= as_of
+                 and side * (entry - level) > 0 and side * (level - stop) >= tick - 1e-8)
+    return {'score': proximity + float(swing), 'fill_proximity': proximity,
+            'structural_stop_protection': bool(swing), 'probability_calibrated': False}
+
+
 def vector(f):
     """No native OHLC data or custom mutable runtime keys can leak into model."""
     regime = str(f.get('regime', '')).upper()

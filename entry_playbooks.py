@@ -89,7 +89,8 @@ def _slow_scenarios(snapshot, tick):
     found=[]
     # Liquidity raid -> reclaim -> a DIFFERENT, later confirmed MSS candle.
     # Prior pivot is known prior to the sweep; break cannot be backdated.
-    for raid_idx in range(max(22,len(w)-6),len(w)-1):
+    from ict_methodology import SWEEP_TO_BOS_M15_BARS
+    for raid_idx in range(max(22,len(w)-SWEEP_TO_BOS_M15_BARS-3),len(w)-1):
         raid=w[raid_idx]
         history=w[raid_idx-20:raid_idx]
         if len(history)<20:
@@ -102,7 +103,7 @@ def _slow_scenarios(snapshot, tick):
             pivot=pivot_level(w,raid_idx,side)
             if pivot is None:
                 continue
-            for k in range(raid_idx+1,len(w)):
+            for k in range(raid_idx+1,min(len(w),raid_idx+SWEEP_TO_BOS_M15_BARS+1)):
                 shifted=(w[k].close>pivot+tick and w[k].close>w[k].open) if side==1 else (w[k].close<pivot-tick and w[k].close<w[k].open)
                 impulse=abs(w[k].close-w[k].open)>=.40*a
                 if not shifted or not impulse:

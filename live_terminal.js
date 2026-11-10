@@ -74,6 +74,8 @@ function track(order, tracker, market, now) {
     // The new ledger resolves the pending order. Discard prior provisional exits.
     tracker.end = null;
     tracker.tp1 = false;
+    tracker.quoteMfe = 0;
+    tracker.quoteMae = 0;
   }
   tracker.observedStatus = order.status;
   if (open && order.tp1_hit) tracker.tp1 = true;
@@ -86,6 +88,10 @@ function track(order, tracker, market, now) {
       (open && number(order.filled_ts) && market.ts < order.filled_ts)) return;
   tracker.lastTs = market.ts;
   const move = order.side * (market.price - order.entry);
+  if (open && market.ts > state.snapshot_ts) {
+    tracker.quoteMfe = Math.max(tracker.quoteMfe ?? 0, move / order.risk);
+    tracker.quoteMae = Math.max(tracker.quoteMae ?? 0, -move / order.risk);
+  }
   if (pending && !tracker.touch) {
     if (move <= 0 && (!number(order.expires_ts) || market.ts < order.expires_ts)) {
       tracker.touch = true;
@@ -202,7 +208,7 @@ function validCandidate(row) {
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
     'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
-    'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION'];
+    'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
@@ -546,7 +552,7 @@ function zoneName(kind) {
            DISPLACEMENT_CATCHER_15M:'Відкат після імпульсу',
            SWEEP_REVERSAL:'Зняття ліквідності й розворот',
            M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
-           BREAKER_BLOCK:'Дзеркальний рівень', FVG_PULLBACK:'Відкат у FVG',
+           BREAKER_BLOCK:'Дзеркальний рівень', BOS_CONTINUATION:'Мілкий ретест пробою', FVG_PULLBACK:'Відкат у FVG',
            FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            FLAG_RETEST:'Ретест пробою прапора', BEARISH_BREAKER:'Дзеркальний опір',
@@ -744,6 +750,29 @@ function lifecycle(order, price) {
   wrap.append(track,element('p','Етапи у рівних інтервалах · ціна рухається між рівнями','muted micro'));
   return wrap;
 }
+function positionMetrics(order, tracker, now) {
+  const info = order.position_guard;
+  if (!info || !number(order.filled_ts)) return null;
+  const mins = Math.floor(Math.max(0, now - order.filled_ts) / 60000);
+  const wrap = element('div', null, 'position-metrics');
+  const mfe = Math.max(order.max_favorable_r ?? 0, tracker.quoteMfe ?? 0);
+  const mae = Math.max(order.max_adverse_r ?? 0, tracker.quoteMae ?? 0);
+  const quoteOnly = mfe > (order.max_favorable_r ?? 0) || mae > (order.max_adverse_r ?? 0);
+  wrap.append(element('span', 'Time in Trade: ' + Math.floor(mins / 60) + 'h ' + mins % 60 + 'm'),
+    element('span', 'Peak MFE: ' + signed(mfe) + 'R · MAE: ' + signed(-mae) + 'R' +
+      (quoteOnly ? ' · оцінка за тиками' : '')));
+  const labels = {
+    ROUND_TRIP: ['ROUND-TRIP GUARD ACTIVE', 'guard'],
+    ROUND_TRIP_TIMER: ['ROUND-TRIP · З ' + stamp(info.round_trip_at), 'guard'],
+    STALE_WARNING: ['STALE TRADE WARNING', 'warning'],
+    STALE_TIMEOUT: ['STALE TRADE WARNING · RETEST', 'warning'],
+    ADVERSE_CHOCH: ['CHoCH ПРОТИ ПОЗИЦІЇ · ЧЕКАЄМО РЕТЕСТУ', 'warning'],
+  };
+  const badge = labels[info.mode];
+  if (badge) wrap.append(element('strong', badge[0], 'protection-badge ' + badge[1]));
+  return wrap;
+}
+
 function management(order, tracker, price, usable) {
   if (!usable) return 'Останній стан за журналом. Оновіть дані перед перевіркою позиції.';
   if (order.status==='CANCELLING') return 'Бот запросив скасування. Перевірте ордер і можливе виконання у брокера.';
@@ -771,6 +800,9 @@ function management(order, tracker, price, usable) {
       'TP1 зафіксовано, чекаємо структуру M5 для перенесення стопа.';
   }
   if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
+  if (order.position_guard?.mode === 'ROUND_TRIP') return 'При поверненні до входу в межах ±0.10R рушій перевірить вихід.';
+  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Після зустрічного CHoCH вихід на ретесті входу в межах −0.10R.';
+  if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп активний. Вихід на ретесті входу або захист підтвердженим свінгом.';
   return 'Зберігаємо поточний стоп до TP1 ' + format(order.tp1) + '.';
 }
 function countdown(expiry) {
@@ -947,6 +979,10 @@ function render() {
     if (order.status==='OPEN') card.append(element('p',signed(move,' $/од.') + (order.risk>0 ? ' · '+signed(move/order.risk)+'R' : ''), 'pnl '+(move>=0?'long':'short')),
       element('small',(live ? 'Live' : 'Зліпок') + ' · ціновий рух без комісій; грошовий PnL залежить від обсягу'), lifecycle(order,price));
     else card.append(proximity(order,price));
+    if (order.status === 'OPEN') {
+      const metrics = positionMetrics(order, tracker, now);
+      if (metrics) card.append(metrics);
+    }
     card.append(element('p',management(order,tracker,price,usable),'action'));
     const details=element('dl');
     const rr=order.risk>0 && number(order.tp1) ? order.side*(order.tp1-order.entry)/order.risk : null;

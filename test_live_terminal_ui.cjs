@@ -93,6 +93,13 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.match(text('state-title'),/MARKET SHORT/);
  assert.match(text('orders'),/MARKET/);
  assert.ok(priceLines.some(l=>l.title.includes('MARKET @ 100.15')));
+ run('Object.assign(state.orders[0], {filled_ts:Date.now()-3*3600000,max_favorable_r:.60,max_adverse_r:.20,position_guard:{mode:"ROUND_TRIP"}});render();');
+ assert.match(text('orders'),/Time in Trade: 3h 0m/);
+ assert.match(text('orders'),/Peak MFE: \+0.60R/);
+ assert.match(text('orders'),/ROUND-TRIP GUARD ACTIVE/);
+ run('state.orders[0].position_guard.mode="STALE_WARNING";render();');
+ assert.match(text('orders'),/STALE TRADE WARNING/);
+
 
  run('state.snapshot_ts=Date.now()-28*60000;render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
  run('state.snapshot_ts=Date.now();quote={price:100.1,ts:Date.now()-20000};render();');assert.match(text('state-title'),/В УГОДІ/);

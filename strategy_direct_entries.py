@@ -103,3 +103,13 @@ def momentum_quote(snapshot, side, entry, stop, zone, origin, tick):
         return None
     return {'price': quote, 'move_r': move / risk, 'known_ts': known,
             'pattern': 'BREAKOUT' if breakout else 'ZONE_REACTION'}
+
+def shallow_bos_retest(candle, side, atr, tick):
+    """A close near the impulse extreme leaves a 25–35% body retracement."""
+    body = side * (candle.close - candle.open)
+    width = max(tick, candle.high - candle.low)
+    tail = candle.high - candle.close if side == 1 else candle.close - candle.low
+    if atr <= 0 or body < .85 * atr or body < 10 * tick - 1e-8 or tail > .30 * width:
+        return None
+    bounds = sorted(candle.close - side * fraction * body for fraction in (.25, .35))
+    return (*bounds, candle.close - side * .30 * body)

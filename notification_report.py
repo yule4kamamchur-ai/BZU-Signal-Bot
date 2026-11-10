@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import position_monitor
 import setup_scanner as scanner
 
 
@@ -90,12 +91,39 @@ def full_exit_text(plan):
 def close_reason(trade):
     hits = [name for name in ('TP1', 'TP2', 'TP3') if trade.get(name.lower() + '_hit')]
     reason = {'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
-              'TAKE_PROFIT': 'тейк-профіт', 'ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов', 'INTRADAY_TIME_EXIT': 'за часом'}.get(
+              'TAKE_PROFIT': 'тейк-профіт',
+              'CLOSED_ROUND_TRIP_BE': 'повернення до входу після піку',
+              'CLOSED_STALE_TIMEOUT': 'тайм-стоп на ретесті входу',
+              'CLOSED_ADVERSE_CHOCH': 'ретест після зустрічного CHoCH',
+              'CLOSED_STALE_REPLACEMENT': 'заміна на підтверджений A+', 'ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов', 'INTRADAY_TIME_EXIT': 'за часом'}.get(
                   trade.get('close_reason', trade.get('reason')), 'завершення')
     detail = (', '.join(hits) + ' досягнуто; ' if hits else '') if trade.get('exit_policy') != 'SINGLE_FULL_EXIT' else ''
     if trade.get('ambiguous_ohlc'):
         reason += '; порядок SL/TP невідомий, враховано стоп'
     return detail + reason
+
+
+def position_diagnostics(position, now, cfg, engine):
+    view = position_monitor.guard(position, now)
+    mins = view['time_in_trade_ms'] // 60_000
+    time = f'{mins // 60} год {mins % 60} хв'
+    entry = f"{position['entry']:.8g}"
+    mode = view['mode']
+    if mode == 'POST_TP1':
+        detail = 'TP1 зафіксовано. Залишок ведемо за штатним стопом до TP2.'
+    elif mode == 'ADVERSE_CHOCH':
+        detail = f'CHoCH проти позиції. Вихід при ретесті {entry} у межах −0.10R…0R.'
+    elif mode == 'ROUND_TRIP':
+        detail = f'Round-trip активний. Вихід при поверненні до {entry} у межах ±0.10R.'
+    elif mode == 'STALE_TIMEOUT':
+        stop = f" Захисний SL {view['stale_stop']:.8g}." if view['stale_stop'] else ''
+        detail = f'Тайм-стоп активний. Вихід на ретесті {entry}.{stop}'
+    else:
+        trip = engine.report_deadline(view['round_trip_at'], now, cfg) if view['round_trip_at'] > now else 'поріг 90 хв пройдено'
+        stale = engine.report_deadline(view['stale_at'], now, cfg)
+        detail = (f'Стоп чинний. Round-trip при піку +0.55R і ретесті {entry} після 90 хв ({trip}). '
+                  f'Тайм-стоп від {stale} при піку нижче +0.60R.')
+    return [f"⏱ {time} • MFE {view['max_favorable_r']:+.2f}R • MAE {(-view['max_adverse_r']):.2f}R", detail]
 
 
 def candidate_reason(row, cfg, engine):
@@ -182,7 +210,7 @@ def build(state, snapshot, result, cfg, engine):
                     + remaining*snapshot.price*cost_cfg.taker_fee/p['risk']) if cost_cfg.include_commission else 0.
             slip = remaining*snapshot.price*cost_cfg.slippage_bps/10_000/p['risk']
             estimate = f'{gross-fees-slip:+.2f}R'
-        lines += [f'Результат зараз ≈ {estimate}']
+        lines += [f'Результат зараз ≈ {estimate}', *position_diagnostics(p, now, cfg, engine)]
         assessment=next((r for r in result.get('analysis',{}).get('position_reviews',[])
                          if r.get('order_id') == p.get('id')),None)
         if assessment and not frozen:
@@ -395,6 +423,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
             f'🛡️ SL: {p["stop"]:.8g} • 🎯 TP1: {p.get("tp1", p["tp"]):.8g}'
             + (f' • TP2: {p["tp2"]:.8g}' if p.get('tp2') is not None else ''),
         ]
+        lines += position_diagnostics(p, now, cfg, engine)
         amendment = engine.bzu_policy.protective_amendment(p)
         if amendment:
             lines += [f"🛡️ Новий SL: {amendment['price']:.8g} • з {engine.local_time(amendment['effective_ts'], cfg)}"]

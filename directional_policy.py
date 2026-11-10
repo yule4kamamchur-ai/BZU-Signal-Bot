@@ -240,11 +240,39 @@ def local_structure(snapshot, tick, engine):
     return {'side':0,'ema50':ema,'known_ts':rows[-1].ts+900_000}
 
 
+def reversal_sweep_override(side, zone, snapshot, tick):
+    """Use a fresh witnessed wick/reclaim to override only the local wave."""
+    zone = zone or {}
+    sweep = zone.get('sweep') or {}
+    if (zone.get('kind') not in ('SWEEP_REVERSAL', 'TURTLE_SOUP')
+            or sweep.get('side') != side or sweep.get('pattern') != 'WICK_RECLAIM'
+            or not 0 <= snapshot.now - zone.get('known_ts', 0) < 30 * 60_000):
+        return False
+    timeframe = (zone.get('wave_proof') or {}).get('timeframe', '15m')
+    if timeframe == '5m':
+        from setup_scanner import closed_five_minutes
+
+        rows, step = closed_five_minutes(snapshot), 300_000
+    else:
+        rows, step = closed(snapshot, '15m'), 900_000
+    raid_ts = sweep.get('raid_ts', 0)
+    if not 0 < sweep.get('reference_known_ts', 0) <= raid_ts or raid_ts + step != zone['known_ts']:
+        return False
+    candle = next((bar for bar in reversed(rows) if bar.ts == raid_ts and bar.confirmed), None)
+    return bool(candle and ict_methodology.wick_reclaim(candle, side, sweep['level'], tick) >= .45 - 1e-8
+                and side * (snapshot.price - sweep['extreme']) > tick / 2)
+
+
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None, *, require_macro=True):
     from market_wave import reversal_override
 
     if reversal_override(side, zone, snapshot, tick, require_macro=require_macro):
         return True, 'CONFIRMED_EXTREME_REVERSAL'
+    local_override = reversal_sweep_override(side, zone, snapshot, tick)
+    macro_opposes = (regime.get('trend_anchor_side') == -side or
+                     regime.get('side_1h') == regime.get('side_4h') == -side)
+    if local_override and not macro_opposes:
+        return True, 'REVERSAL_SWEEP_LOCAL_OVERRIDE'
     if require_macro:
         if regime.get('trend_anchor_side') == side:
             return True, 'HTF_TREND_ANCHOR'
@@ -322,7 +350,7 @@ def evidence(plan, snapshot, tick):
     rows=closed(snapshot,tf)[-90:]
     vol=max(_atr(rows),tick)
     sweeps=[]
-    for i in range(max(20,len(rows)-8),len(rows)):
+    for i in range(max(20,len(rows)-(18 if tf=='15m' else 8)),len(rows)):
         c=rows[i]; previous=rows[max(0,i-20):i]
         if len(previous)<20:
             continue
@@ -384,7 +412,8 @@ def evidence(plan, snapshot, tick):
                     shifts.append({'known_ts':rows[k].ts+TF[tf], 'level':round(level,8)})
     # The price must FIRST sweep/reclaim liquidity and only THEN break the
     # known structure. An FVG without this order is not an ICT sweep+MSS.
-    sequence=any(t['known_ts']>w['known_ts'] for w in sweeps for t in shifts)
+    sequence=any(0 < t['known_ts']-w['known_ts'] <= ict_methodology.SWEEP_TO_BOS_M15_BARS * TF[tf]
+                 for w in sweeps for t in shifts)
     # A rejection is a completed wick-through and close-back at the PLANNED
     # entry level; a nearby price quote without a candle is not a rejection.
     rejected=[]; reclaimed=[]; accepted=[]
@@ -437,7 +466,7 @@ def adjusted_score(plan, proof):
     support=4.*int(proof['sweep_reclaim']) + 5.*int(proof['near_unmitigated_fvg']) + 3.*int(proof['displacement'])
     side=plan['side']
     htf=int(plan.get('htf_1h',0)==side)+int(plan.get('htf_4h',0)==side)
-    against=int(plan.get('htf_1h',0)==-side)+int(plan.get('htf_4h',0)==-side)
+    against=0 if plan.get('reversal_sweep_override') else int(plan.get('htf_1h',0)==-side)+int(plan.get('htf_4h',0)==-side)
     support+=3.*htf-4.*against
     if against and not proof['sweep_reclaim'] and not proof['displacement']:
         support-=5.

@@ -88,6 +88,12 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001, stop=None, *, trend=
             'evaluated_timeframe':tf,'action':'CONFIRMATION_REQUIRED' if blocked else 'PRECISION_ENTRY'}
 
 
+def confirmed_breakout_limit(zone):
+    """Keep the shallow retest as a LIMIT; an extension alone is not a veto."""
+    proof = zone.get('wave_proof') or {}
+    return zone.get('kind') == 'BOS_CONTINUATION' and proof.get('retracement') == .30
+
+
 def intra_bar_reaction(snapshot, shock, side, zone, atr15, tick):
     """Match three independently closed M5 bars to a completed M15."""
     import setup_scanner as scanner

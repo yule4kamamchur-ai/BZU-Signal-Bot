@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.34.0-dual-execution"
-REPORT_RELEASE = 'v12.34.0'
+VERSION = "full-ict-v12.35.0-position-guard"
+REPORT_RELEASE = 'v12.35.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -1290,6 +1290,7 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
                 ambiguous: bool = False) -> None:
     if bzu_policy.is_new(p):
         return bzu_policy.close(state,p,price,ts,reason,cfg,sys.modules[__name__],ambiguous)
+    position_monitor.track(p, ts, price, price)
     cfg = execution_config(p,cfg)
     side, risk = p["side"], p["risk"]
     remaining = p.get("remaining",1.0)
@@ -1369,6 +1370,23 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
 
 
 def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step: int = 180_000, snapshot=None) -> None:
+    position = state.get('active')
+    if not position or c.ts <= position.get('last_bar', -1):
+        return
+    ts = c.ts + step
+    side, risk = position['side'], position['risk']
+    old_size = position.get('filled_fraction')
+    position.update(position_monitor.metrics(position, ts))
+    _manage_standard_bar(state, c, cfg, fill_bar=fill_bar, step=step, snapshot=snapshot)
+    if not state.get('active') or risk <= 0 or fill_bar or position.get('filled_fraction') != old_size:
+        return
+    favorable, adverse = (c.high, c.low) if side == 1 else (c.low, c.high)
+    peak = position_monitor.track(position, ts, favorable, adverse)
+    position_monitor.protect(state, position, snapshot, ts, c.close, cfg, sys.modules[__name__],
+                             new_peak=peak)
+
+
+def _manage_standard_bar(state, c, cfg, fill_bar=False, step=180_000, snapshot=None):
     p = state["active"]
     if not p:
         return
@@ -1903,7 +1921,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     state["execution_audit"]={"timeframe":execution_series(s)[0],"minute_precision":bool(s.candles.get("1m")),"as_of_ts":s.now}
     release_unconfirmed_paper(state,s.now,cfg)
     bind_order_numbers(state)
+    for position in active_plans(state):
+        position_monitor.backfill(position, s, state.get('last_run_ts', 0))
     advance_lifecycle(state, s, cfg)
+    position_monitor.observe_quote(state, s, cfg, sys.modules[__name__])
     # First catch up the old entry contract, then change FUTURE queue arming.
     for pending in pending_plans(state):
         if pending.get('queue_execution_policy')!='PASSIVE_ARM_V2':
@@ -2031,14 +2052,15 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     for candidate in valid:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
         if (dominant and candidate['side'] != dominant
+                and not candidate.get('reversal_sweep_override')
                 and not (candidate.get('zone_origin', {}).get('wave_confirmed')
                          and scanner.wave.reversal_override(candidate['side'], zone, s, cfg.tick, require_macro=single_limit))):
             continue
         if single_limit and not oil_risk.is_organic(candidate):
             continue
         relation = candidate.get('trend_rel')
-        if single_limit and dominant == -candidate['side'] and (
-                relation != 'COUNTER_TREND' or not candidate.get('counter_confirmation')):
+        if (single_limit and dominant == -candidate['side'] and not candidate.get('reversal_sweep_override') and
+                (relation != 'COUNTER_TREND' or not candidate.get('counter_confirmation'))):
             continue
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
@@ -2074,6 +2096,24 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place=False
         pending=pending_plans(state)
     arbitration_audit={'decision':'SKIPPED','reason':'NO_PENDING_OR_UNSAFE_BOOK'}
+    if can_place and len(active) == 1 and not pending and not unresolved:
+        unused = [p for p in valid if not {p['event_key'], *p.get('parent_keys', [])}.intersection(state['used_events'])
+                  and p['expires_ts'] > s.now]
+        replacement = arbitration.stale_replacement(active[0], unused, s, cfg, sys.modules[__name__])
+        if replacement:
+            for number, view in slot_views(state):
+                position = view.get('active')
+                if position is not active[0]:
+                    continue
+                actual = execution_config(position, cfg)
+                exit_price = replacement['exit_quote'] * (1 - position['side'] * actual.slippage_bps / 10_000)
+                close_trade(view, position, exit_price, s.now, 'CLOSED_STALE_REPLACEMENT', cfg)
+                store_slot(state, number, view)
+                break
+            arbitration_audit = replacement
+            valid = [p for p in unused if p['id'] == replacement['candidate_id']]
+            active = []
+            action = 'WATCH'
     rotation=state.get('portfolio_rotation_intent')
     if rotation and (s.now>rotation.get('expires_ts',0) or active):
         state.pop('portfolio_rotation_intent',None)
@@ -2500,6 +2540,11 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'CLOSED_ROUND_TRIP_BE':'повернення до входу після піку',
+    'CLOSED_STALE_TIMEOUT':'тайм-стоп на ретесті входу',
+    'CLOSED_ADVERSE_CHOCH':'ретест після зустрічного CHoCH',
+    'CLOSED_STALE_REPLACEMENT':'заміна на підтверджений A+',
+    'STALE_SWING_STOP':'стоп підтягнуто до підтвердженого свінгу',
     'PAPER_MARKET_IN_ZONE_TOUCH':'паперовий вхід MARKET у межах допуску зони',
     'PAPER_MARKET_POST_TOUCH_REJECTION':'паперовий вхід MARKET після відбою від зони',
     'PAPER_MARKET_BREAKOUT_CONTINUATION':'паперовий вхід MARKET після імпульсного пробою',
@@ -3309,7 +3354,7 @@ def main(core) -> int:
                 # ledger contracts. The Brent suites exercise both swing risk and trend entry.
                 with patch.object(oil_risk, 'enabled', return_value=False):
                     compatibility = runner.run(suite)
-                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback', 'test_v12_34_dual_execution')))
+                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback', 'test_v12_34_dual_execution', 'test_v12_35_stale_and_setups')))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:

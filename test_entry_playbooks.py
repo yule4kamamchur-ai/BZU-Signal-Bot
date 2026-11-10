@@ -154,16 +154,14 @@ class LivePlaybookTests(unittest.TestCase):
         s.candles['1H']=[replace_like(c,confirmed=False) for c in s.candles['1H']]
         self.assertFalse(any(x.family=='MICRO_HTF_FVG' for x in p.scenarios(s,.01)))
 
-    def test_schedule_separates_fast_scan_and_15m_reports(self):
-        w=(Path(__file__).parent/'.github/workflows/main.yml').read_text()
-        self.assertIn("cron: '*/5 * * * *'",w)
-        self.assertIn('bot_oneshot.py --auto-report',w)
-        self.assertNotIn("5,10,20,25,35,40,50,55",w)
-        self.assertNotIn("RESEARCH_ONLY'",w)
-        self.assertIn("BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'",w)
-        self.assertIn("ANALYSIS_SCAN_MINUTES: '5'",w)
-        self.assertIn("ABS_MIN_STOP_PCT: '0.010'",w)
-        self.assertIn("MIN_TP1_DISTANCE_PCT: '0.020'",w)
+    def test_github_schedule_runs_15m_scans_and_reports(self):
+        workflow = (Path(__file__).parent / '.github/workflows/main.yml').read_text()
+        self.assertIn("cron: '*/15 * * * *'", workflow)
+        self.assertIn('bot_oneshot.py --auto-report', workflow)
+        self.assertIn("ANALYSIS_SCAN_MINUTES: '15'", workflow)
+        self.assertIn("BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'", workflow)
+        self.assertIn("BZU_ENTRY_MODE: 'HYBRID'", workflow)
+        self.assertNotIn("BZU_EDGE_MODE: 'RESEARCH_ONLY'", workflow)
 
 
 if __name__=='__main__':

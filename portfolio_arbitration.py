@@ -71,6 +71,45 @@ def current_score(incumbent, proof):
     return base
 
 
+def cluster_rank(plan, snapshot, tick):
+    from trade_meta_model import execution_composite
+
+    evidence = execution_composite(plan, snapshot.price, tick, snapshot.now)
+    return (evidence['score'], _finite(plan.get('score')), -abs(snapshot.price - plan['entry']),
+            str(plan.get('id', '')))
+
+
+def stale_replacement(position, candidates, snapshot, cfg, engine):
+    from position_monitor import REPLACEMENT_BARS, current_r, duration
+
+    filled = position.get('filled_ts')
+    if filled is None or position.get('tp1_hit') or duration(position, snapshot.now)[1] < REPLACEMENT_BARS:
+        return None
+    exit_quote = snapshot.bid if position['side'] == 1 else snapshot.ask
+    if (not 0 < snapshot.bid <= snapshot.ask or abs(current_r(position, exit_quote)) > .15 + 1e-8
+            or position['side'] * (exit_quote - position['stop']) <= 0):
+        return None
+    ready = []
+    for plan in candidates:
+        zone = plan.get('entry_zone') or {}
+        trigger = plan.get('market_trigger') or {}
+        if (plan.get('rating') != 'A+' or not plan.get('quality', {}).get('accepted')
+                or not engine.scanner.market_plan(plan)
+                or not 0 <= snapshot.now - trigger.get('known_ts', 0) < 900_000
+                or not 0 <= snapshot.now - zone.get('known_ts', 0) <= 4 * 900_000
+                or plan.get('event_key') == position.get('event_key')):
+            continue
+        if plan['side'] != position['side'] and not engine.policy.structural_flip(
+                snapshot, plan['side'], filled, cfg.tick, engine)['confirmed']:
+            continue
+        ready.append(plan)
+    if not ready:
+        return None
+    best = max(ready, key=lambda plan: cluster_rank(plan, snapshot, cfg.tick))
+    return {'decision': 'STALE_POSITION_REPLACEMENT', 'replace_id': position['id'],
+            'candidate_id': best['id'], 'exit_quote': exit_quote}
+
+
 def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=None):
     """Propose at most ONE replacement per cycle; return auditable diagnostics.
 

@@ -50,6 +50,19 @@ def session_liquidity(snapshot):
     return result
 
 
+SWEEP_TO_BOS_M15_BARS = 10
+
+
+def wick_reclaim(bar, side, level, tick):
+    """Wick-only raid with the candle body back on the protected side."""
+    extreme = bar.low if side == 1 else bar.high
+    body_edge = min(bar.open, bar.close) if side == 1 else max(bar.open, bar.close)
+    if (side * (level - extreme) < tick - 1e-8 or side * (body_edge - level) < -tick/2
+            or side * (bar.close - level) < tick - 1e-8):
+        return 0.
+    return side * (body_edge - extreme) / max(tick, bar.high - bar.low)
+
+
 def body_break(rows, index, points, side, tick, step):
     """Return a pivot already known when the crossing candle opened."""
     if index < 1 or rows[index].ts - rows[index - 1].ts != step:
@@ -127,7 +140,8 @@ def session_sweeps(snapshot, side, tick, engine):
     if key in cache: return cache[key]
     rows=[c for c in snapshot.candles.get('15m', []) if c.confirmed and c.ts+900_000<=snapshot.now]
     results=[]
-    for i in range(max(12,len(rows)-8),len(rows)-1):
+    step = 900_000
+    for i in range(max(12, len(rows)-SWEEP_TO_BOS_M15_BARS-3), len(rows)-1):
         raid=rows[i]
         prior=replace(snapshot,now=raid.ts,candles={**snapshot.candles,'15m':rows[:i]})
         pools=session_liquidity(prior)['pools']
@@ -141,8 +155,11 @@ def session_sweeps(snapshot, side, tick, engine):
                     and p['known_ts']+900_000<=raid.ts]
             if not pivots: continue
             broken=pivots[-1]['level']
-            for j in range(i+1,len(rows)):
-                if side*(rows[j-1].close-broken)<=0 and side*(rows[j].close-broken)>tick:
+            for j in range(i+1,min(len(rows),i+SWEEP_TO_BOS_M15_BARS+1)):
+                if rows[j].ts != raid.ts + (j-i)*step:
+                    break
+                if (side*(rows[j-1].close-broken)<=0 and side*(rows[j].open-broken)<=tick/2
+                        and side*(rows[j].close-broken)>tick and side*(rows[j].close-rows[j].open)>tick):
                     results.append({'pool':pool['name'],'level':level,
                         'sweep_ts':raid.ts+900_000,'shift_ts':rows[j].ts+900_000,
                         'broken_level':broken,'extreme':raid.low if side==1 else raid.high,
