@@ -750,27 +750,51 @@ function lifecycle(order, price) {
   wrap.append(track,element('p','Етапи у рівних інтервалах · ціна рухається між рівнями','muted micro'));
   return wrap;
 }
-function positionMetrics(order, tracker, now) {
+function tradeDuration(ms) {
+  const mins = Math.floor(Math.max(0, ms) / 60000);
+  return Math.floor(mins / 60) + ' год ' + mins % 60 + ' хв';
+}
+const deadlineTime = new Intl.DateTimeFormat('uk-UA', {timeZone:'Europe/Kyiv', hour:'2-digit', minute:'2-digit'});
+function tradeDeadline(node, now) {
+  const entered = Number(node.dataset.tradeEntered);
+  const deadline = Number(node.dataset.tradeDeadline);
+  const elapsed = now - entered;
+  const hasDeadline = deadline > 0;
+  const remaining = deadline - now;
+  node.textContent = tradeDuration(elapsed);
+  if (hasDeadline) {
+    const cutoff = deadlineTime.format(deadline);
+    node.textContent += remaining > 0 ?
+      ' · до ' + cutoff + ' · ще ' + tradeDuration(remaining) :
+      ' · ' + cutoff + ' — ВИЧЕРПАНО на ' + tradeDuration(-remaining);
+  }
+  node.classList.toggle('trade-time-overdue', hasDeadline && remaining <= 0);
+  node.classList.toggle('trade-time-warning', hasDeadline && remaining > 0 && elapsed >= 4 * 3600000);
+}
+function positionMetrics(details, order, tracker, now) {
   const info = order.position_guard;
-  if (!info || !number(order.filled_ts)) return null;
-  const mins = Math.floor(Math.max(0, now - order.filled_ts) / 60000);
-  const wrap = element('div', null, 'position-metrics');
+  if (!info || !number(order.filled_ts)) return;
+  const clock = element('dd');
+  clock.dataset.tradeEntered = order.filled_ts;
+  clock.dataset.tradeDeadline = info.mode === 'POST_TP1' ? 0 : (info.stale_at ?? 0);
+  tradeDeadline(clock, now);
   const mfe = Math.max(order.max_favorable_r ?? 0, tracker.quoteMfe ?? 0);
   const mae = Math.max(order.max_adverse_r ?? 0, tracker.quoteMae ?? 0);
   const quoteOnly = mfe > (order.max_favorable_r ?? 0) || mae > (order.max_adverse_r ?? 0);
-  wrap.append(element('span', 'Time in Trade: ' + Math.floor(mins / 60) + 'h ' + mins % 60 + 'm'),
-    element('span', 'Peak MFE: ' + signed(mfe) + 'R · MAE: ' + signed(-mae) + 'R' +
-      (quoteOnly ? ' · оцінка за тиками' : '')));
-  const labels = {
-    ROUND_TRIP: ['ROUND-TRIP GUARD ACTIVE', 'guard'],
-    ROUND_TRIP_TIMER: ['ROUND-TRIP · З ' + stamp(info.round_trip_at), 'guard'],
-    STALE_WARNING: ['STALE TRADE WARNING', 'warning'],
-    STALE_TIMEOUT: ['STALE TRADE WARNING · RETEST', 'warning'],
-    ADVERSE_CHOCH: ['CHoCH ПРОТИ ПОЗИЦІЇ · ЧЕКАЄМО РЕТЕСТУ', 'warning'],
-  };
+  const peak = order.entry + order.side * mfe * order.risk;
+  const regime = ({BULLISH_ACTIVE:'Висхідний', BULLISH_TREND:'Висхідний', BEARISH_ACTIVE:'Низхідний',
+    BEARISH_TREND:'Низхідний', PULLBACK_PHASE:'Відкат', RANGE:'Діапазон', RANGE_LIQUIDITY_ROTATION:'Діапазон'})[info.regime];
+  const structure = ({ADVERSE:'⚠️ Зустрічний злам', COUNTER_TREND:'⚠️ Контртренд', WEAKENING:'⚠️ Послаблення',
+    REVERSAL_RISK:'⚠️ Ризик розвороту', INTACT:'Без підтвердженого зламу', INSUFFICIENT:'Бракує свіжих даних'})[info.structure] ?? 'Невизначено';
+  details.append(element('dt','Час в угоді / Ліміт'), clock,
+    element('dt','Пік прибутку (MFE)'), element('dd', signed(mfe) + 'R (' + format(peak) + ') · MAE ' +
+      signed(-mae) + 'R' + (quoteOnly ? ' · оцінка за тиками' : '')),
+    element('dt','Статус структури'), element('dd', structure + (regime ? ' (' + regime + ')' : '')));
+  const labels = {ROUND_TRIP:['ROUND-TRIP GUARD ACTIVE','guard'], ROUND_TRIP_TIMER:['ROUND-TRIP · З ' + stamp(info.round_trip_at),'guard'],
+    STALE_WARNING:['STALE TRADE WARNING','warning'], STALE_TIMEOUT:['ТАЙМ-СТОП · ПЕРЕВІРКА','warning'],
+    STALE_TIGHTENED:['ТАЙМ-СТОП · SL ' + format(info.stale_stop),'warning'], ADVERSE_CHOCH:['СТРУКТУРА ПРОТИ ПОЗИЦІЇ','warning']};
   const badge = labels[info.mode];
-  if (badge) wrap.append(element('strong', badge[0], 'protection-badge ' + badge[1]));
-  return wrap;
+  if (badge) details.append(element('dt','Захист'), element('dd',badge[0],'protection-badge ' + badge[1]));
 }
 
 function management(order, tracker, price, usable) {
@@ -800,9 +824,10 @@ function management(order, tracker, price, usable) {
       'TP1 зафіксовано, чекаємо структуру M5 для перенесення стопа.';
   }
   if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
-  if (order.position_guard?.mode === 'ROUND_TRIP') return 'При поверненні до входу в межах ±0.10R рушій перевірить вихід.';
-  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Після зустрічного CHoCH вихід на ретесті входу в межах −0.10R.';
-  if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп активний. Вихід на ретесті входу або захист підтвердженим свінгом.';
+  if (order.position_guard?.mode === 'ROUND_TRIP') return 'Round-Trip активний. Вихід при +0.10R або нижче.';
+  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Зустрічна структура активує вихід за умовою просадки.';
+  if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп вичерпано. Чекаємо підтвердження дії за журналом.';
+  if (order.position_guard?.mode === 'STALE_TIGHTENED') return 'Тайм-стоп застосовано. Чинний SL ' + format(order.stop) + '.';
   return 'Зберігаємо поточний стоп до TP1 ' + format(order.tp1) + '.';
 }
 function countdown(expiry) {
@@ -816,7 +841,8 @@ function eventText(event) {
     TP1:'TP1', TP1_PARTIAL:'Часткова фіксація TP1', TP1_REACHED:'Досягнуто TP1', TP2:'Досягнуто TP2',
     PAPER_STOP_AMENDED:'Стоп оновлено', UNRESOLVED:'Виконання потребує перевірки' })[event.kind] ?? event.kind;
   return label + (event.side===1 || event.side===-1 ? ' · ' + sideLabel(event.side) : '') +
-    (number(event.entry) ? ' ' + format(event.entry) : '') + (number(event.net_r) ? ' · ' + signed(event.net_r) + 'R' : '') +
+    (event.kind === 'CLOSED' && number(event.price) ? ' @ ' + format(event.price) :
+      number(event.entry) ? ' ' + format(event.entry) : '') + (number(event.net_r) ? ' · ' + signed(event.net_r) + 'R' : '') +
     (event.reason_text ? ' · ' + event.reason_text : '');
 }
 function renderActivity() {
@@ -979,10 +1005,6 @@ function render() {
     if (order.status==='OPEN') card.append(element('p',signed(move,' $/од.') + (order.risk>0 ? ' · '+signed(move/order.risk)+'R' : ''), 'pnl '+(move>=0?'long':'short')),
       element('small',(live ? 'Live' : 'Зліпок') + ' · ціновий рух без комісій; грошовий PnL залежить від обсягу'), lifecycle(order,price));
     else card.append(proximity(order,price));
-    if (order.status === 'OPEN') {
-      const metrics = positionMetrics(order, tracker, now);
-      if (metrics) card.append(metrics);
-    }
     card.append(element('p',management(order,tracker,price,usable),'action'));
     const details=element('dl');
     const rr=order.risk>0 && number(order.tp1) ? order.side*(order.tp1-order.entry)/order.risk : null;
@@ -993,6 +1015,7 @@ function render() {
     if (order.cancel_reason === 'LEGACY_MICRO_RISK') fields.push(['Причина скасування', 'Перехід на органічний стоп']);
     if (number(order.pending_stop)) fields.push(['Запланований SL',format(order.pending_stop)+' з '+stamp(order.pending_stop_effective_ts)]);
     for (const [key,value] of fields) details.append(element('dt',key),element('dd',value));
+    if (order.status === 'OPEN') positionMetrics(details, order, tracker, now);
     if (pending) {
       const value=element('dd',countdown(order.expires_ts)); value.dataset.expiry=order.expires_ts;
       details.append(element('dt','Строк лімітки'),value);
@@ -1349,6 +1372,7 @@ setInterval(() => {
   if (!state || document.hidden) return;
   for (const node of document.querySelectorAll('[data-expiry]')) node.textContent=countdown(Number(node.dataset.expiry));
   const price=displayedPrice(), now=Date.now();
+  for (const node of document.querySelectorAll('[data-trade-entered]')) tradeDeadline(node, now);
   const live=quote && now-quote.ts<=QUOTE_MAX_AGE && quote.ts<=now+3000;
   renderBanner(price,ready(now),live); renderReaction(ready(now),live);
 },1000);

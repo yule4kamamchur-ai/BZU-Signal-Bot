@@ -358,6 +358,8 @@ def build(state, snapshot, result, cfg, engine):
         row = records.get(event.get('order_id'), {})
         item = {key: event.get(key) for key in ('order_id', 'ts', 'kind', 'reason', 'net_r', 'price', 'stop')}
         item.update(side=row.get('side', event.get('side')), entry=row.get('entry', event.get('entry')), number=row.get('order_number'))
+        if item['kind'] == 'CLOSED':
+            item['price'] = row.get('exit', item['price'])
         item['reason_text'] = reasons.get(event.get('reason'), event.get('reason'))
         recent.append(item)
     recent.sort(key=lambda e: e['ts'])

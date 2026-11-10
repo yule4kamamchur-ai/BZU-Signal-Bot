@@ -93,12 +93,15 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.match(text('state-title'),/MARKET SHORT/);
  assert.match(text('orders'),/MARKET/);
  assert.ok(priceLines.some(l=>l.title.includes('MARKET @ 100.15')));
- run('Object.assign(state.orders[0], {filled_ts:Date.now()-3*3600000,max_favorable_r:.60,max_adverse_r:.20,position_guard:{mode:"ROUND_TRIP"}});render();');
- assert.match(text('orders'),/Time in Trade: 3h 0m/);
- assert.match(text('orders'),/Peak MFE: \+0.60R/);
+ run('Object.assign(state.orders[0], {filled_ts:Date.now()-3*3600000,max_favorable_r:.60,max_adverse_r:.20,position_guard:{mode:"ROUND_TRIP",stale_at:Date.now()+3*3600000,structure:"COUNTER_TREND",regime:"BULLISH_ACTIVE"}});render();');
+ assert.match(text('orders'),/Час в угоді \/ Ліміт.*3 год 0 хв/);
+ assert.match(text('orders'),/Пік прибутку \(MFE\).*\+0.60R/);
+ assert.match(text('orders'),/Контртренд \(Висхідний\)/);
  assert.match(text('orders'),/ROUND-TRIP GUARD ACTIVE/);
  run('state.orders[0].position_guard.mode="STALE_WARNING";render();');
  assert.match(text('orders'),/STALE TRADE WARNING/);
+ run('state.orders[0].position_guard.stale_at=Date.now()-2*3600000;render();');
+ assert.match(text('orders'),/ВИЧЕРПАНО на 2 год 0 хв/);
 
 
  run('state.snapshot_ts=Date.now()-28*60000;render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.35.0-position-guard"
-REPORT_RELEASE = 'v12.35.0'
+VERSION = "full-ict-v12.35.1-position-guard"
+REPORT_RELEASE = 'v12.35.1'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -956,7 +956,9 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 check['met']=True
         p['probability'] = meta_decision['probability']
         p['decision_score'] = p['score']+q['ranking_adjustment']
-        p['direction_score'] = policy.adjusted_score(p,proof)+meta_decision.get('score_adjustment',0)
+        p['direction_score'] = policy.adjusted_score(p,proof)
+        if not p.get('reversal_sweep_override'):
+            p['direction_score'] += meta_decision.get('score_adjustment',0)
         if playbook['accepted']:
             # A capped structural tie-break, NOT a calibrated probability.
             # Family identity persists for downstream attribution/research.
@@ -1369,6 +1371,61 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
     emit(state,name,ts,order_id=p["id"],price=exit_price,fraction=size)
 
 
+def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
+    engine = sys.modules[__name__]
+    if not position.get('tp1_hit'):
+        position_monitor.observe_structure(position, snapshot, ts, cfg, engine)
+    decision = position_monitor.evaluate_active_trade_lifecycle(position, ts, price, cfg, engine)
+    if decision['should_exit']:
+        if 'exit_trigger_level' in decision:
+            position['guard_exit_trigger_level'] = decision['exit_trigger_level']
+        close_at_observed_price(state, position, price, ts, decision['exit_reason'], cfg)
+    elif decision['stop'] is not None:
+        stop = decision['stop']
+        position.update(stop=stop, stale_stop=stop, stale_stop_ts=ts)
+        emit(state, 'PAPER_STOP_AMENDED', ts, order_id=position['id'], stop=stop, reason='STALE_TIME_STOP')
+
+
+def close_at_observed_price(state, position, price, ts, reason, cfg):
+    actual = execution_config(position, cfg)
+    exit_price = price * (1 - position['side'] * actual.slippage_bps / 10_000)
+    close_trade(state, position, exit_price, ts, reason, cfg)
+
+
+def check_quote_exits(state, snapshot, cfg):
+    """Use a fresh executable quote after reconciling the intervening bars."""
+    ts = snapshot.ticker_ts
+    if not snapshot.trusted or not 0 <= snapshot.now - ts <= 120_000:
+        return
+    if not 0 < snapshot.bid <= snapshot.ask:
+        return
+    as_of = replace(snapshot, now=ts)
+    latest_m15 = as_of.candles.get('15m', ())
+    regime = (policy.execution_regime(as_of, cfg, sys.modules[__name__])
+              if len(latest_m15) >= 9 and position_monitor._recent(as_of, '15m', 9) else {})
+    for number, view in slot_views(state):
+        position = view.get('active')
+        if not position or position['risk'] <= 0:
+            continue
+        closed_through = position.get('last_bar', -1) + position.get('last_execution_step_ms', 0)
+        if ts < max(closed_through, position.get('filled_ts') or 0):
+            continue
+        price = snapshot.bid if position['side'] == 1 else snapshot.ask
+        assessment = position_monitor.review(position, as_of)
+        position.update(position_regime=regime.get('state', 'UNKNOWN'),
+                        position_regime_side=policy.regime_side(regime),
+                        position_structure_status=assessment['status'])
+        position_monitor.update_trade_excursions(position, latest_m15, ts)
+        position_monitor.track(position, ts, price, price)
+        if position['side'] * (price - position['stop']) <= 0:
+            # An ordinary hard stop is reconciled against its execution bar.
+            if position_monitor.is_stale_stop(position):
+                close_at_observed_price(view, position, price, ts, 'CLOSED_STALE_TIME_STOP', cfg)
+        else:
+            apply_lifecycle_guard(view, position, as_of, ts, price, cfg)
+        store_slot(state, number, view)
+
+
 def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step: int = 180_000, snapshot=None) -> None:
     position = state.get('active')
     if not position or c.ts <= position.get('last_bar', -1):
@@ -1380,10 +1437,11 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step
     _manage_standard_bar(state, c, cfg, fill_bar=fill_bar, step=step, snapshot=snapshot)
     if not state.get('active') or risk <= 0 or fill_bar or position.get('filled_fraction') != old_size:
         return
+    if snapshot is not None:
+        position_monitor.update_trade_excursions(position, snapshot.candles.get('15m', ()), ts)
     favorable, adverse = (c.high, c.low) if side == 1 else (c.low, c.high)
-    peak = position_monitor.track(position, ts, favorable, adverse)
-    position_monitor.protect(state, position, snapshot, ts, c.close, cfg, sys.modules[__name__],
-                             new_peak=peak)
+    position_monitor.track(position, ts, favorable, adverse)
+    apply_lifecycle_guard(state, position, snapshot, ts, c.close, cfg)
 
 
 def _manage_standard_bar(state, c, cfg, fill_bar=False, step=180_000, snapshot=None):
@@ -1419,7 +1477,8 @@ def _manage_standard_bar(state, c, cfg, fill_bar=False, step=180_000, snapshot=N
     if stop_hit:
         raw_exit = c.open if open_stop else p["stop"]
         exit_price = raw_exit*(1-side*cfg.slippage_bps/10_000)
-        close_trade(state, p, exit_price, ts, "STOP_GAP" if open_stop else "STOP", cfg,
+        close_trade(state, p, exit_price, ts, ("CLOSED_STALE_TIME_STOP" if position_monitor.is_stale_stop(p)
+                    else "STOP_GAP" if open_stop else "STOP"), cfg,
                     ambiguous=tp_hit or fill_bar)
         return
     # On the fill candle the favorable extreme may have happened BEFORE entry.
@@ -1924,7 +1983,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     for position in active_plans(state):
         position_monitor.backfill(position, s, state.get('last_run_ts', 0))
     advance_lifecycle(state, s, cfg)
-    position_monitor.observe_quote(state, s, cfg, sys.modules[__name__])
+    if active_plans(state):
+        check_quote_exits(state, s, cfg)
     # First catch up the old entry contract, then change FUTURE queue arming.
     for pending in pending_plans(state):
         if pending.get('queue_execution_policy')!='PASSIVE_ARM_V2':
@@ -2052,14 +2112,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     for candidate in valid:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
         if (dominant and candidate['side'] != dominant
-                and not candidate.get('reversal_sweep_override')
+                and not candidate.get('local_reversal_override')
                 and not (candidate.get('zone_origin', {}).get('wave_confirmed')
                          and scanner.wave.reversal_override(candidate['side'], zone, s, cfg.tick, require_macro=single_limit))):
             continue
         if single_limit and not oil_risk.is_organic(candidate):
             continue
         relation = candidate.get('trend_rel')
-        if (single_limit and dominant == -candidate['side'] and not candidate.get('reversal_sweep_override') and
+        if (single_limit and dominant == -candidate['side'] and not candidate.get('local_reversal_override') and
                 (relation != 'COUNTER_TREND' or not candidate.get('counter_confirmation'))):
             continue
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
@@ -2105,12 +2165,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 position = view.get('active')
                 if position is not active[0]:
                     continue
-                actual = execution_config(position, cfg)
-                exit_price = replacement['exit_quote'] * (1 - position['side'] * actual.slippage_bps / 10_000)
-                close_trade(view, position, exit_price, s.now, 'CLOSED_STALE_REPLACEMENT', cfg)
+                close_at_observed_price(view, position, replacement['exit_quote'], s.now,
+                                        'CLOSED_REPLACED_BY_FRESH_SETUP', cfg)
                 store_slot(state, number, view)
                 break
             arbitration_audit = replacement
+            state.pop('portfolio_rotation_intent', None)
             valid = [p for p in unused if p['id'] == replacement['candidate_id']]
             active = []
             action = 'WATCH'
@@ -2540,6 +2600,10 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'CLOSED_STALE_TIME_STOP':'спрацював шестигодинний тайм-стоп',
+    'STALE_TIME_STOP':'стоп підтягнуто до −0.35R після шести годин',
+    'CLOSED_ADVERSE_STRUCTURE_SHIFT':'структура або режим змінилися проти позиції',
+    'CLOSED_REPLACED_BY_FRESH_SETUP':'позицію замінено свіжим сетапом A або A+',
     'CLOSED_ROUND_TRIP_BE':'повернення до входу після піку',
     'CLOSED_STALE_TIMEOUT':'тайм-стоп на ретесті входу',
     'CLOSED_ADVERSE_CHOCH':'ретест після зустрічного CHoCH',

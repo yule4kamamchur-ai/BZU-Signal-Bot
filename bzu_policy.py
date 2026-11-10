@@ -228,8 +228,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     trend = oil_risk.enabled(cfg) and scanner.wave.trend_zone(zone, regime, origin)
     relation = 'WITH_TREND' if trend else None
     counter_confirmation = None
-    local_reversal = (direction.reversal_sweep_override(side, zone, snapshot, cfg.tick)
-                      and regime.get('trend_anchor_side') != -side
+    sweep_override = direction.reversal_sweep_override(side, zone, snapshot, cfg.tick)
+    local_reversal = (sweep_override and regime.get('trend_anchor_side') != -side
                       and not regime.get('side_1h') == regime.get('side_4h') == -side)
     if oil_risk.enabled(cfg) and not local_reversal:
         anchor_side = (regime.get('trend_anchor_side') or direction.regime_side(regime) or
@@ -483,7 +483,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'tp2_alignment':geometry['tp2_alignment'], 'formation_volume':volume,
          'tp1_source':geometry['tp1_source'], 'tp2_source':geometry['tp2_source'],
          'target_projection':geometry.get('target_projection'),
-         'reversal_sweep_override': local_reversal,
+         'reversal_sweep_override': sweep_override, 'local_reversal_override': local_reversal,
          'reversal_override':local_reversal or bool(origin.get('wave_confirmed') and
                                   scanner.wave.reversal_override(side, zone, snapshot, cfg.tick, require_macro=bool(oil))),
          'breakeven_trigger_r':side*(tp1-entry)/risk,
@@ -674,9 +674,11 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     stop_hit = c.low <= p['stop'] if side==1 else c.high >= p['stop']
     target_hit = c.high >= p['tp1'] if side==1 else c.low <= p['tp1']
     if stop_hit:
+        from position_monitor import is_stale_stop
+
         raw = c.open if side*(c.open-p['stop'])<=0 else p['stop']
-        close(state,p,raw*(1-side*cfg.slippage_bps/10_000),ts,
-              'STOP_GAP' if raw==c.open else 'STOP',cfg,engine,
+        reason = 'CLOSED_STALE_TIME_STOP' if is_stale_stop(p) else 'STOP_GAP' if raw==c.open else 'STOP'
+        close(state,p,raw*(1-side*cfg.slippage_bps/10_000),ts,reason,cfg,engine,
               ambiguous=target_hit or fill_bar or added)
         return
     # Favorable extremes in a fill bar can precede either fill. A close through

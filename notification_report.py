@@ -93,6 +93,9 @@ def close_reason(trade):
     reason = {'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
               'TAKE_PROFIT': 'тейк-профіт',
               'CLOSED_ROUND_TRIP_BE': 'повернення до входу після піку',
+              'CLOSED_STALE_TIME_STOP': 'шестигодинний тайм-стоп',
+              'CLOSED_ADVERSE_STRUCTURE_SHIFT': 'зміна структури або режиму проти позиції',
+              'CLOSED_REPLACED_BY_FRESH_SETUP': 'заміна свіжим сетапом A або A+',
               'CLOSED_STALE_TIMEOUT': 'тайм-стоп на ретесті входу',
               'CLOSED_ADVERSE_CHOCH': 'ретест після зустрічного CHoCH',
               'CLOSED_STALE_REPLACEMENT': 'заміна на підтверджений A+', 'ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов', 'INTRADAY_TIME_EXIT': 'за часом'}.get(
@@ -103,27 +106,40 @@ def close_reason(trade):
     return detail + reason
 
 
-def position_diagnostics(position, now, cfg, engine):
+def duration_text(ms):
+    mins = max(0, ms // 60_000)
+    return f'{mins // 60} год {mins % 60} хв'
+
+
+def position_diagnostics(position, now, cfg, engine, *, frozen=False):
     view = position_monitor.guard(position, now)
-    mins = view['time_in_trade_ms'] // 60_000
-    time = f'{mins // 60} год {mins % 60} хв'
-    entry = f"{position['entry']:.8g}"
     mode = view['mode']
+    time = duration_text(view['time_in_trade_ms'])
+    lines = [f"⏱ {time} • MFE {view['max_favorable_r']:+.2f}R ({view['peak_price']:.8g}) • MAE {(-view['max_adverse_r']):.2f}R"]
     if mode == 'POST_TP1':
-        detail = 'TP1 зафіксовано. Залишок ведемо за штатним стопом до TP2.'
-    elif mode == 'ADVERSE_CHOCH':
-        detail = f'CHoCH проти позиції. Вихід при ретесті {entry} у межах −0.10R…0R.'
-    elif mode == 'ROUND_TRIP':
-        detail = f'Round-trip активний. Вихід при поверненні до {entry} у межах ±0.10R.'
-    elif mode == 'STALE_TIMEOUT':
-        stop = f" Захисний SL {view['stale_stop']:.8g}." if view['stale_stop'] else ''
-        detail = f'Тайм-стоп активний. Вихід на ретесті {entry}.{stop}'
+        return [*lines, 'TP1 зафіксовано. Залишок ведемо за штатним стопом до TP2.']
+    deadline = view['stale_at']
+    moment = engine.report_deadline(deadline, now, cfg)
+    if now < deadline:
+        lines.append(f'⏳ Контроль імпульсу до {moment} (залишилось {duration_text(deadline-now)}).')
     else:
-        trip = engine.report_deadline(view['round_trip_at'], now, cfg) if view['round_trip_at'] > now else 'поріг 90 хв пройдено'
-        stale = engine.report_deadline(view['stale_at'], now, cfg)
-        detail = (f'Стоп чинний. Round-trip при піку +0.55R і ретесті {entry} після 90 хв ({trip}). '
-                  f'Тайм-стоп від {stale} при піку нижче +0.60R.')
-    return [f"⏱ {time} • MFE {view['max_favorable_r']:+.2f}R • MAE {(-view['max_adverse_r']):.2f}R", detail]
+        if view['stale_stop'] is not None:
+            outcome = f"ризик скорочено, SL {position['stop']:.8g}"
+        elif view['max_favorable_r'] >= view['stale_mfe_r'] - 1e-8:
+            outcome = f"пік досяг порога +{view['stale_mfe_r']:.2f}R"
+        elif frozen:
+            outcome = 'чекаємо свіжих даних для застосування'
+        else:
+            outcome = 'діє перевірка рівня −0.35R'
+        lines.append(f'🚨 Тайм-стоп {moment} вичерпано (прострочено на {duration_text(now-deadline)}) · {outcome}.')
+    if mode == 'ADVERSE_CHOCH' or view['structure'] in ('ADVERSE', 'COUNTER_TREND'):
+        lines.append('Структура або режим проти позиції. Вихід при переході в мінус після піку +0.30R '
+                     'або при просадці від −0.15R після трьох годин.')
+    if view['max_favorable_r'] >= view['round_trip_mfe_r'] - 1e-8 and now >= view['round_trip_at']:
+        lines.append(f"Round-Trip активний від входу {position['entry']:.8g}. Вихід при +0.10R або нижче.")
+    elif now < view['round_trip_at'] or mode == 'OBSERVING':
+        lines.append('Round-Trip перевіряє пік від +0.40R після 90 хвилин.')
+    return lines
 
 
 def candidate_reason(row, cfg, engine):
@@ -210,7 +226,7 @@ def build(state, snapshot, result, cfg, engine):
                     + remaining*snapshot.price*cost_cfg.taker_fee/p['risk']) if cost_cfg.include_commission else 0.
             slip = remaining*snapshot.price*cost_cfg.slippage_bps/10_000/p['risk']
             estimate = f'{gross-fees-slip:+.2f}R'
-        lines += [f'Результат зараз ≈ {estimate}', *position_diagnostics(p, now, cfg, engine)]
+        lines += [f'Результат зараз ≈ {estimate}', *position_diagnostics(p, now, cfg, engine, frozen=frozen)]
         assessment=next((r for r in result.get('analysis',{}).get('position_reviews',[])
                          if r.get('order_id') == p.get('id')),None)
         if assessment and not frozen:
@@ -226,8 +242,6 @@ def build(state, snapshot, result, cfg, engine):
         amendment = engine.bzu_policy.protective_amendment(p)
         if amendment:
             lines += [f"Новий SL {amendment['price']:.8g} з {engine.report_deadline(amendment['effective_ts'], now, cfg)}"]
-        if not p.get('tp1_decision_gate'):
-            lines += [f"Супровід до {engine.report_deadline(p['exit_deadline'], now, cfg)}"]
 
     if pending:
         lines += ['', f'🟡 ОЧІКУЄМО ЛІМІТ — {len(pending)}']
@@ -423,7 +437,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
             f'🛡️ SL: {p["stop"]:.8g} • 🎯 TP1: {p.get("tp1", p["tp"]):.8g}'
             + (f' • TP2: {p["tp2"]:.8g}' if p.get('tp2') is not None else ''),
         ]
-        lines += position_diagnostics(p, now, cfg, engine)
+        lines += position_diagnostics(p, now, cfg, engine, frozen=frozen)
         amendment = engine.bzu_policy.protective_amendment(p)
         if amendment:
             lines += [f"🛡️ Новий SL: {amendment['price']:.8g} • з {engine.local_time(amendment['effective_ts'], cfg)}"]

@@ -478,7 +478,8 @@ def ranking(plan, price, tick):
     score=float(plan.get('direction_score',plan.get('decision_score',plan.get('score',0))) or 0)
     distance=abs(plan.get('entry',price)-price)/max(plan.get('risk',tick),tick)
     decision=plan.get('meta_decision') or {}
-    if decision.get('validated') and decision.get('expected_net_r') is not None:
+    if (not plan.get('reversal_sweep_override') and decision.get('validated')
+            and decision.get('expected_net_r') is not None):
         # Once a probability model has cleared chronological holdout, rank
         # competing entries by estimated *net* return, not arbitrary score.
         expected=float(decision['expected_net_r'])

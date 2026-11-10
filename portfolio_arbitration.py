@@ -92,12 +92,18 @@ def stale_replacement(position, candidates, snapshot, cfg, engine):
     ready = []
     for plan in candidates:
         zone = plan.get('entry_zone') or {}
-        trigger = plan.get('market_trigger') or {}
-        if (plan.get('rating') != 'A+' or not plan.get('quality', {}).get('accepted')
-                or not engine.scanner.market_plan(plan)
-                or not 0 <= snapshot.now - trigger.get('known_ts', 0) < 900_000
+        grade = (plan.get('zone_quality') or {}).get('grade')
+        if (not (plan.get('rating') in ('A', 'A+') or grade == 'A')
+                or not plan.get('quality', {}).get('accepted')
                 or not 0 <= snapshot.now - zone.get('known_ts', 0) <= 4 * 900_000
                 or plan.get('event_key') == position.get('event_key')):
+            continue
+        if engine.scanner.market_plan(plan):
+            trigger = plan.get('market_trigger') or {}
+            if not 0 <= snapshot.now - trigger.get('known_ts', 0) < 900_000:
+                continue
+        elif (plan.get('action_type') != 'NEW_PENDING_LIMIT' or
+              not engine.scanner.passive_gate(plan['entry'], plan['side'], snapshot.bid, snapshot.ask, cfg.tick)['passive']):
             continue
         if plan['side'] != position['side'] and not engine.policy.structural_flip(
                 snapshot, plan['side'], filled, cfg.tick, engine)['confirmed']:
