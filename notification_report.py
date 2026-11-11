@@ -97,6 +97,7 @@ def close_reason(trade):
               'CLOSED_BOUNCE_BREAKEVEN': 'спрацював стоп на вході після поглинання',
               'CLOSED_STALE_TIME_STOP': 'шестигодинний тайм-стоп',
               'CLOSED_ADVERSE_STRUCTURE_SHIFT': 'зміна структури або режиму проти позиції',
+              'CLOSED_EARLY_IMPULSE_FAILURE': 'ранній зустрічний імпульс після MARKET-входу',
               'CLOSED_REPLACED_BY_FRESH_SETUP': 'заміна свіжим сетапом A або A+',
               'CLOSED_STALE_TIMEOUT': 'тайм-стоп на ретесті входу',
               'CLOSED_ADVERSE_CHOCH': 'ретест після зустрічного CHoCH',
@@ -135,8 +136,8 @@ def position_diagnostics(position, now, cfg, engine, *, frozen=False):
             outcome = 'діє перевірка рівня −0.35R'
         lines.append(f'🚨 Тайм-стоп {moment} вичерпано (прострочено на {duration_text(now-deadline)}) · {outcome}.')
     if mode == 'ADVERSE_CHOCH' or view['structure'] in ('ADVERSE', 'COUNTER_TREND'):
-        lines.append('Структура або режим проти позиції. Вихід при переході в мінус після піку +0.30R '
-                     'або при просадці від −0.15R після трьох годин.')
+        lines.append('Структура або режим проти позиції. Вихід після підтвердженого зламу M15, '
+                     'при просадці від −0.35R або при переході в мінус після піку +0.30R.')
     if view['max_favorable_r'] >= view['round_trip_mfe_r'] - 1e-8 and now >= view['round_trip_at']:
         lines.append(f"Round-Trip активний від входу {position['entry']:.8g}. Вихід при +0.10R або нижче.")
     elif now < view['round_trip_at'] or mode == 'OBSERVING':
@@ -347,7 +348,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
     now = snapshot.now
     local = datetime.fromtimestamp(now / 1000, ZoneInfo(cfg.timezone))
     session = ict_methodology.session_liquidity(snapshot)
-    regime = directional_policy.market_regime(snapshot, cfg.tick, engine)
+    regime = directional_policy.execution_regime(snapshot, cfg, engine)
     trend = {
         'BULLISH_TREND': 'BULLISH',
         'BULLISH_ACTIVE': 'BULLISH',
@@ -361,7 +362,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
     frozen = result.get('action') in ('DATA_HOLD', 'DUPLICATE_OR_OUT_OF_ORDER')
     lines = [
         f'🛢 BZU • {local:%d.%m %H:%M} (Київ) • {engine.REPORT_RELEASE}',
-        f'💰 Ціна: {price} • {session["session"]} • 1H/4H: {trend}',
+        f'💰 Ціна: {price} • {session["session"]} • Режим {regime.get("trend_anchor_timeframe") or "ринку"} · {trend}',
     ]
 
     # Show only genuine new orders, not duplicate scenario/matrix diagnostics.

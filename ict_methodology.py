@@ -77,9 +77,28 @@ def reversal_engulfing(raid, confirmation, side, tick, step=900_000):
 
 def reclaim_break(rows, index, side, level, tick, atr):
     bar, previous = rows[index], rows[index-1]
-    return (bar.ts-previous.ts == 900_000 and side*(previous.close-level) <= 0
-            and side*(bar.close-level) >= tick-1e-8
+    return (bar.confirmed and previous.confirmed and bar.ts-previous.ts == 900_000
+            and side*(previous.close-level) <= 0
+            and side*(bar.close-level) > max(tick, .15 * atr)
             and side*(bar.close-bar.open) >= max(tick,.60*atr))
+
+
+def reclaim_references(prior, points, opened, side, tick, atr):
+    """Known pivot and repeated-test levels on the approach to a break."""
+    kind = 'HIGH' if side == 1 else 'LOW'
+    start = prior[0].ts
+    previous = prior[-1].close
+    refs = [(p['level'], p['known_ts'] + 900_000) for p in points
+            if p['kind'] == kind and start <= p['ts']
+            and p['known_ts'] + 900_000 <= opened and side * (p['level'] - previous) >= 0]
+    tolerance = max(2 * tick, .25 * atr)
+    for i, bar in enumerate(prior):
+        level = bar.high if side == 1 else bar.low
+        if side * (level - previous) < 0 or any(side * (c.close - level) > tick/2 for c in prior[i:]):
+            continue
+        if any(abs((c.high if side == 1 else c.low) - level) <= tolerance for c in prior[max(0, i-8):i]):
+            refs.append((level, bar.ts + 900_000))
+    return sorted(refs, key=lambda ref: (side * (ref[0] - previous), -ref[1]))
 
 
 def body_break(rows, index, points, side, tick, step):

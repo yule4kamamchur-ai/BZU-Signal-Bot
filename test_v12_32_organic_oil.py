@@ -22,7 +22,7 @@ def swing_fixture():
         snap.candles[tf] = [engine.Candle(c.ts, 95.8, 96.15, 95.40, 95.82, 100.)
                             for c in snap.candles[tf]]
     snap.candles['1H'][-5] = replace(snap.candles['1H'][-5], low=94.70)
-    levels = [{'level': 97.66, 'kind': '1H_LIQUIDITY', 'timeframe': '1H', 'known_ts': snap.now - oil_risk.H1},
+    levels = [{'level': 98.26, 'kind': '1H_LIQUIDITY', 'timeframe': '1H', 'known_ts': snap.now - oil_risk.H1},
               {'level': 98.90, 'kind': '4H_LIQUIDITY', 'timeframe': '4H', 'known_ts': snap.now - oil_risk.H4}]
     return snap, cfg, levels
 
@@ -88,7 +88,7 @@ class OrganicOil(unittest.TestCase):
             result = engine.run_cycle(book, snap, cfg)
             self.assertEqual(result['action'], 'PLACE_LIMIT')
             order, = engine.pending_plans(book)
-            self.assertEqual((order['entry'], order['stop'], order['tp1'], order['tp2']), (96., 94.41, 97.65, 98.89))
+            self.assertEqual((order['entry'], order['stop'], order['tp1'], order['tp2']), (96., 94.41, 98.25, 98.89))
             self.assertTrue(oil_risk.is_organic(order))
             self.assertEqual(order['partials'], {'TP1': .5, 'TP2': .5})
             public = live_terminal.build(book, snap, result, cfg, engine)

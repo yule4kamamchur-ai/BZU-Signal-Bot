@@ -31,6 +31,8 @@ class TrendPullback(unittest.TestCase):
 
     def test_higher_timeframe_direction_survives_local_upswing(self):
         snap, cfg, _ = swing_fixture()
+        for tf in ('1H', '4H'):
+            snap.candles[tf] = [replace(bar, high=97.4, low=94.5) for bar in snap.candles[tf]]
         original = {'state': 'BULLISH_ACTIVE', 'side_1h': -1, 'side_4h': -1,
                     'active_structure': {'side': 1}, 'local_structure': {'side': 1}}
         with patch.object(direction, 'market_regime', return_value=original):

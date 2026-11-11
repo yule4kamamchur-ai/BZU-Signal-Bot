@@ -82,8 +82,9 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         return 'SCORE_BELOW_65'
     if row.get('score_source') != 'CONTEXT':
         return 'CONTEXT_NOT_EVALUATED'
-    if row.get('continuation_entry') and side*(tp1-entry)/risk < oil_risk.CONTINUATION_TP1_MIN-1e-8:
-        return 'CONTINUATION_TP1_RR'
+    gate = oil_risk.entry_tp1_error(side, entry, risk, tp1)
+    if gate:
+        return gate
     if oil_risk.is_organic(row):
         rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
         if not (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
@@ -166,6 +167,14 @@ REVERSAL_RELATION = 'CONFIRMED_REVERSAL'
 
 def continuation_setup(source, kind, setup):
     return (source or (kind if kind != 'STRUCTURAL_LEVEL' else None) or setup or '').upper() in CONTINUATION_SETUPS
+
+
+def pending_tp1_error(plan):
+    target = plan.get('tp1') or plan.get('tp')
+    risk = plan.get('risk')
+    if target is not None and risk is not None:
+        return oil_risk.entry_tp1_error(plan['side'], plan['entry'], risk, target)
+    return None
 
 
 def post_tp_exhaustion(side, snapshot, trades, adr):
@@ -498,7 +507,8 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     relation = (geometry or {}).get('trend_rel')
     trend = relation == 'WITH_TREND'
     runner = trend or relation == REVERSAL_RELATION
-    projected_runner = trend or (runner and bool((geometry or {}).get('reversal_exhaustion_bonus')))
+    projected_runner = trend or (runner and bool((geometry or {}).get('reversal_exhaustion_bonus')
+                                                  or (geometry or {}).get('structure_reclaim')))
     market = market_plan(geometry or {})
     trigger = (geometry or {}).get('market_trigger') if market else None
     score_floor = min_plan_score(relation, trigger)
@@ -625,10 +635,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
           'RISK_BELOW_FLOOR' if risk < floor - 1e-8 else
           'RISK_TOO_WIDE' if not safe else
           zone_error if zone_error else
-          'INSUFFICIENT_ROOM' if not room else
+          oil_risk.entry_tp1_error(side, entry, risk, tp1) or ('INSUFFICIENT_ROOM' if not room else
           window if window else
           'STRUCTURAL_TP1_REQUIRED' if not structural_tp1 else
-          'STRUCTURAL_TP2_REQUIRED' if not structural_tp2 else None)
+          'STRUCTURAL_TP2_REQUIRED' if not structural_tp2 else None))
     breaker = m5_breaker(zone, snapshot, tick)
     reaction_only = relation is None and (inside or bool(breaker) or bool((geometry or {}).get('reaction_only')))
     condition = ('IN_ZONE_M5_RECLAIM' if reaction_only and inside else 'M5_BREAKER_RETEST' if reaction_only and breaker else
@@ -830,7 +840,8 @@ def organic_anchors(snapshot, cfg, context, engine):
         anchor = cfg.core.make_anchor(
             name,
             'LONG' if side == 1 else 'SHORT', entry, setup['invalidation'],
-            family, family, context, score=75, evidence=evidence, ttl_minutes=30)
+            family, family, context, score=84 if family == 'RECLAIM_BREAKER' else 75,
+            evidence=evidence, ttl_minutes=30)
         if anchor is not None:
             anchor.id = engine.ident(family, side, known, entry)
             anchor.created_ts = known
@@ -896,8 +907,9 @@ def zone_origin(zone, snapshot, side, tick, engine, cfg=None, regime=None):
             sweep = witness.get('sweep') or {}
             return {'confirmed': True, 'timeframe': witness['wave_proof']['timeframe'],
                     'reference': witness['reference'], 'sweep': sweep,
-                    'break_known_ts': witness['known_ts'] if sweep.get('pattern') != 'WICK_RECLAIM' else None,
-                    'displacement_known_ts': witness['known_ts'],
+                    'break_known_ts': witness['wave_proof'].get('break_ts', witness['known_ts'])
+                                      if sweep.get('pattern') != 'WICK_RECLAIM' else None,
+                    'displacement_known_ts': witness['wave_proof'].get('break_ts', witness['known_ts']),
                     'wave_confirmed': True, 'reason': 'CURRENT_WAVE_CONFIRMED'}
         return {'confirmed': False, 'reason': 'CURRENT_WAVE_PROOF_EXPIRED'}
     if zone.get('kind') in ORGANIC_FORMATIONS:

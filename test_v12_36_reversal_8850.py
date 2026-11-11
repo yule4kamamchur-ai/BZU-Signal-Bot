@@ -33,6 +33,10 @@ def reversal_snapshot(price=88.73):
     return snap,cfg
 
 
+def known_target(level):
+    return [{'level':level, 'kind':'1H_LIQUIDITY', 'timeframe':'1H', 'known_ts':NOW-STEP}]
+
+
 def filled_short(cfg, ts):
     entry, stop, tp1, tp2 = 89.63,91.62,87.44,85.85
     plan={'id':'incumbent-185','order_id':'incumbent-185','event_key':'incumbent-185','side':-1,
@@ -78,7 +82,8 @@ class Reversal8850(unittest.TestCase):
         self.assertTrue(direction.reversal_sweep_override(1,zone,snap,cfg.tick))
         self.assertFalse(direction.reversal_sweep_override(1,zone,replace(snap,now=NOW-1),cfg.tick))
         book=engine.new_state(cfg)
-        with patch.object(direction,'execution_regime',return_value=REGIME),patch.dict(os.environ,ENV):
+        with patch.object(direction,'execution_regime',return_value=REGIME), \
+             patch.object(engine,'full_targets',return_value=known_target(91.39)), patch.dict(os.environ,ENV):
             result=engine.run_cycle(book,snap,cfg)
         self.assertEqual(result['action'],'ACTIVE_ENTRY')
         plan,=engine.active_plans(book)
@@ -94,6 +99,7 @@ class Reversal8850(unittest.TestCase):
         incumbent['mfe_r']=incumbent['max_favorable_r']=.55
         book['active']=incumbent
         with patch.object(direction,'execution_regime',return_value=REGIME), \
+             patch.object(engine,'full_targets',return_value=known_target(91.39)), \
              patch.object(engine,'advance_lifecycle'),patch.dict(os.environ,ENV):
             result=engine.run_cycle(book,snap,cfg)
         self.assertEqual(result['analysis']['portfolio_arbitration']['decision'],'PEAK_REVERSAL_FLIP')
@@ -109,13 +115,15 @@ class Reversal8850(unittest.TestCase):
     def test_reclaim_breaker_plants_limit_at_recovered_level(self):
         snap,cfg=reversal_snapshot()
         candles={**snap.candles,'15m':[*snap.candles['15m'],
-                 engine.Candle(NOW,89.18,90.05,89.16,89.97,200.)]}
-        candles['3m']=[replace(bar,ts=bar.ts+STEP,open=89.98,high=90.02,low=89.92,close=89.98)
+                 engine.Candle(NOW,89.18,90.05,89.16,89.97,200.),
+                 engine.Candle(NOW+STEP,89.97,90.02,89.63,89.95,200.)]}
+        candles['3m']=[replace(bar,ts=bar.ts+2*STEP,open=89.98,high=90.02,low=89.92,close=89.98)
                        for bar in candles['3m']]
-        snap=replace(snap,now=snap.now+STEP,ticker_ts=snap.ticker_ts+STEP,price=89.98,bid=89.97,ask=89.99,candles=candles)
+        snap=replace(snap,now=snap.now+2*STEP,ticker_ts=snap.ticker_ts+2*STEP,price=89.98,bid=89.97,ask=89.99,candles=candles)
         engine.oil_risk.snapshot_profile(snap).update(adr_d1=4.41,adr_distance=.45*4.41)
         book=engine.new_state(cfg)
-        with patch.object(direction,'execution_regime',return_value=REGIME),patch.dict(os.environ,ENV):
+        with patch.object(direction,'execution_regime',return_value=REGIME), \
+             patch.object(engine,'full_targets',return_value=known_target(92.43)), patch.dict(os.environ,ENV):
             result=engine.run_cycle(book,snap,cfg)
         self.assertEqual(result['action'],'PLACE_LIMIT')
         plan,=engine.pending_plans(book)

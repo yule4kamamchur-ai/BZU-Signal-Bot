@@ -6,9 +6,14 @@ INSTRUMENT = 'BZ-USDT-SWAP'
 MODEL = 'ORGANIC_OIL_V32'
 M15, H1, H4, DAY = 900_000, 3_600_000, 14_400_000, 86_400_000
 TP1_MIN, TP1_MAX, TP2_MIN, TP2_MAX = 1.00, 1.45, 1.80, 2.25
-CONTINUATION_TP1_MIN = 1.35
+ENTRY_TP1_MIN = 1.35
 TARGET_1_FALLBACK = 1.15
 
+
+def entry_tp1_error(side, entry, risk, target):
+    if side in (-1, 1) and risk > 0 and side * (target - entry) < ENTRY_TP1_MIN * risk - 1e-8:
+        return 'BLOCKED_LOW_RR_135'
+    return None
 
 def closed(rows, step, as_of):
     return sorted({c.ts: c for c in rows if c.confirmed and c.ts % step == 0
@@ -79,7 +84,7 @@ def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
             'atr_1h': atr1h, 'atr_source': '1H_TRUE_RANGE' if hourly else '15M_X_2_15' if atr1h else 'UNAVAILABLE',
             'adr_d1': adr, 'adr_days': len(days), 'session_multiplier': multiplier,
             'floor': floor, 'target': target, 'cap': cap, 'volatility_distance': volatility,
-            'adr_distance': adr_stop, 'min_rr1': TP1_MIN, 'min_rr2': TP2_MIN}
+            'adr_distance': adr_stop, 'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
 
 
 def enabled(cfg):

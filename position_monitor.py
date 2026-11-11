@@ -144,13 +144,22 @@ def observe_structure(position, snapshot, ts, cfg, engine):
     position['protection_structure_bucket'] = bucket
     entered = position.get('filled_ts') or ts
     as_of = replace(snapshot, now=ts)
-    for side in (-position['side'], position['side']):
-        proof = engine.policy.structural_flip(as_of, side, entered, cfg.tick, engine, timeframes=('15m', '1H'))
-        if not proof['confirmed'] or proof['known_ts'] <= position.get(
-                'protection_structure_ts', position.get('adverse_choch_ts', 0)):
-            continue
-        position.update(protection_structure_ts=proof['known_ts'], protection_structure_side=side)
-
+    rows = _recent(as_of, '15m', 15)
+    atr = engine.atr(rows[:-1])
+    position.pop('adverse_impulse_ts', None)
+    if rows and atr > 0:
+        impulse = rows[-1]
+        if impulse.ts >= entered and -position['side'] * (impulse.close - impulse.open) >= max(cfg.tick, .60 * atr):
+            position['adverse_impulse_ts'] = impulse.ts + STEPS['15m']
+    proofs = [engine.policy.structural_flip(as_of, side, entered, cfg.tick, engine)
+              for side in (-position['side'], position['side'])]
+    proof = max((p for p in proofs if p['confirmed']),
+                key=lambda p: (p['known_ts'], p['timeframe'] == '15m'), default=None)
+    previous = position.get('protection_structure_ts', position.get('adverse_choch_ts', 0))
+    if proof and (proof['known_ts'] > previous or
+                  (proof['known_ts'] == previous and not position.get('protection_structure_timeframe'))):
+        position.update(protection_structure_ts=proof['known_ts'], protection_structure_side=proof['side'],
+                        protection_structure_timeframe=proof['timeframe'], protection_structure_level=proof['level'])
 
 def adverse_structure(position, ts):
     side = position.get('protection_structure_side')
@@ -190,7 +199,7 @@ def guard(position, ts):
             'round_trip_trigger_r': .10, 'round_trip_mfe_r': ROUND_TRIP_MFE,
             'stale_mfe_r': STALE_MFE, 'structure': 'ADVERSE' if confirmed_break else (
                 'COUNTER_TREND' if regime_opposes else position.get('position_structure_status', 'UNKNOWN')),
-            'regime': regime}
+            'adverse_exit_r': -.35, 'regime': regime}
 
 
 def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
@@ -210,8 +219,18 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
                 decision['exit_trigger_level'] = stop
             else:
                 decision['stop'] = stop
+    impulse_ts = position.get('adverse_impulse_ts', 0)
+    market = position.get('order_type') == 'MARKET' or (
+        not position.get('order_type') and position.get('action_type') == 'ACTIVE_ENTRY')
+    if (reason is None and market and 2 <= bars <= 6 and info['time_in_trade_ms'] <= 6 * STEPS['15m']
+            and peak < .15 - EPS and rr <= -.45 + EPS
+            and impulse_ts and 0 <= ts - impulse_ts < STEPS['15m']):
+        reason = 'CLOSED_EARLY_IMPULSE_FAILURE'
+    fresh_m15_break = (bars >= 2 and info['structure'] == 'ADVERSE'
+                       and position.get('protection_structure_timeframe') == '15m'
+                       and 0 <= ts - position['protection_structure_ts'] < STEPS['15m'])
     if reason is None and info['structure'] in ('ADVERSE', 'COUNTER_TREND') and (
-            (peak >= .30 - EPS and rr < -EPS) or (bars >= 12 and rr <= -.15 + EPS)):
+            fresh_m15_break or rr <= info['adverse_exit_r'] + EPS or (peak >= .30 - EPS and rr < -EPS)):
         reason = 'CLOSED_ADVERSE_STRUCTURE_SHIFT'
     if reason is None and bars >= ROUND_TRIP_BARS and peak >= ROUND_TRIP_MFE - EPS and rr <= .10 + EPS:
         reason = 'CLOSED_ROUND_TRIP_BE'

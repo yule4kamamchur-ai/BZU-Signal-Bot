@@ -189,38 +189,47 @@ def market_regime(snapshot, tick, engine):
 
 
 def execution_regime(snapshot, cfg, engine):
-    """Keep the confirmed hourly direction through an intraday retracement."""
+    """Use confirmed intraday structure when its move reaches the ADR threshold."""
     import oil_risk
 
     regime = market_regime(snapshot, cfg.tick, engine)
     if not oil_risk.enabled(cfg):
         return regime
+    from market_wave import structure_sync
+
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
-    side = one or four
-    if not side or (one and four and one != four):
+    sync = structure_sync(snapshot, cfg.tick, engine) if one or four else {}
+    side = sync.get('side') or one or four
+    if not side or (not sync and one and four and one != four):
         return regime
     m15 = closed(snapshot, '15m')
     local = regime.get('active_structure', {}).get('side') or regime.get('local_structure', {}).get('side')
     pullback = local == -side or (len(m15) >= 3 and side * (snapshot.price - m15[-3].close) < -cfg.tick)
-    return {**regime, 'state': 'BULLISH_ACTIVE' if side == 1 else 'BEARISH_ACTIVE',
-            'trend_anchor_side': side, 'trend_anchor_timeframe': '1H' if one else '4H',
+    phase = None
+    if sync:
+        phase = ('BULLISH' if side == 1 else 'BEARISH') + ('_PULLBACK' if pullback else '_IMPULSE')
+    return {**regime, 'state': 'BULLISH_ACTIVE' if side == 1 else 'BEARISH_ACTIVE', 'wave_phase': phase,
+            'trend_anchor_side': side, 'trend_anchor_timeframe': '15m' if sync else '1H' if one else '4H',
+            'structure_sync': sync,
             'trend_phase': ('BULLISH_PULLBACK_OPPORTUNITY' if side == 1 else 'BEARISH_PULLBACK_OPPORTUNITY')
                            if pullback else 'TREND_CONTINUATION'}
 
 
 def structural_flip(snapshot, side, since, tick, engine, timeframes=('15m', '1H')):
     """Only a newly observed CLOSED 15m/1H BOS authorizes a pending flip."""
+    breaks = []
     for tf in timeframes:
-        rows=closed(snapshot,tf)
+        rows = closed(snapshot, tf)[-96:]
         points = engine.pivots(rows, strength=1 if tf == '15m' else 2)
-        for i in range(max(7,len(rows)-3),len(rows)):
+        for i in range(max(7, len(rows) - 3), len(rows)):
             known = rows[i].ts + TF[tf]
             if known <= since:
                 continue
             pivot = ict_methodology.body_break(rows, i, points, side, tick, TF[tf])
             if pivot:
-                return {'confirmed':True,'timeframe':tf,'known_ts':known,'side':side,'level':pivot['level']}
-    return {'confirmed':False,'side':side}
+                breaks.append({'confirmed': True, 'timeframe': tf, 'known_ts': known,
+                               'side': side, 'level': pivot['level']})
+    return max(breaks, key=lambda p: p['known_ts'], default={'confirmed': False, 'side': side})
 
 
 def local_structure(snapshot, tick, engine):
@@ -238,6 +247,39 @@ def local_structure(snapshot, tick, engine):
             if not structural_flip(snapshot,-sign,since,tick,engine)['confirmed']:
                 return {'side':sign,'ema50':ema,'known_ts':since,'swing_levels':[p['level'] for p in swings]}
     return {'side':0,'ema50':ema,'known_ts':rows[-1].ts+900_000}
+
+
+def bos_recovers_level(snapshot, side, since, level, tick, engine):
+    """A break after exit and a closed recovery of the old entry unlock the side."""
+    step = TF['15m']
+    rows = closed(snapshot, '15m')[-96:]
+    points = engine.pivots(rows, strength=1)
+    recovered = False
+    for i, bar in enumerate(rows):
+        if bar.ts < since:
+            continue
+        recovered = recovered or bool(ict_methodology.body_break(rows, i, points, side, tick, step))
+        if recovered and side * (bar.close - level) >= tick - 1e-8:
+            return True
+    return False
+
+
+def m15_ema_structure(snapshot, tick, engine):
+    rows = closed(snapshot, '15m')[-96:]
+    if len(rows) < 50 or snapshot.now - rows[-1].ts >= 3 * TF['15m']:
+        return 0, ()
+    ema20 = ema50 = rows[0].close
+    for bar in rows[1:]:
+        ema20 += (bar.close - ema20) * 2 / 21
+        ema50 += (bar.close - ema50) * 2 / 51
+    points = engine.pivots(rows, strength=1)
+    highs = [p['level'] for p in points if p['kind'] == 'HIGH'][-2:]
+    lows = [p['level'] for p in points if p['kind'] == 'LOW'][-2:]
+    for side in (1, -1):
+        if all(len(pair) == 2 and side * (pair[-1] - pair[0]) >= tick - 1e-8
+               for pair in (highs, lows)):
+            return side, (ema20, ema50)
+    return 0, ()
 
 
 def multi_bar_reversals(rows, side, tick, *, lookback=4):
@@ -282,9 +324,12 @@ def reversal_sweep_override(side, zone, snapshot, tick):
     """Use a fresh witnessed wick/reclaim to override only the local wave."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
-    if zone.get('kind') in ('MULTIBAR_SWEEP', 'RECLAIM_BREAKER'):
-        if (sweep.get('side') != side or not 0 <= snapshot.now-zone.get('known_ts',0) < (
-                6*3_600_000 if zone['kind'] == 'RECLAIM_BREAKER' else 30*60_000)):
+    if zone.get('kind') == 'RECLAIM_BREAKER':
+        from market_wave import reclaim_is_intact
+
+        return reclaim_is_intact(side, zone, snapshot, tick)
+    if zone.get('kind') == 'MULTIBAR_SWEEP':
+        if sweep.get('side') != side or not 0 <= snapshot.now-zone.get('known_ts',0) < 30*60_000:
             return False
         rows = [bar for bar in closed(snapshot,'15m') if bar.ts+900_000 <= sweep.get('known_ts',0)]
         return (any(proof == sweep for proof in multi_bar_reversals(rows, side, tick))
@@ -311,6 +356,9 @@ def reversal_sweep_override(side, zone, snapshot, tick):
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None, *, require_macro=True):
     from market_wave import reversal_override
 
+    if ((zone or {}).get('kind') == 'RECLAIM_BREAKER'
+            and regime.get('structure_sync', {}).get('side') == -side):
+        return False, 'M15_STRUCTURE_OPPOSES_ENTRY'
     if reversal_override(side, zone, snapshot, tick, require_macro=require_macro):
         return True, 'CONFIRMED_EXTREME_REVERSAL'
     local_override = reversal_sweep_override(side, zone, snapshot, tick)

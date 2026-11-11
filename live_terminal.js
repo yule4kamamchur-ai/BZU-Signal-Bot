@@ -193,7 +193,7 @@ function organicPlan(row) {
 }
 function targetRatiosValid(row, rr1, rr2) {
   return organicPlan(row) ?
-    rr1 >= 1 - 1e-8 && rr1 <= 1.45 + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
+    rr1 >= 1.35 - 1e-8 && rr1 <= 1.45 + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
     rr1 >= 1.4 - 1e-8 && rr2 >= 2.2 - 1e-8;
 }
 function marketCandidate(row) {
@@ -829,7 +829,7 @@ function management(order, tracker, price, usable) {
   }
   if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
   if (order.position_guard?.mode === 'ROUND_TRIP') return 'Round-Trip активний. Вихід при +0.10R або нижче.';
-  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Зустрічна структура активує вихід за умовою просадки.';
+  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Вихід після зламу M15 або просадки від −0.35R при зустрічній структурі.';
   if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп вичерпано. Чекаємо підтвердження дії за журналом.';
   if (order.position_guard?.mode === 'STALE_TIGHTENED') return 'Тайм-стоп застосовано. Чинний SL ' + format(order.stop) + '.';
   return 'Зберігаємо поточний стоп до TP1 ' + format(order.tp1) + '.';
@@ -990,6 +990,10 @@ function render() {
   $('stamp').textContent=stamp(state.snapshot_ts); $('instrument').textContent=state.instrument;
   $('regime').textContent=({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
+  const structureSync=state.structure_sync;
+  $('regime').title=structureSync?.proof === 'M15_BOS_75_ADR'
+    ? 'Пробій M15 ' + format(structureSync.level) + ' · хвиля ' + Math.round(structureSync.wave_adr * 100) + '% ADR'
+    : '';
   $('state-status').textContent=usable ? 'Журнал актуальний' : state.status==='DATA_HOLD' ? 'Дані на перевірці' : 'Потрібен новий зліпок';
   $('capacity').textContent=(state.occupied_slots ?? state.orders.length) + '/' + (state.max_new_pending ?? 2) + ' місць';
   $('daily').textContent=state.daily ? state.daily.entries + ' уг. · ' + signed(state.daily.net_r) + 'R' : '—';
