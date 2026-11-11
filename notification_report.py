@@ -93,6 +93,8 @@ def close_reason(trade):
     reason = {'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
               'TAKE_PROFIT': 'тейк-профіт',
               'CLOSED_ROUND_TRIP_BE': 'повернення до входу після піку',
+              'CLOSED_REVERSAL_FLIP_PROFIT': 'зафіксовано прибуток перед переворотом',
+              'CLOSED_BOUNCE_BREAKEVEN': 'спрацював стоп на вході після поглинання',
               'CLOSED_STALE_TIME_STOP': 'шестигодинний тайм-стоп',
               'CLOSED_ADVERSE_STRUCTURE_SHIFT': 'зміна структури або режиму проти позиції',
               'CLOSED_REPLACED_BY_FRESH_SETUP': 'заміна свіжим сетапом A або A+',

@@ -240,10 +240,55 @@ def local_structure(snapshot, tick, engine):
     return {'side':0,'ema50':ema,'known_ts':rows[-1].ts+900_000}
 
 
+def multi_bar_reversals(rows, side, tick, *, lookback=4):
+    """Witness a raid or separated equal extrema followed by a closed reclaim."""
+    step = 900_000
+    field = 'low' if side == 1 else 'high'
+    for index in range(max(6,len(rows)-lookback), len(rows)):
+        confirm = rows[index]
+        for delay in (1,2):
+            raid_index = index-delay
+            raid = rows[raid_index]
+            if not ict_methodology.reversal_engulfing(raid, confirm, side, tick, delay*step):
+                continue
+            extreme = getattr(raid,field)
+            if delay == 2:
+                middle = rows[raid_index+1]
+                if (not middle.confirmed or middle.ts-raid.ts != step
+                        or side*(getattr(middle,field)-extreme) < -tick/2):
+                    continue
+            past = rows[max(0,raid_index-14):raid_index]
+            reference = min(past,key=lambda bar:side*getattr(bar,field))
+            level = getattr(reference,field)
+            if side*(confirm.close-level) < tick-1e-8:
+                continue
+            # A W or M requires a separating bounce, not adjacent equal ticks.
+            equal = [bar for bar in past[:-1] if abs(getattr(bar,field)-extreme) <= .25+1e-8]
+            double = next((bar for bar in reversed(equal) if any(
+                bar.ts < middle.ts < raid.ts and
+                side*((middle.high if side==1 else middle.low)-extreme) >= .25 for middle in past)),None)
+            swept = side*(level-extreme) >= tick-1e-8
+            if not swept and double is None:
+                continue
+            if double is not None:
+                reference, level = double, getattr(double,field)
+            yield {'side':side,'level':level,'extreme':extreme,'raid_ts':raid.ts,
+                   'reference_known_ts':reference.ts+step,'known_ts':confirm.ts+step,
+                   'reclaim_close':confirm.close,'pattern':'DOUBLE_TEST_ENGULFING' if double else 'SWEEP_ENGULFING'}
+            break
+
+
 def reversal_sweep_override(side, zone, snapshot, tick):
     """Use a fresh witnessed wick/reclaim to override only the local wave."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
+    if zone.get('kind') in ('MULTIBAR_SWEEP', 'RECLAIM_BREAKER'):
+        if (sweep.get('side') != side or not 0 <= snapshot.now-zone.get('known_ts',0) < (
+                6*3_600_000 if zone['kind'] == 'RECLAIM_BREAKER' else 30*60_000)):
+            return False
+        rows = [bar for bar in closed(snapshot,'15m') if bar.ts+900_000 <= sweep.get('known_ts',0)]
+        return (any(proof == sweep for proof in multi_bar_reversals(rows, side, tick))
+                and side*(snapshot.price-sweep['extreme']) >= -tick/2)
     if (zone.get('kind') not in ('SWEEP_REVERSAL', 'TURTLE_SOUP')
             or sweep.get('side') != side or sweep.get('pattern') != 'WICK_RECLAIM'
             or not 0 <= snapshot.now - zone.get('known_ts', 0) < 30 * 60_000):

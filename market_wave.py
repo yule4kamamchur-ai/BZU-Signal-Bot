@@ -8,7 +8,7 @@ M15 = 900_000
 M5 = 300_000
 TREND_ZONE_AGE = 6 * 60 * 60_000
 TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION'})
-REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH'})
+REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER'})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
 
@@ -315,6 +315,56 @@ def _trend_sweep(rows, side, step, tick, engine):
                               pivot_ts=pivot['ts'], reference_known_ts=pivot['known_ts'] + step)
 
 
+def exhausted_adr(rows, sweep, adr):
+    """Measure the adverse leg in the preceding 24 hours of closed M15."""
+    if not adr or not sweep.get('raid_ts'):
+        return False
+    side, raid_ts = sweep['side'], sweep['raid_ts']
+    prior = [bar for bar in rows if raid_ts-96*M15 <= bar.ts < raid_ts]
+    if not prior:
+        return False
+    origin = max(bar.high for bar in prior) if side == 1 else min(bar.low for bar in prior)
+    return side*(origin-sweep['extreme']) >= .80*adr-1e-8
+
+
+def _multibar_zones(rows, tick, engine, adr):
+    import directional_policy as direction
+
+    points = engine.pivots(rows[-50:],strength=1)
+    for side in (1,-1):
+        for sweep in direction.multi_bar_reversals(rows,side,tick,lookback=36):
+            extreme = sweep['extreme']
+            raid_index = next(i for i,bar in enumerate(rows) if bar.ts == sweep['raid_ts'])
+            exhausted = exhausted_adr(rows,sweep,adr)
+            raid = rows[raid_index]
+            confirm_index = raid_index + (sweep['known_ts']-raid.ts)//M15-1
+            confirm = rows[confirm_index]
+            body_edge = min(raid.open,raid.close) if side == 1 else max(raid.open,raid.close)
+            width = min(.35,max(2*tick,side*(body_edge-extreme),side*(sweep['level']-extreme),
+                                .5*side*(confirm.close-extreme)))
+            bounds = (extreme,round(extreme+side*width,8))
+            yield {**_zone('MULTIBAR_SWEEP',side,*sorted(bounds),confirm,M15,sweep['level'],
+                           exhausted_adr=exhausted),'sweep':sweep}
+            kind = 'HIGH' if side == 1 else 'LOW'
+            refs = [p for p in points if p['kind']==kind and p['known_ts']+M15 <= raid.ts
+                    and side*(p['level']-extreme) >= .35]
+            if not refs:
+                continue
+            reference = refs[-1]
+            level = reference['level']
+            start = confirm_index
+            for index in range(start,min(len(rows),start+13)):
+                atr = engine.atr(rows[max(0,index-20):index])
+                if not ict.reclaim_break(rows,index,side,level,tick,atr):
+                    continue
+                width = min(.25,max(2*tick,.30*atr))
+                low, high = sorted((level,level-side*width))
+                yield {**_zone('RECLAIM_BREAKER',side,low,high,rows[index],M15,level,
+                               pivot_ts=reference['ts'],reference_known_ts=reference['known_ts']+M15,
+                               exhausted_adr=exhausted),'sweep':sweep}
+                break
+
+
 def zones(snapshot, cfg, engine, regime):
     """Use M5 only inside an established M15/HTF direction or a witnessed raid."""
     import directional_policy as direction
@@ -343,8 +393,10 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_ote(m15, trend, tick, engine))
         results.extend(_trend_sweep(m15, trend, M15, tick, engine))
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
+    if oil_risk.enabled(cfg):
+        results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
     cache[key] = [z for z in results if z['high'] - z['low'] >= tick - 1e-8
-                  and 0 <= snapshot.now - z['known_ts'] < (TREND_ZONE_AGE if z['kind'] in TREND_ZONES else 30 * 60_000)]
+                  and 0 <= snapshot.now - z['known_ts'] < (TREND_ZONE_AGE if z['kind'] in TREND_ZONES or z['kind']=='RECLAIM_BREAKER' else 30 * 60_000)]
     return cache[key]
 
 
@@ -358,6 +410,10 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
     """Consume the sweep that the planner already reconstructed from candles."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
+    if zone.get('kind') in ('MULTIBAR_SWEEP','RECLAIM_BREAKER'):
+        import directional_policy as direction
+
+        return direction.reversal_sweep_override(side, zone, snapshot, tick)
     return (zone.get('kind') in REVERSALS and sweep.get('side') == side
             and (not require_macro or (sweep.get('macro_timeframe') in ('1H', '4H', 'D1')
                  and sweep.get('reference_known_ts', 0) <= sweep.get('raid_ts', -1)

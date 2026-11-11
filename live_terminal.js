@@ -197,8 +197,9 @@ function targetRatiosValid(row, rr1, rr2) {
     rr1 >= 1.4 - 1e-8 && rr2 >= 2.2 - 1e-8;
 }
 function marketCandidate(row) {
-  return row.order_type === 'MARKET' && row.trend_rel === 'WITH_TREND' &&
-    ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern);
+  return row.order_type === 'MARKET' &&
+    ((row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+     (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function validCandidate(row) {
   if (!row || ![1,-1].includes(row.side) || !['15m','1H','4H'].includes(row.timeframe)) return false;
@@ -207,7 +208,7 @@ function validCandidate(row) {
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
-    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
+    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
     'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
@@ -215,7 +216,8 @@ function validCandidate(row) {
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
-    (row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
+    (row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
+      row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
       row.entry >= row.low - .08000001 && row.entry <= row.high + .08000001 :
       row.side * (row.entry - proximal) >= 0 && row.side * (row.entry - proximal) <= .45 * risk + 1e-8) :
     (!outside || (row.side * (row.entry - proximal) >= 0 &&
@@ -245,7 +247,7 @@ function targetExhausted(row, price) {
 }
 function followsBias(row) {
   return !state.primary_bias || row.side === state.primary_bias ||
-    (row.reversal_override === true && ['SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH'].includes(row.kind));
+    row.reversal_override === true;
 }
 function actionablePlan(row, price, tracking = false) {
   if (row.actionable !== true || row.execution_admitted !== true || !['A','B+'].includes(row.grade) ||
@@ -256,10 +258,11 @@ function actionablePlan(row, price, tracking = false) {
   if (marketCandidate(row)) {
     const risk = row.side * (row.entry - row.stop);
     const proximal = row.side === 1 ? row.high : row.low;
-    const nearZone = price >= row.low - .08000001 && price <= row.high + .08000001;
+    const tolerance = row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? 1e-8 : .08000001;
+    const nearZone = price >= row.low - tolerance && price <= row.high + tolerance;
     const distance = row.side * (price - proximal);
     return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
-      (nearZone || (row.market_trigger.pattern !== 'IN_ZONE_TOUCH' && distance > 0 && distance <= .45 * risk + 1e-8));
+      (nearZone || (!['IN_ZONE_TOUCH','CONFIRMED_REVERSAL'].includes(row.market_trigger.pattern) && distance > 0 && distance <= .45 * risk + 1e-8));
   }
   return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
     (inEntryWindow(row, price) || stage === 'READY' ||
@@ -554,6 +557,7 @@ function zoneName(kind) {
            M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
            BREAKER_BLOCK:'Дзеркальний рівень', BOS_CONTINUATION:'Мілкий ретест пробою', FVG_PULLBACK:'Відкат у FVG',
            FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
+           MULTIBAR_SWEEP:'Свіп із поглинанням', RECLAIM_BREAKER:'Ретест повернутого рівня',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            FLAG_RETEST:'Ретест пробою прапора', BEARISH_BREAKER:'Дзеркальний опір',
            BULLISH_BREAKER:'Дзеркальна підтримка', MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';

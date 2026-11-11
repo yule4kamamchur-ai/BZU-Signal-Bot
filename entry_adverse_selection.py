@@ -88,6 +88,15 @@ def approach(snapshot, atr15, side=0, zone=None, tick=.001, stop=None, *, trend=
             'evaluated_timeframe':tf,'action':'CONFIRMATION_REQUIRED' if blocked else 'PRECISION_ENTRY'}
 
 
+def continuation_market_retracement(zone, side, quote):
+    proof = zone.get('wave_proof') or {}
+    start, end = proof.get('leg_start'), proof.get('leg_end')
+    if start is None or end is None or side*(end-start) <= 0:
+        return False
+    retracement = side*(end-quote)/abs(end-start)
+    return .35-1e-8 <= retracement <= .50+1e-8
+
+
 def confirmed_breakout_limit(zone):
     """Keep the shallow retest as a LIMIT; an extension alone is not a veto."""
     proof = zone.get('wave_proof') or {}

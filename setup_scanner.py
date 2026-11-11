@@ -82,6 +82,8 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         return 'SCORE_BELOW_65'
     if row.get('score_source') != 'CONTEXT':
         return 'CONTEXT_NOT_EVALUATED'
+    if row.get('continuation_entry') and side*(tp1-entry)/risk < oil_risk.CONTINUATION_TP1_MIN-1e-8:
+        return 'CONTINUATION_TP1_RR'
     if oil_risk.is_organic(row):
         rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
         if not (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
@@ -92,7 +94,10 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] == 'IN_ZONE_TOUCH':
+        if trigger['pattern'] == 'CONFIRMED_REVERSAL':
+            if not low-1e-8 <= entry <= high+1e-8:
+                return 'ENTRY_OUTSIDE_ZONE'
+        elif trigger['pattern'] == 'IN_ZONE_TOUCH':
             if not low - MARKET_ZONE_TOLERANCE - 1e-8 <= entry <= high + MARKET_ZONE_TOLERANCE + 1e-8:
                 return 'ENTRY_OUTSIDE_ZONE'
         elif not 0 <= side * (entry - proximal) <= MARKET_CHASE_R * risk + 1e-8:
@@ -153,15 +158,60 @@ def target_crossed(side, snapshot, target, known):
                for bar in (*minute, *m15))
 
 
+CONTINUATION_SETUPS = frozenset({'CONTINUATION_PULLBACK','PULLBACK_CONTINUATION','TREND_PULLBACK',
+    'BOS_CONTINUATION','FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
+    'ACCELERATION_PULLBACK_REENTRY','ACCEPTANCE_RETEST_CONTINUATION','MOMENTUM_NO_PULLBACK_CONTINUATION'})
+REVERSAL_RELATION = 'CONFIRMED_REVERSAL'
+
+
+def continuation_setup(source, kind, setup):
+    return (source or (kind if kind != 'STRUCTURAL_LEVEL' else None) or setup or '').upper() in CONTINUATION_SETUPS
+
+
+def post_tp_exhaustion(side, snapshot, trades, adr):
+    """Hold a new continuation until a completed TP wave has reset."""
+    if not adr or adr <= 0:
+        return False
+    last = max((trade for trade in trades if trade.get('side')==side and
+                trade.get('close_reason')=='TAKE_PROFIT' and
+                0 <= snapshot.now-trade.get('closed_ts',0) < 8*wave.M15),
+               key=lambda trade:trade['closed_ts'], default=None)
+    if not last:
+        return False
+    exit_price = last['exit']
+    move = side*(exit_price-last['entry'])
+    if move < .80*adr-1e-8:
+        return False
+    corrected = -side*(snapshot.price-exit_price)
+    for timeframe,step in (('1m',60_000),('15m',wave.M15)):
+        for bar in snapshot.candles.get(timeframe,()):
+            if bar.confirmed and last['closed_ts'] <= bar.ts and bar.ts+step <= snapshot.now:
+                extreme = bar.low if side==1 else bar.high
+                corrected = max(corrected,-side*(extreme-exit_price))
+    return corrected < .382*move-1e-8
+
+
+def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
+    known = max(zone['known_ts'],confirmation_ts)
+    as_of = snapshot.ticker_ts
+    if (zone['kind']!='RECLAIM_BREAKER' and snapshot.trusted
+            and known <= as_of <= snapshot.now
+            and zone['low'] <= quote <= zone['high']):
+        return {'pattern':'CONFIRMED_REVERSAL','known_ts':known}
+    return None
+
+
 def market_plan(plan):
-    return (plan.get('trend_rel') == 'WITH_TREND' and plan.get('order_type') == 'MARKET'
-            and (plan.get('market_trigger') or {}).get('pattern') in MARKET_PATTERNS)
+    pattern = (plan.get('market_trigger') or {}).get('pattern')
+    return (plan.get('order_type') == 'MARKET' and (
+        (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
+        (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
 
 def min_plan_score(relation, market_trigger=None):
     if relation == 'WITH_TREND' and (market_trigger or {}).get('pattern') == 'BREAKOUT_CONTINUATION':
         return 60
-    return {'WITH_TREND': 52, 'COUNTER_TREND': 78}.get(relation, 60)
+    return {'WITH_TREND': 52, 'COUNTER_TREND': 78, REVERSAL_RELATION: 75}.get(relation, 60)
 
 
 def entry_window(side, price, entry, atr15, cfg, *, minimum=True, trend=False):
@@ -447,6 +497,8 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         return None
     relation = (geometry or {}).get('trend_rel')
     trend = relation == 'WITH_TREND'
+    runner = trend or relation == REVERSAL_RELATION
+    projected_runner = trend or (runner and bool((geometry or {}).get('reversal_exhaustion_bonus')))
     market = market_plan(geometry or {})
     trigger = (geometry or {}).get('market_trigger') if market else None
     score_floor = min_plan_score(relation, trigger)
@@ -482,7 +534,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     target_context = {**(context or {}), 'organic_oil_targets': bool(oil)}
     available = (engine.full_targets(target_context, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
                  if targets is None else targets)
-    destination = (organic_targets(entry, risk, side, available, snapshot, tick, engine, trend=trend,
+    destination = (organic_targets(entry, risk, side, available, snapshot, tick, engine, trend=projected_runner,
                                    fixed_tp1=geometry['tp1'] if frozen else None) if oil else
                    planned_targets(entry, risk, side, available, snapshot, cfg, engine, zone, a,
                                    quote=snapshot.price if not frozen else None))
@@ -515,7 +567,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     target_range = (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
                     oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8) if oil else (
                     rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8)
-    room = target_range and (destination['path_clear'] if trend else
+    room = target_range and (destination['path_clear'] if projected_runner else
                              barrier is None or side * (tp2 - barrier) <= 1e-8)
     if frozen:
         structural_tp1 = structural_target_price(
@@ -529,13 +581,13 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     if oil:
         if projection.get('tp1'):
             multiple = oil_risk.TARGET_1_FALLBACK
-            if trend:
+            if projected_runner:
                 multiple = 1.05 if tp1_source == 'R_MULTIPLE_1_05' else TREND_TP1_R
             structural_tp1 = abs(tp1 - engine.round_tick(
                 round(entry + side * multiple * risk, 10), tick, up=side == 1)) < 1e-8
         if frozen:
             structural_tp2 = structural_tp2 and (geometry.get('tp2_alignment') or {}).get('timeframe') in ('4H', 'D1')
-        if trend and projection.get('tp2'):
+        if projected_runner and projection.get('tp2'):
             structural_tp2 = abs(tp2 - engine.round_tick(
                 round(entry + side * 1.90 * risk, 10), tick, up=side == 1)) < 1e-8
     elif projection and zone.get('wave_proof') and zone.get('kind') in wave.CONTINUATIONS:
@@ -545,7 +597,8 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         if projection.get('tp2'):
             structural_tp2 = abs(tp2 - engine.round_tick(
                 round(entry + side * 2.30 * risk, 10), tick, up=side == 1)) < 1e-8
-    reversal = wave.reversal_override(side, zone, snapshot, tick, require_macro=bool(oil))
+    reversal = (wave.reversal_override(side, zone, snapshot, tick, require_macro=bool(oil))
+                or bool((geometry or {}).get('reversal_override')))
     volume = formation_volume(zone, snapshot)
     criteria = [('REGIME_ALIGNMENT', 25, primary_side == side or reversal),
                 ('UNTESTED', 20, freshness == 'UNTESTED'), ('HTF_OR_SWEEP', 20, htf_or_sweep),
@@ -556,13 +609,16 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         criteria.append(('TREND_PULLBACK', 12, ((geometry or {}).get('trend_phase') or '').endswith('PULLBACK_OPPORTUNITY')))
     if relation == 'COUNTER_TREND':
         criteria.append(('CONFIRMED_CHOCH_M5', 12, bool((geometry or {}).get('counter_confirmation'))))
+    if (geometry or {}).get('reversal_exhaustion_bonus'):
+        criteria.append(('ADR_EXHAUSTION_REVERSAL', 10, True))
     score = min(100, sum(weight for _, weight, passed in criteria if passed))
     import entry_adverse_selection as adverse
-    brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=trend)
+    brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     tracking_only = inside or (geometry or {}).get('reaction_only')
     window = None if market else entry_window(side, snapshot.price, entry, a, cfg,
-                          minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only, trend=trend)
+                          minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only,
+                          trend=runner)
     gate=('EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, trigger['known_ts'] if trigger else known) else
           'STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
           profile['gate'] if profile and profile['gate'] else
@@ -580,7 +636,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
         'score':score,'grade':'A' if score>=65 else 'B+' if score>=score_floor else 'C',
         'trend_rel': relation, 'trend_phase': (geometry or {}).get('trend_phase'),
-        'min_score': score_floor, 'entry_max_distance': TREND_LIMIT_MAX if trend else max_zone_distance(a, cfg),
+        'min_score': score_floor, 'entry_max_distance': TREND_LIMIT_MAX if runner else max_zone_distance(a, cfg),
         'order_type': 'MARKET' if market else 'LIMIT', 'market_trigger': trigger,
         'entry_status': 'MARKET_NOW' if market else 'LIMIT_READY',
         'checkpoints': (geometry or {}).get('checkpoints', destination.get('checkpoints', [])),
@@ -778,7 +834,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         if anchor is not None:
             anchor.id = engine.ident(family, side, known, entry)
             anchor.created_ts = known
-            anchor.expires_ts = known + (wave.TREND_ZONE_AGE if family in wave.TREND_ZONES else 2 * engine.TF['15m'])
+            anchor.expires_ts = known + (wave.TREND_ZONE_AGE if family in wave.TREND_ZONES or family == 'RECLAIM_BREAKER' else 2 * engine.TF['15m'])
             anchors.append(anchor)
     return anchors
 

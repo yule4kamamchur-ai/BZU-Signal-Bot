@@ -220,6 +220,31 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
     return decision
 
 
+def bounce_breakeven(position, snapshot, ts, price, tick):
+    """Return the newly confirmed adverse M15 engulfing timestamp."""
+    if (snapshot is None or position.get('tp1_hit')
+            or metrics(position,ts)['max_favorable_r'] < .40-EPS):
+        return None
+    side = position['side']
+    entry = position['entry']
+    if side*(entry-position['stop']) < tick-EPS or side*(price-entry) < tick-EPS:
+        return None
+    from ict_methodology import reversal_engulfing
+
+    step = STEPS['15m']
+    entered = position.get('filled_ts') or ts
+    rows = [bar for bar in snapshot.candles.get('15m',()) if bar.confirmed
+            and max(entered,ts-3*step) <= bar.ts and bar.ts+step <= ts]
+    if (len(rows)>=2 and ts-rows[-1].ts-step < step
+            and reversal_engulfing(rows[-2],rows[-1],-side,tick,step)):
+        return rows[-1].ts+step
+    return None
+
+
+def is_bounce_stop(position):
+    return bool(position.get('bounce_stop_ts')) and abs(position['stop']-position['entry']) <= EPS
+
+
 def is_stale_stop(position):
     return position.get('stale_stop') == position['stop']
 

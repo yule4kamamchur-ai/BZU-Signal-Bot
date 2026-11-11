@@ -63,6 +63,25 @@ def wick_reclaim(bar, side, level, tick):
     return side * (body_edge - extreme) / max(tick, bar.high - bar.low)
 
 
+def reversal_engulfing(raid, confirmation, side, tick, step=900_000):
+    """Require an opposite closed body, or a close beyond the entire raid."""
+    if not (raid.confirmed and confirmation.confirmed and confirmation.ts-raid.ts == step
+            and side * (confirmation.close-confirmation.open) >= tick-1e-8):
+        return False
+    extreme = raid.high if side == 1 else raid.low
+    engulf = (side*(raid.close-raid.open) <= -tick+1e-8
+              and side*(confirmation.open-raid.close) <= tick/2
+              and side*(confirmation.close-raid.open) >= tick-1e-8)
+    return engulf or side*(confirmation.close-extreme) >= tick-1e-8
+
+
+def reclaim_break(rows, index, side, level, tick, atr):
+    bar, previous = rows[index], rows[index-1]
+    return (bar.ts-previous.ts == 900_000 and side*(previous.close-level) <= 0
+            and side*(bar.close-level) >= tick-1e-8
+            and side*(bar.close-bar.open) >= max(tick,.60*atr))
+
+
 def body_break(rows, index, points, side, tick, step):
     """Return a pivot already known when the crossing candle opened."""
     if index < 1 or rows[index].ts - rows[index - 1].ts != step:

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.35.1-position-guard"
-REPORT_RELEASE = 'v12.35.1'
+VERSION = "full-ict-v12.36.0-reversal-guard"
+REPORT_RELEASE = 'v12.36.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -791,6 +791,11 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             diagnostics={}
             if key in state.get("used_events",{}) or state.get("level_cooldown",{}).get(level_key,0)>s.now:
                 p, reason = None, "LEVEL_OR_EVENT_COOLDOWN"
+            elif (oil_risk.enabled(cfg) and scanner.continuation_setup(
+                    a.evidence.get('source_strategy'), (a.evidence.get('entry_zone') or {}).get('kind'), a.setup_type)
+                    and scanner.post_tp_exhaustion(core.side_sign(a.side),s,state['trades'],
+                                                  oil_risk.snapshot_profile(s)['adr_d1'])):
+                p,reason=None,'POST_TP_EXHAUSTION_COOLDOWN'
             elif (a.setup_type=='CAPITULATION_RECOVERY'
                   and not setup_paths.capitulation_recovery(native,core)['confirmed']):
                 p,reason=None,'CAPITULATION_RECOVERY_NOT_CONFIRMED'
@@ -1375,6 +1380,11 @@ def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
     engine = sys.modules[__name__]
     if not position.get('tp1_hit'):
         position_monitor.observe_structure(position, snapshot, ts, cfg, engine)
+    bounce = position_monitor.bounce_breakeven(position,snapshot,ts,price,cfg.tick)
+    if bounce is not None:
+        position.update(stop=position['entry'],bounce_stop_ts=ts,bounce_confirmation_ts=bounce)
+        emit(state,'PAPER_STOP_AMENDED',ts,order_id=position['id'],stop=position['stop'],
+             reason='BOUNCE_BREAKEVEN_LOCK')
     decision = position_monitor.evaluate_active_trade_lifecycle(position, ts, price, cfg, engine)
     if decision['should_exit']:
         if 'exit_trigger_level' in decision:
@@ -1421,6 +1431,8 @@ def check_quote_exits(state, snapshot, cfg):
             # An ordinary hard stop is reconciled against its execution bar.
             if position_monitor.is_stale_stop(position):
                 close_at_observed_price(view, position, price, ts, 'CLOSED_STALE_TIME_STOP', cfg)
+            elif position_monitor.is_bounce_stop(position):
+                close_at_observed_price(view, position, price, ts, 'CLOSED_BOUNCE_BREAKEVEN', cfg)
         else:
             apply_lifecycle_guard(view, position, as_of, ts, price, cfg)
         store_slot(state, number, view)
@@ -1478,6 +1490,7 @@ def _manage_standard_bar(state, c, cfg, fill_bar=False, step=180_000, snapshot=N
         raw_exit = c.open if open_stop else p["stop"]
         exit_price = raw_exit*(1-side*cfg.slippage_bps/10_000)
         close_trade(state, p, exit_price, ts, ("CLOSED_STALE_TIME_STOP" if position_monitor.is_stale_stop(p)
+                    else "CLOSED_BOUNCE_BREAKEVEN" if position_monitor.is_bounce_stop(p)
                     else "STOP_GAP" if open_stop else "STOP"), cfg,
                     ambiguous=tp_hit or fill_bar)
         return
@@ -1872,26 +1885,27 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     if (pending.get('setup') or pending.get('setup_type')) == 'SESSION_MEAN_RECLAIM':
         request_cancel(state, pending, 'SESSION_MEAN_LIMIT_DISABLED', snapshot.now)
         return
+    trend = pending.get('trend_rel') == 'WITH_TREND'
+    runner = trend or pending.get('trend_rel') == scanner.REVERSAL_RELATION
     a15 = atr(policy.closed(snapshot, '15m'))
     if scanner.exhausted_move(pending['side'], snapshot.price, pending.get('tp1') or pending.get('tp')):
         request_cancel(state, pending, 'EXHAUSTED_MOVE', snapshot.now)
         return
     if a15 > 0 and scanner.entry_window(pending['side'], snapshot.price, pending['entry'], a15, cfg,
-                                        minimum=False, trend=pending.get('trend_rel') == 'WITH_TREND') == 'DISTANT_ZONE':
+                                        minimum=False, trend=runner) == 'DISTANT_ZONE':
         request_cancel(state, pending, 'LIMIT_UNREACHABLE', snapshot.now)
         return
     if bzu_policy.is_new(pending):
         if bzu_policy.is_precision(pending):
             session=bzu_policy.session_gate(snapshot.now)
             approach=entry_adverse_selection.approach(snapshot,a15,
-                        pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'), trend=pending.get('trend_rel') == 'WITH_TREND')
+                        pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'), trend=runner)
             cooldown=arbitration.loss_cooldown(pending,state['trades'],snapshot.now)
             regime=policy.execution_regime(snapshot,cfg,sys.modules[__name__])
             local_ok,local_reason=policy.regime_admission(pending['side'],pending['entry'],regime,
                                    snapshot,cfg.tick,sys.modules[__name__],pending.get('entry_zone'), require_macro=oil_risk.enabled(cfg))
-            trend = pending.get('trend_rel') == 'WITH_TREND'
             zone_error = scanner.standalone_zone_error({**zone, 'side': pending['side']},
-                snapshot, cfg, sys.modules[__name__], a15, regime['state']) if trend else None
+                snapshot, cfg, sys.modules[__name__], a15, regime['state']) if runner else None
             reason=(session['reason'] if not session['allowed'] else
                     'TREND_M5_SPIKE' if approach.get('blocked') and trend else
                     'IMPULSE_CONFIRMATION_REQUIRED' if approach.get('blocked') else
@@ -2133,7 +2147,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if not assessment or assessment['score'] < scanner.min_plan_score(relation, candidate.get('market_trigger')) or assessment['tactic'] == 'OBSERVE':
             continue
         candidate['zone_quality'] = assessment
-        if relation == 'WITH_TREND':
+        if relation in ('WITH_TREND', scanner.REVERSAL_RELATION):
             candidate['admission_status'] = 'ADMITTED_LIVE'
         confirmed.append(candidate)
     # Inside-zone and M5 breaker plans require a closed reaction, even in passive mode.
@@ -2159,14 +2173,15 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     if can_place and len(active) == 1 and not pending and not unresolved:
         unused = [p for p in valid if not {p['event_key'], *p.get('parent_keys', [])}.intersection(state['used_events'])
                   and p['expires_ts'] > s.now]
-        replacement = arbitration.stale_replacement(active[0], unused, s, cfg, sys.modules[__name__])
+        replacement = (arbitration.should_reverse_on_exhaustion_peak(active[0], unused, s, cfg, sys.modules[__name__])
+                       or arbitration.stale_replacement(active[0], unused, s, cfg, sys.modules[__name__]))
         if replacement:
             for number, view in slot_views(state):
                 position = view.get('active')
                 if position is not active[0]:
                     continue
                 close_at_observed_price(view, position, replacement['exit_quote'], s.now,
-                                        'CLOSED_REPLACED_BY_FRESH_SETUP', cfg)
+                                        replacement.get('close_reason','CLOSED_REPLACED_BY_FRESH_SETUP'), cfg)
                 store_slot(state, number, view)
                 break
             arbitration_audit = replacement
@@ -2600,6 +2615,13 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    'POST_TP_EXHAUSTION_COOLDOWN':'після тейка великої хвилі потрібен відкат від 38.2% або пауза 2 год',
+    'CONTINUATION_RETRACE_REQUIRED':'для MARKET потрібен відкат 35–50% від імпульсу',
+    'CONTINUATION_TP1_RR':'для продовження руху TP1 має давати щонайменше 1.35R',
+    'CLOSED_REVERSAL_FLIP_PROFIT':'прибуток зафіксовано перед підтвердженим переворотом',
+    'PAPER_MARKET_CONFIRMED_REVERSAL':'паперовий вхід після підтвердженого розвороту',
+    'BOUNCE_BREAKEVEN_LOCK':'стоп на вході після зустрічного поглинання',
+    'CLOSED_BOUNCE_BREAKEVEN':'спрацював стоп на вході після поглинання',
     'CLOSED_STALE_TIME_STOP':'спрацював шестигодинний тайм-стоп',
     'STALE_TIME_STOP':'стоп підтягнуто до −0.35R після шести годин',
     'CLOSED_ADVERSE_STRUCTURE_SHIFT':'структура або режим змінилися проти позиції',
@@ -3418,7 +3440,7 @@ def main(core) -> int:
                 # ledger contracts. The Brent suites exercise both swing risk and trend entry.
                 with patch.object(oil_risk, 'enabled', return_value=False):
                     compatibility = runner.run(suite)
-                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback', 'test_v12_34_dual_execution', 'test_v12_35_stale_and_setups')))
+                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback', 'test_v12_34_dual_execution', 'test_v12_35_stale_and_setups', 'test_v12_36_reversal_8850')))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:

@@ -250,7 +250,8 @@ def build(state, snapshot, result, cfg, engine):
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
         z['reversal_override'] = bool(calc['reversal_override'] and geometry and
-                                      (geometry.get('zone_origin') or {}).get('wave_confirmed'))
+                                      ((geometry.get('zone_origin') or {}).get('wave_confirmed')
+                                       or geometry.get('reversal_exhaustion_bonus')))
         z['priority'] = ('REVERSAL' if z['reversal_override'] else
                          'PRIMARY' if not primary_side or z['side'] == primary_side else 'COUNTER_TREND')
         z['execution_admitted']=bool(original.get('engine_accepted'))

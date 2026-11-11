@@ -300,6 +300,8 @@ def confluence(plan, snapshot, proof, cfg, engine):
         parts['trend_pullback'] = 12 * int((plan.get('trend_phase') or '').endswith('PULLBACK_OPPORTUNITY'))
     if relation == 'COUNTER_TREND':
         parts['confirmed_choch_m5'] = 12 * int(bool(plan.get('counter_confirmation')))
+    if trigger and plan.get('reversal_exhaustion_bonus'):
+        parts['adr_exhaustion_reversal'] = plan['reversal_exhaustion_bonus']
     if not trigger:
         parts = {'base': 25}
     score = min(100, sum(parts.values()))
@@ -310,7 +312,8 @@ def confluence(plan, snapshot, proof, cfg, engine):
     return {'score': score, 'components': parts, 'route': route,
             'route_scores': {name: sum(points.values()) for name, points, _ in routes},
             'volume_footprint': volume, 'accepted': trigger and score >= threshold,
-            'rating': 'A+' if score >= 82 else 'B', 'trigger_confirmed': trigger,
+            'rating': 'A+' if score >= 82 else 'A' if relation == scanner.REVERSAL_RELATION and score >= 75 else 'B',
+            'trigger_confirmed': trigger,
             'reason': ('ICT_SWEEP_OR_BOS_FVG_REQUIRED' if not trigger else
                        'CONFIRMED' if score >= threshold else 'CONFLUENCE_BELOW_THRESHOLD'),
             'countertrend': countertrend, 'session_sweep_priority': bool(sweeps and fresh),
@@ -346,7 +349,7 @@ def volume_footprint(plan, snapshot, proof, session_sweeps):
 
 
 
-PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','organic_risk','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','reversal_sweep_override','local_reversal_override','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
+PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','organic_risk','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','reversal_sweep_override','local_reversal_override','reversal_exhaustion_bonus','continuation_entry','linked_reversal_zone','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
              'approach','market_regime','ict_evidence','confluence','trend_rel','trend_phase','counter_confirmation','entry_max_distance','order_type','market_trigger','checkpoints',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',

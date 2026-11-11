@@ -79,6 +79,35 @@ def cluster_rank(plan, snapshot, tick):
             str(plan.get('id', '')))
 
 
+def should_reverse_on_exhaustion_peak(position, candidates, snapshot, cfg, engine):
+    """Release a profitable incumbent only for an executable opposite signal."""
+    from position_monitor import current_r
+
+    if position.get('tp1_hit') or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask:
+        return None
+    side = position['side']
+    quote = snapshot.bid if side == 1 else snapshot.ask
+    if current_r(position,quote) < .35-1e-8:
+        return None
+    actual = engine.execution_config(position,cfg)
+    exit_price = quote*(1-side*actual.slippage_bps/10_000)
+    fees = 0.
+    if actual.include_commission:
+        fees = position['entry']*position.get('entry_fee_rate',actual.maker_fee)+exit_price*actual.taker_fee
+    if side*(exit_price-position['entry']) <= fees:
+        return None
+    ready = [p for p in candidates if p['side']==-side and p.get('rating') in ('A','A+') and p.get('score',0)>=78
+             and p.get('quality',{}).get('accepted') and p.get('reversal_exhaustion_bonus')
+             and p.get('action_type')=='ACTIVE_ENTRY' and engine.scanner.market_plan(p)
+             and (p.get('market_trigger') or {}).get('pattern')=='CONFIRMED_REVERSAL'
+             and 0 <= snapshot.now-(p.get('entry_zone') or {}).get('known_ts',0)<2*900_000]
+    if not ready:
+        return None
+    best = max(ready,key=lambda plan:cluster_rank(plan,snapshot,cfg.tick))
+    return {'decision':'PEAK_REVERSAL_FLIP','replace_id':position['id'],'candidate_id':best['id'],
+            'exit_quote':quote,'close_reason':'CLOSED_REVERSAL_FLIP_PROFIT'}
+
+
 def stale_replacement(position, candidates, snapshot, cfg, engine):
     from position_monitor import REPLACEMENT_BARS, current_r, duration
 
