@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v12.38.0 — GitHub-only Scan / 15m Telegram
+name: BZU Auto Bot — ICT v12.38.1 — GitHub-only Scan / 15m Telegram
 
 on:
   schedule:
@@ -31,7 +31,7 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.38.0-proactive-scenario'
+      EXPECTED_BOT_VERSION: 'full-ict-v12.38.1-breakdown-capture'
       INCLUDE_COMMISSION: 'true'
       ANALYSIS_SCAN_MINUTES: '15'
       # Compatibility settings for legacy geometry. Brent v12.32 uses oil_risk.py.
@@ -103,7 +103,7 @@ jobs:
           expected = os.environ['EXPECTED_BOT_VERSION']
           print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
           if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
-              raise SystemExit('Mismatched v12.38.0 files: update bot_oneshot.py and full_limit_engine.py together. '
+              raise SystemExit('Mismatched v12.38.1 files: update bot_oneshot.py and full_limit_engine.py together. '
                                f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
               raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
