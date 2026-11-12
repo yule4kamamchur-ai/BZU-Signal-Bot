@@ -445,6 +445,7 @@ function reactionPresentation(usable, live) {
   if (!usable||!live||document.hidden) return {stage:'PAUSED',title:'Live реакція призупинена',detail:'Потрібні актуальний зліпок і свіжі котирування у відкритій вкладці.'};
   if (state.orders.some(o=>o.status==='OPEN')) return {stage:'PAUSED',title:'Супроводжуємо позицію',detail:'Пошук нового live входу призупинено, доки позиція відкрита.'};
   const current=currentReaction();
+  if (!current && state.scenario_plan?.developing_setup) return {stage:'WAIT',title:'Реакційного плану ще немає',detail:'Умова підтвердження M15 наведена в орієнтирі вище.'};
   if (!current) return {stage:'WAIT',title:'Чекаємо реакційний план від 60/100',detail:'Слабкі, неповні та протитрендові рівні залишаються довідковими.'};
   const {row,tracker:t}=current;
   const expired=t.stage==='READY' && (Date.now()-t.readyTs>(state.reaction_config?.ready_ttl_ms??15000)||Math.floor(Date.now()/300000)!==t.bucket);
@@ -877,10 +878,11 @@ function renderBanner(price, usable, live) {
   const candidate = chartPlan();
   const closed = state.last_closed;
   let mode = 'WAITING';
-  let pill = state.primary_bias ? 'ОЧІКУВАННЯ • ПРІОРИТЕТ ' + sideLabel(state.primary_bias) : 'ПОШУК ТОЧКИ ВХОДУ';
-  let title = 'ОЧІКУЄМО УГОДУ' +
-    (state.primary_bias ? ' • Пошук за трендом (' + sideLabel(state.primary_bias) + ')' : '');
-  let detail = 'Чекаємо підтвердженого сетапу.';
+  const focus = usable && state.scenario_plan?.headline ? state.scenario_plan : null;
+  let pill = focus?.primary?.status === 'DEVELOPING' ? 'СЕТАП У РОЗРОБЦІ' : 'ПОШУК ТОЧКИ ВХОДУ';
+  let title = focus?.headline ?? 'ОЧІКУЄМО УГОДУ';
+  let detail = focus?.phase_text ?? 'Готових сетапів немає.';
+  if (focus?.primary?.status === 'DEVELOPING') detail += ' · ' + focus.primary.label;
   if (candidate) {
     if (state.cockpit_schema === 5) {
       title = (candidate.market_now ? 'СИГНАЛ MARKET ' : 'ГОТУЄМО ') + sideLabel(candidate.side) + ' ВІД ' +
@@ -945,7 +947,12 @@ function renderBanner(price, usable, live) {
 function renderRadar(price, live) {
   $('radar-source').textContent=live ? 'Live Δ ціни' : 'Δ за зліпком';
   const container=$('radar'); container.replaceChildren();
-  radarRows(price).forEach((approved,index) => {
+  const visible = radarRows(price);
+  if (state.scenario_plan?.headline && !visible.some(Boolean)) {
+    container.append(element('p','Готових сетапів немає. Умова наступної перевірки — в орієнтирі вище.','reason'));
+    return;
+  }
+  visible.forEach((approved,index) => {
     const side=index===0 ? 1 : -1;
     const row = approved;
     const reserve = reserveLevel(side, price, row);
@@ -984,22 +991,55 @@ function renderRadar(price, live) {
     container.append(card);
   });
 }
-function renderScenarios(usable) {
+function renderScenarios(usable, price) {
   const panel = $('scenario-plan');
   if (!panel) return;
   panel.replaceChildren();
-  const map = usable ? state.scenario_plan : null;
-  for (const [label, letter] of [['LONG','А'],['SHORT','Б']]) {
-    const row = map?.[label];
-    const card = element('div');
-    card.append(element('strong', letter + ' · ' + label));
-    const zone = row?.poi;
-    card.append(element('p', zone ? 'Ретест ' + format(zone.low) + '–' + format(zone.high) +
-      (row.target ? ' → ' + format(row.target.level) : '') : 'Чекаємо підтверджену зону'));
-    if (number(row?.breakout_level)) {
-      card.append(element('small', 'Альтернатива · пробій ' + format(row.breakout_level) + ' і ретест'));
+  const focus = usable && state.scenario_plan?.headline ? state.scenario_plan : null;
+  if (!focus) {
+    panel.append(element('p','Чекаємо актуальний зліпок сценарію.','muted'));
+    return;
+  }
+  panel.append(element('p',focus.phase_text,'reason'));
+  if (focus.waiting_detail) panel.append(element('p',focus.waiting_detail,'muted'));
+  const primary = focus.primary;
+  if (!primary) {
+    panel.append(element('strong','Готових сетапів немає.'));
+    return;
+  }
+  const card = element('article',null,'focus-primary');
+  const developing = primary.status === 'DEVELOPING';
+  const side = sideLabel(primary.side);
+  const distance = number(price) ? Math.abs(price-primary.level) : primary.distance;
+  card.append(element('strong',focus.headline + ' · ' + primary.label),
+    element('p', (developing ? 'Чекаємо сетап ' : '') + side + ' @ ' + format(primary.level) +
+      ' · до рівня ' + format(distance) + ' $' + (developing ? ' · готових сигналів немає' : '')),
+    element('p',primary.trigger,'reason'));
+  const preview = primary.preview;
+  if (preview) {
+    const values = [['entry','Вхід'],['stop','SL'],['tp1','TP1'],['rr1','R:R']]
+      .filter(([key])=>number(preview[key])).map(([key,label])=>label + ' ' + format(preview[key]) + (key==='rr1'?'R':''));
+    if (values.length) card.append(element('p',(preview.preview_only ? 'Попередньо · ' : '') + values.join(' | '),'reason'));
+    if (preview.gate) {
+      const reasons = {BLOCKED_NO_ROOM_TO_STRUCTURE:'Недостатній простір до структурної цілі',
+        BLOCKED_LOW_RR_135:'Поточна ціль дає замало R:R',NO_CONFIRMED_TARGET:'Ціль ще не підтверджена',
+        STRUCTURAL_STOP_TOO_WIDE:'Структурний стоп занадто широкий',OIL_VOLATILITY_UNAVAILABLE:'Очікуємо дані волатильності'};
+      card.append(element('small',reasons[preview.gate] ?? 'Попередня геометрія потребує перевірки.','muted'));
     }
-    panel.append(card);
+  }
+  if (number(primary.expires_ts)) {
+    const minutes = Math.max(0,Math.ceil((primary.expires_ts-Date.now())/60000));
+    card.append(element('small','Час дії · ' + minutes + ' хв','muted'));
+  }
+  if (developing && primary.touch_history) {
+    const {matched_hours,sample_hours} = primary.touch_history;
+    card.append(element('small','На момент зліпка такий рух вмістився в ' +
+      matched_hours + ' із ' + sample_hours + ' минулих годин.','muted'));
+  }
+  card.append(element('small',primary.invalidation,'muted'));
+  panel.append(card);
+  if (focus.alternative && developing) {
+    panel.append(element('p','Резерв ' + sideLabel(focus.alternative.side) + ' · ' + focus.alternative.trigger,'focus-reserve'));
   }
 }
 
@@ -1008,12 +1048,12 @@ function render() {
   const focusId=document.activeElement?.dataset.focus;
   const now=Date.now(), live=quote && quote.ts<=now+3000 && now-quote.ts<=QUOTE_MAX_AGE;
   const price=displayedPrice(), usable=ready(now);
-  renderScenarios(usable);
+  renderScenarios(usable,price);
   const market=usable && live && !document.hidden ? quote : null;
   $('price').textContent=format(price);
   $('quote-status').textContent=live ? 'Live · ' + stamp(quote.ts) : (feedError ? 'OKX недоступний' : 'Котирування застаріло') + ' · зліпок';
   $('stamp').textContent=stamp(state.snapshot_ts); $('instrument').textContent=state.instrument;
-  $('regime').textContent=({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
+  $('regime').textContent=(usable ? state.scenario_plan?.market?.phase_text : null) ?? ({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
   const structureSync=state.structure_sync;
   $('regime').title=structureSync?.proof === 'BEARISH_BREAKDOWN_MSS'

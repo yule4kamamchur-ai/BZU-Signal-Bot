@@ -51,6 +51,7 @@ const fixture={schema:1,cockpit_schema:4,primary_bias:0,min_structural_spread:.6
  reason_text:'ціна відійшла без тесту'}],candles:{},daily:{entries:2,net_r:1.1},market_regime:'RANGE'};
 ctx.fixture=fixture;ctx.orderFixture=order;
 const cleanFixture=JSON.parse(JSON.stringify(fixture));
+ctx.fixtureBackup=cleanFixture;
 (async()=>{
  // Flush the initial failed fetch before assigning the synthetic state.
  await new Promise(resolve=>setImmediate(resolve));
@@ -58,8 +59,13 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);assert.equal(nodes.get('radar').children.length,2);
  assert.equal(run('visibleZones().length'),1);assert.match(text('last-event'),/Ліміт скасовано/);
  assert.equal(priceLines.length,3);
- run('state.scenario_plan={LONG:{poi:{low:99.6,high:99.71},target:{level:101.25},breakout_level:100.8},SHORT:{poi:{low:100.5,high:100.8},target:{level:98.5},breakout_level:99.6}};render();');
- assert.match(text('scenario-plan'), /А · LONG.*99.60–99.71.*101.25.*Б · SHORT.*98.50/);
+ run('state.scenario_plan={headline:"ПОШУК РОЗВОРОТУ ВІД ДНА (LONG)",phase_text:"Низхідна структура · 21% діапазону",market:{phase_text:"Низхідна структура"},primary:{status:"DEVELOPING",side:1,level:99.66,label:"Свіп дна",trigger:"Прокол 99.66 та закриття M15 вище рівня",invalidation:"Скасування при закритті під рівнем",preview:{entry:99.71,stop:98.31,tp1:101.81,rr1:1.5,preview_only:true}},alternative:{side:-1,trigger:"Тест EMA20 100.55 та ведмежий відбій"}};state.candidates=[];state.zones=[];state.radar={};render();');
+ assert.match(text('scenario-plan'), /21% діапазону.*LONG @ 99.66.*до рівня 0.18.*Прокол 99.66.*Вхід 99.71.*TP1 101.81.*Резерв SHORT.*100.55/);
+ assert.equal(nodes.get('scenario-plan').children.filter(x=>x.tagName==='ARTICLE').length,1);
+ assert.match(text('state-title'),/ПОШУК РОЗВОРОТУ ВІД ДНА/);
+ assert.match(text('regime'),/Низхідна структура/);
+ assert.equal(priceLines.length,0);
+ run('state.scenario_plan=null;state.candidates=[...fixtureBackup.candidates];state.zones=[...fixtureBackup.zones];state.radar=fixtureBackup.radar;render();');
  assert.equal(document.querySelectorAll('[data-focus]').some(x=>x.dataset.zone==='far'),false);
  assert.ok(nodes.get('state-banner').classList.contains('banner-waiting'));
  run('selectedZone=null;state.orders=[orderFixture];render();');

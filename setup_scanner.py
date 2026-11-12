@@ -1291,3 +1291,89 @@ SETUP_NAMES = (
     'LIQUIDITY_LADDER','FAILED_OPENING_RANGE_BREAKOUT','FAILED_BREAKOUT_SHORT','MSS_REVERSAL_SHORT',
     'OR_FAILURE_2_SHORT','SESSION_MEAN_RECLAIM','DAILY_WEEKLY_OPEN_RECLAIM','TIME_OF_DAY_ADAPTIVE',
 )
+
+
+def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_map):
+    """Watch the same price structures consumed by sweep and zone detectors."""
+    from directional_policy import closed
+
+    rows = closed(snapshot, '15m')
+    if len(rows) < 8:
+        return []
+    tick, price = cfg.tick, snapshot.price
+    watches = []
+
+    def add(side, setup, label, level, low, high, entry, known, trigger, source, invalidation):
+        if not (0 < low <= high and 0 < level and known <= snapshot.now):
+            return
+        distance = abs(price-level)
+        watches.append({'side':side, 'setup':setup, 'label':label, 'level':level,
+                        'low':low, 'high':high, 'distance':distance, 'known_ts':known,
+                        'entry_hint':entry, 'trigger':trigger, 'source':source,
+                        'invalidation':invalidation, 'status':'DEVELOPING'})
+
+    # Session pools use the scanner's own sweep references. For a local swing
+    # the same M15 raid + structure proof is required before it can be admitted.
+    pivots = engine.pivots(rows[-96:],strength=2)
+    for side, name in ((1,'мінімум'),(-1,'максимум')):
+        pool = min((p for p in levels if p['side']==side and side*(price-p['level']) >= -tick/2
+                    and (p.get('name') or p['kind'].startswith('15m_'))),
+                   key=lambda p:(abs(price-p['level']), not p.get('name'), -p['known_ts']),default=None)
+        if pool:
+            level = pool['level']
+            pivot = next((p for p in reversed(pivots) if p['kind']==('HIGH' if side==1 else 'LOW')
+                          and side*(p['level']-level)>tick),None)
+            shift = pivot['level'] if pivot else None
+            cross = 'вище' if side==1 else 'нижче'
+            away = 'нижче' if side==1 else 'вище'
+            trigger = f'Прокол {level:.2f} і закриття M15 {cross} {level:.2f}'
+            trigger += f', потім злам M15 {shift:.2f}' if shift is not None else ', потім підтверджений злам M15'
+            add(side, 'BULLISH_LIQUIDITY_SWEEP' if side==1 else 'BEARISH_LIQUIDITY_SWEEP',
+                f'Розворотний свіп · {name} {level:.2f}',level,level,level,
+                shift if shift is not None else level,pool['known_ts'],trigger,pool['kind'],
+                f'Закриття M15 {away} {level:.2f} скасовує очікуваний відбій.')
+
+    # Confirmed structures already discovered by the live scanner. Display the
+    # exact candle range; confirmation/admission still belongs to the engine.
+    kinds = {'RECLAIM_BREAKER':'Дзеркальний рівень','SR_FLIP_RECLAIM':'Дзеркальний рівень',
+             wave.BREAKDOWN:'Ведмежий пробій підтримки','FVG_PULLBACK':'Незаповнений FVG'}
+    zones = wave.zones(snapshot,cfg,engine,regime)
+    for zone in zones:
+        kind = zone['kind']
+        if kind not in kinds:
+            continue
+        side, low, high = zone['side'], zone['low'], zone['high']
+        if side*(price-(low if side==1 else high)) < -tick/2:
+            continue
+        entry = high if side==1 else low
+        cross = 'вище' if side==1 else 'нижче'
+        away = 'нижче' if side==1 else 'вище'
+        boundary = low if side==1 else high
+        add(side,kind,kinds[kind],entry,low,high,entry,zone['known_ts'],
+            f'Ретест {low:.2f}–{high:.2f} і закриття M15 {cross} {entry:.2f} після відбою.',
+            f"{zone['timeframe']} {kind}",f'Закриття M15 {away} {boundary:.2f} скасовує цей орієнтир.')
+
+    for side, key in ((1,'LONG'),(-1,'SHORT')):
+        cross = 'вище' if side==1 else 'нижче'
+        away = 'нижче' if side==1 else 'вище'
+        for zone in admission_map[key]['poi_zones']:
+            if not zone['kind'].endswith('_OB') or zone['low']==zone['high']:
+                continue
+            low, high = zone['low'], zone['high']
+            entry, boundary = (high,low) if side==1 else (low,high)
+            add(side,'HTF_ORDER_BLOCK_RETEST','Ретест ордер-блока',entry,low,high,entry,zone['known_ts'],
+                f'Тест {entry:.2f} і відбій із закриттям M15 {cross} {entry:.2f}. Потрібен структурний злам у бік відбою.',
+                zone['kind'],f'Закриття M15 {away} {boundary:.2f} скасовує орієнтир.')
+    side = market['ema_side']
+    if side:
+        fast, slow = market['ema20'], market['ema50']
+        low, high = sorted((fast,slow))
+        if side*(price-(low if side==1 else high)) >= -tick/2:
+            cross = 'вище' if side==1 else 'нижче'
+            away = 'нижче' if side==1 else 'вище'
+            boundary = low if side==1 else high
+            add(side,'BULLISH_CONTINUATION_PULLBACK' if side==1 else 'BEARISH_CONTINUATION_PULLBACK',
+                'Відкат до EMA20–EMA50 M15',fast,low,high,fast,rows[-1].ts+wave.M15,
+                f'Тест EMA20 {fast:.2f} і закриття M15 {cross} EMA20 після відбою. Потрібен підтверджений структурний рівень.',
+                'EMA20–EMA50 M15',f'Закриття M15 {away} {boundary:.2f} скасовує очікуваний відбій.')
+    return watches

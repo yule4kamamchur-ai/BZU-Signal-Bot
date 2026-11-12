@@ -385,11 +385,15 @@ def build(state, snapshot, result, cfg, engine):
     system_mode = ('DATA_HOLD' if not healthy else 'ACTIVE' if any(o['status']=='OPEN' for o in orders) else
                    'PENDING' if any(o['status']=='PENDING' for o in orders) else
                    'CANCELLING' if orders else 'SCANNING')
+    focus = None
+    if healthy and oil_risk.enabled(cfg):
+        focus = analysis.get('scenario_plan') or engine.scenario_planner.focus(
+            snapshot,cfg,engine,regime,orders=plans,admitted=admitted,action=result.get('action'))
     return {'schema':1, 'cockpit_schema':5, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
-            'scenario_plan': engine.scenario_planner.build(snapshot,cfg,engine) if healthy and oil_risk.enabled(cfg) else None,
+            'scenario_plan':focus,'developing_setup':focus['developing_setup'] if focus else None,
             'stop_and_reverse': analysis.get('stop_and_reverse'),
             'trend_phase':regime.get('trend_phase'), 'wave_phase':regime.get('wave_phase'), 'structure_sync':regime.get('structure_sync') or None,
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,

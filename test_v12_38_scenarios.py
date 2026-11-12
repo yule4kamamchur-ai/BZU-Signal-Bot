@@ -50,10 +50,13 @@ class ScenarioContracts(unittest.TestCase):
         self.assertEqual(scenarios.entry_error(snap,cfg,engine,1,100.,{},trend=False),
                          'BLOCKED_OUTSIDE_HTF_POI')
         public=live_terminal.build(engine.new_state(cfg),snap,{'analysis':{}},cfg,engine)
-        self.assertEqual(public['scenario_plan'],data)
+        self.assertEqual(public['scenario_plan']['market']['range_position_pct'],50)
+        self.assertNotIn('LONG',public['scenario_plan'])
+        self.assertNotIn('SHORT',public['scenario_plan'])
         report=notification_report.build_checklist(engine.new_state(cfg),snap,{},cfg,engine)
-        self.assertIn('А · LONG',report)
-        self.assertIn('Б · SHORT',report)
+        self.assertIn('На що орієнтуватись зараз',report)
+        self.assertNotIn('А · LONG',report)
+        self.assertNotIn('Б · SHORT',report)
 
     def test_outside_range_exception_requires_closed_retest(self):
         snap,cfg=snapshot(103.4,[(100.,103.,97.,100.)]*100+[

@@ -158,6 +158,41 @@ def candidate_reason(row, cfg, engine):
     return 'Вхід заблоковано: ' + engine.REASON_UA.get(reason, 'умови входу ще не виконані')
 
 
+def focus_lines(focus, analysis, engine):
+    lines = ['', '🎯 На що орієнтуватись зараз', focus['phase_text']]
+    if focus.get('waiting_detail'):
+        lines.append(focus['waiting_detail'].capitalize() + '.')
+    primary = focus['primary']
+    if primary:
+        side = 'LONG' if primary['side']==1 else 'SHORT'
+        if primary['status']=='DEVELOPING':
+            lines.append(f"Готових сетапів немає. {side} · {primary['label']} · до рівня {primary['distance']:.2f} $")
+            lines.append(primary['trigger'])
+            preview = primary['preview']
+            values = [f"{label} {preview[key]:.2f}{suffix}" for key,label,suffix in
+                      (('entry','вхід',''),('stop','SL',''),('tp1','TP1',''),('rr1','R:R','R'))
+                      if preview.get(key) is not None]
+            if values:
+                lines.append('Попередньо · ' + ' | '.join(values))
+            if preview.get('gate'):
+                lines.append(engine.REASON_UA.get(preview['gate'],
+                    'Структурна ціль потребує підтвердження.'))
+        else:
+            lines.append(f"{focus['headline']} · {side} @ {primary['level']:.2f}")
+        lines.append(primary['invalidation'])
+    else:
+        lines.append('Готових сетапів і близьких структурних орієнтирів немає.')
+    alternative = focus['alternative']
+    if alternative and primary and primary['status']=='DEVELOPING':
+        side = 'LONG' if alternative['side']==1 else 'SHORT'
+        lines.append(f"Резерв {side} · {alternative['trigger']}")
+    sar = analysis.get('stop_and_reverse')
+    if sar:
+        label = 'LONG' if sar['side']==1 else 'SHORT'
+        lines.append(f"Розворот після виходу · перевірено {label}")
+    return lines
+
+
 def build(state, snapshot, result, cfg, engine):
     if engine.VERSION in ('full-ict-v12.21.0-bzu-checklist','full-ict-v12.22.0-precision-protection'):
         return build_checklist(state,snapshot,result,cfg,engine)
@@ -210,6 +245,16 @@ def build(state, snapshot, result, cfg, engine):
         checkpoint = state.get('last_run_ts', 0)
         when = engine.report_deadline(checkpoint, now, cfg) if checkpoint else 'попередній цикл'
         lines += [f'Дані не оновлені. Збережений стан на {when}.']
+    focus = None
+    if not frozen and not health and result.get('action') != 'DATA_HOLD' and price_ok and engine.oil_risk.enabled(cfg):
+        analysis = result.get('analysis', {})
+        focus = analysis.get('scenario_plan')
+        if not focus:
+            regime = engine.policy.execution_regime(snapshot, cfg, engine)
+            focus = engine.scenario_planner.focus(snapshot, cfg, engine, regime,
+                orders=engine.open_plans(state), admitted=analysis.get('admitted_plans', []),
+                action=result.get('action'))
+        lines += focus_lines(focus, analysis, engine)
     if active:
         lines += ['', f'🔵 СУПРОВІД — {len(active)}']
     for index, p in enumerate(active):
@@ -295,7 +340,7 @@ def build(state, snapshot, result, cfg, engine):
 
     # A forming setup is not a third pending order. Suppress it when both slots
     # are occupied or market/execution data do not permit a new decision.
-    if not active and not pending and engine.occupied_slots(state) < 2 and not health and not frozen and price_ok:
+    if not focus and not active and not pending and engine.occupied_slots(state) < 2 and not health and not frozen and price_ok:
         analysis = result.get('analysis', {})
         rows = analysis.get('watch', []) or analysis.get('setup_matrix', [])
         live = engine.open_plans(state)
@@ -365,21 +410,14 @@ def build_checklist(state, snapshot, result, cfg, engine):
         f'💰 Ціна: {price} • {session["session"]} • Режим {regime.get("trend_anchor_timeframe") or "ринку"} · {trend}',
     ]
 
-    if not frozen and engine.oil_risk.enabled(cfg):
-        plan = engine.scenario_planner.build(snapshot,cfg,engine)
-        lines += ['', 'План на перспективу · сценарії А та Б']
-        for letter, label in (('А','LONG'),('Б','SHORT')):
-            scenario = plan[label]
-            poi, target = scenario['poi'], scenario['target']
-            retest = f"ретест {poi['low']:.2f}–{poi['high']:.2f}" if poi else 'чекаємо підтверджену зону'
-            objective = f" → {target['level']:.2f}" if target else ''
-            breakout = scenario['breakout_level']
-            branch = f" | пробій {breakout:.2f} + ретест" if breakout is not None else ''
-            lines.append(f"{letter} · {label} · {retest}{objective}{branch}")
-        sar = result.get('analysis',{}).get('stop_and_reverse')
-        if sar:
-            label = 'LONG' if sar['side']==1 else 'SHORT'
-            lines.append(f"Розворот після виходу · перевірено {label}")
+    focus = None
+    if not frozen and price_ok and engine.oil_risk.enabled(cfg):
+        analysis = result.get('analysis',{})
+        focus = analysis.get('scenario_plan') or engine.scenario_planner.focus(
+            snapshot,cfg,engine,regime,orders=engine.open_plans(state),
+            admitted=analysis.get('admitted_plans',[]),action=result.get('action'))
+        lines[1] = f'💰 Ціна: {price} • {session["session"]}'
+        lines += focus_lines(focus, analysis, engine)
     # Show only genuine new orders, not duplicate scenario/matrix diagnostics.
     selected = [] if frozen else result.get('selected_plans', [])
     if selected:
@@ -476,7 +514,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
 
     # A research/watch candidate is not a pending order. Do not print long
     # rejection diagnostics while real orders are already occupying the slots.
-    if not pending and not active and not frozen and result.get('analysis', {}).get('entry_mode') in ('LIVE_REACTION','HYBRID'):
+    if not focus and not pending and not active and not frozen and result.get('analysis', {}).get('entry_mode') in ('LIVE_REACTION','HYBRID'):
         import live_terminal
         public = live_terminal.build(state, snapshot, result, cfg, engine)
         primary = next((p for p in public['candidates'] if p['id'] == public['primary_candidate_id']), None)
@@ -487,7 +525,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
                       'Попередній план не є ордером. Перевірте тактику та допуск у дашборді.']
         else:
             lines += ['', '👁 LIVE REACTION: чекаємо повний якісний план; ордер не активовано.']
-    if not pending and not active and not frozen and not selected and result.get('analysis', {}).get('entry_mode') not in ('LIVE_REACTION','HYBRID'):
+    if not focus and not pending and not active and not frozen and not selected and result.get('analysis', {}).get('entry_mode') not in ('LIVE_REACTION','HYBRID'):
         waiting = [p for p in state.get('watch', []) if p.get('reason') in (
             'WAIT_RETEST', 'IMPULSE_CONFIRMATION_REQUIRED', 'LOCAL_STRUCTURE_CONFLICT',
             'SAME_SIDE_LOSS_COOLDOWN', 'ZONE_ORIGIN_BOS_REQUIRED')]

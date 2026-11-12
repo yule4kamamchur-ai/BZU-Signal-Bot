@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.38.1-breakdown-capture"
-REPORT_RELEASE = 'v12.38.1'
+VERSION = "full-ict-v12.39.0-single-focus"
+REPORT_RELEASE = 'v12.39.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -2093,7 +2093,6 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 or record.get('execution')!='PAPER_SIGNAL')
     manual_block = any(needs_manual_check(r) for r in unresolved)
     analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
-    analysis['scenario_plan'] = scenario_planner.build(s,cfg,sys.modules[__name__]) if oil_risk.enabled(cfg) else None
     analysis['stop_and_reverse'] = sar
     analysis['edge_mode']=os.environ.get('BZU_EDGE_MODE','SHADOW').strip().upper()
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
@@ -2551,6 +2550,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         elif plan.get('outcome_forecast',{}).get('as_of_ts')!=s.now:
             plan['outcome_forecast']={'status':'DEFERRED_MODEL_BUDGET','calibrated':False,
                 'as_of_ts':s.now,'entry_gate_enabled':False}
+    if oil_risk.enabled(cfg) and not analysis.get('health'):
+        focus = scenario_planner.focus(s,cfg,sys.modules[__name__],market,
+                                      orders=live,admitted=analysis['admitted_plans'],action=action)
+        analysis['scenario_plan'] = focus
+        analysis['developing_setup'] = focus['developing_setup']
     state['position_reviews']=copy.deepcopy(analysis.get('position_reviews',[]))
     state['best_scenario']=copy.deepcopy(analysis['best_scenario'])
     state['direct_strategy_diagnostic']=copy.deepcopy(analysis.get('direct_strategy',{}))
@@ -3577,7 +3581,7 @@ def main(core) -> int:
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

@@ -678,3 +678,43 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
             and 0 < sweep.get('reference_known_ts', 0) <= zone.get('known_ts', 0)
             and 0 <= snapshot.now - zone.get('known_ts', 0) < 30 * 60_000
             and side * (snapshot.price - sweep['extreme']) > tick / 2)
+
+
+def focus_context(snapshot, regime, dealing_range, tick):
+    """A watch bias is separate from the execution regime and the range position."""
+    from directional_policy import regime_side
+
+    rows = oil_risk.closed(snapshot.candles.get('15m', []), M15, snapshot.now)[-192:]
+    ema20 = ema50 = None
+    ema_side = 0
+    if len(rows) >= 50:
+        ema20 = ema50 = rows[0].close
+        for i, candle in enumerate(rows[1:], 1):
+            if i == len(rows)-3:
+                previous20, previous50 = ema20, ema50
+            ema20 += (candle.close-ema20)*2/21
+            ema50 += (candle.close-ema50)*2/51
+        noise = tick / 2
+        if ema20-ema50 > noise and ema20-previous20 > noise and ema50-previous50 > noise:
+            ema_side = 1
+        elif ema50-ema20 > noise and previous20-ema20 > noise and previous50-ema50 > noise:
+            ema_side = -1
+    wave_side = regime_side(regime)
+    trend_side = ema_side if ema_side == wave_side else 0
+    location = None
+    if dealing_range:
+        low, high = dealing_range['low'], dealing_range['high']
+        location = 100*(snapshot.price-low)/(high-low)
+    discount = location is not None and location < 30
+    premium = location is not None and location > 70
+    phase = ('BEARISH_DISCOUNT' if ema_side == -1 and discount else
+             'BULLISH_PREMIUM' if ema_side == 1 and premium else
+             'BEARISH' if trend_side == -1 else 'BULLISH' if trend_side == 1 else
+             'RANGE' if regime.get('state') in ('RANGE','RANGE_LIQUIDITY_ROTATION') else 'TRANSITION')
+    labels = {'BEARISH_DISCOUNT':'Низхідна структура біля дна діапазону',
+              'BULLISH_PREMIUM':'Висхідна структура біля вершини діапазону',
+              'BEARISH':'Тренд низхідний','BULLISH':'Тренд висхідний',
+              'RANGE':'Діапазон','TRANSITION':'Напрямок хвилі й EMA не підтвердили спільного тренду'}
+    return {'phase':phase, 'phase_text':labels[phase], 'trend_side':trend_side, 'ema_side':ema_side,
+            'ema20':ema20,'ema50':ema50,'range_position_pct':location,
+            'discount':discount,'premium':premium}
