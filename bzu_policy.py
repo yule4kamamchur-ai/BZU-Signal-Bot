@@ -207,6 +207,11 @@ def adverse_reentry_reason(side, trades, snapshot, cfg, engine):
             and previous.get('close_reason') != 'CLOSED_ADVERSE_STRUCTURE_SHIFT') or not previous.get('entry')
             or snapshot.now >= previous['closed_ts'] + duration):
         return None
+    if previous.get('close_reason') in ('STOP','STOP_GAP','SL','STOP_LOSS'):
+        stop = previous.get('stop_at_close') or previous.get('stop') or previous.get('initial_stop')
+        if stop is not None and ict.stop_sweep_recovery(direction.closed(snapshot,'15m')[-96:],
+                side,previous['closed_ts'],stop,cfg.tick,engine):
+            return None
     if direction.bos_recovers_level(snapshot, side, previous['closed_ts'], None, cfg.tick, engine):
         return None
     return 'ADVERSE_STRUCTURE_LOCKOUT'
@@ -280,9 +285,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     sweep_override = direction.reversal_sweep_override(side, zone, snapshot, cfg.tick)
     local_reversal = (sweep_override and regime.get('trend_anchor_side') != -side
                       and not regime.get('side_1h') == regime.get('side_4h') == -side)
-    multibar = bool(sweep_override and zone['kind'] in ('MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM')
+    breakdown = zone['kind'] == scanner.wave.BREAKDOWN and origin.get('wave_confirmed')
+    multibar = breakdown or bool(sweep_override and zone['kind'] in ('MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM')
                     and origin.get('wave_confirmed'))
-    reclaim = multibar and zone['kind'] in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM') and bool(zone['wave_proof'].get('structural_reclaim'))
+    reclaim = multibar and bool(zone['wave_proof'].get('structural_reclaim'))
     linked_sweep = None
     if oil_risk.enabled(cfg) and zone['kind'] in (
             'DEMAND_OB','SUPPLY_OB','SESSION_OB','BREAKER_BLOCK','BULLISH_BREAKER','BEARISH_BREAKER'):
@@ -342,12 +348,13 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     if oil:
-        entry, entry_basis = strategy_direct_entries.adaptive_limit(snapshot,zone,origin,side,cfg.tick,engine)
+        entry, entry_basis = (zone['reference'],'BREAKDOWN_MICRO_RETEST') if breakdown else (
+            strategy_direct_entries.adaptive_limit(snapshot,zone,origin,side,cfg.tick,engine))
         stop, risk, organic_risk = oil_risk.stop_geometry(
             entry, structural, side, *oil, cfg.tick, engine, allow_local=bool(trend or multibar or local_reversal))
         inside = low <= snapshot.price <= high
         gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,
-            trend=bool(trend or scanner.continuation_setup(anchor.evidence.get('source_strategy'),zone['kind'],anchor.setup_type)))
+            trend=bool(breakdown or trend or scanner.continuation_setup(anchor.evidence.get('source_strategy'),zone['kind'],anchor.setup_type)))
         if gate:
             diag.update(entry=entry, stop=stop, risk=risk)
             return None, gate
@@ -406,7 +413,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     distance = abs(snapshot.price-entry)
     diag['distance_atr'] = distance/a15
     quote = snapshot.ask if side == 1 else snapshot.bid
-    market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick) if oil else None
+    market_trigger = (adverse.breakdown_market_trigger(snapshot,zone,entry,risk,quote,cfg.tick) if breakdown else
+        adverse.rejection_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick) if oil else None)
+    if breakdown and not market_trigger and snapshot.price < entry - adverse.breakdown_limit_distance(zone):
+        return None, 'DISTANT_BREAKDOWN_RETEST'
     if market_trigger:
         entry_condition = 'RETEST'
     if not market_trigger and scanner.entry_window(side, snapshot.price, entry, a15, cfg, minimum=False, trend=trend or multibar) == 'DISTANT_ZONE':
@@ -442,6 +452,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     action = 'NEW_PENDING_LIMIT'
     geometry = None
     if market_trigger:
+        if breakdown:
+            gate = scenario_planner.entry_error(snapshot,cfg,engine,side,quote,zone,trend=True)
+            if gate:
+                return None, gate
         # Re-price at executable bid/ask. Retain the structural boundary and
         # preserve the original stop whenever it still fits the risk budget.
         quote_stop, quote_risk, quote_profile = oil_risk.stop_geometry(
@@ -501,7 +515,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if (zone.get('wave_proof') and zone['kind'] in ('BULLISH_BREAKER', 'BEARISH_BREAKER')
                 and distance < .20 - 1e-8 and not reaction_only):
             distance_gate = distance_gate or 'ENTRY_TOO_CLOSE'
-        if distance_gate and not (reaction_only and distance_gate == 'ENTRY_TOO_CLOSE'):
+        if distance_gate and not ((reaction_only or breakdown) and distance_gate == 'ENTRY_TOO_CLOSE'):
             return None, distance_gate
     volume = scanner.formation_volume(zone, snapshot)
     mark('PASSIVE_LIMIT', True)

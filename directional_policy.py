@@ -195,11 +195,17 @@ def execution_regime(snapshot, cfg, engine):
     regime = market_regime(snapshot, cfg.tick, engine)
     if not oil_risk.enabled(cfg):
         return regime
-    from market_wave import structure_sync, displacement_override
+    from market_wave import structure_sync, displacement_override, breakdown_zones, breakdown_intact
 
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
     sync = displacement_override(snapshot, cfg.tick, engine) or (
         structure_sync(snapshot, cfg.tick, engine) if one or four else {})
+    recent_breakdown = next((z for z in reversed(breakdown_zones(snapshot,cfg.tick,engine))
+                             if breakdown_intact(z,snapshot,cfg.tick)), None)
+    if recent_breakdown and recent_breakdown['known_ts'] >= sync.get('known_ts',0):
+        sync = {'side':-1,'known_ts':recent_breakdown['known_ts'],'break_ts':recent_breakdown['known_ts'],
+                'level':recent_breakdown['reference'],'protected_level':recent_breakdown['high'],
+                'proof':'BEARISH_BREAKDOWN_MSS'}
     side = sync.get('side') or one or four
     if not side or (not sync and one and four and one != four):
         return regime

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.38.0-proactive-scenario"
-REPORT_RELEASE = 'v12.38.0'
+VERSION = "full-ict-v12.38.1-breakdown-capture"
+REPORT_RELEASE = 'v12.38.1'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -1755,6 +1755,11 @@ def pending_scenario_error(plan, snapshot, cfg):
         return None
     engine = sys.modules[__name__]
     side, entry = plan['side'], plan['entry']
+    if zone.get('kind') == scanner.wave.BREAKDOWN:
+        if not scanner.wave.breakdown_intact(zone,snapshot,cfg.tick):
+            return 'BREAKDOWN_EXPIRED'
+        if snapshot.price < entry - entry_adverse_selection.breakdown_limit_distance(zone):
+            return 'DISTANT_BREAKDOWN_RETEST'
     trend = plan.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
         plan.get('source_strategy'),zone.get('kind'),plan.get('setup'))
     gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,trend=trend)
@@ -2200,11 +2205,18 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             trigger = candidate.get('market_trigger') or {}
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if candidate['side']==1 else s.bid
-                if (trigger.get('pattern')!='M15_LEVEL_REJECTION' or not
-                    entry_adverse_selection.rejection_trigger(s,candidate['side'],zone,
-                        trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)):
+                if trigger.get('pattern') == 'M15_BREAKDOWN_MOMENTUM':
+                    proof = entry_adverse_selection.breakdown_market_trigger(
+                        s,zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)
+                elif trigger.get('pattern') == 'M15_LEVEL_REJECTION':
+                    proof = entry_adverse_selection.rejection_trigger(
+                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)
+                else:
+                    proof = None
+                if not proof or proof['known_ts'] != trigger.get('known_ts') or abs(quote-candidate['entry']) > 1e-8:
                     continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
+                candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN else
                 trigger.get('limit_entry',candidate['entry']),zone,
                 trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
                     candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')))
@@ -2708,6 +2720,8 @@ REASON_UA = {
     'CONTINUATION_RETRACE_REQUIRED':'для MARKET потрібен відкат 35–50% від імпульсу',
     'BLOCKED_DEALING_RANGE_30_70':'вхід у крайніх 30% торгового діапазону',
     'BLOCKED_OUTSIDE_HTF_POI':'вхід поза підтвердженою зоною старшого таймфрейму',
+    'BREAKDOWN_EXPIRED':'ведмежий пробій втратив чинність',
+    'DISTANT_BREAKDOWN_RETEST':'ціна надто далеко від зони мікроретесту',
     'BLOCKED_NO_ROOM_TO_STRUCTURE':'до найближчої структурної перешкоди менше 1.35R',
     'CONFIRMATION_REQUIRED':'чекаємо підтвердження гальмування на M15',
     'BREAKER_SWEEP_FVG_REQUIRED':'брейкер потребує свіпу та підтвердженого FVG',
@@ -3562,7 +3576,8 @@ def main(core) -> int:
                 }
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
-                current = unittest.defaultTestLoader.loadTestsFromName('test_v12_38_scenarios')
+                current = unittest.defaultTestLoader.loadTestsFromNames(
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

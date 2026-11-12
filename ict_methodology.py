@@ -395,3 +395,55 @@ def breaker_evidence(rows, index, points, side, tick):
     gap = displacement_gap(rows, index, side, tick)
     sweep = prior_local_sweep(rows, index, points, side, tick) if gap else None
     return {**sweep, 'fvg': gap, 'impulse_ts': rows[index].ts} if sweep else None
+
+
+def bearish_breakout(rows, index, points, tick, atr):
+    """Return the pre-existing support broken by a closed displacement."""
+    if index < 19 or atr <= 0:
+        return None
+    bar = rows[index]
+    if not bar.confirmed or bar.open-bar.close < 1.15*atr - 1e-8:
+        return None
+    closes = [c.close for c in rows[max(0,index-95):index+1]]
+    ema20 = ema50 = closes[0]
+    for close in closes[1:]:
+        ema20 += (close-ema20)*2/21
+        ema50 += (close-ema50)*2/51
+    pivot = body_break(rows,index,points,-1,tick,900_000)
+    if not (bar.close < ema20 and (bar.close < ema50 or pivot)):
+        return None
+    prior = rows[max(0,index-96):index]
+    references = reclaim_references(prior,points,bar.ts,-1,tick,atr)
+    if pivot:
+        references.sort(key=lambda item: abs(item[0]-pivot['level']) >= tick/2)
+    for level, known in references:
+        if not reclaim_break(rows,index,-1,level,tick,atr) or bar.open < level-tick/2:
+            continue
+        if any(c.ts >= known and c.close < level-tick/2 for c in prior):
+            continue
+        return {'level':level,'reference_known_ts':known,'ema20':ema20,'ema50':ema50,
+                'mss_level':pivot['level'] if pivot else None,'body_atr':(bar.open-bar.close)/atr}
+    return None
+
+
+def stop_sweep_recovery(rows, side, closed_ts, stop, tick, engine):
+    """A witnessed stop raid and a fresh same-side MSS within four M15."""
+    step = 900_000
+    points = engine.pivots(rows,strength=1)
+    for i, raid in enumerate(rows):
+        if not raid.confirmed or not raid.ts <= closed_ts <= raid.ts+step:
+            continue
+        extreme = raid.high if side==-1 else raid.low
+        if side*(extreme-stop) > tick/2:
+            continue
+        pre_sweep = [p for p in points if p['known_ts']+step <= raid.ts]
+        for j in range(i+1,min(len(rows),i+5)):
+            bar = rows[j]
+            if not bar.confirmed or bar.ts-rows[j-1].ts != step:
+                break
+            if side*(bar.close-stop)<tick-1e-8:
+                continue
+            pivot = body_break(rows,j,pre_sweep,side,tick,step)
+            if pivot:
+                return {'known_ts':bar.ts+step,'level':pivot['level'],'sweep_ts':raid.ts+step}
+    return None

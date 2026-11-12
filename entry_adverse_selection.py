@@ -333,3 +333,28 @@ def rejection_trigger(snapshot, side, zone, entry, risk, quote, tick):
         return None
     return {'pattern':'M15_LEVEL_REJECTION','known_ts':known, 'limit_entry':entry,
             'initial_risk':risk, 'deviation_r':abs(quote-entry)/risk}
+
+
+def breakdown_limit_distance(zone):
+    atr = (zone.get('wave_proof') or {}).get('breakdown_atr') or 0
+    return max(.10,min(.50,atr))
+
+
+def breakdown_market_trigger(snapshot, zone, entry, risk, quote, tick):
+    """Only a fresh executable quote close to the broken support."""
+    from directional_policy import closed
+    from market_wave import M15, breakdown_intact
+
+    known = (zone.get('wave_proof') or {}).get('break_ts',0)
+    if (not snapshot.trusted or not 0 <= snapshot.now-snapshot.ticker_ts <= 120_000
+            or not 0 <= snapshot.ticker_ts-known < M15
+            or risk <= 0 or not breakdown_intact(zone,snapshot,tick)):
+        return None
+    rows = closed(snapshot,'15m')
+    if not rows or rows[-1].ts+M15 != known:
+        return None
+    distance = min(.20*risk, max(.10,min(.15,.30*zone['wave_proof']['breakdown_atr'])))
+    if not tick/2 <= entry-quote <= distance+1e-8 or entry-rows[-1].close > distance+1e-8:
+        return None
+    return {'pattern':'M15_BREAKDOWN_MOMENTUM','known_ts':known,'limit_entry':entry,
+            'initial_risk':risk,'deviation_r':(entry-quote)/risk}

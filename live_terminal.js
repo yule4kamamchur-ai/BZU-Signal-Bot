@@ -198,7 +198,7 @@ function targetRatiosValid(row, rr1, rr2) {
 }
 function marketCandidate(row) {
   return row.order_type === 'MARKET' &&
-    (row.market_trigger?.pattern === 'M15_LEVEL_REJECTION' || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
      (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function validCandidate(row) {
@@ -208,7 +208,7 @@ function validCandidate(row) {
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
-    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
+    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','BREAKDOWN_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
     'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
@@ -216,7 +216,7 @@ function validCandidate(row) {
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
-    (row.market_trigger.pattern === 'M15_LEVEL_REJECTION' ?
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM'].includes(row.market_trigger.pattern) ?
       Math.abs(row.entry - row.market_trigger.limit_entry) <= .20*row.market_trigger.initial_risk + 1e-8 :
       row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
       row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
@@ -560,7 +560,7 @@ function zoneName(kind) {
            M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
            BREAKER_BLOCK:'Дзеркальний рівень', BOS_CONTINUATION:'Мілкий ретест пробою', FVG_PULLBACK:'Відкат у FVG',
            FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
-           MULTIBAR_SWEEP:'Свіп із поглинанням', SR_FLIP_RECLAIM:'Дзеркальний рівень', RECLAIM_BREAKER:'Ретест повернутого рівня',
+           MULTIBAR_SWEEP:'Свіп із поглинанням', BREAKDOWN_RECLAIM:'Ведмежий пробій підтримки', SR_FLIP_RECLAIM:'Дзеркальний рівень', RECLAIM_BREAKER:'Ретест повернутого рівня',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            FLAG_RETEST:'Ретест пробою прапора', BEARISH_BREAKER:'Дзеркальний опір',
            BULLISH_BREAKER:'Дзеркальна підтримка', MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';
@@ -617,6 +617,7 @@ function conditionText(row, price) {
       (row.low <= price && price <= row.high ? '. Для входу потрібні допуск і закрита реакція M5.' : '.');
   }
   if (marketCandidate(row)) {
+    if (row.market_trigger.pattern === 'M15_BREAKDOWN_MOMENTUM') return 'Закрита M15 підтвердила імпульсний пробій підтримки.';
     return ['POST_TOUCH_REJECTION','M15_LEVEL_REJECTION'].includes(row.market_trigger.pattern) ? 'Зафіксовано відбій від зони.' :
       row.market_trigger.pattern === 'BREAKOUT_CONTINUATION' ? 'Підтверджено імпульсний пробій.' : 'Ціна в межах допуску зони.';
   }
@@ -1015,7 +1016,9 @@ function render() {
   $('regime').textContent=({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
   const structureSync=state.structure_sync;
-  $('regime').title=structureSync?.proof === 'DISPLACEMENT_MSS_FVG'
+  $('regime').title=structureSync?.proof === 'BEARISH_BREAKDOWN_MSS'
+    ? 'Закритий ведмежий пробій M15'
+    : structureSync?.proof === 'DISPLACEMENT_MSS_FVG'
     ? 'Свіп / межа ADR · MSS M15 · FVG'
     : structureSync?.proof === 'M15_BOS_75_ADR'
     ? 'Пробій M15 ' + format(structureSync.level) + ' · хвиля ' + Math.round(structureSync.wave_adr * 100) + '% ADR'

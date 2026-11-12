@@ -7,10 +7,12 @@ import oil_risk
 M15 = 900_000
 M5 = 300_000
 STRUCTURE_LOOKBACK = 96
+BREAKDOWN = "BREAKDOWN_RECLAIM"
+BREAKDOWN_MAX_AGE = 2 * M15
 REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
 TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION'})
-REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM'})
+REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
 
@@ -144,6 +146,51 @@ def displacement_override(snapshot, tick, engine):
                     'sweep_ts':sweep['sweep_ts'], 'fvg':gap, 'body_atr':abs(bar.close-bar.open)/atr,
                     'proof':'DISPLACEMENT_MSS_FVG'}
     return {}
+
+
+def breakdown_zones(snapshot, tick, engine):
+    """A bearish flip from a strong close, independent of the slow bias."""
+    import directional_policy as direction
+
+    cache = vars(snapshot).setdefault('_breakdown_zones', {})
+    key = (snapshot.now,tick)
+    if key in cache:
+        return cache[key]
+    rows = direction.closed(snapshot,'15m')[-(STRUCTURE_LOOKBACK+3):]
+    points = engine.pivots(rows,strength=1)
+    zones = []
+    for index in range(max(19,len(rows)-2),len(rows)):
+        bar = rows[index]
+        known = bar.ts+M15
+        if not 0 <= snapshot.now-known < BREAKDOWN_MAX_AGE:
+            continue
+        atr = engine.atr(rows[max(0,index-15):index])
+        evidence = ict.bearish_breakout(rows,index,points,tick,atr)
+        if evidence is None:
+            continue
+        level = evidence.pop('level')
+        high = level+max(tick,min(.10,.25*atr))
+        if any(c.high >= level+tick-1e-8 for c in rows[index+1:]):
+            # The original first retest is no longer available for a new plan.
+            continue
+        zones.append(_zone(BREAKDOWN,-1,level,high,bar,M15,level,
+            structural_reclaim=True,break_ts=known,impulse_ts=bar.ts,
+            breakdown_atr=atr,**evidence))
+    cache[key] = zones
+    return zones
+
+
+def breakdown_intact(zone, snapshot, tick):
+    proof = zone.get('wave_proof') or {}
+    known = proof.get('break_ts',0)
+    if (zone.get('kind')!=BREAKDOWN or zone.get('side')!=-1 or
+            not 0 < proof.get('reference_known_ts',0) <= known-M15 or
+            not 0 <= snapshot.now-known < BREAKDOWN_MAX_AGE):
+        return False
+    from directional_policy import closed
+
+    return (snapshot.price <= zone['high']+tick/2 and
+            not any(c.close>zone['high'] for c in closed(snapshot,'15m') if c.ts>=known))
 
 
 def _reclaim_breakers(rows, tick, engine, *, proactive=False):
@@ -587,6 +634,7 @@ def zones(snapshot, cfg, engine, regime):
     if oil_risk.enabled(cfg):
         results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
         results.extend(_reclaim_breakers(m15, tick, engine, proactive=True))
+        results.extend(breakdown_zones(snapshot,tick,engine))
         reclaims = {}
         other = []
         for zone in results:
@@ -616,6 +664,8 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
     """Consume the sweep that the planner already reconstructed from candles."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
+    if zone.get('kind') == BREAKDOWN:
+        return side == -1 and breakdown_intact(zone,snapshot,tick)
     if zone.get('kind') in ('MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
         import directional_policy as direction
 

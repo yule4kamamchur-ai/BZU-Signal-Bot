@@ -109,6 +109,14 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend):
         return 'DEALING_RANGE_UNAVAILABLE'
     if trend and (entry <= rng['discount'] if side == -1 else entry >= rng['premium']):
         return 'BLOCKED_DEALING_RANGE_30_70'
+    from market_wave import BREAKDOWN, breakdown_zones, breakdown_intact
+
+    if zone.get('kind') == BREAKDOWN:
+        witnessed = side == -1 and breakdown_intact(zone,snapshot,cfg.tick) and any(
+            z['known_ts']==zone['known_ts'] and abs(z['reference']-zone['reference'])<cfg.tick/2
+            for z in breakdown_zones(snapshot,cfg.tick,engine))
+        # The witnessed former support is the new local POI.
+        return None if witnessed else 'BREAKDOWN_EXPIRED'
     label = 'LONG' if side==1 else 'SHORT'
     if not any(p['low'] <= entry <= p['high'] for p in plan[label]['poi_zones']):
         return 'BLOCKED_OUTSIDE_HTF_POI'

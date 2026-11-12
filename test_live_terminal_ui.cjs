@@ -159,6 +159,8 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.match(text('state-detail'),/відбій від зони/);
  assert.equal(nodes.get('state-banner').dataset.mode,'WAITING');
  assert.ok(priceLines.some(l=>l.title.includes('MARKET SHORT')));
+ run('state.candidates[0].kind="BREAKDOWN_RECLAIM";state.candidates[0].market_trigger={pattern:"M15_BREAKDOWN_MOMENTUM",limit_entry:93.86,initial_risk:2.1};render();');
+ assert.match(text('state-detail'),/імпульсний пробій підтримки/);
  run('state.price=92.90;render();');
  assert.equal(run('radarRows().filter(Boolean).length'),0);
  assert.equal(priceLines.length,0);

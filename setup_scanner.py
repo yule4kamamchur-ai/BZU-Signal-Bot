@@ -95,7 +95,7 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] == 'M15_LEVEL_REJECTION':
+        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM'):
             if abs(entry-trigger['limit_entry']) > .20*trigger['initial_risk'] + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -163,7 +163,7 @@ def target_crossed(side, snapshot, target, known):
 
 
 CONTINUATION_SETUPS = frozenset({'CONTINUATION_PULLBACK','PULLBACK_CONTINUATION','TREND_PULLBACK',
-    'BOS_CONTINUATION','FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
+    'BOS_CONTINUATION',wave.BREAKDOWN,'FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
     'ACCELERATION_PULLBACK_REENTRY','ACCEPTANCE_RETEST_CONTINUATION','MOMENTUM_NO_PULLBACK_CONTINUATION'})
 REVERSAL_RELATION = 'CONFIRMED_REVERSAL'
 
@@ -215,7 +215,7 @@ def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern == 'M15_LEVEL_REJECTION' or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -843,7 +843,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         anchor = cfg.core.make_anchor(
             name,
             'LONG' if side == 1 else 'SHORT', entry, setup['invalidation'],
-            family, family, context, score=84 if family in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM') else 75,
+            family, family, context, score=84 if family in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM',wave.BREAKDOWN) else 75,
             evidence=evidence, ttl_minutes=30)
         if anchor is not None:
             anchor.id = engine.ident(family, side, known, entry)
