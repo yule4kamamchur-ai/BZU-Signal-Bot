@@ -195,10 +195,11 @@ def execution_regime(snapshot, cfg, engine):
     regime = market_regime(snapshot, cfg.tick, engine)
     if not oil_risk.enabled(cfg):
         return regime
-    from market_wave import structure_sync
+    from market_wave import structure_sync, displacement_override
 
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
-    sync = structure_sync(snapshot, cfg.tick, engine) if one or four else {}
+    sync = displacement_override(snapshot, cfg.tick, engine) or (
+        structure_sync(snapshot, cfg.tick, engine) if one or four else {})
     side = sync.get('side') or one or four
     if not side or (not sync and one and four and one != four):
         return regime
@@ -259,12 +260,12 @@ def bos_recovers_level(snapshot, side, since, level, tick, engine):
         if bar.ts < since:
             continue
         recovered = recovered or bool(ict_methodology.body_break(rows, i, points, side, tick, step))
-        if recovered and side * (bar.close - level) >= tick - 1e-8:
+        if recovered and (level is None or side * (bar.close - level) >= tick - 1e-8):
             return True
     return False
 
 
-def m15_ema_structure(snapshot, tick, engine):
+def m15_ema_structure(snapshot, tick, engine, *, breaker_side=None):
     rows = closed(snapshot, '15m')[-96:]
     if len(rows) < 50 or snapshot.now - rows[-1].ts >= 3 * TF['15m']:
         return 0, ()
@@ -276,8 +277,8 @@ def m15_ema_structure(snapshot, tick, engine):
     highs = [p['level'] for p in points if p['kind'] == 'HIGH'][-2:]
     lows = [p['level'] for p in points if p['kind'] == 'LOW'][-2:]
     for side in (1, -1):
-        if all(len(pair) == 2 and side * (pair[-1] - pair[0]) >= tick - 1e-8
-               for pair in (highs, lows)):
+        pairs = (lows,) if breaker_side == -1 else (highs,) if breaker_side == 1 else (highs,lows)
+        if all(len(pair) == 2 and side * (pair[-1] - pair[0]) >= tick-1e-8 for pair in pairs):
             return side, (ema20, ema50)
     return 0, ()
 
@@ -324,7 +325,7 @@ def reversal_sweep_override(side, zone, snapshot, tick):
     """Use a fresh witnessed wick/reclaim to override only the local wave."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
-    if zone.get('kind') == 'RECLAIM_BREAKER':
+    if zone.get('kind') in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
         from market_wave import reclaim_is_intact
 
         return reclaim_is_intact(side, zone, snapshot, tick)
@@ -356,7 +357,7 @@ def reversal_sweep_override(side, zone, snapshot, tick):
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None, *, require_macro=True):
     from market_wave import reversal_override
 
-    if ((zone or {}).get('kind') == 'RECLAIM_BREAKER'
+    if ((zone or {}).get('kind') in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM')
             and regime.get('structure_sync', {}).get('side') == -side):
         return False, 'M15_STRUCTURE_OPPOSES_ENTRY'
     if reversal_override(side, zone, snapshot, tick, require_macro=require_macro):

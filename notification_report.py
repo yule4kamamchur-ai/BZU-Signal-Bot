@@ -365,6 +365,21 @@ def build_checklist(state, snapshot, result, cfg, engine):
         f'💰 Ціна: {price} • {session["session"]} • Режим {regime.get("trend_anchor_timeframe") or "ринку"} · {trend}',
     ]
 
+    if not frozen and engine.oil_risk.enabled(cfg):
+        plan = engine.scenario_planner.build(snapshot,cfg,engine)
+        lines += ['', 'План на перспективу · сценарії А та Б']
+        for letter, label in (('А','LONG'),('Б','SHORT')):
+            scenario = plan[label]
+            poi, target = scenario['poi'], scenario['target']
+            retest = f"ретест {poi['low']:.2f}–{poi['high']:.2f}" if poi else 'чекаємо підтверджену зону'
+            objective = f" → {target['level']:.2f}" if target else ''
+            breakout = scenario['breakout_level']
+            branch = f" | пробій {breakout:.2f} + ретест" if breakout is not None else ''
+            lines.append(f"{letter} · {label} · {retest}{objective}{branch}")
+        sar = result.get('analysis',{}).get('stop_and_reverse')
+        if sar:
+            label = 'LONG' if sar['side']==1 else 'SHORT'
+            lines.append(f"Розворот після виходу · перевірено {label}")
     # Show only genuine new orders, not duplicate scenario/matrix diagnostics.
     selected = [] if frozen else result.get('selected_plans', [])
     if selected:

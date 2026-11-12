@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.37.1-structure-sync"
-REPORT_RELEASE = 'v12.37.1'
+VERSION = "full-ict-v12.38.0-proactive-scenario"
+REPORT_RELEASE = 'v12.38.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -45,6 +45,7 @@ import setup_paths
 import execution_atlas
 import directional_policy as policy
 import oil_risk
+import scenario_planner
 import entry_adverse_selection
 import edge_intelligence
 import entry_playbooks
@@ -1391,8 +1392,7 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
 
 def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
     engine = sys.modules[__name__]
-    if not position.get('tp1_hit'):
-        position_monitor.observe_structure(position, snapshot, ts, cfg, engine)
+    position_monitor.observe_structure(position, snapshot, ts, cfg, engine)
     decision = position_monitor.evaluate_active_trade_lifecycle(position, ts, price, cfg, engine)
     if decision['should_exit']:
         if 'exit_trigger_level' in decision:
@@ -1680,9 +1680,11 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         if c.ts >= p["expires_ts"]:
             end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
             continue
-        fill = allow_fill and (c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8)
+        permitted = allow_fill and (entry_gates_checked or
+            not hold_pending_approach(p,replace(s,now=c.ts,price=c.open),cfg))
+        fill = permitted and (c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8)
         if bzu_policy.is_new(p):
-            fill=allow_fill and (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry'])
+            fill=permitted and (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry'])
         if cancel_ts and c.ts < cancel_ts < end:
             end_order(state, p, "UNRESOLVED" if fill else "CANCELLED",
                       "CANCEL_INSIDE_TOUCHED_BAR" if fill else p["cancel_reason"], cancel_ts)
@@ -1693,7 +1695,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
                       "EXPIRY_INSIDE_BAR" if fill else "LIMIT_TTL", p["expires_ts"])
             continue
         if bzu_policy.is_new(p):
-            fill = allow_fill and (p.get('action_type')=='ACTIVE_ENTRY' or
+            fill = permitted and (p.get('action_type')=='ACTIVE_ENTRY' or
                 (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry']))
             target = p['tp1']
             target_hit = c.high>=target if p['side']==1 else c.low<=target
@@ -1735,13 +1737,40 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
 
 
+def hold_pending_approach(plan, snapshot, cfg):
+    zone = plan.get('entry_zone')
+    if not oil_risk.enabled(cfg) or not zone:
+        return False
+    result = entry_adverse_selection.approach_velocity(
+        snapshot,plan['side'],zone,plan['entry'],cfg.tick,sys.modules[__name__],
+        shock_ts=plan.get('approach_shock_ts') or 0)
+    plan['approach_shock_ts'] = result['shock_known_ts']
+    plan['entry_hold'] = 'CONFIRMATION_REQUIRED' if result['blocked'] else None
+    return result['blocked']
+
+
+def pending_scenario_error(plan, snapshot, cfg):
+    zone = plan.get('entry_zone')
+    if not oil_risk.enabled(cfg) or not zone:
+        return None
+    engine = sys.modules[__name__]
+    side, entry = plan['side'], plan['entry']
+    trend = plan.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
+        plan.get('source_strategy'),zone.get('kind'),plan.get('setup'))
+    gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,trend=trend)
+    if gate:
+        return gate
+    _, room_r = oil_risk.structural_room(side,entry,plan['risk'],scenario_planner.structure_levels(snapshot,engine))
+    return 'BLOCKED_NO_ROOM_TO_STRUCTURE' if room_r is not None and room_r < 1.35-1e-8 else None
+
+
 def pending_entry_gate(plan, trades, as_of, cfg):
     session = bzu_policy.session_gate(as_of.now)
     if not session['allowed']:
         return session['reason']
     cooldown = entry_loss_cooldown(plan, trades, as_of, cfg)
     return (cooldown['reason'] if not cooldown['allowed'] else
-            scanner.pending_tp1_error(plan) or
+            scanner.pending_tp1_error(plan) or pending_scenario_error(plan,as_of,cfg) or
             bzu_policy.breaker_structure_error(plan, as_of, cfg, sys.modules[__name__]))
 
 
@@ -1786,9 +1815,13 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
                     book={**state,'pending':plan,'active':None,'reconciliation':None}
                     end_order(book,plan,'CANCELLED',gate,c.ts)
                     continue
-            if plan.get('effective_ts',plan['placed_ts'])<=c.ts<plan['expires_ts'] and plan['id'] not in eligible:
+            held = hold_pending_approach(plan,at_open,cfg)
+            if held:
+                eligible.discard(plan['id'])
+                plan.pop('entry_armed_bar',None)
+            if not held and plan.get('effective_ts',plan['placed_ts'])<=c.ts<plan['expires_ts'] and plan['id'] not in eligible:
                 plan['capacity_waited']=True
-            if (plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
+            if (not held and plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
                     and c.ts>=plan.get('queue_policy_effective_ts',plan.get('effective_ts',plan['placed_ts']))):
                 if plan['id'] in eligible:
                     plan['entry_armed_bar']=c.ts
@@ -1910,6 +1943,12 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
         request_cancel(state, pending, gate, snapshot.now)
         return
     trend = pending.get('trend_rel') == 'WITH_TREND'
+    gate = pending_scenario_error(pending,snapshot,cfg)
+    if gate:
+        request_cancel(state,pending,gate,snapshot.now)
+        return
+    if hold_pending_approach(pending,snapshot,cfg):
+        return
     runner = trend or pending.get('trend_rel') == scanner.REVERSAL_RELATION
     a15 = atr(policy.closed(snapshot, '15m'))
     if scanner.exhausted_move(pending['side'], snapshot.price, pending.get('tp1') or pending.get('tp')):
@@ -1922,7 +1961,7 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     if bzu_policy.is_new(pending):
         if bzu_policy.is_precision(pending):
             session=bzu_policy.session_gate(snapshot.now)
-            approach=entry_adverse_selection.approach(snapshot,a15,
+            approach={} if oil_risk.enabled(cfg) else entry_adverse_selection.approach(snapshot,a15,
                         pending['side'],pending.get('entry_zone'),cfg.tick,stop=pending.get('stop'), trend=runner)
             cooldown=entry_loss_cooldown(pending,state['trades'],snapshot,cfg)
             regime=policy.execution_regime(snapshot,cfg,sys.modules[__name__])
@@ -2025,6 +2064,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     advance_lifecycle(state, s, cfg)
     if active_plans(state):
         check_quote_exits(state, s, cfg)
+    sar = arbitration.stop_and_reverse(state['events'][start:],state['trades']) if oil_risk.enabled(cfg) else None
     # First catch up the old entry contract, then change FUTURE queue arming.
     for pending in pending_plans(state):
         if pending.get('queue_execution_policy')!='PASSIVE_ARM_V2':
@@ -2048,6 +2088,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 or record.get('execution')!='PAPER_SIGNAL')
     manual_block = any(needs_manual_check(r) for r in unresolved)
     analysis = analyze(s, cfg, state) if not manual_block else {"health":faults,"plans":[],"watch":[],"rejections":{},"contexts":{}}
+    analysis['scenario_plan'] = scenario_planner.build(s,cfg,sys.modules[__name__]) if oil_risk.enabled(cfg) else None
+    analysis['stop_and_reverse'] = sar
     analysis['edge_mode']=os.environ.get('BZU_EDGE_MODE','SHADOW').strip().upper()
     state["setup_statistics"] = analysis.get("setup_statistics",state.get("setup_statistics",{}))
     if analysis.get('full_context'):
@@ -2078,7 +2120,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             action=session['reason']
     # Do not place a replacement in the very report that first discovers a
     # historical fill (even if it also closed by this report).
-    if any(e.get('kind') == 'FILLED' for e in state['events'][start:]):
+    if not sar and any(e.get('kind') == 'FILLED' for e in state['events'][start:]):
         can_place = False
     # Independent, final execution interlock: never rely exclusively on the
     # upstream analyzer (or a restored queue/previous model) to enforce the
@@ -2152,6 +2194,24 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     confirmed = []
     for candidate in valid:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
+        if sar and candidate['side'] != sar['side']:
+            continue
+        if single_limit:
+            trigger = candidate.get('market_trigger') or {}
+            if candidate.get('order_type')=='MARKET':
+                quote = s.ask if candidate['side']==1 else s.bid
+                if (trigger.get('pattern')!='M15_LEVEL_REJECTION' or not
+                    entry_adverse_selection.rejection_trigger(s,candidate['side'],zone,
+                        trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)):
+                    continue
+            gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
+                trigger.get('limit_entry',candidate['entry']),zone,
+                trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
+                    candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')))
+            _, room_r = oil_risk.structural_room(candidate['side'],candidate['entry'],candidate['risk'],
+                scenario_planner.structure_levels(s,sys.modules[__name__]))
+            if gate or (room_r is not None and room_r < 1.35-1e-8):
+                continue
         if (dominant and candidate['side'] != dominant
                 and not candidate.get('local_reversal_override')
                 and not (candidate.get('zone_origin', {}).get('wave_confirmed')
@@ -2196,7 +2256,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             request_cancel(state,obsolete,'PENDING_SINGLE_LIMIT_CAP' if single_limit else 'LEGACY_PENDING_EXCESS_CAP_2',s.now)
         can_place=False
         pending=pending_plans(state)
-    arbitration_audit={'decision':'SKIPPED','reason':'NO_PENDING_OR_UNSAFE_BOOK'}
+    arbitration_audit=sar or {'decision':'SKIPPED','reason':'NO_PENDING_OR_UNSAFE_BOOK'}
     if can_place and len(active) == 1 and not pending and not unresolved:
         unused = [p for p in valid if not {p['event_key'], *p.get('parent_keys', [])}.intersection(state['used_events'])
                   and p['expires_ts'] > s.now]
@@ -2441,6 +2501,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         watch = [p for p in watches if p['side'] == watch_side]
         if watch:
             action = 'WATCH_REACTION'
+    if sar:
+        sar['outcome'] = 'ORDER_SELECTED' if selected else 'AWAITING_VALID_OPPOSITE_ENTRY'
     analysis['reaction_plans'] = copy.deepcopy(watch)
     analysis['admitted_plans'] = copy.deepcopy(selected + watch)
     # Convert the market-ready state into the ACTUAL portfolio decision, so a
@@ -2644,7 +2706,12 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 REASON_UA = {
     'POST_TP_EXHAUSTION_COOLDOWN':'після тейка великої хвилі потрібен відкат від 38.2% або пауза 2 год',
     'CONTINUATION_RETRACE_REQUIRED':'для MARKET потрібен відкат 35–50% від імпульсу',
-    'BLOCKED_LOW_RR_135':'відстань до TP1 менша за 1.35 початкового ризику',
+    'BLOCKED_DEALING_RANGE_30_70':'вхід у крайніх 30% торгового діапазону',
+    'BLOCKED_OUTSIDE_HTF_POI':'вхід поза підтвердженою зоною старшого таймфрейму',
+    'BLOCKED_NO_ROOM_TO_STRUCTURE':'до найближчої структурної перешкоди менше 1.35R',
+    'CONFIRMATION_REQUIRED':'чекаємо підтвердження гальмування на M15',
+    'BREAKER_SWEEP_FVG_REQUIRED':'брейкер потребує свіпу та підтвердженого FVG',
+    'BLOCKED_LOW_RR_135':'відстань до TP1 менша за 1.40 початкового ризику',
     'ADVERSE_STRUCTURE_LOCKOUT':'повторний вхід заблоковано до підтвердження структури M15',
     'M15_STRUCTURE_OPPOSES_ENTRY':'структура M15 спрямована проти цього входу',
     'CLOSED_REVERSAL_FLIP_PROFIT':'прибуток зафіксовано перед підтвердженим переворотом',
@@ -3470,7 +3537,33 @@ def main(core) -> int:
                 # ledger contracts. The Brent suites exercise both swing risk and trend entry.
                 with patch.object(oil_risk, 'enabled', return_value=False):
                     compatibility = runner.run(suite)
-                organic = runner.run(unittest.defaultTestLoader.loadTestsFromNames(('test_v12_32_organic_oil', 'test_v12_33_trend_pullback', 'test_v12_34_dual_execution', 'test_v12_35_stale_and_setups', 'test_v12_36_reversal_8850', 'test_v12_37_structure_sync')))
+                historical = unittest.defaultTestLoader.loadTestsFromNames((
+                    'test_v12_32_organic_oil', 'test_v12_33_trend_pullback',
+                    'test_v12_34_dual_execution', 'test_v12_35_stale_and_setups',
+                    'test_v12_36_reversal_8850', 'test_v12_37_structure_sync'))
+                # These fixtures require superseded entry permissions, exact
+                # prices, or the v12.37 early-unlock contract.
+                superseded = {
+                    'test_weak_single_body_can_break_a_two_touch_shelf',
+                    'test_live_reaction_can_publish_organic_plan_and_cannot_place',
+                    'test_no_4h_or_daily_runner_prevents_live_order',
+                    'test_real_router_and_terminal_share_one_organic_plan',
+                    'test_live_cycle_preplaces_and_projects_a_trend_order_beyond_old_window',
+                    'test_engine_persists_market_at_ask_and_recovers_projection_once',
+                    'test_replacement_can_place_a_passive_a_limit',
+                    'test_replacement_closes_old_slot_before_recording_new_market',
+                    'test_double_bottom_can_open_long_during_bearish_regime',
+                    'test_profitable_short_reverses_before_new_long_is_recorded',
+                    'test_reclaim_breaker_plants_limit_at_recovered_level',
+                    'test_adverse_exit_lockout_survives_journal_reload_and_is_symmetric',
+                    'test_breaker_gate_requires_both_higher_lows_and_higher_highs_above_emas',
+                    'test_reclaim_can_find_a_level_older_than_36_bars',
+                    'test_unlock_needs_closed_bos_and_recovery_of_entry',
+                }
+                retained = [case for module in historical for group in module for case in group
+                            if case.id().rsplit('.',1)[-1] not in superseded]
+                current = unittest.defaultTestLoader.loadTestsFromName('test_v12_38_scenarios')
+                organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:

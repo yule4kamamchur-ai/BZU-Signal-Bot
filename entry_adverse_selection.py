@@ -275,3 +275,61 @@ def failed_thesis_after_deadline(plan, snapshot, tick):
                 'h1_reference':h_reference,'last_hourly_close':rows1[-1].close,
                 'latest_15m_close':rows15[-1].close,'as_of_ts':now}
     return None
+
+
+def approach_velocity(snapshot, side, zone, entry, tick, engine, *, shock_ts=0):
+    """Hold after a closed adverse burst until a newer M15 confirms braking."""
+    from directional_policy import closed
+    from oil_risk import M15
+
+    rows = closed(snapshot, '15m')[-32:]
+    for i in range(max(15,len(rows)-16),len(rows)):
+        bar, prev = rows[i], rows[i-1]
+        known = bar.ts+M15
+        if known <= max(shock_ts,zone.get('known_ts',0)):
+            continue
+        atr = engine.atr(rows[i-15:i])
+        if atr <= 0:
+            continue
+        width = max(tick,bar.high-bar.low)
+        wick = (bar.close-bar.low if side==1 else bar.high-bar.close)/width
+        body = -side*(bar.close-bar.open)
+        two = (-side*(bar.close-prev.open) if bar.ts-prev.ts==M15 and
+               side*(prev.close-prev.open)<0 else 0)
+        near = abs(bar.close-entry)<=.65*atr or bar.low<=entry<=bar.high
+        if near and max(body,two)>1.3*atr and body>=.65*width and wick<.20:
+            shock_ts = known
+        elif shock_ts and near and side*(bar.close-entry)>=-tick/2 and (
+                side*(bar.close-bar.open)>tick or wick>=.30):
+            shock_ts = 0
+    return {'blocked': bool(shock_ts), 'shock_known_ts': shock_ts or None,
+            'action': 'CONFIRMATION_REQUIRED' if shock_ts else 'PRECISION_ENTRY',
+            'brake_model': 'M15_APPROACH_VELOCITY'}
+
+
+def rejection_trigger(snapshot, side, zone, entry, risk, quote, tick):
+    from directional_policy import closed
+    from oil_risk import M15
+
+    if (not snapshot.trusted or not 0 <= snapshot.now-snapshot.ticker_ts <= 120_000
+            or risk <= 0 or abs(quote-entry) > .20*risk + 1e-8):
+        return None
+    rows = closed(snapshot, '15m')
+    if not rows:
+        return None
+    bar = rows[-1]
+    known = bar.ts+M15
+    origin = (zone.get('wave_proof') or {}).get('break_ts') or zone['known_ts']
+    if origin > bar.ts:
+        return None
+    if not 0 <= snapshot.ticker_ts-known < M15:
+        return None
+    extreme = bar.low if side==1 else bar.high
+    wick = min(bar.open,bar.close)-bar.low if side==1 else bar.high-max(bar.open,bar.close)
+    if (not zone['low']-tick <= extreme <= zone['high']+tick or
+            side*(bar.close-entry) <= tick/2 or abs(bar.close-entry) > .20*risk + 1e-8):
+        return None
+    if wick < .20*max(tick,bar.high-bar.low) and side*(bar.close-bar.open) <= tick:
+        return None
+    return {'pattern':'M15_LEVEL_REJECTION','known_ts':known, 'limit_entry':entry,
+            'initial_risk':risk, 'deviation_r':abs(quote-entry)/risk}

@@ -193,12 +193,12 @@ function organicPlan(row) {
 }
 function targetRatiosValid(row, rr1, rr2) {
   return organicPlan(row) ?
-    rr1 >= 1.35 - 1e-8 && rr1 <= 1.45 + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
+    rr1 >= 1.40 - 1e-8 && rr1 <= 1.45 + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
     rr1 >= 1.4 - 1e-8 && rr2 >= 2.2 - 1e-8;
 }
 function marketCandidate(row) {
   return row.order_type === 'MARKET' &&
-    ((row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+    (row.market_trigger?.pattern === 'M15_LEVEL_REJECTION' || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
      (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function validCandidate(row) {
@@ -208,7 +208,7 @@ function validCandidate(row) {
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
-    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
+    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
     'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
@@ -216,7 +216,9 @@ function validCandidate(row) {
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
-    (row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
+    (row.market_trigger.pattern === 'M15_LEVEL_REJECTION' ?
+      Math.abs(row.entry - row.market_trigger.limit_entry) <= .20*row.market_trigger.initial_risk + 1e-8 :
+      row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
       row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
       row.entry >= row.low - .08000001 && row.entry <= row.high + .08000001 :
       row.side * (row.entry - proximal) >= 0 && row.side * (row.entry - proximal) <= .45 * risk + 1e-8) :
@@ -311,6 +313,7 @@ function mainPlan(rows=radarRows().filter(Boolean)) {
   return rows.find(r=>r.id===state.primary_candidate_id)||rows.find(r=>r.side===state.primary_bias)||[...rows].sort((a,b)=>b.score-a.score)[0]||null;
 }
 function reactionRows() {
+  if (state.reaction_config?.execution_confirmation === 'CLOSED_M15_REJECTION') return [];
   if (![4,5].includes(state.cockpit_schema) || state.orders.some(o=>o.status==='OPEN') || !ready(Date.now())) return [];
   const price = displayedPrice();
   const chosen = radarRows(price).filter(r => r?.reaction_eligible);
@@ -557,7 +560,7 @@ function zoneName(kind) {
            M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
            BREAKER_BLOCK:'Дзеркальний рівень', BOS_CONTINUATION:'Мілкий ретест пробою', FVG_PULLBACK:'Відкат у FVG',
            FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
-           MULTIBAR_SWEEP:'Свіп із поглинанням', RECLAIM_BREAKER:'Ретест повернутого рівня',
+           MULTIBAR_SWEEP:'Свіп із поглинанням', SR_FLIP_RECLAIM:'Дзеркальний рівень', RECLAIM_BREAKER:'Ретест повернутого рівня',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            FLAG_RETEST:'Ретест пробою прапора', BEARISH_BREAKER:'Дзеркальний опір',
            BULLISH_BREAKER:'Дзеркальна підтримка', MOMENTUM_STAIRCASE_15M:'Продовження тренду'})[kind] ?? 'Структурна зона';
@@ -614,7 +617,7 @@ function conditionText(row, price) {
       (row.low <= price && price <= row.high ? '. Для входу потрібні допуск і закрита реакція M5.' : '.');
   }
   if (marketCandidate(row)) {
-    return row.market_trigger.pattern === 'POST_TOUCH_REJECTION' ? 'Зафіксовано відбій від зони.' :
+    return ['POST_TOUCH_REJECTION','M15_LEVEL_REJECTION'].includes(row.market_trigger.pattern) ? 'Зафіксовано відбій від зони.' :
       row.market_trigger.pattern === 'BREAKOUT_CONTINUATION' ? 'Підтверджено імпульсний пробій.' : 'Ціна в межах допуску зони.';
   }
   if (row.low <= price && price <= row.high) return 'Ціна в зоні. Чекаємо відбою на закритій M5.';
@@ -809,6 +812,7 @@ function management(order, tracker, price, usable) {
     TP2:'Ціна торкнулася TP2. Перевірте закриття залишку у брокера.',
     EXPIRED:'Строк лімітки минув. Очікуємо підтвердження журналу.' })[tracker.end];
   if (order.status==='PENDING') {
+    if (order.entry_hold === 'CONFIRMATION_REQUIRED') return 'Ліміт призупинено до підтвердження M15.';
     const watching=reactionRows().find(r=>r.id==='order:'+order.id);
     if (watching && reactions.get(reactionKey(watching))?.stage==='INVALID') return 'Локальний вхід заблоковано через пробій. Лімітка в журналі ще чинна; перевірте її у брокера.';
   }
@@ -979,11 +983,31 @@ function renderRadar(price, live) {
     container.append(card);
   });
 }
+function renderScenarios(usable) {
+  const panel = $('scenario-plan');
+  if (!panel) return;
+  panel.replaceChildren();
+  const map = usable ? state.scenario_plan : null;
+  for (const [label, letter] of [['LONG','А'],['SHORT','Б']]) {
+    const row = map?.[label];
+    const card = element('div');
+    card.append(element('strong', letter + ' · ' + label));
+    const zone = row?.poi;
+    card.append(element('p', zone ? 'Ретест ' + format(zone.low) + '–' + format(zone.high) +
+      (row.target ? ' → ' + format(row.target.level) : '') : 'Чекаємо підтверджену зону'));
+    if (number(row?.breakout_level)) {
+      card.append(element('small', 'Альтернатива · пробій ' + format(row.breakout_level) + ' і ретест'));
+    }
+    panel.append(card);
+  }
+}
+
 function render() {
   if (!state) return;
   const focusId=document.activeElement?.dataset.focus;
   const now=Date.now(), live=quote && quote.ts<=now+3000 && now-quote.ts<=QUOTE_MAX_AGE;
   const price=displayedPrice(), usable=ready(now);
+  renderScenarios(usable);
   const market=usable && live && !document.hidden ? quote : null;
   $('price').textContent=format(price);
   $('quote-status').textContent=live ? 'Live · ' + stamp(quote.ts) : (feedError ? 'OKX недоступний' : 'Котирування застаріло') + ' · зліпок';
@@ -991,7 +1015,9 @@ function render() {
   $('regime').textContent=({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
   const structureSync=state.structure_sync;
-  $('regime').title=structureSync?.proof === 'M15_BOS_75_ADR'
+  $('regime').title=structureSync?.proof === 'DISPLACEMENT_MSS_FVG'
+    ? 'Свіп / межа ADR · MSS M15 · FVG'
+    : structureSync?.proof === 'M15_BOS_75_ADR'
     ? 'Пробій M15 ' + format(structureSync.level) + ' · хвиля ' + Math.round(structureSync.wave_adr * 100) + '% ADR'
     : '';
   $('state-status').textContent=usable ? 'Журнал актуальний' : state.status==='DATA_HOLD' ? 'Дані на перевірці' : 'Потрібен новий зліпок';

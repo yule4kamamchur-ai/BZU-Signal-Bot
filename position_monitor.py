@@ -147,6 +147,18 @@ def observe_structure(position, snapshot, ts, cfg, engine):
     rows = _recent(as_of, '15m', 15)
     atr = engine.atr(rows[:-1])
     position.pop('adverse_impulse_ts', None)
+    position.pop('entry_engulfed_ts', None)
+    recent = _recent(as_of, '15m', 1)
+    zone = position.get('entry_zone') or {}
+    if recent:
+        bar = recent[-1]
+        side = position['side']
+        entry = position['entry']
+        low, high = zone.get('low',entry), zone.get('high',entry)
+        proximal, distal = (high,low) if side==1 else (low,high)
+        if (bar.ts >= entered and side*(bar.open-proximal) >= -cfg.tick/2
+                and side*(bar.close-distal) <= -cfg.tick):
+            position['entry_engulfed_ts'] = bar.ts + STEPS['15m']
     if rows and atr > 0:
         impulse = rows[-1]
         if impulse.ts >= entered and -position['side'] * (impulse.close - impulse.open) >= max(cfg.tick, .60 * atr):
@@ -205,11 +217,18 @@ def guard(position, ts):
 def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
     """Decide from information already known at the executable observation."""
     decision = {'should_exit': False, 'exit_reason': None, 'stop': None}
-    if position.get('tp1_hit') or position['risk'] <= 0:
+    if position['risk'] <= 0:
         return decision
     info = guard(position, ts)
     side, entry, risk = position['side'], position['entry'], position['risk']
     bars, peak, rr = info['bars_in_trade'], info['max_favorable_r'], current_r(position, price)
+    engulfed = position.get('entry_engulfed_ts',0)
+    if engulfed and 0 <= ts-engulfed < STEPS['15m']:
+        return dict(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT',stop=None)
+    if position.get('tp1_hit'):
+        if info['structure'] in ('ADVERSE','COUNTER_TREND') and rr <= info['adverse_exit_r']+EPS:
+            return dict(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT',stop=None)
+        return decision
     reason = None
     if bars >= STALE_BARS and peak < STALE_MFE - EPS:
         stop = engine.round_tick(round(entry - side * STALE_STOP_R * risk + cfg.tick / 2, 10), cfg.tick)

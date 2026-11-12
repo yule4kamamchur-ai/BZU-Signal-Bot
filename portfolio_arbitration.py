@@ -247,3 +247,15 @@ def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=
     if not audit['challengers'] and audit['decision']=='KEEP':
         audit['decision']='NO_INDEPENDENT_CHALLENGER'
     return audit
+
+
+def stop_and_reverse(events, trades):
+    """Give a just-closed structural failure exactly one opposite-side scan."""
+    exits = {e['order_id'] for e in events
+             if e['kind']=='CLOSED' and e.get('reason')=='CLOSED_ADVERSE_STRUCTURE_SHIFT'}
+    closed = max((p for p in trades if p['id'] in exits),
+                 key=lambda p:p['closed_ts'],default=None)
+    if closed is None:
+        return None
+    return {'decision':'STOP_AND_REVERSE_SCAN','side':-closed['side'],
+            'closed_order_id':closed['id'],'closed_ts':closed['closed_ts']}

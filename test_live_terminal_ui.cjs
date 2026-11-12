@@ -58,6 +58,8 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);assert.equal(nodes.get('radar').children.length,2);
  assert.equal(run('visibleZones().length'),1);assert.match(text('last-event'),/Ліміт скасовано/);
  assert.equal(priceLines.length,3);
+ run('state.scenario_plan={LONG:{poi:{low:99.6,high:99.71},target:{level:101.25},breakout_level:100.8},SHORT:{poi:{low:100.5,high:100.8},target:{level:98.5},breakout_level:99.6}};render();');
+ assert.match(text('scenario-plan'), /А · LONG.*99.60–99.71.*101.25.*Б · SHORT.*98.50/);
  assert.equal(document.querySelectorAll('[data-focus]').some(x=>x.dataset.zone==='far'),false);
  assert.ok(nodes.get('state-banner').classList.contains('banner-waiting'));
  run('selectedZone=null;state.orders=[orderFixture];render();');
@@ -149,7 +151,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
    assert.equal(run('currentReaction().tracker.events.size'),1);
    feed(100-side*.22,1000);assert.equal(run('currentReaction().tracker.events.size'),1);
  }
- reset(-1,{entry:93.77,low:93.86,high:94.14,stop:95.87,tp1:90.90,tp2:89.78,
+ reset(-1,{entry:93.77,low:93.86,high:94.14,stop:95.87,tp1:90.81,tp2:89.78,
    trend_rel:'WITH_TREND',tactic:'MARKET',order_type:'MARKET',market_now:true,
    organic_risk:{model:'ORGANIC_OIL_V32'},market_trigger:{pattern:'POST_TOUCH_REJECTION'}});
  run('state.cockpit_schema=5;state.price=93.77;render();');
@@ -282,7 +284,7 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  const observed=run('m5Proofs.size');await run('pollM5()');assert.equal(run('m5Proofs.size'),observed);
  feed(99.95,1000);assert.notEqual(stage(),'READY');
  // The organic plan uses gross targets and the same risk window for a live recheck.
- const oil = reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.74, tp2:102.43,
+ const oil = reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.81, tp2:102.43,
    organic_risk:{model:'ORGANIC_OIL_V32',atr_1h:.8,adr_d1:3.1,adr_days:14,
      session_multiplier:1.2,macro_anchor:{timeframe:'1H',level:98.4}}});
  run('state.cockpit_schema=5;state.organic_risk_profile={model:"ORGANIC_OIL_V32"};state.plan_pool=state.candidates;');
@@ -290,12 +292,12 @@ const cleanFixture=JSON.parse(JSON.stringify(fixture));
  assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')));
  assert.match(text('radar'),/Органічний стоп 98.20/);
  assert.match(text('radar'),/1.88× ATR 1H.*ADR 3.10/);
- assert.match(text('radar'),/1.36R.*1.82R/);
+ assert.match(text('radar'),/1.41R.*1.82R/);
  assert.ok(run('m5QuotePlan(state.plan_pool[0],99.7)'));
  assert.equal(run('m5QuotePlan(state.plan_pool[0],99.76)'),null);
  oil.tp1=101.22;run('render()');assert.equal(priceLines.length,0);
  // A scored trend pre-limit stays visible beyond the old distance and skips the M5 watch.
- reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.74, tp2:102.43, kind:'BREAKER_BLOCK',
+ reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.81, tp2:102.43, kind:'BREAKER_BLOCK',
    trend_rel:'WITH_TREND', score:52, min_score:52, entry_max_distance:1.994, limit_ready:true,
    organic_risk:{model:'ORGANIC_OIL_V32',atr_1h:.8,adr_d1:3.1,adr_days:14}});
  run('state.cockpit_schema=5;state.plan_pool=state.candidates;state.candidate_rules={max_distance:.65};');

@@ -10,7 +10,7 @@ STRUCTURE_LOOKBACK = 96
 REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
 TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION'})
-REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER'})
+REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM'})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
 
@@ -105,7 +105,48 @@ def _confirmed_structure_sync(rows, snapshot, tick, engine):
     return max(proofs, key=lambda p: (p['known_ts'], -p['break_ts']), default={})
 
 
-def _reclaim_breakers(rows, tick, engine):
+def displacement_override(snapshot, tick, engine):
+    import directional_policy as direction
+
+    rows = direction.closed(snapshot, '15m')[-192:]
+    points = engine.pivots(rows, strength=1)
+    adr = oil_risk.snapshot_profile(snapshot)['adr_d1']
+    for i in range(len(rows)-2, max(13, len(rows)-26), -1):
+        bar = rows[i]
+        atr = engine.atr(rows[max(0,i-15):i])
+        if atr <= 0:
+            continue
+        for side in (1,-1):
+            if side*(bar.close-bar.open) < 1.25*atr:
+                continue
+            pivot = ict.body_break(rows,i,points,side,tick,M15)
+            gap = ict.displacement_gap(rows,i,side,tick)
+            if not pivot or not gap:
+                continue
+            sweep = ict.prior_local_sweep(rows,i,points,side,tick)
+            if not sweep and adr:
+                day = bar.ts//oil_risk.DAY*oil_risk.DAY
+                today = [c for c in rows[:i] if c.ts >= day]
+                if today and today[0].ts == day:
+                    boundary = today[0].open - side*adr
+                    touched = next((c for c in reversed(today[-4:])
+                        if side*((c.low if side==1 else c.high)-boundary)<=tick
+                        and side*(c.close-boundary)>0),None)
+                    if touched:
+                        sweep = {'level':boundary, 'sweep_ts':touched.ts+M15,
+                                 'extreme':touched.low if side==1 else touched.high}
+            if not sweep:
+                continue
+            if any(side*(c.close-sweep['extreme']) <= 0 for c in rows[i:]):
+                continue
+            return {'side':side, 'known_ts':rows[i+1].ts+M15, 'break_ts':bar.ts+M15,
+                    'level':pivot['level'], 'protected_level':sweep['extreme'],
+                    'sweep_ts':sweep['sweep_ts'], 'fvg':gap, 'body_atr':abs(bar.close-bar.open)/atr,
+                    'proof':'DISPLACEMENT_MSS_FVG'}
+    return {}
+
+
+def _reclaim_breakers(rows, tick, engine, *, proactive=False):
     """Revisit a causal pivot or shelf from the preceding 24 hours."""
     points = engine.pivots(rows[-2 * STRUCTURE_LOOKBACK:], strength=1)
     for index in range(max(8, len(rows) - STRUCTURE_LOOKBACK), len(rows)):
@@ -119,7 +160,21 @@ def _reclaim_breakers(rows, tick, engine):
                 if not ict.reclaim_break(rows, index, side, level, tick, atr):
                     continue
                 zone = _confirmed_retest_zone(rows, index, side, level, reference_ts, tick, atr)
+                if proactive:
+                    if zone:
+                        zone['kind'] = 'SR_FLIP_RECLAIM'
+                    else:
+                        # An untouched breakout may reserve its FIRST retest. Once
+                        # the level traded, wait for closed proof; never rearm blind.
+                        touched = any(side*((c.low if side==1 else c.high)-level) <= tick/2
+                                      for c in rows[index+1:])
+                        if not touched:
+                            low, high = sorted((level, level-side*max(2*tick,.30*atr)))
+                            zone = _zone('SR_FLIP_RECLAIM',side,low,high,bar,M15,level,
+                                         structural_reclaim=True, reference_known_ts=reference_ts,
+                                         break_ts=bar.ts+M15, impulse_ts=bar.ts)
                 if zone:
+                    zone['wave_proof']['impulse_ts'] = bar.ts
                     yield zone
                     break
 
@@ -136,8 +191,9 @@ def _confirmed_retest_zone(rows, index, side, level, reference_ts, tick, atr, **
         if retest is not None or bar.ts - breakout.ts > STRUCTURE_LOOKBACK * M15:
             continue
         extreme = bar.low if side == 1 else bar.high
-        if (side * (previous.close - level) >= tick / 2 and side * (extreme - level) <= tick / 2
-                and side * (bar.close - level) >= tick / 2):
+        if side * (extreme - level) <= tick / 2:
+            if side*(previous.close-level) < tick/2 or side*(bar.close-level) < tick/2:
+                return None
             retest = bar
     if retest is None:
         return None
@@ -153,9 +209,10 @@ def reclaim_is_intact(side, zone, snapshot, tick):
     known = zone.get('known_ts', 0)
     reference_ts = proof.get('reference_known_ts', 0)
     broken = proof.get('break_ts', 0)
+    before_retest = zone.get('kind')=='SR_FLIP_RECLAIM' and broken == known and not proof.get('retest_ts')
     if (zone.get('side') != side or not proof.get('structural_reclaim')
-            or proof.get('retest_ts') != known or not 0 < broken - reference_ts <= STRUCTURE_LOOKBACK * M15
-            or not 0 < known - broken <= STRUCTURE_LOOKBACK * M15
+            or not (before_retest or (proof.get('retest_ts') == known and 0 < known-broken <= STRUCTURE_LOOKBACK*M15))
+            or not 0 < broken - reference_ts <= STRUCTURE_LOOKBACK * M15
             or not 0 <= snapshot.now - known < TREND_ZONE_AGE):
         return False
     distal = zone['low'] if side == 1 else zone['high']
@@ -350,9 +407,12 @@ def _trend_breakers(rows, side, tick, engine):
         point = ict.body_break(rows, i, pivots, side, tick, M15)
         if point:
             level = point['level']
-            yield _trend_zone('BREAKER_BLOCK', side, (level, level - side * max(tick, .12 * atr)),
-                              bar, M15, level, structure='PIVOT',
-                              pivot_ts=point['ts'], reference_known_ts=point['known_ts'] + M15)
+            evidence = ict.breaker_evidence(rows, i, pivots, side, tick)
+            if evidence:
+                yield _trend_zone('BREAKER_BLOCK', side, (level, level-side*max(tick,.12*atr)),
+                                  rows[i+1], M15, level, structure='PIVOT',
+                                  pivot_ts=point['ts'], reference_known_ts=point['known_ts']+M15,
+                                  **evidence)
             retest = shallow_bos_retest(bar, side, atr, tick)
             if retest:
                 low, high, entry = retest
@@ -375,8 +435,11 @@ def _trend_breakers(rows, side, tick, engine):
                     or any(side * (c.close - threshold) >= 0 for c in prior)):
                 continue
             entry = min(near) if side == 1 else max(near)
-            yield _trend_zone('BREAKER_BLOCK', side, near, bar, M15, entry, structure='SHELF',
-                              reference_known_ts=prior[-1].ts + M15, shelf_start_ts=prior[0].ts)
+            evidence = ict.breaker_evidence(rows, i, pivots, side, tick)
+            if evidence:
+                yield _trend_zone('BREAKER_BLOCK', side, near, rows[i+1], M15, entry, structure='SHELF',
+                                  reference_known_ts=prior[-1].ts+M15, shelf_start_ts=prior[0].ts,
+                                  **evidence)
             break
 
 
@@ -523,11 +586,11 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
         results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
-        results.extend(_reclaim_breakers(m15, tick, engine))
+        results.extend(_reclaim_breakers(m15, tick, engine, proactive=True))
         reclaims = {}
         other = []
         for zone in results:
-            if zone['kind'] != 'RECLAIM_BREAKER':
+            if zone['kind'] not in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
                 other.append(zone)
                 continue
             if regime.get('structure_sync', {}).get('side') == -zone['side']:
@@ -539,7 +602,7 @@ def zones(snapshot, cfg, engine, regime):
                 reclaims[reclaim_key] = zone
         results = [*other, *reclaims.values()]
     cache[key] = [z for z in results if z['high'] - z['low'] >= tick - 1e-8
-                  and 0 <= snapshot.now - z['known_ts'] < (TREND_ZONE_AGE if z['kind'] in TREND_ZONES or z['kind']=='RECLAIM_BREAKER' else 30 * 60_000)]
+                  and 0 <= snapshot.now - z['known_ts'] < (TREND_ZONE_AGE if z['kind'] in TREND_ZONES or z['kind'] in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM') else 30 * 60_000)]
     return cache[key]
 
 
@@ -553,7 +616,7 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
     """Consume the sweep that the planner already reconstructed from candles."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
-    if zone.get('kind') in ('MULTIBAR_SWEEP','RECLAIM_BREAKER'):
+    if zone.get('kind') in ('MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
         import directional_policy as direction
 
         return direction.reversal_sweep_override(side, zone, snapshot, tick)

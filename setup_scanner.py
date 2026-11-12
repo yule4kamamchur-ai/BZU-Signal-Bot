@@ -95,7 +95,10 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] == 'CONFIRMED_REVERSAL':
+        if trigger['pattern'] == 'M15_LEVEL_REJECTION':
+            if abs(entry-trigger['limit_entry']) > .20*trigger['initial_risk'] + 1e-8:
+                return 'MARKET_CHASE_LIMIT'
+        elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
             if not low-1e-8 <= entry <= high+1e-8:
                 return 'ENTRY_OUTSIDE_ZONE'
         elif trigger['pattern'] == 'IN_ZONE_TOUCH':
@@ -212,7 +215,7 @@ def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (
+    return (plan.get('order_type') == 'MARKET' and (pattern == 'M15_LEVEL_REJECTION' or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -640,7 +643,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
           'STRUCTURAL_TP1_REQUIRED' if not structural_tp1 else
           'STRUCTURAL_TP2_REQUIRED' if not structural_tp2 else None))
     breaker = m5_breaker(zone, snapshot, tick)
-    reaction_only = relation is None and (inside or bool(breaker) or bool((geometry or {}).get('reaction_only')))
+    reaction_only = not market and relation is None and (inside or bool(breaker) or bool((geometry or {}).get('reaction_only')))
     condition = ('IN_ZONE_M5_RECLAIM' if reaction_only and inside else 'M5_BREAKER_RETEST' if reaction_only and breaker else
                  (geometry or {}).get('entry_condition', 'RETEST'))
     return {'low':low,'high':high,'entry':entry,'stop':stop,'tp1':tp1,'tp2':tp2,'risk':risk,'rr1':rr1,'rr2':rr2,
@@ -840,12 +843,12 @@ def organic_anchors(snapshot, cfg, context, engine):
         anchor = cfg.core.make_anchor(
             name,
             'LONG' if side == 1 else 'SHORT', entry, setup['invalidation'],
-            family, family, context, score=84 if family == 'RECLAIM_BREAKER' else 75,
+            family, family, context, score=84 if family in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM') else 75,
             evidence=evidence, ttl_minutes=30)
         if anchor is not None:
             anchor.id = engine.ident(family, side, known, entry)
             anchor.created_ts = known
-            anchor.expires_ts = known + (wave.TREND_ZONE_AGE if family in wave.TREND_ZONES or family == 'RECLAIM_BREAKER' else 2 * engine.TF['15m'])
+            anchor.expires_ts = known + (wave.TREND_ZONE_AGE if family in wave.TREND_ZONES or family in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM') else 2 * engine.TF['15m'])
             anchors.append(anchor)
     return anchors
 

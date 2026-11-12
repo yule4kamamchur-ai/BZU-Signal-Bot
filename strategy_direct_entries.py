@@ -113,3 +113,27 @@ def shallow_bos_retest(candle, side, atr, tick):
         return None
     bounds = sorted(candle.close - side * fraction * body for fraction in (.25, .35))
     return (*bounds, candle.close - side * .30 * body)
+
+
+def adaptive_limit(snapshot, zone, origin, side, tick, engine):
+    from directional_policy import closed
+
+    low, high = zone['low'], zone['high']
+    proof = zone.get('wave_proof') or {}
+    tf = proof.get('timeframe', zone.get('timeframe', '15m'))
+    step = engine.TF.get(tf)
+    rows = closed(snapshot, tf) if step else []
+    ts = proof.get('impulse_ts') or ((origin.get('displacement_known_ts') or 0) - step if step else 0)
+    index = next((i for i, c in enumerate(rows) if c.ts == ts), 0)
+    atr = engine.atr(rows[:index])
+    if atr > 0 and side*(rows[index].close-rows[index].open) > 1.4*atr:
+        if 'FVG' in zone['kind']:
+            entry = high if side==1 else low
+        else:
+            impulse = rows[index]
+            retracement = impulse.close - .268*(impulse.close-impulse.open)
+            entry = min(high, max(low, retracement))
+        basis = 'STRONG_DISPLACEMENT'
+    else:
+        entry, basis = (low+high)/2, 'NORMAL_ROTATION_50'
+    return engine.round_tick(round(entry + tick/2, 10), tick), basis

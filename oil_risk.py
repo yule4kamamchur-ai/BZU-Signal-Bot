@@ -6,7 +6,7 @@ INSTRUMENT = 'BZ-USDT-SWAP'
 MODEL = 'ORGANIC_OIL_V32'
 M15, H1, H4, DAY = 900_000, 3_600_000, 14_400_000, 86_400_000
 TP1_MIN, TP1_MAX, TP2_MIN, TP2_MAX = 1.00, 1.45, 1.80, 2.25
-ENTRY_TP1_MIN = 1.35
+ENTRY_TP1_MIN = 1.40
 TARGET_1_FALLBACK = 1.15
 
 
@@ -14,6 +14,14 @@ def entry_tp1_error(side, entry, risk, target):
     if side in (-1, 1) and risk > 0 and side * (target - entry) < ENTRY_TP1_MIN * risk - 1e-8:
         return 'BLOCKED_LOW_RR_135'
     return None
+
+def structural_room(side, entry, risk, levels):
+    """Nearest significant opposing level in the direction of travel."""
+    obstacle = min((p for p in levels if p['side'] == -side and side*(p['level']-entry) > 0),
+                   key=lambda p: side*(p['level']-entry), default=None)
+    room_r = side*(obstacle['level']-entry)/risk if obstacle and risk > 0 else None
+    return obstacle, room_r
+
 
 def closed(rows, step, as_of):
     return sorted({c.ts: c for c in rows if c.confirmed and c.ts % step == 0

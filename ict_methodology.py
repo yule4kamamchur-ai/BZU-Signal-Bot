@@ -366,3 +366,32 @@ def validate(plan, proof):
     if plan.get('policy') in ('BZU_PRECISION_V12_22','BZU_MASTER_V12_23','BZU_MOMENTUM_V12_24','BZU_LIVE_V12_25') and not entry_trigger(plan,proof):
         ok=False;why='ICT_SWEEP_OR_BOS_FVG_REQUIRED'
     return bool(ok),'CONFIRMED' if ok else why,details
+
+
+def displacement_gap(rows, index, side, tick, step=900_000):
+    if not 1 <= index < len(rows)-1:
+        return None
+    first, middle, last = rows[index-1:index+2]
+    if (not all(c.confirmed for c in (first,middle,last)) or
+            middle.ts-first.ts != step or last.ts-middle.ts != step):
+        return None
+    low, high = (first.high, last.low) if side==1 else (last.high, first.low)
+    return (low, high) if high-low >= tick-1e-8 and side*(middle.close-middle.open)>0 else None
+
+
+def prior_local_sweep(rows, index, points, side, tick):
+    kind = 'LOW' if side == 1 else 'HIGH'
+    for raid in reversed(rows[max(0,index-SWEEP_TO_BOS_M15_BARS):index]):
+        if rows[index].ts-raid.ts > SWEEP_TO_BOS_M15_BARS*900_000:
+            break
+        p = next((p for p in reversed(points) if p['kind']==kind and p['known_ts']+900_000 <= raid.ts), None)
+        if p and wick_reclaim(raid, side, p['level'], tick) > 0:
+            return {'sweep_ts': raid.ts+900_000, 'level': p['level'],
+                    'extreme': raid.low if side==1 else raid.high}
+    return None
+
+
+def breaker_evidence(rows, index, points, side, tick):
+    gap = displacement_gap(rows, index, side, tick)
+    sweep = prior_local_sweep(rows, index, points, side, tick) if gap else None
+    return {**sweep, 'fvg': gap, 'impulse_ts': rows[index].ts} if sweep else None
