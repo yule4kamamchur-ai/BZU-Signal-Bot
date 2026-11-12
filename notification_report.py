@@ -181,9 +181,9 @@ def focus_lines(focus, analysis, engine):
             lines.append(f"{focus['headline']} · {side} @ {primary['level']:.2f}")
         lines.append(primary['invalidation'])
     else:
-        lines.append('Готових сетапів і близьких структурних орієнтирів немає.')
+        lines.append(focus['headline'] + ' · немає допущеного входу.')
     alternative = focus['alternative']
-    if alternative and primary and primary['status']=='DEVELOPING':
+    if alternative and (not primary or primary['status']=='DEVELOPING'):
         side = 'LONG' if alternative['side']==1 else 'SHORT'
         lines.append(f"Резерв {side} · {alternative['trigger']}")
     sar = analysis.get('stop_and_reverse')

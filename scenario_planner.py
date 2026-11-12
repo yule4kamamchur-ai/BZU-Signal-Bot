@@ -147,7 +147,7 @@ def _preview(watch, snapshot, cfg, engine, levels):
     side, entry = watch['side'], watch['entry_hint']
     tick = cfg.tick
     entry = engine.round_tick(round(entry+tick/2,10),tick)
-    boundary = watch['low'] if side==1 else watch['high']
+    boundary = watch.get('stop_anchor',watch['low'] if side==1 else watch['high'])
     stop, risk, profile = oil_risk.stop_geometry(entry,boundary,side,oil_risk.snapshot_profile(snapshot),
         oil_risk.macro_anchors(snapshot,cfg,engine,side),tick,engine,allow_local=True)
     obstacle, room = oil_risk.structural_room(side,entry,risk,levels)
@@ -160,6 +160,20 @@ def _preview(watch, snapshot, cfg, engine, levels):
             oil_risk.entry_tp1_error(side,entry,risk,tp1)))
     return {'entry':entry,'stop':stop if risk>0 and stop>0 else None,'tp1':tp1,
             'rr1':rr,'gate':gate,'preview_only':True}
+
+
+def _reversal_condition(snapshot, regime, trend):
+    # Use a level from confirmed structure. Session highs/lows trail price.
+    level = next((proof.get('protected_level') or proof.get('level')
+                  for proof in (regime.get('structure_sync') or {}, regime.get('active_structure') or {})
+                  if proof.get('side') == trend and 0 < proof.get('known_ts', 0) <= snapshot.now
+                  and (proof.get('protected_level') or proof.get('level') or 0) > 0), None)
+    trigger = 'Переоцінюємо сценарій після підтвердженого зламу структури M15.'
+    if level is not None:
+        cross = 'нижче' if trend == 1 else 'вище'
+        trigger = f'Переоцінюємо сценарій після закриття M15 {cross} {level:.2f} і підтвердження зламу.'
+    return {'side':-trend,'label':'Злам структури M15','level':level,
+            'distance':abs(snapshot.price-level) if level is not None else None,'trigger':trigger}
 
 
 def focus(snapshot, cfg, engine, regime, *, orders=(), admitted=(), action=None):
@@ -181,11 +195,18 @@ def focus(snapshot, cfg, engine, regime, *, orders=(), admitted=(), action=None)
                                -x.get('touch_history',{}).get('matched_hours',0),
                                strength.get(x['source'],0),x['distance'],
                                x['side'] != market['trend_side'],-x['known_ts']))
-    extreme_side = (1 if market['discount'] and market['ema_side'] <= 0 else
-                    -1 if market['premium'] and market['ema_side'] >= 0 else 0)
+    trend = market['trend_side']
+    extreme_side = (1 if not trend and market['discount'] and market['ema_side'] <= 0 else
+                    -1 if not trend and market['premium'] and market['ema_side'] >= 0 else 0)
     reversal_at_extreme = next((w for w in watches if w['side']==extreme_side
                                 and w['setup'].endswith('LIQUIDITY_SWEEP')
                                 and w['distance'] <= FOCUS_DISTANCE), None)
+    pullback = next((w for w in watches if w['side']==trend
+                     and trend*(snapshot.price-w['level']) >= -cfg.tick/2),None)
+    reclaim = next((w for w in watches if w['setup']=='M15_STRUCTURE_RETEST'
+                    and w['distance']<=FOCUS_DISTANCE),None)
+    pullback = reclaim or pullback
+    watch = pullback if trend else reversal_at_extreme or next(iter(watches),None)
     order = min(orders,key=lambda p:p.get('status')!='OPEN',default=None)
     accepted = min(admitted,key=lambda p:abs(snapshot.price-p['entry']),default=None)
     current = order or accepted
@@ -208,8 +229,11 @@ def focus(snapshot, cfg, engine, regime, *, orders=(), admitted=(), action=None)
                               'rr1':current.get('rr1'),'gate':None,'preview_only':False}}
         headline = {'POSITION':'СУПРОВІД ПОЗИЦІЇ','PENDING':'ЧЕКАЄМО ВИКОНАННЯ ЛІМІТУ',
                     'CANCELLING':'СКАСУВАННЯ ЛІМІТУ','ADMITTED':'ДОПУЩЕНИЙ ПЛАН'}[status]
-    elif watches:
-        developing = dict(reversal_at_extreme or watches[0])
+    elif market.get('ema_test'):
+        primary = None
+        headline = 'ТЕСТ ЗОНИ EMA20/50'
+    elif watch:
+        developing = dict(watch)
         developing['preview'] = _preview(developing,snapshot,cfg,engine,levels)
         primary = developing
         if primary['distance'] > FOCUS_DISTANCE:
@@ -222,7 +246,7 @@ def focus(snapshot, cfg, engine, regime, *, orders=(), admitted=(), action=None)
             headline = 'ЧЕКАЄМО ПІДТВЕРДЖЕННЯ СТРУКТУРИ'
     else:
         primary = None
-        headline = 'ГОТОВИХ СЕТАПІВ НЕМАЄ'
+        headline = 'ЧЕКАЄМО ВІДКАТ ЗА ТРЕНДОМ' if trend else 'ГОТОВИХ СЕТАПІВ НЕМАЄ'
     alternates = [x for x in watches if primary and x['side']==-primary['side']]
     if primary and primary['setup'].endswith('LIQUIDITY_SWEEP'):
         # At an extreme the alternative is a pullback to structure when one exists.
@@ -230,9 +254,14 @@ def focus(snapshot, cfg, engine, regime, *, orders=(), admitted=(), action=None)
     alternate = next(iter(alternates),None)
     alternative = ({k:alternate[k] for k in ('side','label','level','distance','trigger','touch_history')
                     if k in alternate} if alternate else None)
+    if trend and not current:
+        alternative = _reversal_condition(snapshot,regime,trend)
     phase = market['phase_text']
     if market['range_position_pct'] is not None:
         phase += f" · {market['range_position_pct']:.0f}% діапазону"
+    if market.get('ema_test'):
+        low, high = sorted((market['ema20'],market['ema50']))
+        phase += f" · Тест EMA20/50 {low:.2f}–{high:.2f}, чекаємо реакцію M15"
     if market['discount']:
         phase += ' · трендовий SHORT від цієї ціни обмежений правилом 30/70'
     elif market['premium']:

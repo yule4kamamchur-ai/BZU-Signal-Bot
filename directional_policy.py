@@ -189,13 +189,15 @@ def market_regime(snapshot, tick, engine):
 
 
 def execution_regime(snapshot, cfg, engine):
-    """Use confirmed intraday structure when its move reaches the ADR threshold."""
+    """Give a confirmed intraday shift priority over a lagging hourly bias."""
     import oil_risk
 
     regime = market_regime(snapshot, cfg.tick, engine)
     if not oil_risk.enabled(cfg):
         return regime
-    from market_wave import structure_sync, displacement_override, breakdown_zones, breakdown_intact
+    from market_wave import (
+        breakdown_intact, breakdown_zones, displacement_override, early_structure_reclaim, structure_sync,
+    )
 
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
     sync = displacement_override(snapshot, cfg.tick, engine) or (
@@ -206,6 +208,10 @@ def execution_regime(snapshot, cfg, engine):
         sync = {'side':-1,'known_ts':recent_breakdown['known_ts'],'break_ts':recent_breakdown['known_ts'],
                 'level':recent_breakdown['reference'],'protected_level':recent_breakdown['high'],
                 'proof':'BEARISH_BREAKDOWN_MSS'}
+    early = early_structure_reclaim(snapshot,cfg.tick,engine)
+    if early and (not sync or (early['side'] != sync['side']
+                               and early['break_ts'] > sync.get('break_ts',0))):
+        sync = early
     side = sync.get('side') or one or four
     if not side or (not sync and one and four and one != four):
         return regime

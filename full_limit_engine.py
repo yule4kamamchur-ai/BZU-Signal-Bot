@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.39.0-single-focus"
-REPORT_RELEASE = 'v12.39.0'
+VERSION = "full-ict-v12.39.2-single-focus"
+REPORT_RELEASE = 'v12.39.2'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality

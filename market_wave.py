@@ -6,6 +6,7 @@ import oil_risk
 
 M15 = 900_000
 M5 = 300_000
+EARLY_M15_RECLAIM = 'M15_BOS_EMA20_ATR'
 STRUCTURE_LOOKBACK = 96
 BREAKDOWN = "BREAKDOWN_RECLAIM"
 BREAKDOWN_MAX_AGE = 2 * M15
@@ -45,6 +46,46 @@ def fast_structure(rows, tick, engine):
             'proof': 'FAST_M15_STRUCTURE_SHIFT', 'pivot_ts': pivot['ts'],
             'reference_known_ts': pivot['known_ts'] + M15,
             'body_atr': abs(bar.close - bar.open) / atr}
+
+
+def early_structure_reclaim(snapshot, tick, engine):
+    """A closed M15 swing break and EMA20 reclaim can lead an hourly reversal."""
+    from strategy_organics import ema20
+
+    rows = oil_risk.closed(snapshot.candles.get('15m', []), M15, snapshot.now)[-192:]
+    if len(rows) < 32 or snapshot.now - rows[-1].ts - M15 >= 2*M15:
+        return {}
+    if any(b.ts-a.ts != M15 for a,b in zip(rows[-32:-1],rows[-31:])):
+        return {}
+    points = engine.pivots(rows[-80:],strength=1)
+    recent = list(structure_breaks(rows,M15,tick,engine,lookback=8))
+    for i,side,pivot,atr in reversed(recent):
+        bar = rows[i]
+        level = pivot['level']
+        swing_kind = 'LOW' if side==1 else 'HIGH'
+        prior = rows[i-16:i]
+        origin_bar = min(prior,key=lambda c:c.low) if side==1 else max(prior,key=lambda c:c.high)
+        origin = origin_bar.low if side==1 else origin_bar.high
+        protected = next((p['level'] for p in reversed(points) if p['kind']==swing_kind
+                          and origin_bar.ts<p['ts'] and p['known_ts']+M15<=bar.ts),None)
+        if protected is None or side*(protected-origin)<tick-1e-8:
+            continue
+        if any(side*(c.close-protected) < -tick/2 for c in rows[i:]):
+            continue
+        if not any(side*(rows[k].close-ema20(rows[:k+1])) <= tick/2 for k in range(i-3,i)):
+            continue
+        for j in range(i,min(i+3,len(rows))):
+            candle = rows[j]
+            if side*(candle.close-level) < tick/2:
+                break
+            average = ema20(rows[:j+1])
+            distance = side*(candle.close-origin)
+            if side*(candle.close-average) >= tick/2 and distance >= 1.10*atr-1e-8:
+                return {'side':side,'known_ts':candle.ts+M15,'break_ts':bar.ts+M15,
+                        'reference_known_ts':pivot['known_ts']+M15,'level':level,
+                        'protected_level':protected,'origin':origin,'close':candle.close,
+                        'ema20_15m':average,'wave_atr':distance/atr,'proof':EARLY_M15_RECLAIM}
+    return {}
 
 
 def structure_sync(snapshot, tick, engine):
@@ -700,21 +741,29 @@ def focus_context(snapshot, regime, dealing_range, tick):
         elif ema50-ema20 > noise and previous20-ema20 > noise and previous50-ema50 > noise:
             ema_side = -1
     wave_side = regime_side(regime)
-    trend_side = ema_side if ema_side == wave_side else 0
+    proof = regime.get('structure_sync') or {}
+    early = proof.get('proof')==EARLY_M15_RECLAIM and proof.get('side')==wave_side and bool(wave_side)
+    trend_side = wave_side if early or ema_side == wave_side else 0
     location = None
     if dealing_range:
         low, high = dealing_range['low'], dealing_range['high']
         location = 100*(snapshot.price-low)/(high-low)
     discount = location is not None and location < 30
     premium = location is not None and location > 70
-    phase = ('BEARISH_DISCOUNT' if ema_side == -1 and discount else
+    phase = ('BULLISH_RECLAIM' if early and wave_side==1 else
+             'BEARISH_RECLAIM' if early else
+             'BEARISH_DISCOUNT' if ema_side == -1 and discount else
              'BULLISH_PREMIUM' if ema_side == 1 and premium else
              'BEARISH' if trend_side == -1 else 'BULLISH' if trend_side == 1 else
              'RANGE' if regime.get('state') in ('RANGE','RANGE_LIQUIDITY_ROTATION') else 'TRANSITION')
-    labels = {'BEARISH_DISCOUNT':'Низхідна структура біля дна діапазону',
+    labels = {'BULLISH_RECLAIM':'Підтверджений висхідний злам M15',
+              'BEARISH_RECLAIM':'Підтверджений низхідний злам M15',
+              'BEARISH_DISCOUNT':'Низхідна структура біля дна діапазону',
               'BULLISH_PREMIUM':'Висхідна структура біля вершини діапазону',
               'BEARISH':'Тренд низхідний','BULLISH':'Тренд висхідний',
               'RANGE':'Діапазон','TRANSITION':'Напрямок хвилі й EMA не підтвердили спільного тренду'}
     return {'phase':phase, 'phase_text':labels[phase], 'trend_side':trend_side, 'ema_side':ema_side,
             'ema20':ema20,'ema50':ema50,'range_position_pct':location,
-            'discount':discount,'premium':premium}
+            'discount':discount,'premium':premium,'early_reclaim':proof if early else None,
+            'ema_test':bool(not early and ema20 is not None and
+                            min(ema20,ema50)<=snapshot.price<=max(ema20,ema50))}

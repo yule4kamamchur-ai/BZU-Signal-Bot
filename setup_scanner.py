@@ -1303,14 +1303,26 @@ def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_
     tick, price = cfg.tick, snapshot.price
     watches = []
 
-    def add(side, setup, label, level, low, high, entry, known, trigger, source, invalidation):
+    def add(side, setup, label, level, low, high, entry, known, trigger, source, invalidation, **details):
         if not (0 < low <= high and 0 < level and known <= snapshot.now):
             return
         distance = abs(price-level)
         watches.append({'side':side, 'setup':setup, 'label':label, 'level':level,
                         'low':low, 'high':high, 'distance':distance, 'known_ts':known,
                         'entry_hint':entry, 'trigger':trigger, 'source':source,
-                        'invalidation':invalidation, 'status':'DEVELOPING'})
+                        'invalidation':invalidation, 'status':'DEVELOPING', **details})
+
+    early = market.get('early_reclaim')
+    if early:
+        side, level = early['side'], early['level']
+        # Keep the pivot that broke. After a close through it, wait for new evidence.
+        broken = any(c.ts>=early['break_ts'] and side*(c.close-level)<-tick/2 for c in rows)
+        if not broken and side*(price-level)>=-tick/2:
+            cross, away = ('вище','нижче') if side==1 else ('нижче','вище')
+            add(side,'M15_STRUCTURE_RETEST','Ретест пробитого рівня M15',level,level,level,level,
+                early['known_ts'],f'Ретест {level:.2f} і закриття M15 {cross} рівня після відбою.',
+                wave.EARLY_M15_RECLAIM,f'Закриття M15 {away} {level:.2f} скасовує цей ретест.',
+                stop_anchor=early['protected_level'])
 
     # Session pools use the scanner's own sweep references. For a local swing
     # the same M15 raid + structure proof is required before it can be admitted.
@@ -1365,10 +1377,10 @@ def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_
                 f'Тест {entry:.2f} і відбій із закриттям M15 {cross} {entry:.2f}. Потрібен структурний злам у бік відбою.',
                 zone['kind'],f'Закриття M15 {away} {boundary:.2f} скасовує орієнтир.')
     side = market['ema_side']
-    if side:
+    if side and not early:
         fast, slow = market['ema20'], market['ema50']
         low, high = sorted((fast,slow))
-        if side*(price-(low if side==1 else high)) >= -tick/2:
+        if (side*(price-fast) >= -tick/2 and side*(rows[-1].close-fast) >= -tick/2):
             cross = 'вище' if side==1 else 'нижче'
             away = 'нижче' if side==1 else 'вище'
             boundary = low if side==1 else high

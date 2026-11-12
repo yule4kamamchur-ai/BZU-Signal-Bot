@@ -1003,8 +1003,11 @@ function renderScenarios(usable, price) {
   panel.append(element('p',focus.phase_text,'reason'));
   if (focus.waiting_detail) panel.append(element('p',focus.waiting_detail,'muted'));
   const primary = focus.primary;
+  const reserve = focus.alternative && element('p','Резерв ' + sideLabel(focus.alternative.side) +
+    ' · ' + focus.alternative.trigger,'focus-reserve');
   if (!primary) {
-    panel.append(element('strong','Готових сетапів немає.'));
+    panel.append(element('strong',focus.headline),element('p','Готових сетапів немає.'));
+    if (reserve) panel.append(reserve);
     return;
   }
   const card = element('article',null,'focus-primary');
@@ -1038,9 +1041,7 @@ function renderScenarios(usable, price) {
   }
   card.append(element('small',primary.invalidation,'muted'));
   panel.append(card);
-  if (focus.alternative && developing) {
-    panel.append(element('p','Резерв ' + sideLabel(focus.alternative.side) + ' · ' + focus.alternative.trigger,'focus-reserve'));
-  }
+  if (reserve && developing) panel.append(reserve);
 }
 
 function render() {
@@ -1060,6 +1061,8 @@ function render() {
     ? 'Закритий ведмежий пробій M15'
     : structureSync?.proof === 'DISPLACEMENT_MSS_FVG'
     ? 'Свіп / межа ADR · MSS M15 · FVG'
+    : structureSync?.proof === 'M15_BOS_EMA20_ATR'
+    ? 'Злам M15 ' + format(structureSync.level) + ' · закриття за EMA20 · ' + format(structureSync.wave_atr) + ' ATR'
     : structureSync?.proof === 'M15_BOS_75_ADR'
     ? 'Пробій M15 ' + format(structureSync.level) + ' · хвиля ' + Math.round(structureSync.wave_adr * 100) + '% ADR'
     : '';
