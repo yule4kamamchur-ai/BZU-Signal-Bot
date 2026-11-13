@@ -99,7 +99,7 @@ def range_retest(snapshot, zone, side, tick, entry):
                 and abs(zone.get('reference',entry)-bound)<=2*tick and side*(entry-bound)>=-tick)
 
 
-def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend):
+def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None):
     from oil_risk import enabled
 
     if not enabled(cfg):
@@ -108,11 +108,24 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend):
     if range_retest(snapshot, zone, side, cfg.tick, entry):
         return None
     rng = plan['range']
-    if trend and rng is None:
-        return 'DEALING_RANGE_UNAVAILABLE'
-    if trend and (entry <= rng['discount'] if side == -1 else entry >= rng['premium']):
-        return 'BLOCKED_DEALING_RANGE_30_70'
-    from market_wave import BREAKDOWN, breakdown_zones, breakdown_intact
+    regime = regime if regime is not None else engine.policy.execution_regime(snapshot,cfg,engine)
+    strength = regime.get('trend_strength')
+    if regime.get('state') in ('SIDEWAYS','RANGE','RANGE_LIQUIDITY_ROTATION') and strength is not None and strength < .35:
+        if rng is None:
+            return 'DEALING_RANGE_UNAVAILABLE'
+        if (entry <= rng['discount'] if side == -1 else entry >= rng['premium']):
+            return 'BLOCKED_DEALING_RANGE_30_70'
+    from market_wave import BASE, BREAKDOWN, breakdown_zones, breakdown_intact, trend_zone, witnessed
+    if trend and regime.get('trend_anchor_side')==side and zone.get('side')==side:
+        if zone.get('wave_proof') and (trend_zone(zone,regime) or zone['kind'] in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM')):
+            if witnessed(zone,snapshot,cfg,engine,regime):
+                return None
+        if zone.get('kind') in ('DEMAND_OB','SUPPLY_OB','FVG_BULL','FVG_BEAR','BREAKER_FLIP_15M'):
+            origin = engine.scanner.zone_origin(zone,snapshot,side,cfg.tick,engine,cfg,regime)
+            if origin.get('confirmed') and origin.get('break_known_ts'):
+                return None
+    if zone.get('kind')==BASE:
+        return 'CURRENT_WAVE_PROOF_EXPIRED'
 
     if zone.get('kind') == BREAKDOWN:
         witnessed = side == -1 and breakdown_intact(zone,snapshot,cfg.tick) and any(
@@ -149,9 +162,11 @@ def _preview(watch, snapshot, cfg, engine, levels):
     entry = engine.round_tick(round(entry+tick/2,10),tick)
     boundary = watch.get('stop_anchor',watch['low'] if side==1 else watch['high'])
     stop, risk, profile = oil_risk.stop_geometry(entry,boundary,side,oil_risk.snapshot_profile(snapshot),
-        oil_risk.macro_anchors(snapshot,cfg,engine,side),tick,engine,allow_local=True)
+        oil_risk.stop_anchors(snapshot,cfg,engine,side),tick,engine)
     obstacle, room = oil_risk.structural_room(side,entry,risk,levels)
     tp1 = engine.scanner.structural_target_price(obstacle,snapshot.now,side,tick,engine) if obstacle else None
+    if tp1 is None and risk>0:
+        tp1 = engine.round_tick(round(entry+side*oil_risk.ENTRY_TP1_MIN*risk,10),tick,up=side==1)
     if tp1 is not None and side*(tp1-entry) <= 0:
         tp1 = None
     rr = side*(tp1-entry)/risk if tp1 is not None and risk>0 else None
@@ -257,15 +272,9 @@ def focus(snapshot, cfg, engine, regime, *, orders=(), admitted=(), action=None)
     if trend and not current:
         alternative = _reversal_condition(snapshot,regime,trend)
     phase = market['phase_text']
-    if market['range_position_pct'] is not None:
-        phase += f" · {market['range_position_pct']:.0f}% діапазону"
     if market.get('ema_test'):
         low, high = sorted((market['ema20'],market['ema50']))
         phase += f" · Тест EMA20/50 {low:.2f}–{high:.2f}, чекаємо реакцію M15"
-    if market['discount']:
-        phase += ' · трендовий SHORT від цієї ціни обмежений правилом 30/70'
-    elif market['premium']:
-        phase += ' · трендовий LONG від цієї ціни обмежений правилом 30/70'
     reason = action if action in engine.REASON_UA and action != 'WATCH' else 'NO_SETUP_CANDIDATE'
     return {'as_of_ts':snapshot.now,'headline':headline,'market':market,'phase_text':phase,
             'primary':primary,'alternative':alternative,'developing_setup':developing,

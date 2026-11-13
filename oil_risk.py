@@ -62,8 +62,7 @@ def contiguous_ranges(bars, step):
     return true_ranges(bars[start:], step)
 
 
-def price_bounds(price):
-    return max(1.15, round(price * .0125, 2)), max(2.10, round(price * .022, 2))
+STOP_FLOOR, STOP_CAP = .70, 1.25
 
 
 def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
@@ -84,15 +83,11 @@ def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
     turbulent = bool(hourly and len(ranges) >= 28 and mean(ranges[-28:-14]) > 0
                      and hourly >= 1.35 * mean(ranges[-28:-14]))
     multiplier = 1.35 if turbulent else 1.20 if active_session else 1.
-    floor, cap = price_bounds(price)
-    volatility = 1.65 * (atr1h or 0) * multiplier
-    adr_stop = .45 * (adr or 0)
-    target = max(1.45, round(price * .0155, 2), volatility, adr_stop)
     return {'model': MODEL, 'as_of_ts': as_of, 'reference_price': price,
+            'atr_15m': atr15,
             'atr_1h': atr1h, 'atr_source': '1H_TRUE_RANGE' if hourly else '15M_X_2_15' if atr1h else 'UNAVAILABLE',
             'adr_d1': adr, 'adr_days': len(days), 'session_multiplier': multiplier,
-            'floor': floor, 'target': target, 'cap': cap, 'volatility_distance': volatility,
-            'adr_distance': adr_stop, 'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
+            'floor': STOP_FLOOR, 'cap': STOP_CAP, 'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
 
 
 def enabled(cfg):
@@ -138,29 +133,51 @@ def macro_anchors(snapshot, cfg, engine, side):
     return cache[key]
 
 
-def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine, *, allow_local=False):
-    """A cap can clip volatility. A cap cannot move SL through a structural buffer."""
-    floor, cap = price_bounds(entry)
-    macro = min((a for a in anchors if 1.20 - 1e-8 <= side * (entry - a['level']) <= 1.80 + 1e-8),
-                key=lambda a: (side * (entry - a['level']), a['timeframe'] != '4H'), default=None)
-    anchor = macro['level'] if macro else local_boundary
-    boundary = min(local_boundary, anchor) if side == 1 else max(local_boundary, anchor)
-    buffer = max(tick, .25 * (profile['atr_1h'] or 0))
-    structural_distance = max(0., side * (entry - boundary)) + buffer
-    volatility_target = max(1.45, round(entry * .0155, 2),
-                            profile['volatility_distance'], profile['adr_distance'])
-    raw = max(floor, structural_distance, min(cap, volatility_target))
+def stop_anchors(snapshot, cfg, engine, side):
+    """Use recent, closed M15 pivots first and confirmed 1H pivots as backup."""
+    cache = vars(snapshot).setdefault('_structural_stop_anchors', {})
+    key = (snapshot.now, side, cfg.tick)
+    if key not in cache:
+        anchors = []
+        kind = 'LOW' if side == 1 else 'HIGH'
+        for tf, step, count in (('15m', M15, 16), ('1H', H1, 48)):
+            rows = closed(snapshot.candles.get(tf, []), step, snapshot.now)
+            for pivot in engine.pivots(rows[-count-2:], strength=2):
+                if pivot['kind'] != kind:
+                    continue
+                known = pivot['known_ts'] + step
+                if not any(c.ts >= known and side*(c.close-pivot['level']) < -cfg.tick/2 for c in rows):
+                    anchors.append({'level':pivot['level'],'known_ts':known,'kind':'SWING_'+kind,'timeframe':tf})
+        cache[key] = anchors
+    return cache[key]
+
+
+def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine):
+    """Buffer a witnessed swing or the zone boundary using M15 volatility."""
+    floor, cap = STOP_FLOOR, STOP_CAP
+    atr = profile.get('atr_15m')
+    buffer = max(tick, .20 * (atr or 0.))
+    local_distance = side*(entry-local_boundary)
+    anchor = min((a for a in anchors if a['timeframe'] in ('15m','1H')
+                  and max(.60,local_distance)-1e-8 <= side*(entry-a['level']) <= min(1.35,cap-buffer)+1e-8),
+                 key=lambda a: (a['timeframe']!='15m',
+                     not (.90*(atr or 0) <= side*(entry-a['level']) <= 1.50*(atr or 0)),
+                     side*(entry-a['level'])),default=None)
+    boundary = anchor['level'] if anchor else local_boundary
+    structural_distance = max(0.,side*(entry-boundary)) + buffer
+    raw = max(floor,structural_distance)
     stop = engine.round_tick(round(entry - side * raw, 10), tick, up=side == -1)
-    risk = side * (entry - stop)
+    risk = round(side * (entry - stop),10)
     if raw <= cap + 1e-8 and risk > cap + 1e-8:
         stop = engine.round_tick(round(entry - side * cap, 10), tick, up=side == 1)
-        risk = side * (entry - stop)
-    reason = ('OIL_VOLATILITY_UNAVAILABLE' if not profile['atr_1h'] else
-              'MACRO_STOP_ANCHOR_REQUIRED' if macro is None and not allow_local else
-              'STRUCTURAL_STOP_TOO_WIDE' if stop <= 0 or risk > cap + 1e-8 or
+        risk = round(side * (entry - stop),10)
+    reason = ('OIL_VOLATILITY_UNAVAILABLE' if not atr else
+              'INVALID_STRUCTURAL_FALSIFIER' if local_distance < 0 else
+              'STRUCTURAL_STOP_TOO_WIDE' if stop <= 0 or raw > cap + 1e-8 or risk > cap + 1e-8 or
               risk < max(floor, structural_distance) - 1e-8 else None)
-    return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': cap, 'target': volatility_target,
-                        'macro_anchor': macro, 'anchor_source': 'HTF' if macro else 'CONFIRMED_ZONE' if allow_local else None,
+    return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': cap, 'target':raw,
+                        'macro_anchor':anchor, 'anchor_source':anchor['timeframe'] if anchor else 'CONFIRMED_ZONE',
+                        'anchor_valid':reason is None,
                         'boundary': boundary, 'buffer': buffer,
                         'structural_distance': structural_distance, 'gate': reason}
 

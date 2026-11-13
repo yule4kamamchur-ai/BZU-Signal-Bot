@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.39.2-single-focus"
-REPORT_RELEASE = 'v12.39.2'
+VERSION = "full-ict-v12.40.0-clean-execution"
+REPORT_RELEASE = 'v12.40.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -1930,6 +1930,8 @@ def migrate_organic_pending(state, snapshot, cfg):
     for order in pending_plans(state):
         if not oil_risk.is_organic(order):
             request_cancel(state, order, 'LEGACY_MICRO_RISK', snapshot.now)
+        elif not oil_risk.STOP_FLOOR-1e-8 <= order['risk'] <= oil_risk.STOP_CAP+1e-8:
+            request_cancel(state, order, 'LEGACY_STOP_BUDGET', snapshot.now)
 
 
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
@@ -2210,6 +2212,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 elif trigger.get('pattern') == 'M15_LEVEL_REJECTION':
                     proof = entry_adverse_selection.rejection_trigger(
                         s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)
+                elif trigger.get('pattern') == 'M15_TREND_ZONE' and market.get('trend_anchor_side')==candidate['side']:
+                    proof = entry_adverse_selection.trend_zone_market_trigger(
+                        s,candidate['side'],zone,trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
                 else:
                     proof = None
                 if not proof or proof['known_ts'] != trigger.get('known_ts') or abs(quote-candidate['entry']) > 1e-8:
@@ -2218,7 +2223,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN else
                 trigger.get('limit_entry',candidate['entry']),zone,
                 trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
-                    candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')))
+                    candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')),regime=market)
             _, room_r = oil_risk.structural_room(candidate['side'],candidate['entry'],candidate['risk'],
                 scenario_planner.structure_levels(s,sys.modules[__name__]))
             if gate or (room_r is not None and room_r < 1.35-1e-8):
@@ -2787,7 +2792,8 @@ REASON_UA = {
     'STRUCTURAL_TP2_REQUIRED':'бракує структурної цілі для залишку позиції',
     'LEGACY_MICRO_RISK':'лімітка зі старим стопом замінюється новим розрахунком',
     'PENDING_SINGLE_LIMIT_CAP':'у журналі дозволено одну лімітку',
-    'MACRO_STOP_ANCHOR_REQUIRED':'бракує підтвердженого макрорівня для стопа',
+    'MACRO_STOP_ANCHOR_REQUIRED':'стоп не підтверджено',
+    'LEGACY_STOP_BUDGET':'старий ліміт поза чинним діапазоном стопа',
     'MACRO_REVERSAL_REQUIRED':'контртрендовий вхід потребує відбою від екстремуму 1H, 4H або попередньої доби',
     'ORGANIC_TARGET_RANGE':'цілі поза свінговим діапазоном R',
     'OIL_VOLATILITY_UNAVAILABLE':'бракує закритих свічок для розрахунку годинного ATR',
@@ -3581,7 +3587,7 @@ def main(core) -> int:
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

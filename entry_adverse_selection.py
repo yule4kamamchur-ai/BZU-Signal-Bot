@@ -335,6 +335,41 @@ def rejection_trigger(snapshot, side, zone, entry, risk, quote, tick):
             'initial_risk':risk, 'deviation_r':abs(quote-entry)/risk}
 
 
+def trend_zone_market_trigger(snapshot, side, zone, risk, quote, tick, engine):
+    """A closed M15 continuation may execute only near its witnessed level."""
+    from directional_policy import closed
+    from market_wave import BASE, M15
+
+    if zone.get('kind') not in (BASE,'RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
+        return None
+    rows = closed(snapshot,'15m')
+    if len(rows)<2 or not snapshot.trusted or not 0<=snapshot.now-snapshot.ticker_ts<=120_000 or risk<=0:
+        return None
+    bar = rows[-1]
+    known = bar.ts+M15
+    proof = zone.get('wave_proof') or {}
+    if not 0<=snapshot.ticker_ts-known<M15 or side*(bar.close-bar.open)<tick-1e-8:
+        return None
+    base = zone['kind']==BASE
+    if base and proof.get('break_ts')!=known:
+        return None
+    if not base and proof.get('break_ts',known)>bar.ts:
+        return None
+    reference = zone['reference']
+    tolerance = .20*engine.atr(rows[:-1])
+    distance = min(.20*risk,tolerance)
+    if (abs(quote-reference)>distance+1e-8 or abs(bar.close-reference)>distance+1e-8
+            or min(side*(bar.close-reference),side*(quote-reference))<-tick/2):
+        return None
+    # A witnessed base may be close to the session extreme. Its own closed
+    # breakout/hold and quote distance decide entry, without a peak veto.
+    extreme = bar.low if side==1 else bar.high
+    if not base and not zone['low']-tick<=extreme<=zone['high']+tick:
+        return None
+    return {'pattern':'M15_TREND_ZONE','known_ts':known,'limit_entry':reference,
+            'initial_risk':risk,'max_distance':distance,'deviation_r':abs(quote-reference)/risk}
+
+
 def breakdown_limit_distance(zone):
     atr = (zone.get('wave_proof') or {}).get('breakdown_atr') or 0
     return max(.10,min(.50,atr))

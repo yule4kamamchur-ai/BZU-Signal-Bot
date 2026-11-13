@@ -59,6 +59,8 @@ def health_text(code):
 
 def setup_text(plan):
     source = plan.get('source_strategy')
+    if source == scanner.wave.BASE:
+        return 'Наторговка після імпульсу'
     if source == 'BREAKER_FLIP_15M':
         return 'Breaker • ретест пробою'
     if source == 'MOMENTUM_STAIRCASE_15M':
@@ -158,39 +160,19 @@ def candidate_reason(row, cfg, engine):
     return 'Вхід заблоковано: ' + engine.REASON_UA.get(reason, 'умови входу ще не виконані')
 
 
-def focus_lines(focus, analysis, engine):
-    lines = ['', '🎯 На що орієнтуватись зараз', focus['phase_text']]
-    if focus.get('waiting_detail'):
-        lines.append(focus['waiting_detail'].capitalize() + '.')
+def focus_lines(focus):
     primary = focus['primary']
-    if primary:
-        side = 'LONG' if primary['side']==1 else 'SHORT'
-        if primary['status']=='DEVELOPING':
-            lines.append(f"Готових сетапів немає. {side} · {primary['label']} · до рівня {primary['distance']:.2f} $")
-            lines.append(primary['trigger'])
-            preview = primary['preview']
-            values = [f"{label} {preview[key]:.2f}{suffix}" for key,label,suffix in
-                      (('entry','вхід',''),('stop','SL',''),('tp1','TP1',''),('rr1','R:R','R'))
-                      if preview.get(key) is not None]
-            if values:
-                lines.append('Попередньо · ' + ' | '.join(values))
-            if preview.get('gate'):
-                lines.append(engine.REASON_UA.get(preview['gate'],
-                    'Структурна ціль потребує підтвердження.'))
-        else:
-            lines.append(f"{focus['headline']} · {side} @ {primary['level']:.2f}")
-        lines.append(primary['invalidation'])
-    else:
-        lines.append(focus['headline'] + ' · немає допущеного входу.')
-    alternative = focus['alternative']
-    if alternative and (not primary or primary['status']=='DEVELOPING'):
-        side = 'LONG' if alternative['side']==1 else 'SHORT'
-        lines.append(f"Резерв {side} · {alternative['trigger']}")
-    sar = analysis.get('stop_and_reverse')
-    if sar:
-        label = 'LONG' if sar['side']==1 else 'SHORT'
-        lines.append(f"Розворот після виходу · перевірено {label}")
-    return lines
+    if not primary:
+        return ['', focus['headline'] + ' • немає допущеного входу.']
+    side = 'LONG' if primary['side']==1 else 'SHORT'
+    if primary['status'] != 'DEVELOPING':
+        return ['', f"{focus['headline']} • {side} @ {primary['level']:.2f}"]
+    preview = primary['preview']
+    title = 'СПОСТЕРЕЖЕННЯ' if preview.get('gate') else 'АКТИВНИЙ ПОШУК'
+    line = f"{title} {side} • Робоча зона {primary['level']:.2f}"
+    if preview.get('stop') is not None and preview.get('tp1') is not None:
+        line += f" (Стоп {preview['stop']:.2f} | Тейк {preview['tp1']:.2f})"
+    return ['', line]
 
 
 def build(state, snapshot, result, cfg, engine):
@@ -254,7 +236,7 @@ def build(state, snapshot, result, cfg, engine):
             focus = engine.scenario_planner.focus(snapshot, cfg, engine, regime,
                 orders=engine.open_plans(state), admitted=analysis.get('admitted_plans', []),
                 action=result.get('action'))
-        lines += focus_lines(focus, analysis, engine)
+        lines += focus_lines(focus)
     if active:
         lines += ['', f'🔵 СУПРОВІД — {len(active)}']
     for index, p in enumerate(active):
@@ -417,7 +399,7 @@ def build_checklist(state, snapshot, result, cfg, engine):
             snapshot,cfg,engine,regime,orders=engine.open_plans(state),
             admitted=analysis.get('admitted_plans',[]),action=result.get('action'))
         lines[1] = f'💰 Ціна: {price} • {session["session"]}'
-        lines += focus_lines(focus, analysis, engine)
+        lines += focus_lines(focus)
     # Show only genuine new orders, not duplicate scenario/matrix diagnostics.
     selected = [] if frozen else result.get('selected_plans', [])
     if selected:

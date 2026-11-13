@@ -61,7 +61,7 @@ class DualExecution(unittest.TestCase):
         fresh = scanner.organic_targets(93.86, 1.35, -1, [barrier], snap, cfg.tick, engine, trend=True)
         self.assertFalse(fresh['path_clear'])
         profile = oil_risk.snapshot_profile(snap)
-        stop, risk, details = oil_risk.stop_geometry(93.76, 94.14, -1, profile, [], .01, engine, allow_local=True)
+        stop, risk, details = oil_risk.stop_geometry(93.76, 94.14, -1, profile, [], .01, engine)
         self.assertEqual(details['anchor_source'], 'CONFIRMED_ZONE')
         self.assertIsNone(details['gate'])
         self.assertGreaterEqual(stop - 94.14, details['buffer'])

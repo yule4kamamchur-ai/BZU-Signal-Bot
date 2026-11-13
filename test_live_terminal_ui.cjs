@@ -60,13 +60,12 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('visibleZones().length'),1);assert.match(text('last-event'),/Ліміт скасовано/);
  assert.equal(priceLines.length,3);
  run('state.scenario_plan={headline:"ПОШУК РОЗВОРОТУ ВІД ДНА (LONG)",phase_text:"Низхідна структура · 21% діапазону",market:{phase_text:"Низхідна структура"},primary:{status:"DEVELOPING",side:1,level:99.66,label:"Свіп дна",trigger:"Прокол 99.66 та закриття M15 вище рівня",invalidation:"Скасування при закритті під рівнем",preview:{entry:99.71,stop:98.31,tp1:101.81,rr1:1.5,preview_only:true}},alternative:{side:-1,trigger:"Тест EMA20 100.55 та ведмежий відбій"}};state.candidates=[];state.zones=[];state.radar={};render();');
- assert.match(text('scenario-plan'), /21% діапазону.*LONG @ 99.66.*до рівня 0.18.*Прокол 99.66.*Вхід 99.71.*TP1 101.81.*Резерв SHORT.*100.55/);
- assert.equal(nodes.get('scenario-plan').children.filter(x=>x.tagName==='ARTICLE').length,1);
- assert.match(text('state-title'),/ПОШУК РОЗВОРОТУ ВІД ДНА/);
+ assert.equal(nodes.has('scenario-plan'),false);
+ assert.match(text('state-title'),/АКТИВНИЙ ПОШУК LONG.*99.66.*Стоп 98.31.*Тейк 101.81/);
  assert.match(text('regime'),/Низхідна структура/);
  assert.equal(priceLines.length,0);
  run('Object.assign(state.scenario_plan,{headline:"ЧЕКАЄМО ВІДКАТ ЗА ТРЕНДОМ",primary:null,alternative:{side:-1,trigger:"Закриття M15 нижче 98.80"}});render();');
- assert.match(text('scenario-plan'), /ЧЕКАЄМО ВІДКАТ ЗА ТРЕНДОМ.*Готових сетапів немає.*Резерв SHORT.*98.80/);
+ assert.match(text('state-title'), /ЧЕКАЄМО ВІДКАТ ЗА ТРЕНДОМ/);
  assert.equal(priceLines.length,0);
  run('state.scenario_plan=null;state.candidates=[...fixtureBackup.candidates];state.zones=[...fixtureBackup.zones];state.radar=fixtureBackup.radar;render();');
  assert.equal(document.querySelectorAll('[data-focus]').some(x=>x.dataset.zone==='far'),false);
@@ -219,7 +218,7 @@ ctx.fixtureBackup=cleanFixture;
      tactic:'REACTION_M5',status:'CANDIDATE',entry_source:'ENGINE_PLAN',plan_basis:'ENGINE_GEOMETRY',rr1:2,rr2:3,display_eligible:true});
    run('state.cockpit_schema=4;state.plan_pool=state.candidates;');return row;
  };
- approvedReaction();feed(100);assert.match(text('radar'),/клас B\+/);assert.match(text('zones'),/TP2/);
+ approvedReaction();feed(100);assert.match(text('radar'),/клас B\+/);assert.match(text('zones'),/100.50.*2.00R.*До входу/);
  feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');assert.equal(run('state.orders.length'),0);
  // Ordinary deep penetration is not a terminal invalidation until the actual SL is breached.
  approvedReaction();feed(100);feed(99.68);assert.equal(stage(),'TOUCHED');feed(99.77);assert.equal(stage(),'READY');
@@ -229,12 +228,12 @@ ctx.fixtureBackup=cleanFixture;
  feed(100);assert.equal(run('radarRows()[1].id'),first.id);
  feed(100.71);assert.equal(run('radarRows()[1].id'),'higher-resistance');
  assert.match(text('radar'),/101.30/);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&Math.abs(l.price-101.7)<.0001));
- assert.match(text('zones'),/SL ПРОБИТО/);
+ assert.match(text('zones'),/SL пробито/);
  // The same invalidated zone cannot reappear simply because the quote returns below it.
  feed(100.67);assert.equal(run('radarRows()[1].id'),'higher-resistance');
  // A weak or blocked plan remains in the table and cannot add chart lines.
  const weak=approvedReaction();weak.score=40;weak.grade='C';weak.tactic='OBSERVE';weak.reaction_eligible=false;
- feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостерігаємо за зоною/);assert.match(text('zones'),/40\/100/);
+ feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостереження/);assert.doesNotMatch(text('zones'),/40\/100/);
  assert.equal(priceLines.length,0);
  // With no pending order, repeated renders never toggle the near-limit class by passing undefined.
  approvedReaction();feed(100);for(let i=0;i<5;i++)run('render()');assert.equal(nodes.get('state-banner').classList.contains('near'),false);
@@ -255,7 +254,7 @@ ctx.fixtureBackup=cleanFixture;
  assert.ok(priceLines.length);assert.equal(run('radarRows().filter(Boolean).length'),1);
  // Once TP1 has traded, bouncing back does not resurrect the same plan.
  feed(100.5);assert.equal(priceLines.length,0);
- assert.match(text('zones'),/ціль пройдена/);
+ assert.match(text('zones'),/Ціль пройдена/);
  feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);
  // Context bands have no entry/stop/target lines.
  run('state.context_bands=[{id:"context",side:1,kind:"DEMAND_OB",timeframe:"1H",low:99.4,high:99.5}];render();');
@@ -302,7 +301,7 @@ ctx.fixtureBackup=cleanFixture;
  feed(100);
  assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')));
  assert.match(text('radar'),/Органічний стоп 98.20/);
- assert.match(text('radar'),/1.88× ATR 1H.*ADR 3.10/);
+ assert.doesNotMatch(text('radar'),/ADR|множник сесії/);
  assert.match(text('radar'),/1.41R.*1.82R/);
  assert.ok(run('m5QuotePlan(state.plan_pool[0],99.7)'));
  assert.equal(run('m5QuotePlan(state.plan_pool[0],99.76)'),null);

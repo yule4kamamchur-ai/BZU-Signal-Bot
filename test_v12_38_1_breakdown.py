@@ -57,8 +57,8 @@ class BreakdownCapture(unittest.TestCase):
                 snap,cfg=breakdown_fixture(price)
                 book=engine.new_state(cfg)
                 result=engine.run_cycle(book,snap,cfg)
-                self.assertEqual(result['action'],action)
                 if kind:
+                    self.assertEqual(result['action'],action)
                     plan,=engine.open_plans(book)
                     self.assertEqual((plan['source_strategy'],plan['order_type'],plan['entry']),
                                      ('BREAKDOWN_RECLAIM',kind,entry))
@@ -66,7 +66,8 @@ class BreakdownCapture(unittest.TestCase):
                     if kind=='MARKET':
                         self.assertEqual(plan['market_trigger']['pattern'],'M15_BREAKDOWN_MOMENTUM')
                 else:
-                    self.assertFalse(engine.open_plans(book))
+                    self.assertNotEqual(result['action'],'ACTIVE_ENTRY')
+                    self.assertFalse(any(p['source_strategy']=='BREAKDOWN_RECLAIM' for p in engine.open_plans(book)))
                     self.assertIn('DISTANT_BREAKDOWN_RETEST',result['analysis']['rejections'])
 
     def test_stop_sweep_unlocks_only_after_closed_mss(self):

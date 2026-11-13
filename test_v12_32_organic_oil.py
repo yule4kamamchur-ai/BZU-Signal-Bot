@@ -51,15 +51,17 @@ class OrganicOil(unittest.TestCase):
         profile = oil_risk.snapshot_profile(snap)
         for side in (1, -1):
             with self.subTest(side=side):
-                macro = {'level': 96 - side * 1.3, 'timeframe': '1H', 'known_ts': NOW - STEP}
+                macro = {'level': 96 - side * .85, 'timeframe': '1H', 'known_ts': NOW - STEP}
                 stop, risk, details = oil_risk.stop_geometry(96, 96 - side * .2, side, profile, [macro], cfg.tick, engine)
                 self.assertIsNone(details['gate'])
-                self.assertGreaterEqual(risk, 1.58)
-                self.assertGreaterEqual(side * (macro['level'] - stop), .20 - 1e-8)
+                self.assertGreaterEqual(risk, .85)
+                self.assertLessEqual(risk, 1.25)
+                self.assertGreaterEqual(side * (macro['level'] - stop), details['buffer'] - 1e-8)
                 _, _, details = oil_risk.stop_geometry(96, 96 - side * 2.03, side, profile, [macro], cfg.tick, engine)
                 self.assertEqual(details['gate'], 'STRUCTURAL_STOP_TOO_WIDE')
-                self.assertEqual(oil_risk.stop_geometry(96, 96 - side * .2, side, profile, [], cfg.tick, engine)[2]['gate'],
-                                 'MACRO_STOP_ANCHOR_REQUIRED')
+                fallback = oil_risk.stop_geometry(96, 96 - side * .2, side, profile, [], cfg.tick, engine)[2]
+                self.assertIsNone(fallback['gate'])
+                self.assertTrue(fallback['anchor_valid'])
 
     def test_macro_target_windows_and_fallback_are_symmetric(self):
         snap, cfg, _ = swing_fixture()

@@ -183,6 +183,7 @@ def market_regime(snapshot, tick, engine):
     state = ('BULLISH_ACTIVE' if active['side'] == 1 else 'BEARISH_ACTIVE') if active else (
         'PULLBACK_PHASE' if conflict else label)
     return {'state':state,'trend_state':label,'active_structure':active,
+            'trend_strength':r.efficiency_1h if r.state!='UNKNOWN' else None,
             'local_structure':local,'side_1h':one,'side_4h':four,'as_of_ts':snapshot.now,
             'range_low':min((c.low for c in rows),default=snapshot.price),
             'range_high':max((c.high for c in rows),default=snapshot.price)}

@@ -13,7 +13,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import market_wave as wave
 import oil_risk
 
-TREND_TP1_R = 1.10
+TREND_TP1_R = oil_risk.ENTRY_TP1_MIN
 TREND_LIMIT_MIN = .08
 TREND_LIMIT_MAX = 2.20
 MARKET_CHASE_R = .45
@@ -37,7 +37,7 @@ ZONE_DIRECTION = {
 DIRECTIONAL_FORMATIONS = frozenset({'CONFIRMED_FVG', 'BREAKER_FLIP_15M',
     'MOMENTUM_STAIRCASE_15M', 'DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M', 'STRUCTURAL_LEVEL', 'SESSION_SWEEP_ENGULFING',
-    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB', 'IMPULSE_OTE_15M'}) | wave.REVERSALS | wave.CONTINUATIONS | wave.TREND_ZONES
+    'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB', 'IMPULSE_OTE_15M',wave.BASE}) | wave.REVERSALS | wave.CONTINUATIONS | wave.TREND_ZONES
 PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'zone_origin', 'approach', 'session_gate', 'planning_policy', 'entry_checks',
     'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition')
@@ -95,8 +95,8 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM'):
-            if abs(entry-trigger['limit_entry']) > .20*trigger['initial_risk'] + 1e-8:
+        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE'):
+            if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
             if not low-1e-8 <= entry <= high+1e-8:
@@ -164,6 +164,7 @@ def target_crossed(side, snapshot, target, known):
 
 CONTINUATION_SETUPS = frozenset({'CONTINUATION_PULLBACK','PULLBACK_CONTINUATION','TREND_PULLBACK',
     'BOS_CONTINUATION',wave.BREAKDOWN,'FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
+    wave.BASE,
     'ACCELERATION_PULLBACK_REENTRY','ACCEPTANCE_RETEST_CONTINUATION','MOMENTUM_NO_PULLBACK_CONTINUATION'})
 REVERSAL_RELATION = 'CONFIRMED_REVERSAL'
 
@@ -215,7 +216,7 @@ def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -296,7 +297,7 @@ def normalized_zone_stop(entry, structural, side, atr15, cfg, engine):
     return stop, risk, safe
 
 
-def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None, oil=None, allow_local=False):
+def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, *, preferred=None, oil=None):
     """Work inside the native zone without shrinking its structural falsifier."""
     width = high - low
     wide = width > .45 + 1e-8 or width > .80 * atr15 + 1e-8
@@ -324,7 +325,7 @@ def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, 
         if inside and (not low - 1e-8 <= entry <= high + 1e-8 or side * (price - entry) < cfg.tick - 1e-8):
             continue
         if oil:
-            stop, risk, details = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine, allow_local=allow_local)
+            stop, risk, details = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)
             safe = details['gate'] is None
         else:
             stop, risk, safe = normalized_zone_stop(entry, structural, side, atr15, cfg, engine)
@@ -335,7 +336,7 @@ def zone_entry_geometry(low, high, price, structural, side, atr15, cfg, engine, 
         fallback = (engine.round_tick(round(distal, 10), cfg.tick, up=side == 1), 'DISTAL_EDGE')
     entry, basis = fallback
     if oil:
-        stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine, allow_local=allow_local)
+        stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine)
         return entry, stop, risk, basis, wide, inside
     floor, _ = zone_risk_bounds(atr15, cfg)
     # Show the real required protection in a reference plan even when it exceeds the cap.
@@ -475,7 +476,7 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
     else:
         clear = barrier is None or side * (tp2 - barrier) <= 1e-8
     return {'tp1': tp1, 'tp2': tp2,
-            'tp1_source': first[2]['kind'] if first else ('R_MULTIPLE_1_10' if trend else 'R_MULTIPLE_1_15'),
+            'tp1_source': first[2]['kind'] if first else ('R_MULTIPLE_1_40' if trend else 'R_MULTIPLE_1_15'),
             'tp2_source': second[2]['kind'] if second else ('R_MULTIPLE_1_90' if trend else 'REFERENCE_2R'),
             'tp1_alignment': first[2] if first else None, 'tp2_alignment': second[2] if second else None,
             'structural_tp1': bool(first), 'structural_tp2': bool(second),
@@ -521,7 +522,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                    and point['known_ts'] + 900_000 <= known
                    and 0 <= side * (distal - point['level']) <= .25 * a]
     structural = min(near_swings, key=lambda level: abs(level - distal), default=distal)
-    oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
+    oil = (oil_risk.snapshot_profile(snapshot), oil_risk.stop_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     entry, stop, risk, basis, wide, inside = zone_entry_geometry(
         low, high, snapshot.price, structural, side, a, cfg, engine, oil=oil)
     profile = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)[2] if oil else None
@@ -808,6 +809,49 @@ ORGANIC_REVERSAL = 'SESSION_SWEEP_ENGULFING_15M'
 ORGANIC_FORMATIONS = ORGANIC_MOMENTUM | {ORGANIC_REVERSAL}
 
 
+def consolidation_base(rows, side, tick, engine):
+    """Find a closed trend impulse, a 4–10 bar base, and its fresh M15 trigger."""
+    from strategy_organics import ema20
+
+    if len(rows)<24 or side not in (1,-1):
+        return None
+    signal = rows[-1]
+    if side*(signal.close-signal.open)<tick-1e-8:
+        return None
+    for count in range(10,3,-1):
+        base = rows[-count-1:-1]
+        impulse = rows[-count-4:-count-1]
+        atr = engine.atr(rows[:-count-4])
+        window = [*impulse,*base,signal]
+        if not atr or any(b.ts-a.ts!=wave.M15 for a,b in zip(window,window[1:])):
+            continue
+        if side*(impulse[-1].close-impulse[0].open)<1.10*atr-1e-8:
+            continue
+        averages = (ema20(rows[:len(rows)-count+i]) for i in range(count))
+        if any(avg is None or side*(bar.close-avg)<0 for bar,avg in zip(base,averages)):
+            continue
+        if side*(signal.close-ema20(rows))<0:
+            continue
+        low,high = min(c.low for c in base),max(c.high for c in base)
+        if not 2*tick-1e-8<=high-low<=1.+1e-8:
+            continue
+        extremes = [bar.low if side==1 else bar.high for bar in base[-3:]]
+        if any(side*(b-a)<-tick/2 for a,b in zip(extremes,extremes[1:])):
+            continue
+        edge = high if side==1 else low
+        middle = engine.round_tick(round((low+high)/2,10),tick,up=side==1)
+        extreme = signal.low if side==1 else signal.high
+        breakout = side*(signal.close-edge)>=tick-1e-8
+        hold = -tick<=side*(extreme-middle)<=.20*atr and side*(signal.close-middle)>=tick
+        if breakout or hold:
+            return {'kind':wave.BASE,'side':side,'timeframe':'15m','low':low,'high':high,
+                    'reference':edge if breakout else middle,'known_ts':signal.ts+wave.M15,
+                    'wave_proof':{'timeframe':'15m','base_bars':count,'base_start_ts':base[0].ts,
+                                  'break_ts':signal.ts+wave.M15,
+                                  'trigger':'BREAKOUT' if breakout else 'MIDPOINT_HOLD'}}
+    return None
+
+
 def organic_anchors(snapshot, cfg, context, engine):
     import strategy_organics as organic
 
@@ -832,7 +876,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         if family == ORGANIC_REVERSAL or family in wave.REVERSALS:
             name = 'SWEEP_RECLAIM' if side == 1 else 'LIQUIDITY_SWEEP_REVERSAL_SHORT'
         else:
-            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST', 'BREAKER_BLOCK', 'BOS_CONTINUATION') else 'PULLBACK_CONTINUATION'
+            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST', 'BREAKER_BLOCK', 'BOS_CONTINUATION',wave.BASE) else 'PULLBACK_CONTINUATION'
         known = setup['signal_ts']
         evidence = {**setup, 'entry_route': 'STRATEGY_EVENT', 'setup_timeframe': '15m',
                     'formation_timeframe': zone['timeframe'], 'source_strategy': family,
@@ -1347,7 +1391,7 @@ def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_
 
     # Confirmed structures already discovered by the live scanner. Display the
     # exact candle range; confirmation/admission still belongs to the engine.
-    kinds = {'RECLAIM_BREAKER':'Дзеркальний рівень','SR_FLIP_RECLAIM':'Дзеркальний рівень',
+    kinds = {'RECLAIM_BREAKER':'Дзеркальний рівень','SR_FLIP_RECLAIM':'Дзеркальний рівень',wave.BASE:'Пробій бази',
              wave.BREAKDOWN:'Ведмежий пробій підтримки','FVG_PULLBACK':'Незаповнений FVG'}
     zones = wave.zones(snapshot,cfg,engine,regime)
     for zone in zones:
@@ -1357,7 +1401,7 @@ def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_
         side, low, high = zone['side'], zone['low'], zone['high']
         if side*(price-(low if side==1 else high)) < -tick/2:
             continue
-        entry = high if side==1 else low
+        entry = zone['reference'] if kind==wave.BASE else high if side==1 else low
         cross = 'вище' if side==1 else 'нижче'
         away = 'нижче' if side==1 else 'вище'
         boundary = low if side==1 else high

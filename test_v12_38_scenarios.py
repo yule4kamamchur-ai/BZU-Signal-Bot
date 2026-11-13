@@ -43,9 +43,10 @@ class ScenarioContracts(unittest.TestCase):
         data = scenarios.build(snap,cfg,engine)
         self.assertEqual(set(data) & {'LONG','SHORT'}, {'LONG','SHORT'})
         self.assertEqual((data['range']['discount'],data['range']['premium']), (98.8,101.2))
-        self.assertEqual(scenarios.entry_error(snap,cfg,engine,-1,98.5,{},trend=True),
+        sideways={'state':'SIDEWAYS','trend_strength':.20}
+        self.assertEqual(scenarios.entry_error(snap,cfg,engine,-1,98.5,{},trend=True,regime=sideways),
                          'BLOCKED_DEALING_RANGE_30_70')
-        self.assertEqual(scenarios.entry_error(snap,cfg,engine,1,101.5,{},trend=True),
+        self.assertEqual(scenarios.entry_error(snap,cfg,engine,1,101.5,{},trend=True,regime=sideways),
                          'BLOCKED_DEALING_RANGE_30_70')
         self.assertEqual(scenarios.entry_error(snap,cfg,engine,1,100.,{},trend=False),
                          'BLOCKED_OUTSIDE_HTF_POI')
@@ -54,7 +55,7 @@ class ScenarioContracts(unittest.TestCase):
         self.assertNotIn('LONG',public['scenario_plan'])
         self.assertNotIn('SHORT',public['scenario_plan'])
         report=notification_report.build_checklist(engine.new_state(cfg),snap,{},cfg,engine)
-        self.assertIn('На що орієнтуватись зараз',report)
+        self.assertNotIn('30/70',report)
         self.assertNotIn('А · LONG',report)
         self.assertNotIn('Б · SHORT',report)
 

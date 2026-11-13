@@ -108,10 +108,8 @@ class SingleFocus(unittest.TestCase):
         self.assertEqual(public['orders'], [])
         self.assertEqual(engine.open_plans(state), [])
         text = engine.build_message(state, snap, result, cfg)
-        self.assertIn('Готових сетапів немає. LONG', text)
-        self.assertIn('до рівня 0.41 $', text)
-        self.assertIn('Попередньо', text)
-        self.assertIn('Резерв SHORT', text)
+        self.assertIn('LONG • Робоча зона 88.81', text)
+        self.assertNotIn('30/70', text)
         self.assertNotIn('Пошук за трендом', text)
 
     def test_admitted_and_ledger_plans_take_precedence(self):

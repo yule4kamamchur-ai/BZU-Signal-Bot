@@ -9,6 +9,7 @@ M5 = 300_000
 EARLY_M15_RECLAIM = 'M15_BOS_EMA20_ATR'
 STRUCTURE_LOOKBACK = 96
 BREAKDOWN = "BREAKDOWN_RECLAIM"
+BASE = "CONSOLIDATION_BREAKOUT_BASE"
 BREAKDOWN_MAX_AGE = 2 * M15
 REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
@@ -460,7 +461,8 @@ def _m5_continuations(rows, side, a15, tick, engine):
 
 def trend_zone(zone, regime, origin=None):
     kind = zone.get('kind')
-    witnessed = (kind in TREND_ZONES | {'FLAG_RETEST', 'BEARISH_BREAKER', 'BULLISH_BREAKER'}
+    witnessed = (kind in TREND_ZONES | {'FLAG_RETEST', 'BEARISH_BREAKER', 'BULLISH_BREAKER',
+                                      'RECLAIM_BREAKER','SR_FLIP_RECLAIM',BASE}
                  and bool(zone.get('wave_proof')))
     native = (kind in ('DEMAND_OB', 'SUPPLY_OB', 'FVG_BULL', 'FVG_BEAR', 'IMPULSE_OTE_15M',
                        'DISPLACEMENT_CATCHER_15M', 'BREAKER_FLIP_15M', 'CONTINUATION_PULLBACK')
@@ -673,6 +675,9 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_sweep(m15, trend, M15, tick, engine))
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
+        base = scanner.consolidation_base(m15,trend,cfg.tick,engine)
+        if base:
+            results.append(base)
         results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
         results.extend(_reclaim_breakers(m15, tick, engine, proactive=True))
         results.extend(breakdown_zones(snapshot,tick,engine))

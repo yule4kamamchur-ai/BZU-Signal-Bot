@@ -346,23 +346,22 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             anchor.invalidation, low if side == 1 else high,
             swings[-1]['level'] if swings else anchor.invalidation)
     preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
-    oil = (oil_risk.snapshot_profile(snapshot), oil_risk.macro_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
+    oil = (oil_risk.snapshot_profile(snapshot), oil_risk.stop_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     if oil:
-        entry, entry_basis = (zone['reference'],'BREAKDOWN_MICRO_RETEST') if breakdown else (
+        entry, entry_basis = ((zone['reference'],'STRUCTURAL_REFERENCE') if breakdown or zone['kind']==scanner.wave.BASE else
             strategy_direct_entries.adaptive_limit(snapshot,zone,origin,side,cfg.tick,engine))
         stop, risk, organic_risk = oil_risk.stop_geometry(
-            entry, structural, side, *oil, cfg.tick, engine, allow_local=bool(trend or multibar or local_reversal))
+            entry, structural, side, *oil, cfg.tick, engine)
         inside = low <= snapshot.price <= high
         gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,
-            trend=bool(breakdown or trend or scanner.continuation_setup(anchor.evidence.get('source_strategy'),zone['kind'],anchor.setup_type)))
+            trend=bool(breakdown or trend or scanner.continuation_setup(anchor.evidence.get('source_strategy'),zone['kind'],anchor.setup_type)),regime=regime)
         if gate:
             diag.update(entry=entry, stop=stop, risk=risk)
             return None, gate
     else:
         entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
-            low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil, allow_local=local_reversal)
-        organic_risk = oil_risk.stop_geometry(entry, structural, side, *oil, cfg.tick, engine,
-                                             allow_local=local_reversal)[2] if oil else None
+            low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil)
+        organic_risk = None
     legs = [{'name':'L1', 'price':entry, 'fraction':1., 'status':'PENDING'}]
     breaker = scanner.m5_breaker({**zone, 'side': side}, snapshot, cfg.tick)
     reaction_only = not oil and relation is None and (inside or bool(breaker))
@@ -413,8 +412,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     distance = abs(snapshot.price-entry)
     diag['distance_atr'] = distance/a15
     quote = snapshot.ask if side == 1 else snapshot.bid
-    market_trigger = (adverse.breakdown_market_trigger(snapshot,zone,entry,risk,quote,cfg.tick) if breakdown else
-        adverse.rejection_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick) if oil else None)
+    market_trigger = None
+    if breakdown:
+        market_trigger = adverse.breakdown_market_trigger(snapshot,zone,entry,risk,quote,cfg.tick)
+    elif oil:
+        if regime.get('trend_anchor_side')==side:
+            market_trigger = adverse.trend_zone_market_trigger(snapshot,side,zone,risk,quote,cfg.tick,engine)
+        if not market_trigger and zone['kind']!=scanner.wave.BASE:
+            market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick)
     if breakdown and not market_trigger and snapshot.price < entry - adverse.breakdown_limit_distance(zone):
         return None, 'DISTANT_BREAKDOWN_RETEST'
     if market_trigger:
@@ -452,14 +457,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     action = 'NEW_PENDING_LIMIT'
     geometry = None
     if market_trigger:
-        if breakdown:
-            gate = scenario_planner.entry_error(snapshot,cfg,engine,side,quote,zone,trend=True)
+        if breakdown or market_trigger['pattern']=='M15_TREND_ZONE':
+            gate = scenario_planner.entry_error(snapshot,cfg,engine,side,quote,zone,trend=True,regime=regime)
             if gate:
                 return None, gate
         # Re-price at executable bid/ask. Retain the structural boundary and
         # preserve the original stop whenever it still fits the risk budget.
         quote_stop, quote_risk, quote_profile = oil_risk.stop_geometry(
-            quote, organic_risk['boundary'], side, *oil, cfg.tick, engine, allow_local=True)
+            quote, organic_risk['boundary'], side, *oil, cfg.tick, engine)
         if quote_profile['gate']:
             return None, quote_profile['gate']
         fixed_risk = side * (quote - stop)

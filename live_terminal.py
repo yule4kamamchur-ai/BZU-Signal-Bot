@@ -99,7 +99,7 @@ def build(state, snapshot, result, cfg, engine):
     atr15 = atr15 if numeric(atr15) and atr15 > 0 else 0
     primary_side = engine.policy.regime_side(regime)
     profile = oil_risk.snapshot_profile(snapshot) if oil_risk.enabled(cfg) else None
-    minimum_spread = (max(1., .8 * min(profile['target'], profile['cap'])) if profile else
+    minimum_spread = (max(1., .8 * profile['cap']) if profile else
                       max(.65, 1.2 * atr15))
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
     admitted = analysis.get('admitted_plans', [])

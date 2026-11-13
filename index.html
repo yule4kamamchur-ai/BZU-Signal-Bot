@@ -4,20 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b1018">
-<title>BZU · Pro Cockpit v12.39.2</title>
-<link rel="stylesheet" href="./live_terminal.css?v=12.39.2">
+<title>BZU · Pro Cockpit v12.40.0</title>
+<link rel="stylesheet" href="./live_terminal.css?v=12.40.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
-<script defer src="./live_terminal.js?v=12.39.2"></script>
+<script defer src="./live_terminal.js?v=12.40.0"></script>
 </head>
 <body>
 <header class="masthead">
-  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>POSITION GUARD</span></h1><p class="muted">Brent · v12.39.2 · сигнальний журнал</p></div></div>
+  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>POSITION GUARD</span></h1><p class="muted">Brent · v12.40.0 · сигнальний журнал</p></div></div>
   <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
 </header>
 <section id="state-banner" class="state-banner banner-waiting" data-mode="WAITING" aria-labelledby="state-title">
-  <div class="state-heading"><div><p id="state-eyebrow" class="eyebrow">ПОТОЧНИЙ СТАН СИСТЕМИ</p><h2 id="state-title">Завантажуємо стан бота…</h2></div><span id="state-pill" class="badge">З’ЄДНАННЯ</span></div>
-  <p id="state-detail">Очікуємо журнал і котирування.</p>
-  <ol class="stepper" aria-label="Етапи угоди"><li id="step-scan">1 · Пошук</li><li id="step-pending">2 · Лімітка</li><li id="step-active">3 · Супровід</li></ol>
+  <div class="state-heading"><div><p id="state-eyebrow" class="eyebrow" hidden></p><h2 id="state-title">Завантажуємо стан бота…</h2></div><span id="state-pill" class="badge" hidden></span></div>
+  <p id="state-detail" class="sr-only"></p>
+  <ol class="stepper sr-only" aria-label="Етапи угоди"><li id="step-scan">1 · Пошук</li><li id="step-pending">2 · Лімітка</li><li id="step-active">3 · Супровід</li></ol>
 </section>
 <div class="summary">
   <div class="tile"><small>ЦІНА OKX</small><strong id="price">—</strong><small id="quote-status">Очікуємо котирування</small></div>
@@ -37,9 +37,8 @@
   </div>
   <aside class="console" aria-label="Пульт ордерів">
     <section class="panel" aria-labelledby="orders-title"><div class="bar"><div><p class="eyebrow">EXECUTION MONITOR</p><h2 id="orders-title">Ліміти й супровід</h2></div><span id="order-count" class="badge">0</span></div><p id="alert" role="status" aria-live="polite"></p><div id="orders"></div><p class="execution-note">Метрики тика оновлюються в браузері. Виходи та зміни стопа підтверджує сигнальний журнал.</p></section>
-    <section class="panel" aria-labelledby="scenario-title"><div class="bar"><h2 id="scenario-title">Єдиний орієнтир зараз</h2></div><div id="scenario-plan" class="focus-plan"></div></section>
     <section class="panel" aria-labelledby="radar-title"><div class="bar"><div><p class="eyebrow">LONG / SHORT RADAR</p><h2 id="radar-title">Кандидати на вхід</h2></div><small id="radar-source">За зліпком</small></div><div id="radar" class="radar-grid"></div><div id="reaction-monitor" class="reaction-monitor" data-stage="WAIT"><h3 id="reaction-title">Чекаємо план / реакцію M5</h3><p id="reaction-detail">Live фільтр працює у відкритій вкладці.</p><p id="reaction-metrics" class="muted micro"></p></div></section>
-    <section class="panel zones-panel" aria-labelledby="zones-title"><div class="bar"><h2 id="zones-title">Зони сканера</h2><small id="zone-count"></small></div><p class="muted micro">Плани за трендом, резерви та орієнтири протилежного напрямку.</p><div class="scroll"><table><thead><tr><th>Зона</th><th>Бал</th><th>Рішення</th><th><span class="sr-only">На графіку</span></th></tr></thead><tbody id="zones"></tbody></table></div></section>
+    <section class="panel zones-panel" aria-labelledby="zones-title"><div class="bar"><h2 id="zones-title">Зони сканера</h2><small id="zone-count"></small></div><div class="scroll"><table><thead><tr><th>Сетап</th><th>Вхід</th><th>Стоп ($)</th><th>Тейк 1 (R:R)</th><th>Статус</th></tr></thead><tbody id="zones"></tbody></table></div></section>
   </aside>
 </main>
 <footer><span>Котирування · 3 с &nbsp; Зліпок · 30 с</span><span id="copy-status" role="status" aria-live="polite"></span><span>Read-only · SIGNAL LEDGER</span></footer>
