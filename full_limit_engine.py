@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.40.0-clean-execution"
-REPORT_RELEASE = 'v12.40.0'
+VERSION = "full-ict-v12.42.0-unified-execution"
+REPORT_RELEASE = 'v12.42.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -1302,7 +1302,7 @@ def end_order(state: dict, order: dict, status: str, reason: str, ts: int) -> No
     state["used_events"][order["event_key"]] = ts
     for key in order.get("parent_keys", []):
         state["used_events"][key] = ts
-    if order.get("level_key"):
+    if status in ('FILLED','UNRESOLVED') and order.get("level_key"):
         state.setdefault("level_cooldown", {})[order["level_key"]] = ts+90*60_000
     emit(state, status, ts, order_id=order["id"], reason=reason)
 
@@ -1643,6 +1643,14 @@ def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
         store_slot(state,number,view)
 
 
+def paper_limit_touch(plan, candle, cfg):
+    """Paper-only approximation. A tolerated touch is logged separately."""
+    tolerance = (oil_risk.PAPER_TOUCH_TOLERANCE if oil_risk.enabled(cfg)
+                 and oil_risk.is_organic(plan) else 0.)
+    extreme = candle.low if plan['side']==1 else candle.high
+    return plan['side']*(extreme-plan['entry']) <= tolerance+1e-8
+
+
 def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True, *, entry_gates_checked=False) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
     tf, step = execution_series(s)
@@ -1659,7 +1667,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         effective = p.get('effective_ts',p['placed_ts'])
         if c.ts < effective:
             if bzu_policy.is_new(p) and step==60_000 and c.ts<p['placed_ts']<end:
-                touched=c.low<=p['entry'] if p['side']==1 else c.high>=p['entry']
+                touched=paper_limit_touch(p,c,cfg)
                 if touched:
                     end_order(state,p,'UNRESOLVED','PLACEMENT_INSIDE_TOUCHED_BAR',end)
                     continue
@@ -1684,7 +1692,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             not hold_pending_approach(p,replace(s,now=c.ts,price=c.open),cfg))
         fill = permitted and (c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8)
         if bzu_policy.is_new(p):
-            fill=permitted and (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry'])
+            fill=permitted and paper_limit_touch(p,c,cfg)
         if cancel_ts and c.ts < cancel_ts < end:
             end_order(state, p, "UNRESOLVED" if fill else "CANCELLED",
                       "CANCEL_INSIDE_TOUCHED_BAR" if fill else p["cancel_reason"], cancel_ts)
@@ -1696,7 +1704,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             continue
         if bzu_policy.is_new(p):
             fill = permitted and (p.get('action_type')=='ACTIVE_ENTRY' or
-                (c.low<=p['entry'] if p['side']==1 else c.high>=p['entry']))
+                paper_limit_touch(p,c,cfg))
             target = p['tp1']
             target_hit = c.high>=target if p['side']==1 else c.low<=target
             before_fill = p['side']*(c.open-target)>=0
@@ -1708,7 +1716,11 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
                 continue
             p['target_cancel_armed']=armed or p['side']*(c.close-target)<0
         if fill:
-            end_order(state, p, "FILLED", "PAPER_ONE_TICK_PENETRATION", end)
+            fill_reason = 'PAPER_ONE_TICK_PENETRATION'
+            if oil_risk.enabled(cfg) and oil_risk.is_organic(p):
+                extreme = c.low if p['side']==1 else c.high
+                fill_reason = 'PAPER_TOUCH_TOLERANCE' if p['side']*(extreme-p['entry'])>1e-8 else 'PAPER_LIMIT_TOUCH'
+            end_order(state,p,'FILLED',fill_reason,end)
             if bzu_policy.is_new(p):
                 p=bzu_policy.first_fill(p,c,sys.modules[__name__],cfg,step)
                 state['active']=p
@@ -1765,7 +1777,7 @@ def pending_scenario_error(plan, snapshot, cfg):
     gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,trend=trend)
     if gate:
         return gate
-    _, room_r = oil_risk.structural_room(side,entry,plan['risk'],scenario_planner.structure_levels(snapshot,engine))
+    _, room_r = oil_risk.structural_room(side,entry,plan['risk'],scenario_planner.structure_levels(snapshot,engine),trend=trend)
     return 'BLOCKED_NO_ROOM_TO_STRUCTURE' if room_r is not None and room_r < 1.35-1e-8 else None
 
 
@@ -1832,7 +1844,7 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
                     plan['entry_armed_bar']=c.ts
                 else:
                     plan.pop('entry_armed_bar',None)
-                    visited=c.low<=plan['entry'] if plan['side']==1 else c.high>=plan['entry']
+                    visited=paper_limit_touch(plan,c,cfg)
                     if visited and c.ts<plan['expires_ts'] and not plan.get('cancel_requested_ts'):
                         book={**state,'pending':plan,'active':None,'reconciliation':None}
                         end_order(book,plan,'CANCELLED','LEVEL_PASSED_WHILE_UNARMED',c.ts+step)
@@ -2215,17 +2227,22 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 elif trigger.get('pattern') == 'M15_TREND_ZONE' and market.get('trend_anchor_side')==candidate['side']:
                     proof = entry_adverse_selection.trend_zone_market_trigger(
                         s,candidate['side'],zone,trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                elif trigger.get('pattern') == 'M15_STRUCTURAL_IMPULSE':
+                    proof = entry_adverse_selection.structural_impulse_market_trigger(
+                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
                 else:
                     proof = None
                 if not proof or proof['known_ts'] != trigger.get('known_ts') or abs(quote-candidate['entry']) > 1e-8:
                     continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
-                candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN else
+                candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN or
+                trigger.get('pattern')=='M15_TREND_ZONE' else
                 trigger.get('limit_entry',candidate['entry']),zone,
                 trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
                     candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')),regime=market)
             _, room_r = oil_risk.structural_room(candidate['side'],candidate['entry'],candidate['risk'],
-                scenario_planner.structure_levels(s,sys.modules[__name__]))
+                scenario_planner.structure_levels(s,sys.modules[__name__]),
+                trend=candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
             if gate or (room_r is not None and room_r < 1.35-1e-8):
                 continue
         if (dominant and candidate['side'] != dominant
@@ -2242,12 +2259,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
         if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
-                                        min_score=scanner.min_plan_score(relation, candidate.get('market_trigger')), min_rr=1.40):
+                                        min_score=scanner.min_plan_score(relation, candidate.get('market_trigger'),
+                                            structural=oil_risk.is_organic(candidate)), min_rr=1.40):
             continue
         assessment = scanner.calculate_zone_trade_plan(
             zone, s, cfg, sys.modules[__name__], dominant, analysis.get('full_context', {}),
             geometry=candidate, regime=regime)
-        if not assessment or assessment['score'] < scanner.min_plan_score(relation, candidate.get('market_trigger')) or assessment['tactic'] == 'OBSERVE':
+        if not assessment or assessment['tactic'] == 'OBSERVE':
             continue
         candidate['zone_quality'] = assessment
         if relation in ('WITH_TREND', scanner.REVERSAL_RELATION):
@@ -2421,7 +2439,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             # Revalidate right NOW; a plan saved in a previous cycle is never
             # authorised to trade without current closed-candle/price proof.
             matching=next((p for p in plans if p.get('event_key')==intent.get('candidate_event_key')
-                           and execution_atlas.passive_at_open(p,s.price,cfg.tick)),None)
+                           and (scanner.market_plan(p) or execution_atlas.passive_at_open(p,s.price,cfg.tick))),None)
             if matching:
                 plans=[matching]+[p for p in plans if p is not matching]
             else:
@@ -2704,6 +2722,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         emoji='✅' if value>0 else '🔴' if value<0 else '⚪'
         return f"{emoji} {at} {label} ЗАКРИТО: {value:+.2f}R — {outcome}\n   {details}{text}{uncertainty}"
     if kind=='FILLED':
+        if event.get('reason')=='PAPER_TOUCH_TOLERANCE':
+            return f"🟢 {at} {label} Ліміт виконано в симуляції • допуск $0.05"
         return f"🟢 {at} {label} ЦІНА ПРОЙШЛА ЛІМІТ — супровід сигналу розпочато"
     if kind in ('TP1','TP2','TP3'):
         return None  # Legacy partial events remain in the ledger, not in current alerts.
@@ -2712,7 +2732,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
     if kind in ('CANCELLED','EXPIRED'):
         text = 'скасовано' if kind=='CANCELLED' else 'строк очікування завершився'
         reasons = {'CONFIRMED_HTF_FLIP':'змінився напрямок', 'STRUCTURE_INVALIDATED_NOW':'сетап утратив чинність',
-                   'TARGET_REACHED_WITHOUT_FILL':'ціль досягнута без входу'}
+                   'TARGET_REACHED_WITHOUT_FILL':'ціль досягнута без входу',
+                   'REPLACED_BY_CLOSER_SETUP':'ближчий підтверджений сетап'}
         suffix = '; '+reasons[event['reason']] if event.get('reason') in reasons else ''
         return f"⚪ {at} {label} Ліміт {text}, угода НЕ відкрилася{suffix}"
     if kind=='CANCEL_REQUESTED':
@@ -3446,6 +3467,9 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         if notify:
             result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
         stage('research_archive')
+        import live_terminal
+        if notify and os.environ.get('LIVE_STATE_FILE') and snapshot_path is None:
+            result['public_projection'] = live_terminal.build(state,snap,result,cfg,sys.modules[__name__])
         message = build_message(state,snap,result,cfg) if notify else ''
         stage('compose_report')
         state.setdefault('last_notified_event_count',old_events)
@@ -3487,7 +3511,6 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             state['market_history_status']={'status':'FAILED','error':str(exc)}
             print('Market evidence recording failed: '+str(exc),file=sys.stderr)
         stage('research_archive')
-        import live_terminal
         live_path = os.environ.get('LIVE_STATE_FILE') if snapshot_path is None else None
         live_terminal.sync_active_signal_to_journal(
             state, snap, result, cfg, sys.modules[__name__], state_path=state_path,
@@ -3587,7 +3610,7 @@ def main(core) -> int:
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

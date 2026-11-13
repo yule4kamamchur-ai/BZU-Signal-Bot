@@ -5,8 +5,10 @@ from statistics import mean
 INSTRUMENT = 'BZ-USDT-SWAP'
 MODEL = 'ORGANIC_OIL_V32'
 M15, H1, H4, DAY = 900_000, 3_600_000, 14_400_000, 86_400_000
-TP1_MIN, TP1_MAX, TP2_MIN, TP2_MAX = 1.00, 1.45, 1.80, 2.25
-ENTRY_TP1_MIN = 1.40
+TP1_MIN, TP1_MAX, TP2_MIN, TP2_MAX = 1.35, 1.65, 1.80, 2.25
+ENTRY_TP1_MIN = 1.35
+TREND_TP1_PROJECTION = 1.45
+STRUCTURAL_SCORE_MIN = 55
 TARGET_1_FALLBACK = 1.15
 
 
@@ -15,12 +17,18 @@ def entry_tp1_error(side, entry, risk, target):
         return 'BLOCKED_LOW_RR_135'
     return None
 
-def structural_room(side, entry, risk, levels):
+def structural_room(side, entry, risk, levels, *, trend=False):
     """Nearest significant opposing level in the direction of travel."""
-    obstacle = min((p for p in levels if p['side'] == -side and side*(p['level']-entry) > 0),
+    obstacle = min((p for p in levels if p['side'] == -side and side*(p['level']-entry) > 0
+                    and (not trend or p.get('hard_barrier'))),
                    key=lambda p: side*(p['level']-entry), default=None)
     room_r = side*(obstacle['level']-entry)/risk if obstacle and risk > 0 else None
     return obstacle, room_r
+
+
+def target_range_valid(rr1, rr2):
+    return (TP1_MIN-1e-8<=rr1<=TP1_MAX+1e-8 and
+            TP2_MIN-1e-8<=rr2<=TP2_MAX+1e-8)
 
 
 def closed(rows, step, as_of):
@@ -62,7 +70,8 @@ def contiguous_ranges(bars, step):
     return true_ranges(bars[start:], step)
 
 
-STOP_FLOOR, STOP_CAP = .70, 1.25
+STOP_FLOOR, STOP_CAP = .65, 1.15
+PAPER_TOUCH_TOLERANCE = .05
 
 
 def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
@@ -156,7 +165,7 @@ def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine):
     """Buffer a witnessed swing or the zone boundary using M15 volatility."""
     floor, cap = STOP_FLOOR, STOP_CAP
     atr = profile.get('atr_15m')
-    buffer = max(tick, .20 * (atr or 0.))
+    buffer = max(tick, min(.18, max(.12, .20 * (atr or 0.))))
     local_distance = side*(entry-local_boundary)
     anchor = min((a for a in anchors if a['timeframe'] in ('15m','1H')
                   and max(.60,local_distance)-1e-8 <= side*(entry-a['level']) <= min(1.35,cap-buffer)+1e-8),

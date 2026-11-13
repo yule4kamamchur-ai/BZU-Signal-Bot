@@ -126,6 +126,15 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     ts = proof.get('impulse_ts') or ((origin.get('displacement_known_ts') or 0) - step if step else 0)
     index = next((i for i, c in enumerate(rows) if c.ts == ts), 0)
     atr = engine.atr(rows[:index])
+    m15 = closed(snapshot,'15m')
+    impulse = next((bar for bar in reversed(m15[-4:])
+                    if bar.ts+900_000 in (zone.get('known_ts'),origin.get('displacement_known_ts'))
+                    and side*(bar.close-bar.open)>.60),None)
+    if impulse:
+        pullback = impulse.close - .275*(impulse.close-impulse.open)
+        reference = zone.get('reference',pullback)
+        entry = reference if .15<=side*(snapshot.price-reference)<=.28 else pullback
+        return engine.round_tick(round(entry+tick/2,10),tick), 'SHALLOW_M15_RETEST'
     if atr > 0 and side*(rows[index].close-rows[index].open) > 1.4*atr:
         if 'FVG' in zone['kind']:
             entry = high if side==1 else low
@@ -135,5 +144,5 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
             entry = min(high, max(low, retracement))
         basis = 'STRONG_DISPLACEMENT'
     else:
-        entry, basis = (low+high)/2, 'NORMAL_ROTATION_50'
+        entry, basis = (high if side==1 else low) + side*.04, 'ZONE_EDGE_BUFFER'
     return engine.round_tick(round(entry + tick/2, 10), tick), basis

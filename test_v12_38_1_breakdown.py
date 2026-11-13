@@ -60,8 +60,11 @@ class BreakdownCapture(unittest.TestCase):
                 if kind:
                     self.assertEqual(result['action'],action)
                     plan,=engine.open_plans(book)
-                    self.assertEqual((plan['source_strategy'],plan['order_type'],plan['entry']),
-                                     ('BREAKDOWN_RECLAIM',kind,entry))
+                    self.assertEqual(plan['order_type'],kind)
+                    if kind=='MARKET' or plan['source_strategy']=='BREAKDOWN_RECLAIM':
+                        self.assertEqual((plan['source_strategy'],plan['entry']),('BREAKDOWN_RECLAIM',entry))
+                    else:
+                        self.assertEqual(plan['source_strategy'],'BOS_CONTINUATION')
                     self.assertGreaterEqual(plan['rr1'],1.40)
                     if kind=='MARKET':
                         self.assertEqual(plan['market_trigger']['pattern'],'M15_BREAKDOWN_MOMENTUM')
@@ -102,7 +105,7 @@ class BreakdownCapture(unittest.TestCase):
 
     def test_breakdown_does_not_bypass_structural_room(self):
         snap,cfg=breakdown_fixture()
-        nearby=[{'side':1,'kind':'1H_SWING_LOW','level':91.4,'known_ts':NOW-STEP}]
+        nearby=[{'side':1,'kind':'1H_SWING_LOW','level':91.4,'known_ts':NOW-STEP,'hard_barrier':True}]
         with patch.object(scenarios,'structure_levels',return_value=nearby), \
              patch.object(engine,'full_targets',side_effect=targets), patch.dict(os.environ,ENV):
             book=engine.new_state(cfg)

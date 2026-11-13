@@ -222,11 +222,8 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
     info = guard(position, ts)
     side, entry, risk = position['side'], position['entry'], position['risk']
     bars, peak, rr = info['bars_in_trade'], info['max_favorable_r'], current_r(position, price)
-    engulfed = position.get('entry_engulfed_ts',0)
-    if engulfed and 0 <= ts-engulfed < STEPS['15m']:
-        return dict(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT',stop=None)
     if position.get('tp1_hit'):
-        if info['structure'] in ('ADVERSE','COUNTER_TREND') and rr <= info['adverse_exit_r']+EPS:
+        if bars>=3 and info['structure']=='ADVERSE' and rr <= info['adverse_exit_r']+EPS:
             return dict(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT',stop=None)
         return decision
     reason = None
@@ -245,11 +242,10 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
             and peak < .15 - EPS and rr <= -.45 + EPS
             and impulse_ts and 0 <= ts - impulse_ts < STEPS['15m']):
         reason = 'CLOSED_EARLY_IMPULSE_FAILURE'
-    fresh_m15_break = (bars >= 2 and info['structure'] == 'ADVERSE'
-                       and position.get('protection_structure_timeframe') == '15m'
-                       and 0 <= ts - position['protection_structure_ts'] < STEPS['15m'])
-    if reason is None and info['structure'] in ('ADVERSE', 'COUNTER_TREND') and (
-            fresh_m15_break or rr <= info['adverse_exit_r'] + EPS or (peak >= .30 - EPS and rr < -EPS)):
+    swing = position.get('protection_structure_level')
+    below_swing = swing is None or side*(price-swing)<=EPS
+    if reason is None and bars>=3 and info['structure']=='ADVERSE' and (
+            (below_swing and rr <= info['adverse_exit_r']+EPS) or (peak>=.45-EPS and rr<=EPS)):
         reason = 'CLOSED_ADVERSE_STRUCTURE_SHIFT'
     if reason is None and bars >= ROUND_TRIP_BARS and peak >= ROUND_TRIP_MFE - EPS and rr <= .10 + EPS:
         reason = 'CLOSED_ROUND_TRIP_BE'

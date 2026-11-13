@@ -153,7 +153,7 @@ class StructureSync(unittest.TestCase):
             engine.review_waiting_conditions(book, plan, snap, cfg)
         cancel.assert_called_once_with(book, plan, 'BLOCKED_LOW_RR_135', snap.now)
 
-    def test_short_189_exits_at_observed_price_without_three_hour_delay(self):
+    def test_short_189_ignores_unconfirmed_regime_flip(self):
         test = positions.PositionGuard()
         position, book, cfg = test.make_position(side=-1, entry=91.25, risk=2.01)
         ts = NOW + 4 * STEP
@@ -162,12 +162,9 @@ class StructureSync(unittest.TestCase):
         snap = engine.Snapshot(ts, 91.96, {'15m': rows}, 91.96, 91.97, ticker_ts=ts)
         with patch.object(direction, 'execution_regime', return_value={'state': 'BULLISH_ACTIVE'}):
             engine.check_quote_exits(book, snap, cfg)
-        self.assertIsNone(book['active'])
-        trade, = book['trades']
-        self.assertEqual((trade['exit'], trade['close_reason'], trade['bars_in_trade']),
-                         (91.97, 'CLOSED_ADVERSE_STRUCTURE_SHIFT', 4))
+        self.assertIs(book['active'],position)
 
-    def test_confirmed_m15_break_exits_even_above_the_drawdown_floor(self):
+    def test_confirmed_m15_break_needs_drawdown_or_prior_profit(self):
         test = positions.PositionGuard()
         position, book, cfg = test.make_position()
         end = NOW+4*STEP
@@ -178,10 +175,7 @@ class StructureSync(unittest.TestCase):
         test.bar(book, cfg, end-60_000, 98.40, 98.42, 97.97, 98.02, snapshot)
         self.assertIs(book['active'], position)
         test.bar(book, cfg, end, 98.02, 98.12, 97.97, 98.02, snapshot)
-        trade, = book['trades']
-        self.assertEqual((trade['close_reason'], trade['protection_structure_timeframe']),
-                         ('CLOSED_ADVERSE_STRUCTURE_SHIFT', '15m'))
-        self.assertGreater(trade['gross_r'], -.35)
+        self.assertIs(book['active'],position)
 
     def test_market_early_impulse_failure_closes_through_execution(self):
         entered = kyiv(16, 1)

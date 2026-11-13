@@ -19,7 +19,7 @@ def loss_cooldown(plan, trades, now):
         return {'allowed': True, 'reason': 'TREND_EXECUTION_POLICY'}
     losses=[t for t in trades if t.get('side')==plan.get('side')
             and t.get('close_reason') in ('STOP','STOP_GAP','SL','STOP_LOSS')
-            and t.get('net_r',0)<0 and 0<t.get('closed_ts',0)<=now]
+            and t.get('net_r',0)<=-.50+1e-8 and 0<t.get('closed_ts',0)<=now]
     last=max(losses,key=lambda t:t['closed_ts'],default=None)
     if last is None or now>=last['closed_ts']+3_600_000:
         return {'allowed':True,'reason':'COOLDOWN_CLEAR'}
@@ -165,6 +165,33 @@ def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=
     if not current:
         audit['decision']='EMPTY_BOOK'
         return audit
+    if len(current)==1 and engine:
+        from market_wave import BASE, M15
+        from oil_risk import enabled
+        import directional_policy
+
+        incumbent = current[0]
+        side = incumbent['side']
+        gap = side*(snapshot.price-incumbent['entry'])
+        atr = engine.atr(directional_policy.closed(snapshot,'15m'))
+        if (enabled(cfg) and atr>0 and gap>1.10*atr
+                and snapshot.now-incumbent['placed_ts']>=3*M15
+                and incumbent['expires_ts']>snapshot.now
+                and (not last_swap_ts or snapshot.now-last_swap_ts>=COOLDOWN_MS)):
+            eligible = [p for p in candidates if p['side']==side
+                        and p.get('entry_zone',{}).get('kind') in (BASE,'SR_FLIP_RECLAIM','RECLAIM_BREAKER')
+                        and p['entry_zone']['known_ts']>incumbent['placed_ts']
+                        and p.get('quality',{}).get('accepted')
+                        and p.get('event_key')!=incumbent.get('event_key')
+                        and side*(p['entry']-incumbent['entry'])>=cfg.tick-1e-8
+                        and abs(snapshot.price-p['entry'])<gap
+                        and p['expires_ts']>snapshot.now]
+            if eligible:
+                best = max(eligible,key=lambda p:policy.ranking(p,snapshot.price,cfg.tick))
+                audit.update(decision='REQUEST_REPLACEMENT',candidate_id=best['id'],
+                             replace_id=incumbent['id'],advantage=0.,
+                             reason='REPLACED_BY_CLOSER_SETUP',distance_atr=gap/atr)
+                return audit
     if len(current) == 1 and current[0].get('trend_rel') == 'WITH_TREND':
         audit.update(decision='KEEP_TREND_PRELIMIT', capacity=1)
         return audit

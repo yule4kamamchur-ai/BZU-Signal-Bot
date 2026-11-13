@@ -675,9 +675,11 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_sweep(m15, trend, M15, tick, engine))
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
-        base = scanner.consolidation_base(m15,trend,cfg.tick,engine)
-        if base:
-            results.append(base)
+        for offset in (0,1):
+            base = scanner.consolidation_base(m15[:len(m15)-offset],trend,cfg.tick,engine)
+            if base and all(trend*(bar.close-(base['low'] if trend==1 else base['high']))>=-cfg.tick/2
+                            for bar in m15[len(m15)-offset:]):
+                results.append(base)
         results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
         results.extend(_reclaim_breakers(m15, tick, engine, proactive=True))
         results.extend(breakdown_zones(snapshot,tick,engine))

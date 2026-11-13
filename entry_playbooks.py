@@ -594,6 +594,15 @@ def assess(plan, snapshot, tick, *, setup_candidates=None, market_regime=None):
     entry=plan.get('entry')
     if side not in (-1,1) or not isinstance(entry,(int,float)) or entry<=0:
         return {'accepted':False,'reason':'PLAYBOOK_INVALID_PLAN','playbook':None}
+    from market_wave import BASE
+    family = plan.get('source_strategy')
+    origin = plan.get('zone_origin') or {}
+    known = origin.get('break_known_ts') or 0
+    if (family in (BASE,'SR_FLIP_RECLAIM','RECLAIM_BREAKER')
+            and origin.get('wave_confirmed') and 0<known<=snapshot.now
+            and plan.get('trend_rel')=='WITH_TREND'):
+        return {'accepted':True,'reason':'PLAYBOOK_'+family,'playbook':family,
+                'strategy':family,'regime':'WITH_TREND','evidence_score':75}
     regime = market_regime or organic.classify(snapshot)
     direct = plan.get('entry_route') == 'STRATEGY_EVENT'
     proof = plan.get('anchor_proof',{}) if direct else {}

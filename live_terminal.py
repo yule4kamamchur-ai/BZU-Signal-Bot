@@ -33,7 +33,7 @@ def sync_active_signal_to_journal(state, snapshot, result, cfg, engine, *, state
         recover_projection = (duplicate and snapshot.now == state.get('last_run_ts')
                               and engine.read_json(live_path).get('ledger_ts') != snapshot.now)
         if not duplicate or recover_projection:
-            engine.atomic_write(live_path, build(state, snapshot, result, cfg, engine))
+            engine.atomic_write(live_path,result.get('public_projection') or build(state,snapshot,result,cfg,engine))
 
 
 def build(state, snapshot, result, cfg, engine):
@@ -124,6 +124,9 @@ def build(state, snapshot, result, cfg, engine):
             result.update(wave_proof=zone['wave_proof'], sweep=zone.get('sweep'))
         if numeric(zone.get('impulse_known_ts')):
             result['impulse_known_ts'] = zone['impulse_known_ts']
+        for key in ('execution_low','execution_high'):
+            if numeric(zone.get(key)):
+                result[key]=zone[key]
         sweep=zone.get('sweep') or {}
         sweep_ts=sweep.get('known_ts',sweep.get('sweep_ts')) if isinstance(sweep,dict) else None
         if numeric(sweep_ts) and sweep_ts<=snapshot.now: result['sweep_known_ts']=sweep_ts
@@ -389,6 +392,19 @@ def build(state, snapshot, result, cfg, engine):
     if healthy and oil_risk.enabled(cfg):
         focus = analysis.get('scenario_plan') or engine.scenario_planner.focus(
             snapshot,cfg,engine,regime,orders=plans,admitted=admitted,action=result.get('action'))
+    scanner_top = sorted(all_zones,key=lambda z:(not bool(z.get('order_id')),
+        not z['actionable'], z['side']!=primary_side if primary_side else False,
+        z.get('risk_gate')=='EXHAUSTED_MOVE', abs(snapshot.price-z['entry']),-z['score']))[:5]
+    if primary:
+        scanner_top = [primary,*[z for z in scanner_top if z['id']!=primary['id']]][:5]
+    if focus and focus['primary'] and focus['primary']['status']=='DEVELOPING' and scanner_top:
+        best = scanner_top[0]
+        focus = {**focus,'primary':{**focus['primary'],'side':best['side'],'level':best['entry'],
+                 'distance':abs(snapshot.price-best['entry']),'setup':best['kind'],
+                 'label':best['kind'],'preview':{'entry':best['entry'],'stop':best['stop'],'tp1':best['tp1'],
+                    'rr1':best['rr1'],'gate':best['gate_reason'],'preview_only':True},
+                 'trigger':best.get('reason_text') or 'Чекаємо підтвердження рівня.'}}
+        focus['developing_setup'] = focus['primary']
     return {'schema':1, 'cockpit_schema':5, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
@@ -407,12 +423,15 @@ def build(state, snapshot, result, cfg, engine):
             'primary_bias':primary_side,'atr15':atr15,'min_structural_spread':minimum_spread,
             'entry_mode':entry_mode,'reference_levels':reference_rows[:48],
             'candidate_rejections':rejected[:100],
-            'candidate_rules':{'min_score':60,'direct_min_score':65,'min_rr':oil_risk.ENTRY_TP1_MIN if profile else 1.4,
+            'candidate_rules':{'min_score':oil_risk.STRUCTURAL_SCORE_MIN if profile else 60,
+                               'direct_min_score':oil_risk.STRUCTURAL_SCORE_MIN if profile else 65,
+                               'min_rr':oil_risk.ENTRY_TP1_MIN if profile else 1.4,
+                               'max_rr1':oil_risk.TP1_MAX if profile else None,
                                'min_rr2':oil_risk.TP2_MIN if profile else 2.2,'wide_zone_usd':.45,'wide_zone_atr':.8,
                                'min_distance':.10,'max_distance':engine.scanner.max_zone_distance(atr15, cfg)},
             'reaction_config':{'execution_confirmation':'CLOSED_M15_REJECTION' if profile else None,'retracement':max(.06,3*cfg.tick),'max_sample_gap_ms':15000,
                                'min_samples':3,'ready_ttl_ms':15000,'max_chase_r':.25,
                                'min_net_rr':cfg.min_net_rr, 'taker_fee':engine.fee_rate(cfg,'taker')},
-            'zones':all_zones,
+            'zones':all_zones,'scanner_top':scanner_top,
             'candles':{'5m':candles(engine.scanner.closed_five_minutes(snapshot),300_000),
                        '15m':candles(snapshot.candles.get('15m',[]),900_000)}}

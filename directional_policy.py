@@ -585,6 +585,9 @@ def ranking(plan, price, tick):
     score=float(plan.get('direction_score',plan.get('decision_score',plan.get('score',0))) or 0)
     distance=abs(plan.get('entry',price)-price)/max(plan.get('risk',tick),tick)
     decision=plan.get('meta_decision') or {}
+    from market_wave import BASE
+    if plan.get('trend_rel')=='WITH_TREND' and plan.get('source_strategy') in (BASE,'RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
+        score += 4.
     if (not plan.get('reversal_sweep_override') and decision.get('validated')
             and decision.get('expected_net_r') is not None):
         # Once a probability model has cleared chronological holdout, rank

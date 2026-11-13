@@ -193,12 +193,13 @@ function organicPlan(row) {
 }
 function targetRatiosValid(row, rr1, rr2) {
   return organicPlan(row) ?
-    rr1 >= 1.40 - 1e-8 && rr1 <= 1.45 + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
+    rr1 >= (state.candidate_rules?.min_rr ?? 1.40) - 1e-8 &&
+    rr1 <= (state.candidate_rules?.max_rr1 ?? 1.45) + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
     rr1 >= 1.4 - 1e-8 && rr2 >= 2.2 - 1e-8;
 }
 function marketCandidate(row) {
   return row.order_type === 'MARKET' &&
-    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
      (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function validCandidate(row) {
@@ -216,13 +217,15 @@ function validCandidate(row) {
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
-    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE'].includes(row.market_trigger.pattern) ?
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'].includes(row.market_trigger.pattern) ?
       Math.abs(row.entry - row.market_trigger.limit_entry) <= (row.market_trigger.max_distance ?? .20*row.market_trigger.initial_risk) + 1e-8 :
       row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
       row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
       row.entry >= row.low - .08000001 && row.entry <= row.high + .08000001 :
       row.side * (row.entry - proximal) >= 0 && row.side * (row.entry - proximal) <= .45 * risk + 1e-8) :
-    (!outside || (row.side * (row.entry - proximal) >= 0 &&
+    (!outside || (row.entry_basis === 'SHALLOW_M15_RETEST' && number(row.execution_low) &&
+      number(row.execution_high) && row.entry >= row.execution_low && row.entry <= row.execution_high) ||
+      (row.side * (row.entry - proximal) >= 0 &&
       row.side * (row.entry - proximal) <= .03000001 + (state.tick || .01)));
   return row.low < row.high && risk > 0 &&
     targetRatiosValid(row, row.side * (row.tp1 - row.entry) / risk, row.side * (row.tp2 - row.entry) / risk) &&
@@ -258,7 +261,7 @@ function actionablePlan(row, price, tracking = false) {
       (state.organic_risk_profile?.model === 'ORGANIC_OIL_V32' && !organicPlan(row))) return false;
   const stage = livePlanState(row, price);
   if (marketCandidate(row)) {
-    if (row.market_trigger.pattern === 'M15_TREND_ZONE')
+    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'].includes(row.market_trigger.pattern))
       return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
         number(price) && Math.abs(price-row.market_trigger.limit_entry) <= row.market_trigger.max_distance + 1e-8;
     const risk = row.side * (row.entry - row.stop);
@@ -618,7 +621,7 @@ function conditionText(row, price) {
   }
   if (marketCandidate(row)) {
     if (row.market_trigger.pattern === 'M15_BREAKDOWN_MOMENTUM') return 'Закрита M15 підтвердила імпульсний пробій підтримки.';
-    if (row.market_trigger.pattern === 'M15_TREND_ZONE') return 'Закрита M15 підтвердила продовження від робочої зони.';
+    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'].includes(row.market_trigger.pattern)) return 'Закрита M15 підтвердила продовження від робочої зони.';
     return ['POST_TOUCH_REJECTION','M15_LEVEL_REJECTION'].includes(row.market_trigger.pattern) ? 'Зафіксовано відбій від зони.' :
       row.market_trigger.pattern === 'BREAKOUT_CONTINUATION' ? 'Підтверджено імпульсний пробій.' : 'Ціна в межах допуску зони.';
   }
@@ -659,9 +662,10 @@ function displayedPrice() {
 function renderZones(price) {
   const container = $('zones');
   container.replaceChildren();
-  $('zone-count').textContent = state.zones.length + ' зон';
+  const visible = state.scanner_top ?? state.zones.slice(0,5);
+  $('zone-count').textContent = visible.length + ' зон';
   const focusable = chartPlan()?.id;
-  for (const z of state.zones) {
+  for (const z of visible) {
     const row = element('tr');
     if (z.id === selectedZone) row.classList.add('selected');
     const name = td('');
@@ -673,7 +677,7 @@ function renderZones(price) {
     const risk = z.side*(z.entry-z.stop);
     const status = order?.status === 'PENDING' ? 'Лімітка' : order?.status === 'OPEN' ? 'В угоді' :
       targetExhausted(z, price) ? 'Ціль пройдена' : livePlanState(z,price)==='INVALID' ? 'SL пробито' :
-      approved && z.market_now ? 'Готовий' :
+      approved && z.market_now ? 'Вхід за ринком' :
       approved && number(price) ? 'До входу ' + format(Math.abs(z.entry-price)) + ' $' : 'Спостереження';
     if (z.id === focusable) {
       const focus = element('button', '◎');
@@ -876,7 +880,12 @@ function renderBanner(price, usable, live) {
   let pill = focus?.primary?.status === 'DEVELOPING' ? 'СЕТАП У РОЗРОБЦІ' : 'ПОШУК ТОЧКИ ВХОДУ';
   let title = focus?.headline ?? 'ОЧІКУЄМО УГОДУ';
   let detail = focus?.market?.phase_text ?? 'Готових сетапів немає.';
-  if (focus?.primary?.status === 'DEVELOPING') {
+  const reference = state.scanner_top?.[0];
+  if (usable && reference && !candidate) {
+    title = 'СПОСТЕРЕЖЕННЯ ' + sideLabel(reference.side) + ' • Робоча зона ' + format(reference.entry) +
+      ' (Стоп ' + format(reference.stop) + ' | Тейк ' + format(reference.tp1) + ')';
+    detail = statusText(reference, price);
+  } else if (focus?.primary?.status === 'DEVELOPING' && !state.scanner_top) {
     const {side,level,preview,trigger} = focus.primary;
     title = preview?.gate ? 'СПОСТЕРЕЖЕННЯ ' : 'АКТИВНИЙ ПОШУК ';
     title += sideLabel(side) + ' • Робоча зона ' + format(level);
@@ -950,6 +959,18 @@ function renderRadar(price, live) {
   const container=$('radar'); container.replaceChildren();
   const visible = radarRows(price);
   if (state.scenario_plan?.headline && !visible.some(Boolean)) {
+    if (state.scanner_top?.length) {
+      for (const z of state.scanner_top) {
+        const card = element('article',null,'candidate');
+        const label = z.order_id ? 'За журналом' : z.gate_reason ? 'Спостереження' : 'Очікує тесту рівня';
+        card.append(element('h3',sideLabel(z.side) + ' · ' + zoneName(z.kind)),
+          element('p',label + ' · ' + format(z.entry) + ' | SL ' + format(z.stop) +
+            ' | TP1 ' + format(z.tp1) + ' (' + format(z.rr1) + 'R)'),
+          element('small',statusText(z,price)));
+        container.append(card);
+      }
+      return;
+    }
     container.append(element('p','Готових сетапів немає. Умова наступної перевірки — в орієнтирі вище.','reason'));
     return;
   }

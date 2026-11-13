@@ -93,7 +93,7 @@ class ScenarioContracts(unittest.TestCase):
                          (100.50,'STRONG_DISPLACEMENT'))
         normal={**zone,'wave_proof':{'impulse_ts':NOW-8*STEP}}
         self.assertEqual(direct.adaptive_limit(snap,normal,{},1,.01,engine),
-                         (100.22,'NORMAL_ROTATION_50'))
+                         (100.54,'ZONE_EDGE_BUFFER'))
 
     def test_velocity_hold_and_release_and_market_distance(self):
         ohlc=[(100.4,100.52,100.32,100.4)]*31 + [
@@ -133,8 +133,8 @@ class ScenarioContracts(unittest.TestCase):
         obstacle, room=oil_risk.structural_room(1,100.,1.,levels)
         self.assertEqual(obstacle,levels[0])
         self.assertLess(room,1.35)
-        self.assertEqual(oil_risk.entry_tp1_error(1,100.,1.,101.39),'BLOCKED_LOW_RR_135')
-        self.assertIsNone(oil_risk.entry_tp1_error(1,100.,1.,101.40))
+        self.assertEqual(oil_risk.entry_tp1_error(1,100.,1.,101.34),'BLOCKED_LOW_RR_135')
+        self.assertIsNone(oil_risk.entry_tp1_error(1,100.,1.,101.35))
         snap,cfg=snapshot(100.,[(100.,103.,97.,100.)]*100,[])
         with patch.object(scenarios,'structure_levels',return_value=levels), \
              patch.object(engine,'full_targets',return_value=[]):
@@ -143,7 +143,7 @@ class ScenarioContracts(unittest.TestCase):
         self.assertIsNone(plan)
         self.assertEqual(reason,'BLOCKED_NO_ROOM_TO_STRUCTURE')
 
-    def test_engulfed_entry_exits_and_sar_scans_same_cycle(self):
+    def test_engulfed_entry_near_breakeven_does_not_trigger_sar(self):
         snap,cfg=snapshot(100.18,[(99.94,100.05,99.85,99.98)]*95+[(99.92,100.24,99.90,100.18)],[])
         p,book,_=positions.PositionGuard().make_position(side=-1,entry=100.,risk=1.5,entered=NOW-4*STEP)
         p['entry_zone']={'low':99.96,'high':100.06}
@@ -152,16 +152,16 @@ class ScenarioContracts(unittest.TestCase):
         book['config_hash']=engine.new_state(cfg)['config_hash']
         with patch.object(engine,'advance_lifecycle'):
             result=engine.run_cycle(book,snap,cfg)
-        trade,=book['trades']
-        self.assertEqual(trade['close_reason'],'CLOSED_ADVERSE_STRUCTURE_SHIFT')
-        self.assertEqual(result['analysis']['stop_and_reverse']['side'],1)
-        self.assertEqual(result['analysis']['stop_and_reverse']['closed_order_id'],p['id'])
+        self.assertIs(book['active'],p)
+        self.assertIsNone(result['analysis']['stop_and_reverse'])
         self.assertIsNone(arbitration.stop_and_reverse([],book['trades']))
 
     def test_sar_reserves_a_valid_opposite_limit_in_same_cycle(self):
         snap,cfg=snapshot(100.18,[(99.94,100.05,98.60,99.98)]*95+[(99.92,100.24,99.90,100.18)],[])
         p,book,_=positions.PositionGuard().make_position(side=-1,entry=100.,risk=1.5,entered=NOW-4*STEP)
-        p.update(entry_zone={'low':99.96,'high':100.06},last_bar=NOW-180_000)
+        p.update(entry_zone={'low':99.96,'high':100.06},last_bar=NOW-180_000,
+                 max_favorable_r=.50,protection_structure_side=1,
+                 protection_structure_timeframe='15m',protection_structure_ts=NOW-STEP)
         cfg=replace(cfg,include_commission=False)
         book['config_hash']=engine.new_state(cfg)['config_hash']
         long=order(1)
@@ -184,12 +184,12 @@ class ScenarioContracts(unittest.TestCase):
         self.assertEqual([ev['kind'] for ev in result['events'] if ev['kind'] in ('CLOSED','PLACED')],
                          ['CLOSED','PLACED'])
 
-    def test_lockout_covers_any_loss_or_adverse_exit(self):
+    def test_lockout_requires_at_least_half_r_loss(self):
         snap,cfg=snapshot(100.,[(100.,100.3,99.7,100.)]*100,[])
-        for reason, net in [('ROUND_TRIP_EXIT',-.01),('CLOSED_ADVERSE_STRUCTURE_SHIFT',.02)]:
+        for reason, net in [('ROUND_TRIP_EXIT',-.01),('CLOSED_ADVERSE_STRUCTURE_SHIFT',.02),('STOP',-.50)]:
             t={'side':-1,'entry':100.,'net_r':net,'close_reason':reason,'closed_ts':NOW-STEP}
             self.assertEqual(bzu_policy.adverse_reentry_reason(-1,[t],snap,cfg,engine),
-                             'ADVERSE_STRUCTURE_LOCKOUT')
+                             'ADVERSE_STRUCTURE_LOCKOUT' if net<=-.50 else None)
             self.assertIsNone(bzu_policy.adverse_reentry_reason(1,[t],snap,cfg,engine))
             self.assertIsNone(bzu_policy.adverse_reentry_reason(-1,[t],
                 replace(snap,now=NOW+15*STEP),cfg,engine))

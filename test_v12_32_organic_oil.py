@@ -72,12 +72,12 @@ class OrganicOil(unittest.TestCase):
             noisy = [level(.70, '15m'), level(1.51, '15m'), level(1.51, '1H', NOW + 1)]
             runner = level(2.71, '4H')
             plan = scanner.organic_targets(96, 1.5, side, [*noisy, runner], snap, cfg.tick, engine)
-            self.assertEqual(plan['tp1_source'], 'R_MULTIPLE_1_15')
-            self.assertAlmostEqual(side * (plan['tp1'] - 96), 1.73)
+            self.assertEqual(plan['tp1_source'], 'R_MULTIPLE_1_35')
+            self.assertAlmostEqual(side * (plan['tp1'] - 96), 2.03)
             self.assertAlmostEqual(side * (plan['tp2'] - 96) / 1.5, 1.8)
-            first = level(1.51, '1H')
+            first = level(2.06, '1H')
             plan = scanner.organic_targets(96, 1.5, side, [first, runner], snap, cfg.tick, engine)
-            self.assertAlmostEqual(side * (plan['tp1'] - 96), 1.50)
+            self.assertAlmostEqual(side * (plan['tp1'] - 96), 2.05)
             self.assertTrue(plan['structural_tp2'])
             blocked = scanner.organic_targets(96, 1.5, side, [{**first, 'hard_barrier': True}, runner],
                                                snap, cfg.tick, engine)

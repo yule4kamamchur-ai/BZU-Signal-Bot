@@ -309,7 +309,9 @@ def confluence(plan, snapshot, proof, cfg, engine):
     if not trigger:
         parts = {'base': 25}
     score = min(100, sum(parts.values()))
-    threshold = scanner.min_plan_score(relation, plan.get('market_trigger')) if relation else max(60, cfg.min_score)
+    threshold = (scanner.min_plan_score(relation, plan.get('market_trigger'),structural=True)
+                 if scanner.oil_risk.is_organic(plan) else
+                 scanner.min_plan_score(relation, plan.get('market_trigger')) if relation else max(60, cfg.min_score))
     active = plan.get('market_regime', {}).get('active_structure', {}).get('side')
     countertrend = active != plan['side'] and any(
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))

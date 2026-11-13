@@ -103,6 +103,14 @@ def assess(plan, snapshot, proof=None):
         return verdict('EDGE_INSUFFICIENT_NET_REWARD')
     if _numeric(plan.get('risk', 0)) <= 0:
         return verdict('EDGE_INVALID_STOP_GEOMETRY')
+    from market_wave import BASE
+    family = plan.get('source_strategy')
+    origin = plan.get('zone_origin') or {}
+    if (family in (BASE,'SR_FLIP_RECLAIM','RECLAIM_BREAKER') and origin.get('wave_confirmed')
+            and 0<(origin.get('break_known_ts') or 0)<=snapshot.now
+            and plan.get('trend_rel')=='WITH_TREND'):
+        result['family']='TREND_CONTINUATION'
+        return verdict('EDGE_CLOSED_M15_CONTINUATION_CONFIRMED',True)
 
     continuation = contract.family in ('TREND_CONTINUATION', 'STRUCTURE_BREAK',
                                         'SESSION_EXPANSION')

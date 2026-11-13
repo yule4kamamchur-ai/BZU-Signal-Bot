@@ -157,7 +157,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     targets = engine.full_targets({**context, 'organic_oil_targets': organic}, snapshot, anchor.side, entry, cfg)
     geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine, trend=trend) if organic else
                 scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
-    obstacle, room_r = (oil_risk.structural_room(side, entry, risk, scenario_planner.structure_levels(snapshot, engine))
+    obstacle, room_r = (oil_risk.structural_room(side, entry, risk, scenario_planner.structure_levels(snapshot, engine),trend=trend)
                         if organic else (None, None))
     if room_r is not None and room_r < 1.35-1e-8:
         return None, 'BLOCKED_NO_ROOM_TO_STRUCTURE'
@@ -181,8 +181,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     costs = (entry * entry_fee + tp2 * exit_fee) / risk
     rr1 = side * (tp1 - entry) / risk
     if organic:
-        if not (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
-                oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8):
+        if not oil_risk.target_range_valid(rr1,rr2):
             return None, 'ORGANIC_TARGET_RANGE'
         if rr1 <= (entry * entry_fee + tp1 * exit_fee) / risk:
             return None, 'NEAREST_TARGET_TOO_CLOSE_AFTER_COSTS'
@@ -203,8 +202,7 @@ def adverse_reentry_reason(side, trades, snapshot, cfg, engine):
     previous = max((t for t in trades if t.get('side') == side
                     and 0 < (t.get('closed_ts') or 0) <= snapshot.now),
                    key=lambda t: t['closed_ts'], default=None)
-    if (previous is None or ((previous.get('net_r') or 0) >= 0
-            and previous.get('close_reason') != 'CLOSED_ADVERSE_STRUCTURE_SHIFT') or not previous.get('entry')
+    if (previous is None or (previous.get('net_r') or 0) > -.50+1e-8 or not previous.get('entry')
             or snapshot.now >= previous['closed_ts'] + duration):
         return None
     if previous.get('close_reason') in ('STOP','STOP_GAP','SL','STOP_LOSS'):
@@ -350,6 +348,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if oil:
         entry, entry_basis = ((zone['reference'],'STRUCTURAL_REFERENCE') if breakdown or zone['kind']==scanner.wave.BASE else
             strategy_direct_entries.adaptive_limit(snapshot,zone,origin,side,cfg.tick,engine))
+        if entry_basis in ('SHALLOW_M15_RETEST','ZONE_EDGE_BUFFER'):
+            # Keep the original structural invalidation and carry the witnessed
+            # execution band through router and dashboard geometry validation.
+            zone = {**zone,'execution_low':min(low,entry),'execution_high':max(high,entry)}
         stop, risk, organic_risk = oil_risk.stop_geometry(
             entry, structural, side, *oil, cfg.tick, engine)
         inside = low <= snapshot.price <= high
@@ -418,6 +420,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     elif oil:
         if regime.get('trend_anchor_side')==side:
             market_trigger = adverse.trend_zone_market_trigger(snapshot,side,zone,risk,quote,cfg.tick,engine)
+        if not market_trigger and (trend or multibar or local_reversal or entry_basis=='SHALLOW_M15_RETEST'):
+            market_trigger = adverse.structural_impulse_market_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick,engine)
         if not market_trigger and zone['kind']!=scanner.wave.BASE:
             market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick)
     if breakdown and not market_trigger and snapshot.price < entry - adverse.breakdown_limit_distance(zone):
@@ -629,7 +633,7 @@ def fill_legs(p, c, engine, cfg, initial=False):
     previous = p.get('filled_fraction',0.)
     cost = p.get('entry_cost',0.)
     for leg in p['entry_legs']:
-        touched = c.low <= leg['price'] if p['side']==1 else c.high >= leg['price']
+        touched = engine.paper_limit_touch({**p,'entry':leg['price']},c,cfg)
         if p['action_type']=='ACTIVE_ENTRY' and initial:
             touched = True
         if leg['status']=='PENDING' and touched:
@@ -666,7 +670,7 @@ def partial_tp1_time(position):
     tp1 = position.get('tp1')
     if not position.get('tp1_hit') or not 0 < remaining < filled or tp1 is None:
         return None
-    minimum = oil_risk.TP1_MIN if oil_risk.is_organic(position) else 1.40
+    minimum = 1.00 if oil_risk.is_organic(position) else 1.40
     if position['side'] * (tp1 - position['entry']) < minimum * position['risk'] - 1e-8:
         return None
     return next((leg['ts'] for leg in position.get('realized_legs', [])

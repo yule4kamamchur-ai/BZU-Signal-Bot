@@ -13,7 +13,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import market_wave as wave
 import oil_risk
 
-TREND_TP1_R = oil_risk.ENTRY_TP1_MIN
+TREND_TP1_R = oil_risk.TREND_TP1_PROJECTION
 TREND_LIMIT_MIN = .08
 TREND_LIMIT_MAX = 2.20
 MARKET_CHASE_R = .45
@@ -87,15 +87,14 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         return gate
     if oil_risk.is_organic(row):
         rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
-        if not (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
-                oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8):
+        if not oil_risk.target_range_valid(rr1,rr2):
             return 'ORGANIC_TARGET_RANGE'
     elif side*(tp1-entry)/risk < min_rr-1e-8:
         return 'RR_BELOW_1_35'
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE'):
+        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'):
             if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -106,10 +105,13 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
                 return 'ENTRY_OUTSIDE_ZONE'
         elif not 0 <= side * (entry - proximal) <= MARKET_CHASE_R * risk + 1e-8:
             return 'MARKET_CHASE_LIMIT'
+    elif row.get('entry_basis')=='SHALLOW_M15_RETEST' and row.get('execution_low',low)<=entry<=row.get('execution_high',high):
+        pass
     elif not low-1e-8 <= entry <= high+1e-8:
         # Planner front-running of a narrow zone is explicit, bounded and causal.
         proximal = high if side == 1 else low
-        if not 0 <= side*(entry-proximal) <= .03000001:
+        buffer = .04 if row.get('entry_basis')=='ZONE_EDGE_BUFFER' else .03
+        if not 0 <= side*(entry-proximal) <= buffer+1e-8:
             return 'ENTRY_OUTSIDE_ZONE'
     return None
 
@@ -216,12 +218,14 @@ def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
 
-def min_plan_score(relation, market_trigger=None):
+def min_plan_score(relation, market_trigger=None, *, structural=False):
+    if structural:
+        return oil_risk.STRUCTURAL_SCORE_MIN
     if relation == 'WITH_TREND' and (market_trigger or {}).get('pattern') == 'BREAKOUT_CONTINUATION':
         return 60
     return {'WITH_TREND': 52, 'COUNTER_TREND': 78, REVERSAL_RELATION: 75}.get(relation, 60)
@@ -448,6 +452,7 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
     barrier = next((price for _, price, target in levels if target.get('hard_barrier')), None)
     first_floor = TREND_TP1_R if trend else oil_risk.TP1_MIN
     first = next((x for x in levels if first_floor - 1e-8 <= x[0] <= oil_risk.TP1_MAX + 1e-8
+                  and (not trend or x[2]['timeframe']!='SESSION')
                   and (x[2]['timeframe'] != 'D1' or x[2]['kind'].startswith('PD_'))), None)
     second = next((x for x in levels if oil_risk.TP2_MIN - 1e-8 <= x[0] <= oil_risk.TP2_MAX + 1e-8
                    and x[2]['timeframe'] in ('4H', 'D1')), None)
@@ -455,16 +460,16 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
     def projected(multiplier):
         return engine.round_tick(round(entry + side * multiplier * risk, 10), tick, up=side == 1)
 
-    tp1 = first[1] if first else projected(TREND_TP1_R if trend else oil_risk.TARGET_1_FALLBACK)
+    tp1 = first[1] if first else projected(TREND_TP1_R if trend else max(oil_risk.ENTRY_TP1_MIN,oil_risk.TARGET_1_FALLBACK))
     tp2 = second[1] if second else projected(1.90 if trend else 2.)
     checkpoints = []
     if trend:
         first_exit = tp1 if fixed_tp1 is None else fixed_tp1
-        checkpoints = {price for rr, price, _ in levels if rr < 1.05}
+        checkpoints = {price for rr, price, _ in levels if rr < 1.40}
         m15 = [bar for bar in snapshot.candles.get('15m', [])
                if bar.confirmed and bar.ts + wave.M15 <= snapshot.now]
         for point in engine.pivots(m15[-48:], strength=1):
-            if point['kind'] == ('HIGH' if side == 1 else 'LOW') and 0 < side * (point['level'] - entry) < 1.05 * risk:
+            if point['kind'] == ('HIGH' if side == 1 else 'LOW') and 0 < side * (point['level'] - entry) < 1.40 * risk:
                 checkpoints.add(point['level'])
         checkpoints = sorted(checkpoints, key=lambda price: side * (price - entry))[:8]
         # Tested opposing zones and runner obstacles remain visible. A fresh
@@ -476,7 +481,7 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
     else:
         clear = barrier is None or side * (tp2 - barrier) <= 1e-8
     return {'tp1': tp1, 'tp2': tp2,
-            'tp1_source': first[2]['kind'] if first else ('R_MULTIPLE_1_40' if trend else 'R_MULTIPLE_1_15'),
+            'tp1_source': first[2]['kind'] if first else ('R_MULTIPLE_1_45' if trend else 'R_MULTIPLE_1_35'),
             'tp2_source': second[2]['kind'] if second else ('R_MULTIPLE_1_90' if trend else 'REFERENCE_2R'),
             'tp1_alignment': first[2] if first else None, 'tp2_alignment': second[2] if second else None,
             'structural_tp1': bool(first), 'structural_tp2': bool(second),
@@ -509,13 +514,13 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     if zone_error and zone_error != 'RANGE_ZONE_TOO_CLOSE':
         return None
     relation = (geometry or {}).get('trend_rel')
-    trend = relation == 'WITH_TREND'
+    trend = relation == 'WITH_TREND' or (not geometry and oil_risk.enabled(cfg) and primary_side==side)
     runner = trend or relation == REVERSAL_RELATION
     projected_runner = trend or (runner and bool((geometry or {}).get('reversal_exhaustion_bonus')
                                                   or (geometry or {}).get('structure_reclaim')))
     market = market_plan(geometry or {})
     trigger = (geometry or {}).get('market_trigger') if market else None
-    score_floor = min_plan_score(relation, trigger)
+    score_floor = min_plan_score(relation, trigger,structural=oil_risk.is_organic(geometry or {}))
     distal = low if side == 1 else high
     near_swings = [point['level'] for point in engine.pivots(closed15)
                    if point['kind'] == ('LOW' if side == 1 else 'HIGH')
@@ -578,8 +583,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                   or (zone.get('wave_proof') and zone['kind'] in wave.CONTINUATIONS) or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
     barrier = destination['barrier_price']
-    target_range = (oil_risk.TP1_MIN - 1e-8 <= rr1 <= oil_risk.TP1_MAX + 1e-8 and
-                    oil_risk.TP2_MIN - 1e-8 <= rr2 <= oil_risk.TP2_MAX + 1e-8) if oil else (
+    target_range = oil_risk.target_range_valid(rr1,rr2) if oil else (
                     rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8)
     room = target_range and (destination['path_clear'] if projected_runner else
                              barrier is None or side * (tp2 - barrier) <= 1e-8)
@@ -594,7 +598,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     projection = (geometry if frozen else destination).get('target_projection') or {}
     if oil:
         if projection.get('tp1'):
-            multiple = oil_risk.TARGET_1_FALLBACK
+            multiple = oil_risk.ENTRY_TP1_MIN
             if projected_runner:
                 multiple = 1.05 if tp1_source == 'R_MULTIPLE_1_05' else TREND_TP1_R
             structural_tp1 = abs(tp1 - engine.round_tick(
@@ -626,6 +630,11 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     if (geometry or {}).get('reversal_exhaustion_bonus'):
         criteria.append(('ADR_EXHAUSTION_REVERSAL', 10, True))
     score = min(100, sum(weight for _, weight, passed in criteria if passed))
+    if geometry and oil_risk.is_organic(geometry) and geometry.get('score') is not None:
+        score = geometry['score']
+        breakdown = (geometry.get('confluence') or {}).get('components',{})
+        if breakdown:
+            criteria = [(name,value,True) for name,value in breakdown.items()]
     import entry_adverse_selection as adverse
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
@@ -658,7 +667,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         'score_cap':100, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
-        'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':'ENGINE_PLAN' if frozen else basis, 'in_zone':inside,
+        'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':geometry.get('entry_basis','ENGINE_PLAN') if frozen else basis, 'in_zone':inside,
         'entry_condition':condition, 'm5_breaker':breaker,
         'risk_floor':floor, 'risk_cap':cap, 'target_barrier':barrier, 'organic_risk':profile,
         'target_projection':projection or None, 'reversal_override':reversal,

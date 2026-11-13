@@ -126,6 +126,12 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None)
                 return None
     if zone.get('kind')==BASE:
         return 'CURRENT_WAVE_PROOF_EXPIRED'
+    if (zone.get('execution_low') is not None and zone.get('execution_high') is not None
+            and regime.get('trend_anchor_side')==side
+            and zone['execution_low']-cfg.tick/2<=entry<=zone['execution_high']+cfg.tick/2):
+        origin = engine.scanner.zone_origin(zone,snapshot,side,cfg.tick,engine,cfg,regime)
+        if origin.get('confirmed'):
+            return None
 
     if zone.get('kind') == BREAKDOWN:
         witnessed = side == -1 and breakdown_intact(zone,snapshot,cfg.tick) and any(
@@ -163,16 +169,16 @@ def _preview(watch, snapshot, cfg, engine, levels):
     boundary = watch.get('stop_anchor',watch['low'] if side==1 else watch['high'])
     stop, risk, profile = oil_risk.stop_geometry(entry,boundary,side,oil_risk.snapshot_profile(snapshot),
         oil_risk.stop_anchors(snapshot,cfg,engine,side),tick,engine)
-    obstacle, room = oil_risk.structural_room(side,entry,risk,levels)
-    tp1 = engine.scanner.structural_target_price(obstacle,snapshot.now,side,tick,engine) if obstacle else None
-    if tp1 is None and risk>0:
-        tp1 = engine.round_tick(round(entry+side*oil_risk.ENTRY_TP1_MIN*risk,10),tick,up=side==1)
+    _, room = oil_risk.structural_room(side,entry,risk,levels,trend=True)
+    targets = engine.full_targets({'organic_oil_targets':True},snapshot,'LONG' if side==1 else 'SHORT',entry,cfg)
+    geometry = engine.scanner.organic_targets(entry,risk,side,targets,snapshot,tick,engine,trend=True) if risk>0 else {}
+    tp1 = geometry.get('tp1')
     if tp1 is not None and side*(tp1-entry) <= 0:
         tp1 = None
     rr = side*(tp1-entry)/risk if tp1 is not None and risk>0 else None
     gate = (profile['gate'] or ('NO_CONFIRMED_TARGET' if rr is None else
             'BLOCKED_NO_ROOM_TO_STRUCTURE' if room is not None and room<1.35-1e-8 else
-            oil_risk.entry_tp1_error(side,entry,risk,tp1)))
+            'INSUFFICIENT_ROOM' if not geometry.get('path_clear') else oil_risk.entry_tp1_error(side,entry,risk,tp1)))
     return {'entry':entry,'stop':stop if risk>0 and stop>0 else None,'tp1':tp1,
             'rr1':rr,'gate':gate,'preview_only':True}
 

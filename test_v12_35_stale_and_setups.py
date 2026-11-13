@@ -108,14 +108,14 @@ class PositionGuard(unittest.TestCase):
         end = NOW+12*M15
         rows = [engine.Candle(end-(8-i)*M15, 98.40, 98.60, low, close)
                 for i, (low, close) in enumerate([(98.22,98.45)]*4+[(98.10,98.44),(98.23,98.47),
-                                                                    (98.24,98.48),(97.97,98.02)])]
-        snapshot = engine.Snapshot(end, 98.02, {'15m': rows})
-        self.bar(book, cfg, end, 98.40, 98.42, 97.97, 98.02, snapshot)
+                                                                    (98.24,98.48),(97.60,97.70)])]
+        snapshot = engine.Snapshot(end, 97.70, {'15m': rows})
+        self.bar(book, cfg, end, 98.40, 98.42, 97.60, 97.70, snapshot)
         trade, = book['trades']
         self.assertEqual((trade['protection_structure_ts'], trade['close_reason']),
                          (end, 'CLOSED_ADVERSE_STRUCTURE_SHIFT'))
 
-    def test_quote_regime_flip_exits_a_former_winner_in_loss(self):
+    def test_quote_regime_flip_alone_keeps_position(self):
         p, book, cfg = self.make_position(side=-1)
         end = NOW + 3 * M15
         rows = [engine.Candle(end-(9-i)*M15,98.2,98.4,98.1,98.3) for i in range(9)]
@@ -123,7 +123,7 @@ class PositionGuard(unittest.TestCase):
         s = engine.Snapshot(end,98.36,{'15m':rows},98.35,98.36,ticker_ts=end)
         with patch.object(direction,'execution_regime',return_value={'state':'BULLISH_ACTIVE'}):
             engine.check_quote_exits(book,s,cfg)
-        self.assertEqual(book['trades'][0]['close_reason'],'CLOSED_ADVERSE_STRUCTURE_SHIFT')
+        self.assertIs(book['active'],p)
 
     def test_short_185_overdue_guard_commits_close_to_both_outputs(self):
         tz = ZoneInfo('Europe/Kyiv')

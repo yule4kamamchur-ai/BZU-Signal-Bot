@@ -281,8 +281,12 @@ def approach_velocity(snapshot, side, zone, entry, tick, engine, *, shock_ts=0):
     """Hold after a closed adverse burst until a newer M15 confirms braking."""
     from directional_policy import closed
     from oil_risk import M15
+    from market_wave import BASE
 
     rows = closed(snapshot, '15m')[-32:]
+    if (zone.get('kind') in (BASE,'RECLAIM_BREAKER','SR_FLIP_RECLAIM')
+            and zone.get('wave_proof') and 0 < shock_ts <= zone.get('known_ts',0) <= snapshot.now):
+        shock_ts = 0
     for i in range(max(15,len(rows)-16),len(rows)):
         bar, prev = rows[i], rows[i-1]
         known = bar.ts+M15
@@ -356,8 +360,7 @@ def trend_zone_market_trigger(snapshot, side, zone, risk, quote, tick, engine):
     if not base and proof.get('break_ts',known)>bar.ts:
         return None
     reference = zone['reference']
-    tolerance = .20*engine.atr(rows[:-1])
-    distance = min(.20*risk,tolerance)
+    distance = min(.32,.45*engine.atr(rows[:-1]))
     if (abs(quote-reference)>distance+1e-8 or abs(bar.close-reference)>distance+1e-8
             or min(side*(bar.close-reference),side*(quote-reference))<-tick/2):
         return None
@@ -368,6 +371,32 @@ def trend_zone_market_trigger(snapshot, side, zone, risk, quote, tick, engine):
         return None
     return {'pattern':'M15_TREND_ZONE','known_ts':known,'limit_entry':reference,
             'initial_risk':risk,'max_distance':distance,'deviation_r':abs(quote-reference)/risk}
+
+
+def structural_impulse_market_trigger(snapshot, side, zone, entry, risk, quote, tick, engine):
+    from directional_policy import closed
+    from market_wave import M15
+
+    rows = closed(snapshot,'15m')
+    if (len(rows)<2 or risk<=0 or not snapshot.trusted
+            or not 0<=snapshot.now-snapshot.ticker_ts<=120_000):
+        return None
+    bar = rows[-1]
+    known = bar.ts+M15
+    atr = engine.atr(rows[:-1])
+    kind = zone.get('kind','')
+    structural = any(token in kind for token in ('SWEEP','OB','FVG','CHOCH','BREAKER'))
+    if (not 0<=snapshot.ticker_ts-known<M15
+            or not structural or atr<=0
+            or known not in (zone['known_ts'],zone.get('impulse_known_ts'))
+            or side*(bar.close-bar.open)<max(tick,.60*atr)-1e-8):
+        return None
+    distance = min(.32,.45*atr)
+    if (abs(quote-entry)>distance+1e-8 or abs(bar.close-entry)>distance+1e-8
+            or min(side*(quote-entry),side*(bar.close-entry)) < -tick/2):
+        return None
+    return {'pattern':'M15_STRUCTURAL_IMPULSE','known_ts':known,'limit_entry':entry,
+            'initial_risk':risk,'max_distance':distance,'deviation_r':abs(quote-entry)/risk}
 
 
 def breakdown_limit_distance(zone):

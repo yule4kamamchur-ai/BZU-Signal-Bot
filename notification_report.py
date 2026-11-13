@@ -230,7 +230,7 @@ def build(state, snapshot, result, cfg, engine):
     focus = None
     if not frozen and not health and result.get('action') != 'DATA_HOLD' and price_ok and engine.oil_risk.enabled(cfg):
         analysis = result.get('analysis', {})
-        focus = analysis.get('scenario_plan')
+        focus = result.get('public_projection',{}).get('scenario_plan') or analysis.get('scenario_plan')
         if not focus:
             regime = engine.policy.execution_regime(snapshot, cfg, engine)
             focus = engine.scenario_planner.focus(snapshot, cfg, engine, regime,
@@ -309,7 +309,9 @@ def build(state, snapshot, result, cfg, engine):
         else:
             text = 'скасовано без входу' if event['kind'] == 'CANCELLED' else 'строк минув, входу не було'
             reason=event.get('reason')
-            if reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED','CAPITULATION_RECOVERY_LOST','PORTFOLIO_DIRECTION_CONFLICT','BETTER_OPPOSING_SCENARIO','LEGACY_PENDING_EXCESS_CAP_2'):
+            if reason=='REPLACED_BY_CLOSER_SETUP':
+                text += ' • ближчий підтверджений сетап'
+            elif reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED','CAPITULATION_RECOVERY_LOST','PORTFOLIO_DIRECTION_CONFLICT','BETTER_OPPOSING_SCENARIO','LEGACY_PENDING_EXCESS_CAP_2'):
                 text += ' • '+engine.REASON_UA[reason]
         lines += [f"{engine.display_order(state, order_id)} • {text}"]
     represented = {p['id'] for p in active+pending+cancelling} | set(closed) | set(no_entry)
