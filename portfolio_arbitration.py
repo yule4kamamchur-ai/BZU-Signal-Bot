@@ -59,6 +59,8 @@ def current_score(incumbent, proof):
     Do not compare a previously fitted expected-return model against a new
     unvalidated model. Never turn a stale recorded probability into a fact.
     """
+    if incumbent.get('institutional_family'):
+        return _finite(incumbent.get('score'))
     import directional_policy as policy
     old=incumbent.get('ict_evidence',{})
     base=_finite(incumbent.get('direction_score',incumbent.get('decision_score',incumbent.get('score'))))

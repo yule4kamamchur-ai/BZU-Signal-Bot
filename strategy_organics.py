@@ -177,7 +177,7 @@ def body_breaks(rows, tick, engine):
                 yield index, side, pivot['level']
 
 
-def formations(snapshot, tick, engine):
+def formations(snapshot, tick, engine, *, include_ote=True):
     """Closed M15 displacement or same-bar session sweep and reversal."""
     import directional_policy as direction
     import ict_methodology as ict
@@ -228,6 +228,8 @@ def formations(snapshot, tick, engine):
         add('BREAKER_FLIP_15M', side, level, level - side * tick, extreme, level)
         add('DISPLACEMENT_CATCHER_15M', side, latest.close - side * .25 * body,
             latest.close - side * .30 * body, extreme, level)
+        if not include_ote:
+            continue
         # OTE uses the last confirmed counter-swing and the completed impulse extreme.
         pivots = engine.pivots(rows[-16:-1], strength=1)
         swing = next((p for p in reversed(pivots)

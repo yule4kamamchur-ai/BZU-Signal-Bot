@@ -158,7 +158,7 @@ class ScenarioContracts(unittest.TestCase):
 
     def test_sar_reserves_a_valid_opposite_limit_in_same_cycle(self):
         snap,cfg=snapshot(100.18,[(99.94,100.05,98.60,99.98)]*95+[(99.92,100.24,99.90,100.18)],[])
-        p,book,_=positions.PositionGuard().make_position(side=-1,entry=100.,risk=1.5,entered=NOW-4*STEP)
+        p,book,_=positions.PositionGuard().make_position(side=-1,entry=99.60,risk=1.5,entered=NOW-4*STEP)
         p.update(entry_zone={'low':99.96,'high':100.06},last_bar=NOW-180_000,
                  max_favorable_r=.50,protection_structure_side=1,
                  protection_structure_timeframe='15m',protection_structure_ts=NOW-STEP)

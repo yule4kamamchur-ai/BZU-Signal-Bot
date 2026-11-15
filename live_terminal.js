@@ -879,7 +879,7 @@ function management(order, tracker, price, usable) {
   }
   if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
   if (order.position_guard?.mode === 'ROUND_TRIP') return 'Round-Trip активний. Вихід при +0.10R або нижче.';
-  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Вихід після зламу M15 або просадки від −0.35R при зустрічній структурі.';
+  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Структурний вихід після 45 хвилин при підтвердженому зламі M15 та просадці від −0.35R.';
   if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп вичерпано. Чекаємо підтвердження дії за журналом.';
   if (order.position_guard?.mode === 'STALE_TIGHTENED') return 'Тайм-стоп застосовано. Чинний SL ' + format(order.stop) + '.';
   return 'Зберігаємо поточний стоп до TP1 ' + format(order.tp1) + '.';

@@ -8,6 +8,8 @@ import entry_adverse_selection as adverse
 import full_limit_engine as engine
 import ict_methodology
 import notification_report
+import portfolio_arbitration
+import position_monitor
 import scenario_planner
 import signal_quality
 from test_full_limit_engine import order
@@ -16,6 +18,64 @@ from test_v12_40_execution import base_fixture
 
 
 class Intraday(unittest.TestCase):
+    def test_brent_skips_retired_detectors_and_does_not_reactivate_saved_anchors(self):
+        snapshot, cfg = base_fixture()
+        state = engine.new_state(cfg)
+        with engine.market_clock(cfg.core, snapshot.now - STEP):
+            anchor = cfg.core.make_anchor('RANGE_COMPRESSION_BREAKOUT', 'LONG', 93.50, 92.80,
+                                          'DEMAND_OB', 'fixture', {'price': snapshot.price, 'atr15': .5})
+        key = engine.anchor_key(anchor, cfg)
+        state['anchor_memory'][key] = cfg.core.anchor_to_dict(anchor)
+        self.assertEqual(engine.merge_full_anchors([], state, snapshot, cfg), [])
+        self.assertIn(key, state['anchor_memory'])
+        with patch.object(engine.setup_paths, 'candidates', wraps=engine.setup_paths.candidates) as candidates:
+            result = engine.analyze(snapshot, cfg, state)
+        skipped = {row['setup'] for row in result['detectors'] if row['status'] == 'DISABLED'}
+        self.assertEqual(skipped, {'RANGE_COMPRESSION_BREAKOUT', 'MOMENTUM_NO_PULLBACK_CONTINUATION'})
+        self.assertTrue(skipped.isdisjoint({call.args[1] for call in candidates.call_args_list}))
+        self.assertEqual(result['registered_setups'], 24)
+
+    def test_nearby_candidates_merge_across_families_but_keep_execution_modes(self):
+        snapshot, cfg = base_fixture()
+        plans = []
+        for name, entry, action, family in (
+            ('one', 93.50, 'NEW_PENDING_LIMIT', 'SR_FLIP_RECLAIM'),
+            ('two', 93.52, 'NEW_PENDING_LIMIT', 'FVG_OB_PULLBACK'),
+            ('market', 93.51, 'ACTIVE_ENTRY', 'VWAP_TREND_CONTINUATION'),
+        ):
+            plans.append({'id':name, 'event_key':name, 'side':1, 'entry':entry, 'stop':92.70,
+                          'setup':family, 'canonical_setup_family':family,
+                          'institutional_family':family, 'action_type':action,
+                          'score':70, 'quality':{'accepted':True, 'reason':'CONFIRMED'}})
+        clusters = bzu_policy.merge_plans(plans, snapshot, cfg, engine)
+        self.assertEqual(len(clusters), 2)
+        cluster = next(p for p in clusters if p['action_type']=='NEW_PENDING_LIMIT')
+        self.assertCountEqual(cluster['zone_cluster_members'], ['one', 'two'])
+        self.assertEqual(next(p for p in clusters if p['action_type']=='ACTIVE_ENTRY')['id'], 'market')
+
+    def test_institutional_incumbent_keeps_the_canonical_score(self):
+        plan = {'institutional_family': 'FVG_OB_PULLBACK', 'score': 61,
+                'direction_score': 54, 'ict_evidence': {'proof_source': 'CLOSED_CANDLES_ONLY'}}
+        with patch.object(engine.policy, 'adjusted_score') as adjusted:
+            self.assertEqual(portfolio_arbitration.current_score(plan, {}), 61)
+        adjusted.assert_not_called()
+
+    def test_structural_exit_requires_elapsed_45_minutes_and_amplitude(self):
+        _, cfg = base_fixture()
+        for side in (1, -1):
+            with self.subTest(side=side):
+                position = order(side, placed=NOW)
+                position.update(filled_ts=NOW, entry=100., risk=1., stop=100.-side,
+                                protection_structure_side=-side, protection_structure_timeframe='15m',
+                                protection_structure_ts=NOW+STEP, position_regime_side=-side,
+                                max_favorable_r=.47)
+                check = lambda ts, rr: position_monitor.evaluate_active_trade_lifecycle(
+                    position, ts, 100.+side*rr, cfg, engine)
+                self.assertFalse(check(NOW+3*STEP-1, -.45)['should_exit'])
+                self.assertFalse(check(NOW+3*STEP, -.09)['should_exit'])
+                self.assertFalse(check(NOW+3*STEP, -.34)['should_exit'])
+                self.assertEqual(check(NOW+3*STEP, -.35)['exit_reason'], 'CLOSED_ADVERSE_STRUCTURE_SHIFT')
+
     def test_five_minute_engulf_requires_a_closed_contiguous_pair_and_fresh_quote(self):
         snapshot, cfg = base_fixture()
         step = 300_000

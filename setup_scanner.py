@@ -865,6 +865,29 @@ def consolidation_base(rows, side, tick, engine, *, prospective=False, require_b
     return None
 
 
+RETIRED_BRENT_SETUPS = frozenset({
+    'OTE_RETRACEMENT', 'IMPULSE_OTE_15M', 'FIB_OTE_ZONE',
+    'RANGE_COMPRESSION_BREAKOUT', 'COMPRESSION_EXPANSION',
+    'MOMENTUM_NO_PULLBACK_CONTINUATION', 'WAVE_CONTINUATION',
+})
+RETIRED_SETUP_REASON = 'LEGACY_BRENT_SETUP_RETIRED'
+
+
+def retired_brent_setup(setup, evidence=None):
+    evidence = evidence or {}
+    zone = evidence.get('entry_zone') or {}
+    return bool(RETIRED_BRENT_SETUPS.intersection(
+        (setup, evidence.get('source_strategy'), zone.get('kind'))))
+
+
+def nearby_setup(first, second, tick, atr):
+    """Match nearly identical entries, without joining separate price levels."""
+    if first['side'] != second['side']:
+        return False
+    near = max(2*tick, min(.05, .25*atr))
+    return abs(first['entry']-second['entry']) <= near+1e-8
+
+
 def institutional_family(kind):
     """Report six execution families while retaining native detector identities."""
     kind = str(kind or '').upper()
@@ -893,10 +916,14 @@ def organic_anchors(snapshot, cfg, context, engine):
                     'organic_confluence': True}
                    for zone in wave.zones(snapshot, cfg, engine,
                                          direction.execution_regime(snapshot, cfg, engine))]
-    for setup in [*wave_setups, *organic.formations(snapshot, cfg.tick, engine)]:
+    brent = oil_risk.enabled(cfg)
+    formations = organic.formations(snapshot, cfg.tick, engine, include_ote=not brent)
+    for setup in [*wave_setups, *formations]:
         zone = setup['entry_zone']
         side = setup['side']
         family = setup['family']
+        if brent and retired_brent_setup(family, setup):
+            continue
         proximal = zone['high'] if side == 1 else zone['low']
         raw_entry = (zone['reference'] if family in wave.TREND_ZONES else
                      (zone['low'] + zone['high']) / 2 if family in ('DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M', 'CONTINUATION_PULLBACK')

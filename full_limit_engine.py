@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v13.0.0-intraday"
-REPORT_RELEASE = 'v13.0.0'
+VERSION = "full-ict-v13.0.1-intraday"
+REPORT_RELEASE = 'v13.0.1'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -443,6 +443,9 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
     """Stable first observation per episode; renewal needs new market evidence."""
     core = cfg.core
     memory = state.setdefault("anchor_memory", {})
+    brent = oil_risk.enabled(cfg)
+    if brent:
+        fresh = [a for a in fresh if not scanner.retired_brent_setup(a.setup_type, a.evidence)]
     live_zones=set()
     for plan in open_plans(state):
         raw=memory.get(plan.get('event_key'),{})
@@ -506,6 +509,8 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
     # Retain tombstones beyond setup lifetime to prevent a detector refreshing age.
     memory = {k: v for k, v in memory.items() if s.now-v["created_ts"] <= 7*86_400_000}
     for key,raw in list(memory.items()):
+        if brent and scanner.retired_brent_setup(raw.get('setup_type'), raw.get('evidence')):
+            continue
         a=core.anchor_from_dict(raw)
         if a is None or not (a.created_ts<=s.now<a.expires_ts):continue
         native=(contexts or {}).get('MICRO_PRECURSOR' if a.evidence.get('entry_route')=='MICRO_PRECURSOR' else a.evidence.get('setup_timeframe','15m'),{})
@@ -520,7 +525,9 @@ def merge_full_anchors(fresh: list, state: dict, s: Snapshot, cfg: Config, conte
             memory.pop(key)
             memory[anchor_key(a,cfg)]=core.anchor_to_dict(a)
     state["anchor_memory"] = memory
-    return [a for raw in memory.values() for a in [core.anchor_from_dict(raw)] if a is not None
+    return [a for raw in memory.values()
+            if not (brent and scanner.retired_brent_setup(raw.get('setup_type'), raw.get('evidence')))
+            for a in [core.anchor_from_dict(raw)] if a is not None
             and a.created_ts <= s.now < a.expires_ts
             and a.state not in {"TRIGGERED", "INVALIDATED", "REJECTED"}]
 
@@ -691,6 +698,14 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         historical_anchor_index = _historical_anchor_index(state.get('anchor_memory', {}))
         names = [row['setup'] for row in core_setup_registry(core)]
         for setup,detector in zip(names,core.DETECTORS):
+            if oil_risk.enabled(cfg) and scanner.retired_brent_setup(setup):
+                reason = scanner.RETIRED_SETUP_REASON
+                matrix.extend({'setup':setup, 'timeframe':tf, 'side':0, 'status':'DISABLED',
+                               'reason':reason, 'score_status':'UNAVAILABLE'} for tf in tf_contexts)
+                detector_audit.append({'detector':detector.__name__, 'setup':setup, 'status':'DISABLED',
+                                       'reason':reason, 'timeframes':[
+                                           {'timeframe':tf, 'status':'DISABLED'} for tf in tf_contexts]})
+                continue
             evaluations=[]
             for tf,native in tf_contexts.items():
                 try:
@@ -968,19 +983,21 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             if check['key']=='DECISION_EVALUATED':
                 check['met']=True
         p['probability'] = meta_decision['probability']
-        p['decision_score'] = p['score']+q['ranking_adjustment']
-        p['direction_score'] = policy.adjusted_score(p,proof)
-        if not p.get('reversal_sweep_override'):
-            p['direction_score'] += meta_decision.get('score_adjustment',0)
         if playbook['accepted']:
-            # A capped structural tie-break, NOT a calibrated probability.
-            # Family identity persists for downstream attribution/research.
             p['strategy_family'] = playbook['strategy']
             p['strategy_regime'] = playbook['regime']
             p['strategy_evidence_score'] = playbook['evidence_score']
-            p['direction_score'] += min(3.,max(0.,(playbook['evidence_score']-60.)*.2))
-        if bzu_policy.is_new(p):
-            p['direction_score']=p['score']+p.get('session_vwap',{}).get('priority_points',0)
+        if p.get('institutional_family'):
+            p['direction_score'] = p['score']
+        elif bzu_policy.is_new(p):
+            p['direction_score'] = p['score'] + p.get('session_vwap',{}).get('priority_points',0)
+        else:
+            p['decision_score'] = p['score']+q['ranking_adjustment']
+            p['direction_score'] = policy.adjusted_score(p,proof)
+            if not p.get('reversal_sweep_override'):
+                p['direction_score'] += meta_decision.get('score_adjustment',0)
+            if playbook['accepted']:
+                p['direction_score'] += min(3.,max(0.,(playbook['evidence_score']-60.)*.2))
         p['decision_score'] = p['direction_score']
         p['probability_status'] = meta_decision['status']
         p['forecast'] = 'Confirmed departure; wait for return to limit, preserve structural stop, seek nearest target'

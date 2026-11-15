@@ -238,6 +238,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     diag['entry_checks'] = scanner.entry_checks()
     def mark(key, passed):
         next(c for c in diag['entry_checks'] if c['key'] == key)['met'] = bool(passed)
+    if oil_risk.enabled(cfg) and scanner.retired_brent_setup(anchor.setup_type, anchor.evidence):
+        return None, scanner.RETIRED_SETUP_REASON
     side = cfg.core.side_sign(anchor.side)
     a15 = engine.atr(structure.closed(snapshot, '15m'))
     if side not in (-1, 1) or a15 <= 0:
@@ -876,7 +878,8 @@ def merge_plans(plans, snapshot, cfg, engine):
     import portfolio_arbitration as arbitration
     import trade_dependencies
     groups = []
-    threshold = .5*engine.atr(structure.closed(snapshot,'15m'))
+    atr = engine.atr(structure.closed(snapshot,'15m'))
+    threshold = .5*atr
     def same_impulse(first, second):
         if not (first.get('source_strategy') in scanner.ORGANIC_MOMENTUM
                 and second.get('source_strategy') in scanner.ORGANIC_MOMENTUM):
@@ -885,13 +888,15 @@ def merge_plans(plans, snapshot, cfg, engine):
         return first_event is not None and first_event == second.get('anchor_proof', {}).get('strategy_event_ts')
 
     for p in sorted(plans,key=lambda p:(p['side'],p['entry'])):
-        group = next((g for g in groups if p['side'] == g[0]['side'] and (
-            any(same_impulse(p, other) for other in g)
-            or (p.get('institutional_family') and all(p.get('institutional_family') == other.get('institutional_family')
-                and abs(p['entry'] - other['entry']) <= threshold
-                and p.get('action_type') == other.get('action_type') for other in g))
-            or (trade_dependencies.zone_related(p, g[-1], 2 * threshold)
-                and all(x.get('action_type') == p.get('action_type') for x in g)))), None)
+        group = next((g for g in groups
+                      if p['side'] == g[0]['side'] and p.get('action_type') == g[0].get('action_type')
+                      and (
+                          any(same_impulse(p, other) for other in g)
+                          or (p.get('institutional_family') and all(
+                              other.get('institutional_family') and
+                              scanner.nearby_setup(p, other, cfg.tick, atr) for other in g))
+                          or trade_dependencies.zone_related(p, g[-1], 2 * threshold)
+                      )), None)
         if group is None:
             groups.append([p])
         else:

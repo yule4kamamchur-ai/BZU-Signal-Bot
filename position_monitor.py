@@ -76,6 +76,8 @@ STALE_MFE = .60
 STALE_STOP_R = .35
 STALE_BARS = 24
 REPLACEMENT_BARS = 16
+ADVERSE_HOLD_BARS = 3
+ADVERSE_EXIT_R = -.35
 EPS = 1e-8
 
 
@@ -211,7 +213,7 @@ def guard(position, ts):
             'round_trip_trigger_r': .10, 'round_trip_mfe_r': ROUND_TRIP_MFE,
             'stale_mfe_r': STALE_MFE, 'structure': 'ADVERSE' if confirmed_break else (
                 'COUNTER_TREND' if regime_opposes else position.get('position_structure_status', 'UNKNOWN')),
-            'adverse_exit_r': -.35, 'regime': regime}
+            'adverse_exit_r': ADVERSE_EXIT_R, 'regime': regime}
 
 
 def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
@@ -222,8 +224,12 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
     info = guard(position, ts)
     side, entry, risk = position['side'], position['entry'], position['risk']
     bars, peak, rr = info['bars_in_trade'], info['max_favorable_r'], current_r(position, price)
+    swing = position.get('protection_structure_level')
+    beyond_swing = swing is None or side*(price-swing)<=EPS
+    adverse_exit = (bars >= ADVERSE_HOLD_BARS and info['structure'] == 'ADVERSE'
+                    and beyond_swing and rr <= ADVERSE_EXIT_R + EPS)
     if position.get('tp1_hit'):
-        if bars>=3 and info['structure']=='ADVERSE' and rr <= info['adverse_exit_r']+EPS:
+        if adverse_exit:
             return dict(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT',stop=None)
         return decision
     reason = None
@@ -242,10 +248,7 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
             and peak < .15 - EPS and rr <= -.45 + EPS
             and impulse_ts and 0 <= ts - impulse_ts < STEPS['15m']):
         reason = 'CLOSED_EARLY_IMPULSE_FAILURE'
-    swing = position.get('protection_structure_level')
-    below_swing = swing is None or side*(price-swing)<=EPS
-    if reason is None and info['structure']=='ADVERSE' and (
-            (below_swing and rr <= info['adverse_exit_r']+EPS) or (bars>=3 and peak>=.45-EPS and rr<=EPS)):
+    if reason is None and adverse_exit:
         reason = 'CLOSED_ADVERSE_STRUCTURE_SHIFT'
     if reason is None and bars >= ROUND_TRIP_BARS and peak >= ROUND_TRIP_MFE - EPS and rr <= .10 + EPS:
         reason = 'CLOSED_ROUND_TRIP_BE'

@@ -396,11 +396,19 @@ def build(state, snapshot, result, cfg, engine):
     if healthy and oil_risk.enabled(cfg):
         focus = analysis.get('scenario_plan') or engine.scenario_planner.focus(
             snapshot,cfg,engine,regime,orders=plans,admitted=admitted,action=result.get('action'))
-    scanner_top = sorted(all_zones,key=lambda z:(not bool(z.get('order_id')),
+    ranked_zones = sorted(all_zones,key=lambda z:(not bool(z.get('order_id')),
         not z['actionable'], z['side']!=primary_side if primary_side else False,
-        z.get('risk_gate')=='EXHAUSTED_MOVE', abs(snapshot.price-z['entry']),-z['score']))[:5]
-    if primary:
-        scanner_top = [primary,*[z for z in scanner_top if z['id']!=primary['id']]][:5]
+        z.get('risk_gate')=='EXHAUSTED_MOVE', abs(snapshot.price-z['entry']),-z['score']))
+    scanner_top = [primary] if primary else []
+    for zone in ranked_zones:
+        if any(row['id']==zone['id'] for row in scanner_top):
+            continue
+        if profile and not zone.get('order_id') and any(
+                engine.scanner.nearby_setup(zone, row, cfg.tick, atr15) for row in scanner_top):
+            continue
+        scanner_top.append(zone)
+        if len(scanner_top)==5:
+            break
     if focus and focus['primary'] and focus['primary']['status']=='DEVELOPING' and scanner_top:
         best = scanner_top[0]
         focus = {**focus,'primary':{**focus['primary'],'side':best['side'],'level':best['entry'],
