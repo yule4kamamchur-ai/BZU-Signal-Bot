@@ -119,6 +119,9 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     from directional_policy import closed
 
     low, high = zone['low'], zone['high']
+    if (any(token in zone['kind'] for token in ('FVG', 'DEMAND_OB', 'SUPPLY_OB', 'FLIP_RECLAIM', 'RECLAIM_BREAKER'))):
+        edge = zone.get('reference', high if side == 1 else low) if 'RECLAIM' in zone['kind'] else (high if side == 1 else low)
+        return engine.round_tick(round(edge + side*.04,10),tick), 'ZONE_EDGE_BUFFER'
     proof = zone.get('wave_proof') or {}
     tf = proof.get('timeframe', zone.get('timeframe', '15m'))
     step = engine.TF.get(tf)

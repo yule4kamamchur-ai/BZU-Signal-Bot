@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v12.42.0-unified-execution"
-REPORT_RELEASE = 'v12.42.0'
+VERSION = "full-ict-v13.0.0-intraday"
+REPORT_RELEASE = 'v13.0.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -942,8 +942,10 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             p['score']=points['score']
             p['rating']=points['rating']
             if p.get('policy')==bzu_policy.POLICY:
-                p['session_vwap']=policy.vwap_priority(p,s,cfg.tick)
-                if points['accepted'] and p['session_vwap']['aligned']:
+                p['session_vwap']=(points.get('session_vwap')
+                                   or policy.vwap_priority(p,s,cfg.tick))
+                if (not p.get('institutional_family') and points['accepted']
+                        and p['session_vwap']['aligned']):
                     p['rating']='A+'
             next(c for c in p['entry_checks'] if c['key']=='CONTEXT_SCORE')['met']=points['accepted']
             if q['accepted'] and not points['accepted']:
@@ -1227,6 +1229,13 @@ def bind_order_numbers(state: dict) -> None:
 PAPER_UNCERTAINTY = frozenset({'PLACEMENT_INSIDE_TOUCHED_BAR', 'EXPIRY_INSIDE_BAR', 'CANCEL_INSIDE_TOUCHED_BAR'})
 
 
+def scheduled_paper_limit(plan):
+    placed, effective = plan.get('placed_ts'), plan.get('effective_ts')
+    return (plan.get('execution') == 'PAPER_SIGNAL' and plan.get('order_type') == 'LIMIT'
+            and isinstance(placed, int) and isinstance(effective, int)
+            and 0 < effective-placed < 60_000 and effective % 60_000 == 0)
+
+
 def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
     """Keep uncertain outcomes out of WR, release only after their age limit.
 
@@ -1240,7 +1249,15 @@ def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
         order = next((o for o in reversed(state['orders']) if o['id']==r['order_id']),None)
         if not order or order.get('execution') != 'PAPER_SIGNAL':
             continue
-        if bzu_policy.is_new(order):
+        # This exact paper contract starts on a minute boundary. The earlier
+        # bar could not execute the limit, so no hypothetical fill is needed.
+        before_activation = (r['reason'] == 'PLACEMENT_INSIDE_TOUCHED_BAR'
+                             and scheduled_paper_limit(order) and order['status'] == 'UNRESOLVED'
+                             and r['ts'] == order.get('resolved_ts') == order['effective_ts']
+                             and not order.get('filled_ts') and not view.get('active')
+                             and not any(o['id'] == order['id'] and o['status'] == 'FILLED' for o in state['orders'])
+                             and not any(t['id'] == order['id'] for t in state['trades']))
+        if bzu_policy.is_new(order) and not before_activation:
             continue  # No automatic time exit can prove this possible position closed.
         if order.get('tp1_decision_gate'):
             continue  # No finite automatic holding exit to justify erasing a possible fill.
@@ -1250,7 +1267,7 @@ def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
         release_ts = expiry+order.get('max_hold_minutes',cfg.max_hold_minutes)*60_000
         if order.get('intraday',True):
             release_ts=min(release_ts,session_cutoff(expiry,cfg))
-        release_ts=max(r['ts'],release_ts)
+        release_ts = r['ts'] if before_activation else max(r['ts'],release_ts)
         if now < release_ts:
             r['release_ts'] = release_ts
             continue
@@ -1258,8 +1275,9 @@ def release_unconfirmed_paper(state: dict, now: int, cfg: Config) -> None:
         order['status'] = 'UNCONFIRMED'
         order['excluded_from_win_rate'] = True
         order['released_ts'] = now
-        state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(r),'released_ts':now})
-        emit(state,'UNCONFIRMED_RELEASED',now,order_id=order['id'],reason=r['reason'])
+        reason = 'TOUCH_BEFORE_ACTIVATION' if before_activation else r['reason']
+        state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(r),'released_ts':now,'release_reason':reason})
+        emit(state,'UNCONFIRMED_RELEASED',now,order_id=order['id'],reason=reason)
         view['reconciliation'] = None
         store_slot(state,number,view)
 
@@ -1666,6 +1684,8 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         end = c.ts+step
         effective = p.get('effective_ts',p['placed_ts'])
         if c.ts < effective:
+            if scheduled_paper_limit(p) and end <= effective:
+                continue
             if bzu_policy.is_new(p) and step==60_000 and c.ts<p['placed_ts']<end:
                 touched=paper_limit_touch(p,c,cfg)
                 if touched:
@@ -2229,6 +2249,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         s,candidate['side'],zone,trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M15_STRUCTURAL_IMPULSE':
                     proof = entry_adverse_selection.structural_impulse_market_trigger(
+                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                elif trigger.get('pattern') == 'M5_ZONE_ENGULFING' and market.get('trend_anchor_side')==candidate['side']:
+                    proof = entry_adverse_selection.m5_reaction_market_trigger(
                         s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
                 else:
                     proof = None
@@ -3402,7 +3425,7 @@ def notification_checkpoint(state, path):
 
 
 def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
-             ack: bool = False, auto_report: bool = False) -> int:
+             ack: bool = False, auto_report: bool = False, report_allowed: bool = True) -> int:
     if core.BOT_VERSION != VERSION:
         raise ValueError('Неповне оновлення: оновіть bot_oneshot.py і full_limit_engine.py з одного архіву')
     expected=os.environ.get('EXPECTED_BOT_VERSION')
@@ -3432,8 +3455,10 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             if recovery.get('instrument')!=cfg.instrument:
                 raise ValueError('Notification checkpoint belongs to a different instrument')
             state.update(recovery)
+        report_check_ts = int(time.time()*1000)
         if auto_report:
-            notify = report_due(int(time.time()*1000),int(state.get('last_report_requested_ts',0) or 0))
+            notify = report_allowed and report_due(
+                report_check_ts, int(state.get('last_report_requested_ts',0) or 0))
         try:
             quality.seed(state,cfg,Path(os.environ.get('QUALITY_MODEL_FILE',str(ROOT/'quality_model.json'))))
             state.pop('quality_model_warning',None)
@@ -3488,7 +3513,7 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             for page, part in enumerate(notification_report.split_message(message)):
                 state['notification_queue'].append({'id':ident(report_ts,page,part),'text':part,
                                                     'version':VERSION,'ts':report_ts})
-            state['last_report_requested_ts']=report_ts
+            state['last_report_requested_ts']=report_check_ts
             print('[TELEGRAM] 15m report queued; pages: '
                   +str(len(state['notification_queue'])),flush=True)
         delivery_ok=True
@@ -3610,7 +3635,7 @@ def main(core) -> int:
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

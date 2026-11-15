@@ -2,7 +2,7 @@
 """Optional single-host worker: closed-bar scan each 3m, report each 15m.
 
 Run INSTEAD of scheduled GitHub cycles when an always-on host is available.
-The one-shot GitHub workflow remains supported and unchanged in cadence.
+The one-shot GitHub workflow scans on its own five-minute schedule.
 """
 from __future__ import annotations
 import logging
@@ -62,7 +62,7 @@ def main():
         while True:
             now=int(time.time()*1000)
             try:
-                updated,ran=step(now,checkpoint,lambda notify:engine.run_live(core,notify=notify))
+                updated,ran=step(now,checkpoint,lambda notify:engine.run_live(core, auto_report=True, report_allowed=notify))
                 if ran:
                     engine.atomic_write(checkpoint_path,updated)
                     checkpoint=updated

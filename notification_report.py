@@ -70,6 +70,10 @@ def setup_text(plan):
 
 
 def targets(plan):
+    from bzu_policy import SCALE_POLICY, partial_target
+
+    if plan.get('scale_policy') == SCALE_POLICY:
+        return f"TP1: {partial_target(plan):.8g} • 50% на +1R | TP2: {plan['tp2']:.8g}"
     parts=[]
     for name in ('TP1','TP2','TP3'):
         level=plan.get(name.lower(),plan.get('tp') if name=='TP1' else None)
@@ -78,6 +82,9 @@ def targets(plan):
 
 
 def full_exit_text(plan):
+    if plan.get('scale_policy') == 'SCALE_OUT_1R':
+        return ('Залишок до TP2 • стоп за свінгами М15' if plan.get('tp1_hit') else
+                'Після TP1 стоп на +0.15R, далі за свінгами М15')
     name=plan.get('full_exit_target')
     if not name:
         names=[n for n in ('TP1','TP2','TP3') if not plan.get(n.lower()+'_hit')
@@ -122,6 +129,11 @@ def position_diagnostics(position, now, cfg, engine, *, frozen=False):
     time = duration_text(view['time_in_trade_ms'])
     lines = [f"⏱ {time} • MFE {view['max_favorable_r']:+.2f}R ({view['peak_price']:.8g}) • MAE {(-view['max_adverse_r']):.2f}R"]
     if mode == 'POST_TP1':
+        if position.get('scale_policy') == 'SCALE_OUT_1R':
+            effective = position.get('pending_stop') or {}
+            stop = effective.get('price', position['stop'])
+            timing = ' з наступної свічки' if effective else ''
+            return [*lines, f'50% зафіксовано на +1R. SL залишку {stop:.8g}{timing}.']
         return [*lines, 'TP1 зафіксовано. Залишок ведемо за штатним стопом до TP2.']
     deadline = view['stale_at']
     moment = engine.report_deadline(deadline, now, cfg)
@@ -237,6 +249,18 @@ def build(state, snapshot, result, cfg, engine):
                 orders=engine.open_plans(state), admitted=analysis.get('admitted_plans', []),
                 action=result.get('action'))
         lines += focus_lines(focus)
+        plans = result.get('public_projection', {}).get('entry_scenarios', {})
+        pullback, breakout = plans.get('pullback'), plans.get('breakout')
+        if pullback:
+            side = 'LONG' if pullback['side'] == 1 else 'SHORT'
+            tag = '' if pullback['actionable'] else ' • спостереження'
+            lines += [f"План А · {side} відкат {pullback['entry']:.2f} • SL {pullback['stop']:.2f} • "
+                      f"TP1 {pullback['tp1']:.2f} • TP2 {pullback['tp2']:.2f}{tag}"]
+        if breakout:
+            side = 'LONG' if breakout['side'] == 1 else 'SHORT'
+            verb = 'вище' if breakout['side'] == 1 else 'нижче'
+            label = '' if breakout['base_confirmed'] else ' • структурний орієнтир'
+            lines += [f"План Б · {side} після закриття М15 {verb} {breakout['edge']:.2f}{label}"]
     if active:
         lines += ['', f'🔵 СУПРОВІД — {len(active)}']
     for index, p in enumerate(active):
@@ -453,7 +477,10 @@ def build_checklist(state, snapshot, result, cfg, engine):
         elif kind in ('BREAKEVEN_ARMED', 'STRUCTURAL_TRAIL_ARMED'):
             lines += [f"🛡️ {label}: SL → {ev['stop']:.8g} • з наступної свічки"]
         elif kind == 'TP1_PARTIAL':
-            lines += [f"🎯 Частину {label} зафіксовано на TP1 • чекаємо підтвердження M5 для Б/У"]
+            if ev.get('scale_policy') == 'SCALE_OUT_1R':
+                lines += [f"🎯 {label}: 50% зафіксовано на +1.00R @ {ev['price']:.8g}"]
+            else:
+                lines += [f"🎯 Частину {label} зафіксовано на TP1 • чекаємо підтвердження M5 для Б/У"]
         elif kind in ('CANCELLED', 'EXPIRED', 'CANCEL_REQUESTED'):
             reasons = {'TARGET_REACHED_WITHOUT_FILL': 'TP1 досягнуто без входу',
                        'LIMIT_TTL': 'минув час дії', 'SESSION_ENDED': 'сесія закінчилася',

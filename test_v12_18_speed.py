@@ -57,16 +57,16 @@ class FastRuntimeTests(unittest.TestCase):
         candidate.evidence['entry_route']='NATIVE_PATTERN'
         self.assertFalse(engine._anchor_already_seen(indexed,candidate,'1H','different-zone',0.01))
 
-    def test_both_workflows_keep_one_15m_cycle_and_shallow_checkout(self):
+    def test_both_workflows_scan_every_5m_with_report_gate_and_shallow_checkout(self):
         live = (ROOT/'.github/workflows/main.yml').read_text()
         self.assertEqual(live, (ROOT/'WORKFLOW_main.yml').read_text())
-        self.assertIn("cron: '*/15 * * * *'", live)
+        self.assertIn("cron: '*/5 * * * *'", live)
         self.assertIn('fetch-depth: 1', live)
         self.assertNotIn('git fetch --unshallow', live)
         self.assertIn('git rebase --onto', live)
         self.assertIn("BOT_STAGE_TIMING: 'true'", live)
         self.assertNotIn('fetch-depth: 0', live)
-        self.assertIn('python bot_oneshot.py --notify', live)
+        self.assertIn('python bot_oneshot.py --auto-report', live)
         self.assertNotIn('python bot_oneshot.py --self-test', live)
 
 

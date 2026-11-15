@@ -205,7 +205,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(frozen['status'],'DATA_HOLD')
         workflow = Path('.github/workflows/main.yml').read_text()
         self.assertEqual(workflow,Path('WORKFLOW_main.yml').read_text())
-        self.assertIn("cron: '*/15 * * * *'",workflow)
+        self.assertIn("cron: '*/5 * * * *'",workflow)
         self.assertIn(engine.VERSION,workflow)
         self.assertEqual(core.BOT_VERSION,engine.VERSION)
         self.assertEqual(len(core.DETECTORS),24)

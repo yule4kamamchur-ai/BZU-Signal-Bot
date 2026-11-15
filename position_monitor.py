@@ -244,8 +244,8 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
         reason = 'CLOSED_EARLY_IMPULSE_FAILURE'
     swing = position.get('protection_structure_level')
     below_swing = swing is None or side*(price-swing)<=EPS
-    if reason is None and bars>=3 and info['structure']=='ADVERSE' and (
-            (below_swing and rr <= info['adverse_exit_r']+EPS) or (peak>=.45-EPS and rr<=EPS)):
+    if reason is None and info['structure']=='ADVERSE' and (
+            (below_swing and rr <= info['adverse_exit_r']+EPS) or (bars>=3 and peak>=.45-EPS and rr<=EPS)):
         reason = 'CLOSED_ADVERSE_STRUCTURE_SHIFT'
     if reason is None and bars >= ROUND_TRIP_BARS and peak >= ROUND_TRIP_MFE - EPS and rr <= .10 + EPS:
         reason = 'CLOSED_ROUND_TRIP_BE'

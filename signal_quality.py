@@ -308,6 +308,33 @@ def confluence(plan, snapshot, proof, cfg, engine):
         parts['adr_exhaustion_reversal'] = plan['reversal_exhaustion_bonus']
     if not trigger:
         parts = {'base': 25}
+    vwap = None
+    if plan.get('institutional_family'):
+        vwap = direction.session_vwap(snapshot)
+        aligned_vwap = (vwap['value'] is not None and
+                        plan['side'] * (snapshot.price - vwap['value']) > 0)
+        evidence = [e['rvol'] for e in volume.get('events', []) if e.get('rvol') is not None]
+        market_trigger = plan.get('market_trigger') or {}
+        recent = scanner.closed_five_minutes(snapshot) if market_trigger.get('pattern') == 'M5_ZONE_ENGULFING' else direction.closed(snapshot, '15m')
+        if recent:
+            timeframe, step = ('5m', 300_000) if market_trigger.get('pattern') == 'M5_ZONE_ENGULFING' else ('15m', 900_000)
+            recent_volume = scanner.event_rvol(snapshot, timeframe, recent[-1].ts + step)
+            if recent_volume['rvol'] is not None:
+                evidence.append(recent_volume['rvol'])
+        relative_volume = max(evidence, default=0.)
+        vwap_volume = aligned_vwap and relative_volume >= 1.25
+        vwap.update(aligned=aligned_vwap, relative_volume=relative_volume, bonus=12 if vwap_volume else 0)
+        valid_risk = (plan.get('risk', 0) > 0 and
+                      plan.get('rr1', 0) >= scanner.oil_risk.ENTRY_TP1_MIN - 1e-8)
+        volatility_evidence = bool(recent and (bos or sweep))
+        hour = snapshot.now // 3_600_000 % 24
+        parts = {'structure': 25 * int(trigger),
+                 'zone_and_vwap': 13 * int(fresh) + vwap['bonus'],
+                 'trade_geometry': 25 * int(valid_risk),
+                 'impulse_volume_session': (10 * int(volatility_evidence)
+                                            + 10 * int(relative_volume >= 1.25)
+                                            + 5 * int(7 <= hour < 21))}
+        trigger = trigger and valid_risk
     score = min(100, sum(parts.values()))
     threshold = (scanner.min_plan_score(relation, plan.get('market_trigger'),structural=True)
                  if scanner.oil_risk.is_organic(plan) else
@@ -317,7 +344,7 @@ def confluence(plan, snapshot, proof, cfg, engine):
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))
     return {'score': score, 'components': parts, 'route': route,
             'route_scores': {name: sum(points.values()) for name, points, _ in routes},
-            'volume_footprint': volume, 'accepted': trigger and score >= threshold,
+            'volume_footprint': volume, 'session_vwap': vwap, 'accepted': trigger and score >= threshold,
             'rating': 'A+' if score >= 82 else 'A' if relation == scanner.REVERSAL_RELATION and score >= 75 else 'B',
             'trigger_confirmed': trigger,
             'reason': ('ICT_SWEEP_OR_BOS_FVG_REQUIRED' if not trigger else
@@ -355,7 +382,7 @@ def volume_footprint(plan, snapshot, proof, session_sweeps):
 
 
 
-PLAN_FIELDS=('organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','organic_risk','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','reversal_sweep_override','local_reversal_override','reversal_exhaustion_bonus','structure_reclaim','continuation_entry','linked_reversal_zone','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
+PLAN_FIELDS=('institutional_family','scale_policy','organic_confluence','origin_broke_structure','zone_freshness','m15_momentum_aligned','session_vwap','round_level_protection','policy','entry_zone','zone_origin','breakeven_trigger_r','breakeven_price','structural_trail_trigger_r','tp1_alignment','tp2_alignment','organic_risk','formation_volume','tp1_source','tp2_source','target_projection','reversal_override','reversal_sweep_override','local_reversal_override','reversal_exhaustion_bonus','structure_reclaim','continuation_entry','linked_reversal_zone','entry_basis','entry_condition','reaction_only','rr1','rr2','rr3',
              'approach','market_regime','ict_evidence','confluence','trend_rel','trend_phase','counter_confirmation','entry_max_distance','order_type','market_trigger','checkpoints',
              'entry_legs','action_type','execution_timeframe','id','order_id','event_key','zone_key','side','instrument','setup','setup_type',
              'setup_family','canonical_setup_family','entry','limit_price','stop','initial_stop',

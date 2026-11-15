@@ -94,7 +94,7 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'):
+        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING'):
             if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -218,7 +218,7 @@ def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -439,7 +439,7 @@ def planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone, atr
                                   'tp2': not destination['structural_tp2']}}
 
 
-def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend=False, fixed_tp1=None):
+def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend=False, fixed_tp1=None, max_runner=oil_risk.TP2_MAX):
     """Prefer macro liquidity, with a labelled R projection for an intact trend."""
     levels = []
     for target in targets:
@@ -454,7 +454,7 @@ def organic_targets(entry, risk, side, targets, snapshot, tick, engine, *, trend
     first = next((x for x in levels if first_floor - 1e-8 <= x[0] <= oil_risk.TP1_MAX + 1e-8
                   and (not trend or x[2]['timeframe']!='SESSION')
                   and (x[2]['timeframe'] != 'D1' or x[2]['kind'].startswith('PD_'))), None)
-    second = next((x for x in levels if oil_risk.TP2_MIN - 1e-8 <= x[0] <= oil_risk.TP2_MAX + 1e-8
+    second = next((x for x in levels if oil_risk.TP2_MIN - 1e-8 <= x[0] <= max_runner + 1e-8
                    and x[2]['timeframe'] in ('4H', 'D1')), None)
 
     def projected(multiplier):
@@ -818,28 +818,29 @@ ORGANIC_REVERSAL = 'SESSION_SWEEP_ENGULFING_15M'
 ORGANIC_FORMATIONS = ORGANIC_MOMENTUM | {ORGANIC_REVERSAL}
 
 
-def consolidation_base(rows, side, tick, engine):
+def consolidation_base(rows, side, tick, engine, *, prospective=False, require_breakout=False):
     """Find a closed trend impulse, a 4–10 bar base, and its fresh M15 trigger."""
     from strategy_organics import ema20
 
     if len(rows)<24 or side not in (1,-1):
         return None
-    signal = rows[-1]
-    if side*(signal.close-signal.open)<tick-1e-8:
+    signal = None if prospective else rows[-1]
+    if signal and side*(signal.close-signal.open)<tick-1e-8:
         return None
+    history = rows if prospective else rows[:-1]
     for count in range(10,3,-1):
-        base = rows[-count-1:-1]
-        impulse = rows[-count-4:-count-1]
-        atr = engine.atr(rows[:-count-4])
-        window = [*impulse,*base,signal]
+        base = history[-count:]
+        impulse = history[-count-3:-count]
+        atr = engine.atr(history[:-count-3])
+        window = [*impulse, *base, *([signal] if signal else [])]
         if not atr or any(b.ts-a.ts!=wave.M15 for a,b in zip(window,window[1:])):
             continue
         if side*(impulse[-1].close-impulse[0].open)<1.10*atr-1e-8:
             continue
-        averages = (ema20(rows[:len(rows)-count+i]) for i in range(count))
+        averages = (ema20(history[:len(history)-count+i+1]) for i in range(count))
         if any(avg is None or side*(bar.close-avg)<0 for bar,avg in zip(base,averages)):
             continue
-        if side*(signal.close-ema20(rows))<0:
+        if signal and side*(signal.close-ema20(rows))<0:
             continue
         low,high = min(c.low for c in base),max(c.high for c in base)
         if not 2*tick-1e-8<=high-low<=1.+1e-8:
@@ -849,16 +850,35 @@ def consolidation_base(rows, side, tick, engine):
             continue
         edge = high if side==1 else low
         middle = engine.round_tick(round((low+high)/2,10),tick,up=side==1)
+        if prospective:
+            return {'low':low, 'high':high, 'side':side, 'reference':edge,
+                    'known_ts':base[-1].ts+wave.M15, 'kind':wave.BASE}
         extreme = signal.low if side==1 else signal.high
         breakout = side*(signal.close-edge)>=tick-1e-8
         hold = -tick<=side*(extreme-middle)<=.20*atr and side*(signal.close-middle)>=tick
-        if breakout or hold:
+        if breakout or (hold and not require_breakout):
             return {'kind':wave.BASE,'side':side,'timeframe':'15m','low':low,'high':high,
                     'reference':edge if breakout else middle,'known_ts':signal.ts+wave.M15,
                     'wave_proof':{'timeframe':'15m','base_bars':count,'base_start_ts':base[0].ts,
                                   'break_ts':signal.ts+wave.M15,
                                   'trigger':'BREAKOUT' if breakout else 'MIDPOINT_HOLD'}}
     return None
+
+
+def institutional_family(kind):
+    """Report six execution families while retaining native detector identities."""
+    kind = str(kind or '').upper()
+    if any(key in kind for key in ('FLIP_RECLAIM', 'RECLAIM_BREAKER', 'BREAKDOWN_RECLAIM')):
+        return 'SR_FLIP_RECLAIM'
+    if any(key in kind for key in ('CONSOLIDATION', 'FLAG_RETEST', 'BOS_CONTINUATION')):
+        return 'HIGH_TIGHT_BREAKOUT'
+    if any(key in kind for key in ('SWEEP_REV', 'TURTLE', 'SWEEP_RECLAIM', 'SWEEP_ENGULF', 'MULTIBAR_SWEEP', 'LIQUIDITY_SWEEP', 'SESSION_OB')):
+        return 'LIQUIDITY_SWEEP_REV'
+    if any(key in kind for key in ('BREAKER', 'CHOCH', 'MSS')):
+        return 'BREAKER_STRUCTURE_SHIFT'
+    if any(key in kind for key in ('VWAP', 'CONTINUATION', 'ROTATION', 'STAIRCASE')):
+        return 'VWAP_TREND_CONTINUATION'
+    return 'FVG_OB_PULLBACK'
 
 
 def organic_anchors(snapshot, cfg, context, engine):

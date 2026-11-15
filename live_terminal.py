@@ -63,7 +63,9 @@ def build(state, snapshot, result, cfg, engine):
             'market_trigger': plan.get('market_trigger'), 'admission_status': plan.get('admission_status'),
             'setup': plan.get('source_strategy') or plan.get('setup'),
             'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
-            'tp1': plan.get('tp1', plan.get('tp')), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
+            'tp1': engine.bzu_policy.partial_target(plan),
+            'qualification_tp1': plan.get('tp1'), 'scale_policy': plan.get('scale_policy'),
+            'institutional_family': plan.get('institutional_family'), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),
             'organic_risk': plan.get('organic_risk'), 'tp1_source': plan.get('tp1_source'),
             'tp2_source': plan.get('tp2_source'), 'cancel_reason': plan.get('cancel_reason'),
@@ -76,7 +78,7 @@ def build(state, snapshot, result, cfg, engine):
             'tp1_fraction': plan.get('partials', {}).get('TP1', 1.),
             'remaining': plan.get('remaining', 1.), 'tp1_hit': bool(plan.get('tp1_hit')),
             'tp1_partial': partial,
-            'be_waits_for_structure': engine.bzu_policy.partial_tp1_time(plan) is not None,
+            'be_waits_for_structure': not plan.get('scale_policy') and engine.bzu_policy.partial_tp1_time(plan) is not None,
             'effective_ts': plan.get('effective_ts', plan.get('placed_ts')),
             'expires_ts': plan.get('expires_ts'), 'filled_ts': plan.get('filled_ts'),
             'pending_stop': stop_amendment.get('price'),
@@ -249,6 +251,8 @@ def build(state, snapshot, result, cfg, engine):
             continue
         z.update(engine_score=original.get('score'),engine_reason=original.get('reason'))
         z.update(calc)
+        z['institutional_family'] = (geometry or {}).get('institutional_family')
+        z['scale_policy'] = (geometry or {}).get('scale_policy')
         z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
@@ -405,11 +409,14 @@ def build(state, snapshot, result, cfg, engine):
                     'rr1':best['rr1'],'gate':best['gate_reason'],'preview_only':True},
                  'trigger':best.get('reason_text') or 'Чекаємо підтвердження рівня.'}}
         focus['developing_setup'] = focus['primary']
+    entry_scenarios = (engine.scenario_planner.entry_scenarios(
+        snapshot,cfg,engine,scanner_top,primary_side or (primary or {}).get('side'))
+        if healthy and profile else {})
     return {'schema':1, 'cockpit_schema':5, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
-            'scenario_plan':focus,'developing_setup':focus['developing_setup'] if focus else None,
+            'scenario_plan':focus,'entry_scenarios':entry_scenarios,'developing_setup':focus['developing_setup'] if focus else None,
             'stop_and_reverse': analysis.get('stop_and_reverse'),
             'trend_phase':regime.get('trend_phase'), 'wave_phase':regime.get('wave_phase'), 'structure_sync':regime.get('structure_sync') or None,
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,

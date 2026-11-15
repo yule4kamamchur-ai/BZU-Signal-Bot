@@ -1,8 +1,8 @@
-name: BZU Auto Bot — ICT v12.42.0 — GitHub-only Scan / 15m Telegram
+name: BZU Auto Bot — ICT v13.0.0 — GitHub-only Scan / 15m Telegram
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -31,9 +31,9 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v12.42.0-unified-execution'
+      EXPECTED_BOT_VERSION: 'full-ict-v13.0.0-intraday'
       INCLUDE_COMMISSION: 'true'
-      ANALYSIS_SCAN_MINUTES: '15'
+      ANALYSIS_SCAN_MINUTES: '5'
       # Compatibility settings for legacy geometry. Brent v12.32 uses oil_risk.py.
       LIMIT_MAX_STOP_ATR: '4.00'
       BZU_MIN_STOP_ABSOLUTE: '0.20'
@@ -47,7 +47,7 @@ jobs:
       PYTHONUNBUFFERED: '1'
       MARKET_FETCH_TIMING: 'true'
       BOT_STAGE_TIMING: 'true'
-      # Every 15 minutes: closed 1m lifecycle audit and closed 3m/15m setup scan.
+      # Every 5 minutes: lifecycle audit and closed M5/M15 setup scan.
       # Exactly one report per 15-minute UTC bucket, guarded by --auto-report
       # and persisted last_report_requested_ts in the trading ledger. GitHub
       # may start jobs late, so delivery at :00/:15/:30/:45 is best effort.
@@ -103,7 +103,7 @@ jobs:
           expected = os.environ['EXPECTED_BOT_VERSION']
           print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
           if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
-              raise SystemExit('Mismatched v12.42.0 files: update bot_oneshot.py and full_limit_engine.py together. '
+              raise SystemExit('Mismatched v13.0.0 files: update bot_oneshot.py and full_limit_engine.py together. '
                                f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
               raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
@@ -111,7 +111,7 @@ jobs:
           PY
 
       - name: Verify Telegram settings
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *' }}
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -122,8 +122,8 @@ jobs:
               raise SystemExit('Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in GitHub Actions secrets')
           PY
 
-      - name: 15m scan (closed 1m audit and ICT setup confirmation)
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *' }}
+      - name: 5m scan (closed candle confirmation)
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *' }}
         id: bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -132,13 +132,7 @@ jobs:
           TELEGRAM_NOTIFY_EVERY_RUN: 'false'
         shell: bash
         run: |
-          # Manual "Run workflow" must produce a Telegram report immediately.
-          # Scheduled scans remain silent unless their UTC 15m bucket is due.
-          if [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
-            python bot_oneshot.py --notify
-          else
-            python bot_oneshot.py --auto-report
-          fi
+          python bot_oneshot.py --auto-report
 
       - name: Save signal memory and journal
         id: persist

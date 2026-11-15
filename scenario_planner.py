@@ -3,6 +3,45 @@ from oil_risk import M15, H1, H4, closed
 from ict_methodology import session_liquidity
 
 
+def entry_scenarios(snapshot, cfg, engine, rows, side):
+    """Publish the best pullback plan and the next actual breakout reference."""
+    import market_wave
+    import setup_scanner
+
+    m15 = closed(snapshot.candles.get('15m', []), M15, snapshot.now)
+    side = side or next((p['side'] for p in rows if p.get('side') in (1,-1)), None)
+    row = next((p for p in rows if p.get('actionable') and p.get('side') == side
+                and not p.get('market_now')), None)
+    row = row or next((p for p in rows if p.get('side') == side and
+                       p.get('risk_gate') != 'EXHAUSTED_MOVE' and
+                       all(p.get(k) for k in ('entry','stop','tp1','tp2')) and
+                       side*(snapshot.price-p['stop']) > 0 and
+                       side*(p['tp1']-snapshot.price) > 0), None)
+    pullback = None
+    if row:
+        risk = side*(row['entry']-row['stop'])
+        if risk > 0:
+            pullback = {'side':side,'entry':row['entry'],'stop':row['stop'],
+                        'tp1':round(row['entry']+side*risk,10),'tp2':row['tp2'],
+                        'qualification_tp1':row['tp1'], 'actionable':bool(row.get('actionable')),
+                        'low':row.get('low'),'high':row.get('high'),'kind':row.get('kind')}
+    base = setup_scanner.consolidation_base(m15,side,cfg.tick,engine,prospective=True)
+    breakout = None
+    if base:
+        edge = base['reference']
+        breakout = {'side':side,'entry':round(edge+side*max(.03,cfg.tick),10),
+                    'edge':edge,'kind':market_wave.BASE,'base_confirmed':True}
+    elif side and len(m15) >= 20:
+        levels = (p for p in structure_levels(snapshot,engine) if p['kind'].startswith('15m_')
+                  and p['side'] == -side and side*(p['level']-snapshot.price) >= 0)
+        nearest = min(levels,default=None,key=lambda p:side*(p['level']-snapshot.price))
+        if nearest:
+            edge = nearest['level']
+            breakout = {'side':side,'entry':edge,'edge':edge,
+                        'kind':nearest['kind'],'base_confirmed':False}
+    return {'pullback':pullback,'breakout':breakout}
+
+
 def dealing_range(rows, as_of):
     window = [c for c in rows if as_of - 192*M15 <= c.ts and c.ts + M15 <= as_of]
     if len(window) < 96:

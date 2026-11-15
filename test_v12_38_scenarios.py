@@ -85,12 +85,12 @@ class ScenarioContracts(unittest.TestCase):
         self.assertIsNone(ict.breaker_evidence(without_gap,len(candles)-2,
             engine.pivots(without_gap,strength=1),1,cfg.tick))
 
-    def test_adaptive_depth_uses_closed_impulse(self):
+    def test_fvg_limits_front_run_proximal_edge(self):
         snap,cfg=snapshot(100.72,displacement(),[])
         zone={'kind':'FVG_PULLBACK','low':99.94,'high':100.50,'timeframe':'15m',
               'wave_proof':{'impulse_ts':NOW-2*STEP}}
         self.assertEqual(direct.adaptive_limit(snap,zone,{},1,.01,engine),
-                         (100.50,'STRONG_DISPLACEMENT'))
+                         (100.54,'ZONE_EDGE_BUFFER'))
         normal={**zone,'wave_proof':{'impulse_ts':NOW-8*STEP}}
         self.assertEqual(direct.adaptive_limit(snap,normal,{},1,.01,engine),
                          (100.54,'ZONE_EDGE_BUFFER'))

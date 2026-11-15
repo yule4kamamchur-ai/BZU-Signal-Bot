@@ -10,10 +10,11 @@ EARLY_M15_RECLAIM = 'M15_BOS_EMA20_ATR'
 STRUCTURE_LOOKBACK = 96
 BREAKDOWN = "BREAKDOWN_RECLAIM"
 BASE = "CONSOLIDATION_BREAKOUT_BASE"
+VWAP_CONTINUATION = "VWAP_TREND_CONTINUATION"
 BREAKDOWN_MAX_AGE = 2 * M15
 REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
-TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION'})
+TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION})
 REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
@@ -280,7 +281,7 @@ def _confirmed_retest_zone(rows, index, side, level, reference_ts, tick, atr, **
         if retest is not None or bar.ts - breakout.ts > STRUCTURE_LOOKBACK * M15:
             continue
         extreme = bar.low if side == 1 else bar.high
-        if side * (extreme - level) <= tick / 2:
+        if side * (extreme - level) <= max(tick / 2, .06, .28 * atr):
             if side*(previous.close-level) < tick/2 or side*(bar.close-level) < tick/2:
                 return None
             retest = bar
@@ -641,6 +642,32 @@ def _multibar_zones(rows, tick, engine, adr):
                     break
 
 
+def vwap_continuation(snapshot, rows, side, atr, tick, direction):
+    """A closed retest of the session VWAP in the established direction."""
+    from strategy_organics import ema20
+
+    if len(rows) < 21 or not side or rows[-2].ts + M15 != rows[-1].ts:
+        return None
+    bar = rows[-1]
+    if not 0 <= snapshot.now - bar.ts - M15 < M15:
+        return None
+    # Only use the VWAP that was available before the signal candle.
+    known_snapshot = replace(snapshot, now=bar.ts)
+    vwap = direction.session_vwap(known_snapshot)['value']
+    ema = ema20(rows[:-1])
+    if vwap is None or ema is None:
+        return None
+    extreme = bar.low if side == 1 else bar.high
+    if (abs(extreme-vwap) > .30*atr or abs(vwap-ema) > .60*atr
+            or side*(bar.close-vwap) < tick or side*(bar.close-ema) < tick
+            or side*(bar.close-bar.open) < .25*atr
+            or side*(rows[-2].close-vwap) < -tick):
+        return None
+    bounds = (min(extreme, vwap) - tick, max(extreme, vwap) + tick)
+    return _trend_zone(VWAP_CONTINUATION, side, bounds, bar, M15, vwap,
+                       break_ts=bar.ts+M15, impulse_ts=bar.ts, reference_vwap=vwap)
+
+
 def zones(snapshot, cfg, engine, regime):
     """Use M5 only inside an established M15/HTF direction or a witnessed raid."""
     import directional_policy as direction
@@ -671,12 +698,16 @@ def zones(snapshot, cfg, engine, regime):
                        if not breaker_structure_error({'side': trend, 'entry_zone': z}, snapshot, cfg, engine))
         results.extend(_trend_fvgs(m15, trend, M15, tick, engine))
         results.extend(_trend_fvgs(direction.closed(snapshot, '1H'), trend, oil_risk.H1, tick, engine))
-        results.extend(_trend_ote(m15, trend, tick, engine))
+        if not oil_risk.enabled(cfg):
+            results.extend(_trend_ote(m15, trend, tick, engine))
         results.extend(_trend_sweep(m15, trend, M15, tick, engine))
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
+        vwap = vwap_continuation(snapshot, m15, trend, atr, tick, direction)
+        if vwap:
+            results.append(vwap)
         for offset in (0,1):
-            base = scanner.consolidation_base(m15[:len(m15)-offset],trend,cfg.tick,engine)
+            base = scanner.consolidation_base(m15[:len(m15)-offset],trend,cfg.tick,engine,require_breakout=True)
             if base and all(trend*(bar.close-(base['low'] if trend==1 else base['high']))>=-cfg.tick/2
                             for bar in m15[len(m15)-offset:]):
                 results.append(base)

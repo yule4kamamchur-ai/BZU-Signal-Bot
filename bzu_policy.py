@@ -26,6 +26,8 @@ PRECISION_POLICY = 'BZU_PRECISION_V12_22'
 LEGACY_POLICY = 'BZU_CHECKLIST_V12_21'
 EXIT = 'TP1_50_M5_BREAKEVEN_TP2_50'
 STOP_POLICY = 'TP1_PARTIAL_M5_CONFIRMED'
+SCALE_POLICY = 'SCALE_OUT_1R'
+SCALE_STOP_POLICY = 'SCALE_OUT_NEXT_BAR'
 MINUTE = 60_000
 
 
@@ -155,7 +157,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     risk = side * (entry - stop)
     organic = oil_risk.enabled(cfg)
     targets = engine.full_targets({**context, 'organic_oil_targets': organic}, snapshot, anchor.side, entry, cfg)
-    geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine, trend=trend) if organic else
+    geometry = (scanner.organic_targets(entry, risk, side, targets, snapshot, cfg.tick, engine, trend=trend, max_runner=2.20) if organic else
                 scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
     obstacle, room_r = (oil_risk.structural_room(side, entry, risk, scenario_planner.structure_levels(snapshot, engine),trend=trend)
                         if organic else (None, None))
@@ -420,10 +422,16 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     elif oil:
         if regime.get('trend_anchor_side')==side:
             market_trigger = adverse.trend_zone_market_trigger(snapshot,side,zone,risk,quote,cfg.tick,engine)
+            if not market_trigger and zone['kind']!=scanner.wave.BASE:
+                market_trigger = adverse.m5_reaction_market_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick,engine)
         if not market_trigger and (trend or multibar or local_reversal or entry_basis=='SHALLOW_M15_RETEST'):
             market_trigger = adverse.structural_impulse_market_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick,engine)
         if not market_trigger and zone['kind']!=scanner.wave.BASE:
             market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick)
+    if (oil and zone['kind']==scanner.wave.BASE and
+            (zone.get('wave_proof') or {}).get('trigger')!='BREAKOUT'):
+        diag['status']='WATCHING'
+        return None, 'CONFIRMATION_REQUIRED'
     if breakdown and not market_trigger and snapshot.price < entry - adverse.breakdown_limit_distance(zone):
         return None, 'DISTANT_BREAKDOWN_RETEST'
     if market_trigger:
@@ -511,6 +519,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         elif not can_wait:
             return None, direct_failure
     if geometry is None:
+        if oil and zone['kind']==scanner.wave.BASE:
+            return None, 'WAIT_CONFIRMED_BREAK_FOR_LIMIT'
         if anchor.setup_type == 'SESSION_MEAN_RECLAIM':
             return None, 'SESSION_MEAN_LIMIT_DISABLED'
         if not can_wait:
@@ -548,6 +558,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'policy':POLICY, 'instrument':cfg.instrument, 'side':side,
          'setup':anchor.setup_type, 'setup_type':anchor.setup_type,
          'setup_family':cfg.core.journal_setup_family(anchor.setup_type),
+         'institutional_family':scanner.institutional_family(zone['kind']) if oil else None,
          'canonical_setup_family':cfg.core.canonical_setup_family(anchor.setup_type),
          'timeframe':anchor.evidence.get('setup_timeframe','15m'),
          'setup_timeframe':anchor.evidence.get('setup_timeframe','15m'),
@@ -572,6 +583,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'risk':risk, 'organic_risk':organic_risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
          'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
          'partials':{'TP1':.5,'TP2':.5} if has_runner else {'TP1':1.},
+         'scale_policy':SCALE_POLICY if oil and has_runner else None,
          'exit_policy':EXIT, 'tp1_alignment':geometry['tp1_alignment'],
          'tp2_alignment':geometry['tp2_alignment'], 'formation_volume':volume,
          'tp1_source':geometry['tp1_source'], 'tp2_source':geometry['tp2_source'],
@@ -667,10 +679,10 @@ def partial_tp1_time(position):
     """A TP1 price touch alone never proves a partial execution."""
     filled = position.get('filled_fraction', 1.)
     remaining = position.get('remaining', 1.)
-    tp1 = position.get('tp1')
+    tp1 = partial_target(position)
     if not position.get('tp1_hit') or not 0 < remaining < filled or tp1 is None:
         return None
-    minimum = 1.00 if oil_risk.is_organic(position) else 1.40
+    minimum = 1.00 if position.get('scale_policy') == SCALE_POLICY or oil_risk.is_organic(position) else 1.40
     if position['side'] * (tp1 - position['entry']) < minimum * position['risk'] - 1e-8:
         return None
     return next((leg['ts'] for leg in position.get('realized_legs', [])
@@ -678,11 +690,26 @@ def partial_tp1_time(position):
                  and isinstance(leg.get('ts'), int)), None)
 
 
+def partial_target(position):
+    if position.get('scale_policy') == SCALE_POLICY:
+        return round(position['entry']+position['side']*position['risk'],10)
+    return position.get('tp1', position.get('tp'))
+
+
 def protective_amendment(position):
     amendment = position.get('pending_stop')
-    if not amendment or amendment.get('policy') != STOP_POLICY:
+    if not amendment:
         return None
     partial_ts = partial_tp1_time(position)
+    if amendment.get('policy') == SCALE_STOP_POLICY and position.get('scale_policy') == SCALE_POLICY:
+        effective, price = amendment.get('effective_ts'), amendment.get('price')
+        if (partial_ts is not None and isinstance(effective, int) and effective >= partial_ts
+                and isinstance(price, (int, float)) and math.isfinite(price) and price > 0
+                and position['side']*(price-position['entry']) > 0):
+            return amendment
+        return None
+    if amendment.get('policy') != STOP_POLICY:
+        return None
     known = position.get('be_confirmed_ts')
     if partial_ts is None or not isinstance(known, int) or known < partial_ts + 900_000:
         return None
@@ -708,6 +735,8 @@ def apply_protective_stop(position, bar_start):
 
 
 def arm_breakeven(state, position, snapshot, bar_end, close_price, cfg, engine):
+    if position.get('scale_policy') == SCALE_POLICY:
+        return
     if snapshot is None or position.get('pending_stop'):
         return
     partial_ts = partial_tp1_time(position)
@@ -725,6 +754,32 @@ def arm_breakeven(state, position, snapshot, bar_end, close_price, cfg, engine):
     position.update(breakeven_armed=True, breakeven_price=stop, be_confirmed_ts=known,
                     pending_stop={'price': stop, 'effective_ts': bar_end, 'policy': STOP_POLICY})
     engine.emit(state, 'BREAKEVEN_ARMED', bar_end, order_id=position['id'], stop=stop, m5_known_ts=known)
+
+
+def arm_scale_stop(state, position, snapshot, known, cfg, engine):
+    """Apply the +0.15R floor and only trail from closed pivots available as of now."""
+    if position.get('scale_policy')!=SCALE_POLICY or not position.get('tp1_hit') or position.get('pending_stop'):
+        return
+    side, tick = position['side'], cfg.tick
+    floor = engine.round_tick(round(position['entry']+side*.15*position['risk'],10),tick,up=side==1)
+    stop = floor
+    if snapshot is not None:
+        rows = oil_risk.closed(snapshot.candles.get('15m',[]),oil_risk.M15,known)
+        filled = partial_tp1_time(position)
+        if filled:
+            pivot = next((p for p in reversed(engine.pivots(rows[-24:],strength=2))
+                          if p['kind']==('LOW' if side==1 else 'HIGH') and p['ts']>=filled),None)
+            if pivot:
+                buffer = (position.get('organic_risk') or {}).get('buffer') or tick
+                trail = engine.round_tick(round(pivot['level']-side*buffer,10),tick,up=side==-1)
+                if side*(rows[-1].close-trail)>tick and side*(trail-stop)>0:
+                    stop = trail
+    if side*(stop-position['stop']) <= 1e-8:
+        return
+    position.update(breakeven_armed=True,breakeven_price=floor,be_confirmed_ts=known,
+                    pending_stop={'price':stop,'effective_ts':known,'policy':SCALE_STOP_POLICY})
+    event = 'BREAKEVEN_ARMED' if stop==floor else 'STRUCTURAL_TRAIL_ARMED'
+    engine.emit(state,event,known,order_id=position['id'],stop=stop,scale_policy=SCALE_POLICY)
 
 
 def close(state, p, price, ts, reason, cfg, engine, ambiguous=False):
@@ -767,7 +822,8 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     if added:
         engine.emit(state,'SECOND_LIMIT_FILLED',ts,order_id=p['id'],entry=p['entry'])
     stop_hit = c.low <= p['stop'] if side==1 else c.high >= p['stop']
-    target_hit = c.high >= p['tp1'] if side==1 else c.low <= p['tp1']
+    first_target = partial_target(p)
+    target_hit = c.high >= first_target if side==1 else c.low <= first_target
     if stop_hit:
         from position_monitor import is_bounce_stop, is_stale_stop
 
@@ -783,14 +839,14 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     if not fill_bar and not added:
         favorable = c.high if side == 1 else c.low
         p['mfe_r'] = max(p['mfe_r'], side*(favorable-p['entry'])/p['risk'])
-    if not p.get('tp1_hit') and target_hit and proved(p['tp1']):
+    if not p.get('tp1_hit') and target_hit and proved(first_target):
         fraction=p.get('partials',{}).get('TP1',.6)
         if fraction == 1.:
             p.update(tp1_hit=True, tp1_reached_ts=ts)
-            close(state,p,p['tp1']*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg,engine)
+            close(state,p,first_target*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg,engine)
             return
         size = fraction*p['filled_fraction']
-        price = p['tp1']*(1-side*cfg.slippage_bps/10_000)
+        price = first_target*(1-side*cfg.slippage_bps/10_000)
         p['realized_gross_r'] += size*side*(price-p['entry'])/p['risk_budget']
         p['realized_exit_fees_r'] += size*price*engine.fee_rate(cfg,'taker')/p['risk_budget']
         p['remaining'] -= size
@@ -799,8 +855,8 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
         # Never add the second half after taking profit from the first half.
         for leg in p['entry_legs']:
             if leg['status']=='PENDING': leg['status']='CANCELLED_AFTER_TP1'
-        engine.emit(state, 'TP1_PARTIAL', ts, order_id=p['id'], price=p['tp1'],
-                    fraction=fraction, rr=side * (p['tp1'] - p['entry']) / p['risk'])
+        engine.emit(state, 'TP1_PARTIAL', ts, order_id=p['id'], price=first_target,
+                    fraction=fraction, rr=side*(first_target-p['entry'])/p['risk'],scale_policy=p.get('scale_policy'))
         # TP1 is a realized milestone. Aggregate WR gets ONE label only when
         # the remaining position closes, including all fees and gap losses.
     second = c.high >= p['tp2'] if side==1 else c.low <= p['tp2']
@@ -811,6 +867,7 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
         close(state,p,c.close*(1-side*cfg.slippage_bps/10_000),ts,'INTRADAY_TIME_EXIT',cfg,engine)
         return
     arm_breakeven(state, p, snapshot, ts, c.close, cfg, engine)
+    arm_scale_stop(state,p,snapshot,ts,cfg,engine)
     p['last_bar'] = c.ts
 
 
@@ -830,6 +887,9 @@ def merge_plans(plans, snapshot, cfg, engine):
     for p in sorted(plans,key=lambda p:(p['side'],p['entry'])):
         group = next((g for g in groups if p['side'] == g[0]['side'] and (
             any(same_impulse(p, other) for other in g)
+            or (p.get('institutional_family') and all(p.get('institutional_family') == other.get('institutional_family')
+                and abs(p['entry'] - other['entry']) <= threshold
+                and p.get('action_type') == other.get('action_type') for other in g))
             or (trade_dependencies.zone_related(p, g[-1], 2 * threshold)
                 and all(x.get('action_type') == p.get('action_type') for x in g)))), None)
         if group is None:

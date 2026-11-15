@@ -399,6 +399,37 @@ def structural_impulse_market_trigger(snapshot, side, zone, entry, risk, quote, 
             'initial_risk':risk,'max_distance':distance,'deviation_r':abs(quote-entry)/risk}
 
 
+def m5_reaction_market_trigger(snapshot, side, zone, entry, risk, quote, tick, engine):
+    """Confirm on closed M5 OHLC and use the currently executable quote."""
+    import setup_scanner
+    from directional_policy import closed
+    from market_wave import M5, M15
+
+    if (not snapshot.trusted or risk<=0 or quote<=0 or
+            not 0<=snapshot.now-snapshot.ticker_ts<=120_000):
+        return None
+    bars = setup_scanner.closed_five_minutes(snapshot)
+    atr = engine.atr(closed(snapshot,'15m'))
+    span = min(.32,.45*atr)
+    if len(bars)<2 or span<=0 or abs(quote-entry)>span+1e-8:
+        return None
+    tail = bars[-4:]
+    for previous, bar in reversed(list(zip(tail, tail[1:]))):
+        known = bar.ts+M5
+        if not 0<=snapshot.ticker_ts-known<M15 or bar.ts<zone['known_ts'] or bar.ts-previous.ts!=M5:
+            continue
+        extreme = bar.low if side==1 else bar.high
+        touches = zone['low']-tick <= extreme <= zone['high']+max(tick, .06) if side==1 else (
+                  zone['low']-max(tick,.06)<=extreme<=zone['high']+tick)
+        engulfed = (side*(previous.close-previous.open)<0 and
+                     side*(bar.open-previous.close)<=tick and side*(bar.close-previous.open)>=tick-1e-8)
+        if (touches and engulfed and side*(bar.close-bar.open)>0 and
+                side*(bar.close-entry)>=tick/2 and side*(quote-entry)>=-tick/2):
+            return {'pattern':'M5_ZONE_ENGULFING','known_ts':known,'limit_entry':entry,
+                    'initial_risk':risk,'max_distance':span,'confirmation_close':bar.close}
+    return None
+
+
 def breakdown_limit_distance(zone):
     atr = (zone.get('wave_proof') or {}).get('breakdown_atr') or 0
     return max(.10,min(.50,atr))
