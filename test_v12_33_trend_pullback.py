@@ -35,7 +35,8 @@ class TrendPullback(unittest.TestCase):
             snap.candles[tf] = [replace(bar, high=97.4, low=94.5) for bar in snap.candles[tf]]
         original = {'state': 'BULLISH_ACTIVE', 'side_1h': -1, 'side_4h': -1,
                     'active_structure': {'side': 1}, 'local_structure': {'side': 1}}
-        with patch.object(direction, 'market_regime', return_value=original):
+        with patch.object(direction, 'market_regime', return_value=original), \
+             patch.object(direction, 'trend_references', return_value=(96.,None)):
             regime = direction.execution_regime(snap, cfg, engine)
         self.assertEqual(regime['state'], 'BEARISH_ACTIVE')
         self.assertEqual(regime['trend_phase'], 'BEARISH_PULLBACK_OPPORTUNITY')

@@ -94,12 +94,14 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
+        if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' and side*(tp1-entry)<1.40*risk-1e-8:
+            return 'TREND_MARKET_RR_BELOW_1_40'
         if trigger.get('sniper_pullback'):
             distal = low if side==1 else high
             if (side*(entry-distal)<-1e-8 or
                     side*(entry-trigger['limit_entry'])>trigger['max_distance']+1e-8):
                 return 'MARKET_CHASE_LIMIT'
-        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'):
+        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'):
             if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -170,7 +172,7 @@ def target_crossed(side, snapshot, target, known):
 
 
 CONTINUATION_SETUPS = frozenset({'CONTINUATION_PULLBACK','PULLBACK_CONTINUATION','TREND_PULLBACK',
-    'BOS_CONTINUATION',wave.BREAKDOWN,'FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
+    'BOS_CONTINUATION',wave.BOS_IMPULSE,wave.VWAP_CONTINUATION,wave.BREAKDOWN,'FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
     wave.BASE,
     'ACCELERATION_PULLBACK_REENTRY','ACCEPTANCE_RETEST_CONTINUATION','MOMENTUM_NO_PULLBACK_CONTINUATION'})
 REVERSAL_RELATION = 'CONFIRMED_REVERSAL'
@@ -237,7 +239,7 @@ def pullback_quote_allowed(side, level, distal, quote, atr):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -616,17 +618,20 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         structural_tp2 = destination['structural_tp2']
     projection = (geometry if frozen else destination).get('target_projection') or {}
     if oil:
+        origin_entry, origin_risk = entry, risk
+        if frozen and trigger and trigger.get('frozen_geometry'):
+            origin_entry, origin_risk = trigger['limit_entry'], trigger['initial_risk']
         if projection.get('tp1'):
             multiple = oil_risk.ENTRY_TP1_MIN
             if projected_runner:
                 multiple = 1.05 if tp1_source == 'R_MULTIPLE_1_05' else TREND_TP1_R
             structural_tp1 = abs(tp1 - engine.round_tick(
-                round(entry + side * multiple * risk, 10), tick, up=side == 1)) < 1e-8
+                round(origin_entry + side * multiple * origin_risk, 10), tick, up=side == 1)) < 1e-8
         if frozen:
             structural_tp2 = structural_tp2 and (geometry.get('tp2_alignment') or {}).get('timeframe') in ('4H', 'D1')
         if projected_runner and projection.get('tp2'):
             structural_tp2 = abs(tp2 - engine.round_tick(
-                round(entry + side * 1.90 * risk, 10), tick, up=side == 1)) < 1e-8
+                round(origin_entry + side * 1.90 * origin_risk, 10), tick, up=side == 1)) < 1e-8
     elif projection and zone.get('wave_proof') and zone.get('kind') in wave.CONTINUATIONS:
         if projection.get('tp1'):
             structural_tp1 = abs(tp1 - engine.round_tick(
@@ -923,7 +928,7 @@ def institutional_family(kind):
     kind = str(kind or '').upper()
     if any(key in kind for key in ('FLIP_RECLAIM', 'RECLAIM_BREAKER', 'BREAKDOWN_RECLAIM')):
         return 'SR_FLIP_RECLAIM'
-    if any(key in kind for key in ('CONSOLIDATION', 'FLAG_RETEST', 'BOS_CONTINUATION')):
+    if kind==wave.BOS_IMPULSE or any(key in kind for key in ('CONSOLIDATION', 'FLAG_RETEST', 'BOS_CONTINUATION')):
         return 'HIGH_TIGHT_BREAKOUT'
     if kind == wave.SNIPER_REVERSAL:
         return 'LIQUIDITY_SWEEP_REV'
@@ -944,7 +949,7 @@ def organic_anchors(snapshot, cfg, context, engine):
     anchors = []
     wave_setups = [{'entry_zone': zone, 'side': zone['side'], 'family': zone['kind'],
                     'signal_ts': zone['known_ts'],
-                    'invalidation': zone['low'] if zone['side'] == 1 else zone['high'],
+                    'invalidation': zone['wave_proof'].get('invalidation',zone['low'] if zone['side']==1 else zone['high']),
                     'organic_confluence': True}
                    for zone in wave.zones(snapshot, cfg, engine,
                                          direction.execution_regime(snapshot, cfg, engine))]
@@ -964,7 +969,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         if family == ORGANIC_REVERSAL or family in wave.REVERSALS:
             name = 'SWEEP_RECLAIM' if side == 1 else 'LIQUIDITY_SWEEP_REVERSAL_SHORT'
         else:
-            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST', 'BREAKER_BLOCK', 'BOS_CONTINUATION',wave.BASE) else 'PULLBACK_CONTINUATION'
+            name = 'BREAKOUT_RETEST' if family in ('BREAKER_FLIP_15M', 'BEARISH_BREAKER', 'BULLISH_BREAKER', 'FLAG_RETEST', 'BREAKER_BLOCK', 'BOS_CONTINUATION',wave.BOS_IMPULSE,wave.BASE) else 'PULLBACK_CONTINUATION'
         known = setup['signal_ts']
         evidence = {**setup, 'entry_route': 'STRATEGY_EVENT', 'setup_timeframe': '15m',
                     'formation_timeframe': zone['timeframe'], 'source_strategy': family,

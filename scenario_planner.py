@@ -143,9 +143,9 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None)
 
     if not enabled(cfg):
         return None
-    from market_wave import SNIPER_REVERSAL, witnessed
+    from market_wave import BOS_IMPULSE, SNIPER_REVERSAL, witnessed
 
-    if zone.get('kind')==SNIPER_REVERSAL:
+    if zone.get('kind') in (SNIPER_REVERSAL,BOS_IMPULSE):
         regime = regime if regime is not None else engine.policy.execution_regime(snapshot,cfg,engine)
         return None if witnessed(zone,snapshot,cfg,engine,regime) else 'CURRENT_WAVE_PROOF_EXPIRED'
     plan = build(snapshot, cfg, engine)
@@ -154,7 +154,9 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None)
     rng = plan['range']
     regime = regime if regime is not None else engine.policy.execution_regime(snapshot,cfg,engine)
     strength = regime.get('trend_strength')
-    if regime.get('state') in ('SIDEWAYS','RANGE','RANGE_LIQUIDITY_ROTATION') and strength is not None and strength < .35:
+    aligned = engine.policy.aligned_references(side,snapshot.price,*engine.policy.trend_references(snapshot))
+    if (not aligned and regime.get('state') in ('SIDEWAYS','RANGE','RANGE_LIQUIDITY_ROTATION')
+            and strength is not None and strength < .35):
         if rng is None:
             return 'DEALING_RANGE_UNAVAILABLE'
         if (entry <= rng['discount'] if side == -1 else entry >= rng['premium']):

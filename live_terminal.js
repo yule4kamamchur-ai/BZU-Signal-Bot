@@ -199,7 +199,7 @@ function targetRatiosValid(row, rr1, rr2) {
 }
 function marketCandidate(row) {
   return row.order_type === 'MARKET' &&
-    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
      (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function validCandidate(row) {
@@ -211,7 +211,7 @@ function validCandidate(row) {
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
     'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','BREAKDOWN_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
     'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION',
-    'CONSOLIDATION_BREAKOUT_BASE','VWAP_TREND_CONTINUATION','M5_SNIPER_REVERSAL'];
+    'CONSOLIDATION_BREAKOUT_BASE','VWAP_TREND_CONTINUATION','M5_SNIPER_REVERSAL','BOS_IMPULSE_BREAKOUT'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
@@ -219,7 +219,7 @@ function validCandidate(row) {
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
     (row.market_trigger.sniper_pullback ? pullbackQuoteAllowed(row, row.entry) :
-    ['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'].includes(row.market_trigger.pattern) ?
+    ['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger.pattern) ?
       Math.abs(row.entry - row.market_trigger.limit_entry) <= (row.market_trigger.max_distance ?? .20*row.market_trigger.initial_risk) + 1e-8 :
       row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
       row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
@@ -272,7 +272,7 @@ function actionablePlan(row, price, tracking = false) {
   if (marketCandidate(row)) {
     if (row.market_trigger.sniper_pullback)
       return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) && pullbackQuoteAllowed(row, price);
-    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'].includes(row.market_trigger.pattern))
+    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger.pattern))
       return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
         number(price) && Math.abs(price-row.market_trigger.limit_entry) <= row.market_trigger.max_distance + 1e-8;
     const risk = row.side * (row.entry - row.stop);
@@ -509,8 +509,9 @@ function closedM5Pattern(row, bars, tick) {
 function m5QuotePlan(row, price) {
   const settings = state.reaction_config ?? {};
   const risk = row.side * (price - row.stop);
-  const strictPullback = number(row.market_pullback_max);
-  const projected = !strictPullback && row.institutional_family && row.target_projection;
+  const trendMarket = row.market_trigger?.pattern === 'TREND_CONTINUATION_MARKET';
+  const strictPullback = number(row.market_pullback_max) && !trendMarket;
+  const projected = !strictPullback && !trendMarket && row.institutional_family && row.target_projection;
   const tp1 = projected?.tp1 ? price + row.side*1.45*risk : row.tp1;
   const tp2 = projected?.tp2 ? price + row.side*1.90*risk : row.tp2;
   const rr = risk > 0 ? row.side * (tp1 - price) / risk : 0;
@@ -521,8 +522,10 @@ function m5QuotePlan(row, price) {
   const maxChase = (settings.max_chase_r ?? .25) * plannedRisk;
   const floor = organicPlan(row) ? row.organic_risk.floor ?? Math.max(1.15, Math.round(price*1.25)/100) : row.risk_floor ?? .22;
   const cap = organicPlan(row) ? row.organic_risk.cap ?? Math.max(2.10, Math.round(price*2.2)/100) : row.risk_cap ?? .65;
-  const near = strictPullback ? pullbackQuoteAllowed(row, price) : move >= 0 && move <= maxChase;
-  if (!near || risk < floor - 1e-8 || risk > cap + 1e-8 ||
+  const near = trendMarket ? Math.abs(price-row.market_trigger.limit_entry) <= row.market_trigger.max_distance+1e-8 :
+    strictPullback ? pullbackQuoteAllowed(row, price) : move >= 0 && move <= maxChase;
+  const minTrendR = trendMarket ? 1.40 : 0;
+  if (rr < minTrendR - 1e-8 || !near || risk < floor - 1e-8 || risk > cap + 1e-8 ||
       !targetRatiosValid(row, rr, rr2) ||
       (organicPlan(row) ? rr <= (price + tp1) * (settings.taker_fee ?? 0) / risk :
         rr2 - costs / risk < (settings.min_net_rr ?? 1.8) - 1e-8)) return null;
@@ -636,6 +639,8 @@ function conditionText(row, price) {
       (row.low <= price && price <= row.high ? '. Для входу потрібні допуск і закрита реакція M5.' : '.');
   }
   if (marketCandidate(row)) {
+    if (row.market_trigger.pattern === 'TREND_CONTINUATION_MARKET')
+      return 'Закрита ' + (row.market_trigger.confirmation_timeframe === '5m' ? 'M5' : 'M15') + ' підтвердила трендовий вхід.';
     if (row.market_trigger.pattern === 'M5_SNIPER_REVERSAL') return 'Закрита M5 підтвердила розворот після свіпу ліквідності.';
     if (row.market_trigger.pattern === 'M15_BREAKDOWN_MOMENTUM') return 'Закрита M15 підтвердила імпульсний пробій підтримки.';
     if (row.market_trigger.pattern === 'M5_ZONE_ENGULFING') return 'Закрита M5 підтвердила відбій від зони.';
@@ -1086,7 +1091,11 @@ function render() {
   $('regime').textContent=(usable ? state.scenario_plan?.market?.phase_text : null) ?? ({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
   const structureSync=state.structure_sync;
-  $('regime').title=structureSync?.proof === 'BEARISH_BREAKDOWN_MSS'
+  $('regime').title=structureSync?.proof === 'RECENT_SWING_IMPULSE'
+    ? 'Хвиля від останнього підтвердженого свінга · ' + format(structureSync.wave_atr) + ' ATR'
+    : structureSync?.proof === 'BOS_IMPULSE_BREAKOUT'
+    ? 'Закритий пробій структури · EMA20, VWAP та обсяг'
+    : structureSync?.proof === 'BEARISH_BREAKDOWN_MSS'
     ? 'Закритий ведмежий пробій M15'
     : structureSync?.proof === 'DISPLACEMENT_MSS_FVG'
     ? 'Свіп / межа ADR · MSS M15 · FVG'

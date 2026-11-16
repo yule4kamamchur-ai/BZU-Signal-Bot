@@ -47,7 +47,8 @@ class CleanExecution(unittest.TestCase):
         snap,cfg=snapshot(93.68,[(93.0,93.9,90.0,93.0)]*192,[])
         base={'range':{'low':90.0,'high':93.9,'discount':91.17,'premium':92.73},
               'LONG':{'poi_zones':[{'low':93.65,'high':93.75}]}}
-        with patch.object(planner,'build',return_value=base):
+        with patch.object(planner,'build',return_value=base), \
+             patch.object(engine.policy,'trend_references',return_value=(94.,94.)):
             for state,strength,expected in (
                 ('SIDEWAYS',.34,'BLOCKED_DEALING_RANGE_30_70'),
                 ('SIDEWAYS',.35,None),('BULLISH_ACTIVE',.20,None),('SIDEWAYS',None,None),
@@ -73,6 +74,7 @@ class CleanExecution(unittest.TestCase):
 
     def test_base_reaches_the_normal_paper_execution_route(self):
         snap,cfg=base_fixture()
+        snap=replace(snap,price=93.69,bid=93.68,ask=93.69)
         regime={'state':'BULLISH_ACTIVE','side_1h':1,'side_4h':1,'trend_anchor_side':1,
                 'active_structure':{'side':1},'trend_phase':'TREND_CONTINUATION'}
         book=engine.new_state(cfg)

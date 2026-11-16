@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v13.1.0-intraday"
-REPORT_RELEASE = 'v13.1.0'
+VERSION = "full-ict-v13.2.0-intraday"
+REPORT_RELEASE = 'v13.2.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -2262,7 +2262,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
                 proof_quote = quote
-                if scanner.structural_pullback(zone):
+                if scanner.structural_pullback(zone) and trigger.get('pattern')!='TREND_CONTINUATION_MARKET':
                     level = trigger.get('limit_entry')
                     distal = zone.get('low' if side==1 else 'high')
                     a15 = atr(policy.closed(s,'15m'))
@@ -2273,7 +2273,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         proof_quote = level
                 if policy.trend_entry_error(s,side,quote,zone):
                     continue
-                if trigger.get('pattern') == 'M5_SNIPER_REVERSAL':
+                if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' and market.get('trend_anchor_side')==side:
+                    proof = entry_adverse_selection.trend_execution_trigger(
+                        s,side,zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                elif trigger.get('pattern') == 'M5_SNIPER_REVERSAL':
                     proof = entry_adverse_selection.sniper_reversal_trigger(
                         s,side,zone,trigger['retest_entry'],trigger['initial_risk'],quote,
                         atr(policy.closed(s,'15m')),cfg.tick)
@@ -2298,7 +2301,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
                 candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN or
-                trigger.get('pattern')=='M15_TREND_ZONE' else
+                trigger.get('pattern') in ('M15_TREND_ZONE','TREND_CONTINUATION_MARKET') else
                 trigger.get('limit_entry',candidate['entry']),zone,
                 trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
                     candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')),regime=market)
@@ -2917,6 +2920,7 @@ REASON_UA = {
     'STOP_INSIDE_NOISE':'стоп усередині цінового шуму',
     'DETECTOR_ERROR':'помилка аналізу цього сетапу',
     'BASE_TREND_REFERENCES_MISSING':'для пробою бази потрібні EMA20 і повний сесійний VWAP',
+    'TREND_MARKET_RR_BELOW_1_40':'ринковий вхід за трендом потребує R:R від 1.40 до першої цілі',
     'BASE_AGAINST_VWAP_EMA20':'пробій бази не узгоджується з EMA20 та VWAP',
     'AGAINST_VWAP_EMA20':'ціна проти напрямку входу відносно EMA20 та VWAP',
     'DEPENDENT_ENTRY_ALREADY_RESERVED':'близький залежний вхід уже займає місце',
@@ -3677,7 +3681,7 @@ def main(core) -> int:
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

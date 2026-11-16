@@ -185,6 +185,8 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     costs = (entry * entry_fee + tp2 * exit_fee) / risk
     rr1 = side * (tp1 - entry) / risk
     if organic:
+        if (market_trigger or {}).get('pattern')=='TREND_CONTINUATION_MARKET' and rr1<1.40-1e-8:
+            return None, 'TREND_MARKET_RR_BELOW_1_40'
         if not oil_risk.target_range_valid(rr1,rr2):
             return None, 'ORGANIC_TARGET_RANGE'
         if rr1 <= (entry * entry_fee + tp1 * exit_fee) / risk:
@@ -435,15 +437,17 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     elif breakdown:
         market_trigger = adverse.breakdown_market_trigger(snapshot,zone,entry,risk,quote,cfg.tick)
     elif oil:
-        if regime.get('trend_anchor_side')==side:
-            market_trigger = adverse.trend_zone_market_trigger(snapshot,side,zone,risk,proof_quote,cfg.tick,engine)
-            if not market_trigger and zone['kind']!=scanner.wave.BASE:
+        aligned = regime.get('trend_anchor_side')==side
+        if aligned and adverse.trend_supports_wide(zone):
+            market_trigger = adverse.trend_execution_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick,engine)
+        elif zone['kind'] not in (scanner.wave.BASE,scanner.wave.BOS_IMPULSE):
+            if aligned and pullback:
                 market_trigger = adverse.m5_reaction_market_trigger(snapshot,side,zone,entry,risk,proof_quote,cfg.tick,engine)
-        if not market_trigger and (trend or multibar or local_reversal or entry_basis=='SHALLOW_M15_RETEST'):
-            market_trigger = adverse.structural_impulse_market_trigger(snapshot,side,zone,entry,risk,proof_quote,cfg.tick,engine)
-        if not market_trigger and zone['kind']!=scanner.wave.BASE:
-            market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,proof_quote,cfg.tick)
-    if pullback and market_trigger:
+            if not market_trigger and (trend or multibar or local_reversal or entry_basis=='SHALLOW_M15_RETEST'):
+                market_trigger = adverse.structural_impulse_market_trigger(snapshot,side,zone,entry,risk,proof_quote,cfg.tick,engine)
+            if not market_trigger:
+                market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,proof_quote,cfg.tick)
+    if pullback and market_trigger and market_trigger['pattern']!='TREND_CONTINUATION_MARKET':
         if scanner.pullback_quote_allowed(side,entry,distal,quote,a15):
             market_trigger = {**market_trigger, 'limit_entry':entry, 'max_distance':.12*a15,
                               'sniper_pullback':True}
@@ -491,23 +495,26 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     geometry = None
     target_trend = trend or exhaustion_bonus or reclaim or sniper_reversal
     if market_trigger:
-        if breakdown or market_trigger['pattern']=='M15_TREND_ZONE':
+        freeze_geometry = pullback or market_trigger['pattern']=='TREND_CONTINUATION_MARKET'
+        if breakdown or market_trigger['pattern']=='TREND_CONTINUATION_MARKET':
             gate = scenario_planner.entry_error(snapshot,cfg,engine,side,quote,zone,trend=True,regime=regime)
             if gate:
                 return None, gate
         reference, why = None, None
-        if pullback:
-            reference, why = protected_targets(
+        if freeze_geometry:
+            reference, reference_reason = protected_targets(
                 context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False,
                 zone=zone, trend=target_trend)
+            if reference is None:
+                why = reference_reason
         quote_stop, quote_risk, quote_profile = oil_risk.stop_geometry(
             quote, organic_risk['boundary'], side, *oil, cfg.tick, engine)
         fixed_risk = side * (quote - stop)
         fixed_valid = (quote_profile['floor']-1e-8 <= fixed_risk <= quote_profile['cap']+1e-8
                        and side*(quote_profile['boundary']-stop) >= quote_profile['buffer']-1e-8)
-        if fixed_valid and (pullback or not quote_profile['gate']):
+        if fixed_valid and (freeze_geometry or not quote_profile['gate']):
             quote_stop, quote_risk = stop, fixed_risk
-        if quote_profile['gate'] or (pullback and not fixed_valid):
+        if quote_profile['gate'] or (freeze_geometry and not fixed_valid):
             why = quote_profile['gate'] or 'STRUCTURAL_STOP_TOO_WIDE'
         if why is None:
             geometry, why = protected_targets(
@@ -518,6 +525,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 return None, why
             market_trigger = None
         else:
+            if freeze_geometry:
+                market_trigger = {**market_trigger,'frozen_geometry':True}
             entry, stop, risk = quote, quote_stop, quote_risk
             organic_risk = quote_profile
             action = 'ACTIVE_ENTRY'
@@ -549,8 +558,6 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         elif not can_wait:
             return None, direct_failure
     if geometry is None:
-        if oil and zone['kind']==scanner.wave.BASE:
-            return None, 'WAIT_CONFIRMED_BREAK_FOR_LIMIT'
         if anchor.setup_type == 'SESSION_MEAN_RECLAIM':
             return None, 'SESSION_MEAN_LIMIT_DISABLED'
         if not can_wait:

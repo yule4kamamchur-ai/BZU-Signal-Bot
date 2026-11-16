@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Run from a Git working tree to stage removal of obsolete v12/v13.0 files.
+set -euo pipefail
+repo_root=$(git rev-parse --show-toplevel)
+paths=()
+while IFS= read -r path
+do
+  paths+=("$path")
+done <<'BZU_OBSOLETE_FILES'
+#U0432#U0438#U043c#U043e#U0433#U0438.txt
+.github/workflows/Fix key
+AUDIT_2026-10-08_UA.md
+AUDIT_2026-10-18.json
+AUDIT_2026-10-18_UA.md
+CHANGED_FILES_v12_21.json
+CHANGED_FILES_v12_22.json
+CHANGED_FILES_v12_5_1.txt
+CHANGED_FILES_v12_6.txt
+CHECKLIST_v12_21.json
+GITHUB_INSTALL_UA.md
+INSTALL_AND_AUDIT_v12_22_UA.md
+INSTALL_v12_20_0_UA.md
+INSTALL_v12_20_1_GITHUB_15M_UA.md
+INSTALL_v12_20_3_TELEGRAM_UA.md
+INSTALL_v12_20_4_LONG_SHORT_SCAN_GAP_UA.md
+INSTALL_v12_21_UA.md
+INSTALL_v12_23_UA.md
+INSTALL_v12_27_UA.md
+INSTALL_v12_28_UA.md
+INSTALL_v12_29_UA.md
+INSTALL_v12_30_UA.md
+INSTALL_v12_5_1_UA.md
+INSTALL_v12_6_UA.md
+MESSAGE_EXAMPLE_UA.txt
+MESSAGE_EXAMPLE_v12_5_1_UA.txt
+MESSAGE_EXAMPLE_v12_6_UA.txt
+README_v13_0.md
+README_v13_0_1.md
+REMOVE_V13_0_1.txt
+REPLAY_BASELINE_v12_21_SAME_ARCHIVE.json
+REPLAY_MARKET_HISTORY_CHECK_v12_21.json
+REPLAY_v12_21.json
+REPLAY_v12_22.json
+REPORTED_MESSAGE_FIX_EXAMPLE_UA.txt
+SOURCE_SHA256_v12_6.json
+V12_6_EXPLORATORY_CHECK.json
+V12_6_IMPLEMENTATION_UA.md
+V12_6_LEGACY_QUARANTINE.json
+V12_6_RESEARCH_STATUS.json
+VALIDATION_REPORT_UA.md
+VALIDATION_UA.md
+VALIDATION_v12_20_0_UA.md
+VALIDATION_v12_21_UA.md
+VALIDATION_v12_22.json
+VALIDATION_v12_23.json
+audit_replay_v12_9.py
+baseline_v12_1.py
+strategy_observed_audit.py
+BZU_OBSOLETE_FILES
+
+git -C "$repo_root" rm --ignore-unmatch -- "${paths[@]}"

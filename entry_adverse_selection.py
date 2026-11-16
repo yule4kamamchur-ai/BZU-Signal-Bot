@@ -430,6 +430,64 @@ def m5_reaction_market_trigger(snapshot, side, zone, entry, risk, quote, tick, e
     return None
 
 
+def trend_supports_wide(zone):
+    from market_wave import BASE, BOS_IMPULSE, VWAP_CONTINUATION
+
+    return zone.get('kind') in (BASE,BOS_IMPULSE,VWAP_CONTINUATION,'SR_FLIP_RECLAIM','RECLAIM_BREAKER')
+
+
+def trend_execution_trigger(snapshot, side, zone, entry, risk, quote, tick, engine):
+    """Use a larger quote band only for a fresh, aligned closed confirmation."""
+    import directional_policy as direction
+    import setup_scanner as scanner
+    from market_wave import BASE, BOS_IMPULSE, M5, M15, VWAP_CONTINUATION, bos_impulse_zones
+
+    kind = zone.get('kind')
+    if (not trend_supports_wide(zone) or risk<=0 or quote<=0 or not snapshot.trusted
+            or not 0<=snapshot.now-snapshot.ticker_ts<=120_000
+            or not direction.aligned_references(side,quote,*direction.trend_references(snapshot))):
+        return None
+    proof = zone.get('wave_proof') or {}
+    m15 = direction.closed(snapshot,'15m')
+    if len(m15)<2:
+        return None
+    is_m5 = proof.get('timeframe')=='5m'
+    rows, step = (scanner.closed_five_minutes(snapshot),M5) if is_m5 else (m15,M15)
+    if len(rows)<2:
+        return None
+    bar = rows[-1]
+    known = bar.ts+step
+    if not 0<=snapshot.ticker_ts-known<step or side*(bar.close-bar.open)<tick-1e-8:
+        return None
+    if kind==BOS_IMPULSE:
+        if not any(z['side']==side and z['known_ts']==known and z['reference']==zone.get('reference')
+                   and z['wave_proof']==proof for z in bos_impulse_zones(snapshot,tick,engine)):
+            return None
+    elif kind==BASE:
+        if proof.get('break_ts')!=known or proof.get('trigger')!='BREAKOUT':
+            return None
+    elif kind==VWAP_CONTINUATION:
+        if zone['known_ts']!=known:
+            return None
+    else:
+        level = zone['reference']
+        atr = engine.atr(rows[:-1])
+        extreme = bar.low if side==1 else bar.high
+        if (proof.get('break_ts',known)>bar.ts or abs(extreme-level)>.40*atr+1e-8
+                or side*(rows[-2].close-level)<-tick/2 or side*(bar.close-level)<tick-1e-8):
+            return None
+    atr = engine.atr(rows[:-1])
+    span = proof.get('impulse_range',bar.high-bar.low)
+    if span>1.8*proof.get('impulse_atr',atr)+1e-8:
+        return None
+    atr15 = engine.atr(m15[:-1])
+    distance = .30*atr15
+    if distance<=0 or max(abs(quote-entry),abs(bar.close-entry))>distance+1e-8:
+        return None
+    return {'pattern':'TREND_CONTINUATION_MARKET','known_ts':known,'limit_entry':entry,
+            'initial_risk':risk,'max_distance':distance,'confirmation_timeframe':'5m' if is_m5 else '15m'}
+
+
 def sniper_reversal_trigger(snapshot, side, zone, entry, risk, quote, atr, tick):
     from market_wave import M5, SNIPER_REVERSAL, reversal_override
 

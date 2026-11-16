@@ -156,13 +156,17 @@ def qualify(signal, snapshot, tick, regime=None, active_side=0):
             'as_of_ts': snapshot.now, 'estimated_win_rate': None}
 
 
-def ema20(rows):
-    if len(rows) < 20:
+def ema(rows, period):
+    if len(rows) < period:
         return None
-    value = mean(c.close for c in rows[:20])
-    for candle in rows[20:]:
-        value += (candle.close - value) * 2 / 21
+    value = mean(c.close for c in rows[:period])
+    for candle in rows[period:]:
+        value += (candle.close - value) * 2 / (period+1)
     return value
+
+
+def ema20(rows):
+    return ema(rows,20)
 
 
 def body_breaks(rows, tick, engine):

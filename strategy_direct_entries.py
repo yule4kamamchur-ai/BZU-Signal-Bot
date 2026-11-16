@@ -122,6 +122,10 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     if zone['kind'] in ('VWAP_TREND_CONTINUATION','SR_FLIP_RECLAIM','RECLAIM_BREAKER'):
         entry = engine.round_tick(round(zone['reference']+side*.03,10),tick)
         return entry, 'STRUCTURAL_REFERENCE_BUFFER'
+    if zone['kind'] == 'FVG_PULLBACK' and (zone.get('wave_proof') or {}).get('first_retest'):
+        return zone['reference'], 'STRUCTURAL_REFERENCE'
+    if zone['kind'] == 'BOS_IMPULSE_BREAKOUT':
+        return zone['reference'], 'STRUCTURAL_REFERENCE'
     if zone['kind'] == 'M5_SNIPER_REVERSAL':
         return zone['reference'], 'M5_ENGULFING_RETEST'
     if (any(token in zone['kind'] for token in ('FVG', 'DEMAND_OB', 'SUPPLY_OB', 'FLIP_RECLAIM', 'RECLAIM_BREAKER'))):

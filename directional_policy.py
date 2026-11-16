@@ -74,6 +74,11 @@ def trend_references(snapshot):
     return cache[snapshot.now]
 
 
+def aligned_references(side, price, ema, vwap):
+    return (ema is not None and vwap is not None and side*(price-ema)>0
+            and side*(price-vwap)>0)
+
+
 def trend_entry_error(snapshot, side, price, zone):
     """Veto entries against both references, with a witnessed sweep exception."""
     import market_wave
@@ -239,7 +244,8 @@ def execution_regime(snapshot, cfg, engine):
     if not oil_risk.enabled(cfg):
         return regime
     from market_wave import (
-        breakdown_intact, breakdown_zones, displacement_override, early_structure_reclaim, structure_sync,
+        BOS_IMPULSE, RECENT_SWING, bos_impulse_zones, breakdown_intact, breakdown_zones,
+        chronological_wave, displacement_override, early_structure_reclaim, structure_sync,
     )
 
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
@@ -255,16 +261,34 @@ def execution_regime(snapshot, cfg, engine):
     if early and (not sync or (early['side'] != sync['side']
                                and early['break_ts'] > sync.get('break_ts',0))):
         sync = early
+    recent = chronological_wave(snapshot,cfg.tick,engine)
+    if recent and (not sync or (recent['side']!=sync['side']
+                                and recent['origin_ts']>=sync.get('break_ts',0))):
+        sync = recent
+    bos = next((z for z in reversed(bos_impulse_zones(snapshot,cfg.tick,engine))
+                if aligned_references(z['side'],snapshot.price,*trend_references(snapshot))),None)
+    if bos and (not sync or bos['known_ts']>sync['known_ts']
+                or (bos['known_ts']==sync['known_ts'] and bos['side']!=sync['side'])):
+        proof = bos['wave_proof']
+        sync = {'side':bos['side'],'known_ts':bos['known_ts'],'break_ts':bos['known_ts'],
+                'level':proof['break_level'],'protected_level':proof['invalidation'],'proof':BOS_IMPULSE}
+    ema, vwap = trend_references(snapshot)
+    if sync and aligned_references(-sync['side'],snapshot.price,ema,vwap):
+        sync = {}
     side = sync.get('side') or one or four
     if not side or (not sync and one and four and one != four):
         return regime
     m15 = closed(snapshot, '15m')
     local = regime.get('active_structure', {}).get('side') or regime.get('local_structure', {}).get('side')
     pullback = local == -side or (len(m15) >= 3 and side * (snapshot.price - m15[-3].close) < -cfg.tick)
+    if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE):
+        pullback = False
     phase = None
     if sync:
         phase = ('BULLISH' if side == 1 else 'BEARISH') + ('_PULLBACK' if pullback else '_IMPULSE')
     return {**regime, 'state': 'BULLISH_ACTIVE' if side == 1 else 'BEARISH_ACTIVE', 'wave_phase': phase,
+            'active_structure': sync if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE)
+                                else regime['active_structure'],
             'trend_anchor_side': side, 'trend_anchor_timeframe': '15m' if sync else '1H' if one else '4H',
             'structure_sync': sync,
             'trend_phase': ('BULLISH_PULLBACK_OPPORTUNITY' if side == 1 else 'BEARISH_PULLBACK_OPPORTUNITY')

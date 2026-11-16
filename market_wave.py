@@ -9,13 +9,15 @@ M5 = 300_000
 EARLY_M15_RECLAIM = 'M15_BOS_EMA20_ATR'
 STRUCTURE_LOOKBACK = 96
 BREAKDOWN = "BREAKDOWN_RECLAIM"
+BOS_IMPULSE = "BOS_IMPULSE_BREAKOUT"
+RECENT_SWING = "RECENT_SWING_IMPULSE"
 SNIPER_REVERSAL = "M5_SNIPER_REVERSAL"
 BASE = "CONSOLIDATION_BREAKOUT_BASE"
 VWAP_CONTINUATION = "VWAP_TREND_CONTINUATION"
 BREAKDOWN_MAX_AGE = 2 * M15
 REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
-TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION})
+TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION, BOS_IMPULSE})
 REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN, SNIPER_REVERSAL})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
@@ -49,6 +51,38 @@ def fast_structure(rows, tick, engine):
             'proof': 'FAST_M15_STRUCTURE_SHIFT', 'pivot_ts': pivot['ts'],
             'reference_known_ts': pivot['known_ts'] + M15,
             'body_atr': abs(bar.close - bar.open) / atr}
+
+
+def chronological_wave(snapshot, tick, engine):
+    """Only the newest confirmed swing can originate the current wave."""
+    import directional_policy as direction
+
+    rows = direction.closed(snapshot,'15m')[-36:]
+    if (len(rows)<20 or snapshot.now-rows[-1].ts-M15>=M15
+            or any(b.ts-a.ts!=M15 for a,b in zip(rows,rows[1:]))):
+        return {}
+    points = engine.pivots(rows,strength=2)
+    high = next((p for p in reversed(points) if p['kind']=='HIGH'),None)
+    low = next((p for p in reversed(points) if p['kind']=='LOW'),None)
+    if high is None or low is None or high['ts']==low['ts']:
+        return {}
+    side = -1 if high['ts']>low['ts'] else 1
+    origin = high if side==-1 else low
+    average, vwap = direction.trend_references(snapshot)
+    bar = rows[-1]
+    if side*(bar.close-origin['level'])<0:
+        # A close through the newer pivot resumes the opposite leg.
+        side, origin = -side, low if side==-1 else high
+    if not direction.aligned_references(side,bar.close,average,vwap):
+        return {}
+    atr = engine.atr(rows[:-1])
+    distance = side*(bar.close-origin['level'])
+    if atr<=0 or distance<atr-1e-8:
+        return {}
+    return {'side':side,'known_ts':bar.ts+M15,'break_ts':origin['ts'],
+            'origin_ts':origin['ts'],'origin':origin['level'],'close':bar.close,
+            'level':origin['level'],'protected_level':origin['level'],'wave_atr':distance/atr,
+            'ema20_15m':average,'session_vwap':vwap,'proof':RECENT_SWING}
 
 
 def early_structure_reclaim(snapshot, tick, engine):
@@ -192,6 +226,74 @@ def displacement_override(snapshot, tick, engine):
     return {}
 
 
+def bos_impulse_zones(snapshot, tick, engine):
+    """A fresh volume-backed structural break on M15 or two contiguous M5s."""
+    import setup_scanner as scanner
+    import directional_policy as direction
+
+    cache = vars(snapshot).setdefault('_bos_impulse_zones', {})
+    key = (snapshot.now,tick)
+    if key in cache:
+        return cache[key]
+    zones = []
+    for tf, step, count, rows in (
+            ('15m', M15, 1, direction.closed(snapshot,'15m')),
+            ('5m', M5, 2, scanner.closed_five_minutes(snapshot))):
+        rows = rows[-44:]
+        if len(rows)<22+count:
+            continue
+        for end in range(len(rows)-1,max(count+20,len(rows)-3)-1,-1):
+            bars = rows[end+1-count:end+1]
+            start, last = bars[0],bars[-1]
+            known = last.ts+step
+            if not 0<=snapshot.now-known<2*M15:
+                continue
+            prior = rows[max(0,end+1-count-40):end+1-count]
+            window = [*prior,*bars]
+            if any(b.ts-a.ts!=step for a,b in zip(window,window[1:])):
+                continue
+            atr = engine.atr(prior)
+            baseline = scanner.event_rvol(snapshot,tf,start.ts+step)['sma_volume_20']
+            if atr<=0 or not baseline or any(not b.volume>=0 for b in bars):
+                continue
+            relative = sum(b.volume for b in bars)/(count*baseline)
+            if not 1.15-1e-8<=relative<float('inf'):
+                continue
+            ema, vwap = direction.trend_references(replace(snapshot,now=known))
+            high,low = max(b.high for b in bars),min(b.low for b in bars)
+            if high<=low:
+                continue
+            side = 1 if last.close>start.open else -1
+            body = side*(last.close-start.open)
+            close_position = (last.close-low)/(high-low)
+            if (body<max(tick,.65*atr) or any(side*(b.close-b.open)<=0 for b in bars)
+                    or (close_position<.65 if side==1 else close_position>.35)
+                    or not direction.aligned_references(side,last.close,ema,vwap)):
+                continue
+            kind = 'HIGH' if side==1 else 'LOW'
+            point = next((p for p in reversed(engine.pivots(prior,strength=1))
+                          if p['kind']==kind and p['known_ts']+step<=start.ts
+                          and side*(prior[-1].close-p['level'])<=tick/2
+                          and side*(start.open-p['level'])<=tick/2
+                          and side*(last.close-p['level'])>=tick-1e-8),None)
+            if point is None:
+                continue
+            level = point['level']
+            if any(side*(b.close-level)<-tick/2 for b in rows[end+1:]):
+                continue
+            retracement = min(.25*body,side*(last.close-level))
+            reference = engine.round_tick(round(last.close-side*retracement+tick/2,10),tick)
+            bounds = (reference,reference-side*max(tick,min(.10,.10*atr)))
+            zone = _trend_zone(BOS_IMPULSE,side,bounds,last,step,reference,
+                               break_ts=known,impulse_ts=start.ts,break_level=level,
+                               pivot_ts=point['ts'],reference_known_ts=point['known_ts']+step,
+                               invalidation=low if side==1 else high,impulse_range=high-low,
+                               impulse_atr=atr,relative_volume=relative,close_position=close_position)
+            zones.append(zone)
+    cache[key] = sorted(zones,key=lambda zone:zone['known_ts'])
+    return cache[key]
+
+
 def breakdown_zones(snapshot, tick, engine):
     """A bearish flip from a strong close, independent of the slow bias."""
     import directional_policy as direction
@@ -237,7 +339,7 @@ def breakdown_intact(zone, snapshot, tick):
             not any(c.close>zone['high'] for c in closed(snapshot,'15m') if c.ts>=known))
 
 
-def _reclaim_breakers(rows, tick, engine, *, proactive=False):
+def _reclaim_breakers(rows, tick, engine, *, proactive=False, trend_side=0):
     """Revisit a causal pivot or shelf from the preceding 24 hours."""
     points = engine.pivots(rows[-2 * STRUCTURE_LOOKBACK:], strength=1)
     for index in range(max(8, len(rows) - STRUCTURE_LOOKBACK), len(rows)):
@@ -250,7 +352,8 @@ def _reclaim_breakers(rows, tick, engine, *, proactive=False):
             for level, reference_ts in ict.reclaim_references(prior, points, bar.ts, side, tick, atr):
                 if not ict.reclaim_break(rows, index, side, level, tick, atr):
                     continue
-                zone = _confirmed_retest_zone(rows, index, side, level, reference_ts, tick, atr)
+                zone = _confirmed_retest_zone(rows,index,side,level,reference_ts,tick,atr,
+                                              tolerance_atr=.40 if trend_side==side else .28)
                 if proactive:
                     if zone:
                         zone['kind'] = 'SR_FLIP_RECLAIM'
@@ -270,7 +373,7 @@ def _reclaim_breakers(rows, tick, engine, *, proactive=False):
                     break
 
 
-def _confirmed_retest_zone(rows, index, side, level, reference_ts, tick, atr, **proof):
+def _confirmed_retest_zone(rows,index,side,level,reference_ts,tick,atr,*,tolerance_atr=.28,**proof):
     width = min(.25, max(2 * tick, .30 * atr))
     low, high = sorted((level, level - side * width))
     distal = low if side == 1 else high
@@ -282,7 +385,7 @@ def _confirmed_retest_zone(rows, index, side, level, reference_ts, tick, atr, **
         if retest is not None or bar.ts - breakout.ts > STRUCTURE_LOOKBACK * M15:
             continue
         extreme = bar.low if side == 1 else bar.high
-        if side * (extreme - level) <= max(tick / 2, .06, .28 * atr):
+        if side * (extreme - level) <= max(tick / 2, .06, tolerance_atr * atr):
             if side*(previous.close-level) < tick/2 or side*(bar.close-level) < tick/2:
                 return None
             retest = bar
@@ -593,7 +696,7 @@ def _trend_fvgs(rows, side, step, tick, engine):
         if any((c.low <= low if side == 1 else c.high >= high) for c in rows[i + 1:]):
             continue
         yield _trend_zone('FVG_PULLBACK', side, (low, high), last, step,
-                          (low + high) / 2, impulse_ts=middle.ts)
+                          high if side==1 else low, impulse_ts=middle.ts, first_retest=True)
 
 
 def _trend_ote(rows, side, tick, engine):
@@ -715,6 +818,50 @@ def vwap_continuation(snapshot, rows, side, atr, tick, direction):
                        break_ts=bar.ts+M15, impulse_ts=bar.ts, reference_vwap=vwap)
 
 
+def fast_trend_retest(snapshot, m15, m5, side, atr, tick, engine):
+    """Use a closed M5 rejection of EMA9 or a recently broken M5 level."""
+    import directional_policy as direction
+    from strategy_organics import ema
+
+    if len(m15)<20 or len(m5)<10 or side not in (1,-1) or atr<=0:
+        return None
+    bar = m5[-1]
+    known = bar.ts+M5
+    window = m5[-10:]
+    if (not 0<=snapshot.now-known<M5 or side*(bar.close-bar.open)<tick-1e-8
+            or any(b.ts-a.ts!=M5 for a,b in zip(window,window[1:]))):
+        return None
+    as_of = replace(snapshot,now=bar.ts)
+    average, vwap = direction.trend_references(as_of)
+    if not direction.aligned_references(side,bar.close,average,vwap):
+        return None
+    prior_m15 = [b for b in m15 if b.ts+M15<=bar.ts]
+    quick = ema(prior_m15[-60:],9)
+    if quick is None or side*(quick-average)<-tick:
+        return None
+    extreme = bar.low if side==1 else bar.high
+    references = [(quick,'EMA9',None)]
+    kind = 'HIGH' if side==1 else 'LOW'
+    for point in engine.pivots(window[:-2],strength=1):
+        reference_ts = point['known_ts']+M5
+        level = point['level']
+        if point['kind']!=kind or not 2*M5<=bar.ts-reference_ts<=8*M5:
+            continue
+        if any(a.ts>=reference_ts and side*(a.close-level)<=0<side*(b.close-level)
+               for a,b in zip(window[:-2],window[1:-1])):
+            references.append((level,'M5_SR_FLIP',reference_ts))
+    eligible = [(level,source,reference_ts) for level,source,reference_ts in references
+                if abs(extreme-level)<=.40*atr+1e-8
+                and side*(m5[-2].close-level)>=-tick/2 and side*(bar.close-level)>=tick-1e-8]
+    if not eligible:
+        return None
+    level,source,reference_ts = min(eligible,key=lambda p:abs(extreme-p[0]))
+    bounds = (min(extreme,level)-tick,max(extreme,level)+tick)
+    return _trend_zone(VWAP_CONTINUATION,side,bounds,bar,M5,level,break_ts=known,
+                       impulse_ts=bar.ts,retest_source=source,
+                       reference_known_ts=reference_ts,reference_vwap=vwap)
+
+
 def zones(snapshot, cfg, engine, regime):
     """Use M5 only inside an established M15/HTF direction or a witnessed raid."""
     import directional_policy as direction
@@ -751,6 +898,10 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
         results.extend(sniper_reversals(snapshot,m5,tick,engine,atr))
+        results.extend(z for z in bos_impulse_zones(snapshot,tick,engine) if z['side']==trend)
+        fast = fast_trend_retest(snapshot,m15,m5,trend,atr,tick,engine)
+        if fast:
+            results.append(fast)
         vwap = vwap_continuation(snapshot, m15, trend, atr, tick, direction)
         if vwap:
             results.append(vwap)
@@ -760,7 +911,9 @@ def zones(snapshot, cfg, engine, regime):
                             for bar in m15[len(m15)-offset:]):
                 results.append(base)
         results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
-        results.extend(_reclaim_breakers(m15, tick, engine, proactive=True))
+        aligned_trend = trend if trend and direction.aligned_references(
+            trend,snapshot.price,*direction.trend_references(snapshot)) else 0
+        results.extend(_reclaim_breakers(m15,tick,engine,proactive=True,trend_side=aligned_trend))
         results.extend(breakdown_zones(snapshot,tick,engine))
         reclaims = {}
         other = []
