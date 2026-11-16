@@ -60,21 +60,27 @@ class Intraday(unittest.TestCase):
             self.assertEqual(portfolio_arbitration.current_score(plan, {}), 61)
         adjusted.assert_not_called()
 
-    def test_structural_exit_requires_elapsed_45_minutes_and_amplitude(self):
+    def test_structural_exit_requires_two_hours_and_price_beyond_all_references(self):
         _, cfg = base_fixture()
+        close_ts = NOW + 8*STEP
         for side in (1, -1):
             with self.subTest(side=side):
                 position = order(side, placed=NOW)
                 position.update(filled_ts=NOW, entry=100., risk=1., stop=100.-side,
-                                protection_structure_side=-side, protection_structure_timeframe='15m',
-                                protection_structure_ts=NOW+STEP, position_regime_side=-side,
-                                max_favorable_r=.47)
-                check = lambda ts, rr: position_monitor.evaluate_active_trade_lifecycle(
-                    position, ts, 100.+side*rr, cfg, engine)
-                self.assertFalse(check(NOW+3*STEP-1, -.45)['should_exit'])
-                self.assertFalse(check(NOW+3*STEP, -.09)['should_exit'])
-                self.assertFalse(check(NOW+3*STEP, -.34)['should_exit'])
-                self.assertEqual(check(NOW+3*STEP, -.35)['exit_reason'], 'CLOSED_ADVERSE_STRUCTURE_SHIFT')
+                                adverse_close_pair={'known_ts':close_ts,'level':100.-side*.30,
+                                                    'ema20':100.-side*.20,'session_vwap':100.-side*.35})
+                def check(ts, rr):
+                    return position_monitor.evaluate_active_trade_lifecycle(
+                        position, ts, 100.+side*rr, cfg, engine)
+
+                self.assertFalse(check(close_ts-1, -.45)['should_exit'])
+                self.assertFalse(check(close_ts, -.34)['should_exit'])
+                self.assertFalse(check(close_ts+STEP, -.45)['should_exit'])
+                self.assertEqual(check(close_ts, -.40)['exit_reason'], 'CLOSED_ADVERSE_STRUCTURE_SHIFT')
+                position['partial_tp1_hit'] = True
+                position['max_favorable_r'] = 1.
+                self.assertFalse(check(close_ts, -.40)['should_exit'])
+                self.assertFalse(check(NOW+25*STEP, .10)['should_exit'])
 
     def test_five_minute_engulf_requires_a_closed_contiguous_pair_and_fresh_quote(self):
         snapshot, cfg = base_fixture()

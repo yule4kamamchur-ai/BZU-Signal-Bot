@@ -55,6 +55,48 @@ def session_vwap(snapshot):
             'known_ts':end,'status':'AVAILABLE','price_basis':'HLC3','volume':volume}
 
 
+def trend_references(snapshot):
+    """Use the most recent closed M15 and a complete session VWAP."""
+    from strategy_organics import ema20
+
+    cache = vars(snapshot).setdefault('_trend_references', {})
+    if snapshot.now not in cache:
+        rows = closed(snapshot, '15m')[-60:]
+        step = TF['15m']
+        if (len(rows)<20 or not 0<=snapshot.now-rows[-1].ts-step<step
+                or any(b.ts-a.ts!=step for a,b in zip(rows[-20:-1],rows[-19:]))):
+            cache[snapshot.now] = (None, None)
+        else:
+            # Use the same closed M15 boundary for EMA and VWAP. This remains
+            # available with a minute-feed gap after that boundary.
+            as_of = replace(snapshot, now=rows[-1].ts+step)
+            cache[snapshot.now] = (ema20(rows), session_vwap(as_of)['value'])
+    return cache[snapshot.now]
+
+
+def trend_entry_error(snapshot, side, price, zone):
+    """Veto entries against both references, with a witnessed sweep exception."""
+    import market_wave
+
+    ema, vwap = trend_references(snapshot)
+    base = zone.get('kind') == market_wave.BASE
+    if base and (ema is None or vwap is None):
+        return 'BASE_TREND_REFERENCES_MISSING'
+    if ema is None or vwap is None:
+        return None
+    crosses = [side*(price-line) for line in (ema, vwap)]
+    if base and min(crosses)<=0:
+        return 'BASE_AGAINST_VWAP_EMA20'
+    sweep = zone.get('sweep') or {}
+    reversal = (zone.get('kind') in (market_wave.SNIPER_REVERSAL,'SWEEP_REVERSAL','TURTLE_SOUP','MULTIBAR_SWEEP',
+                                   'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE')
+                and sweep.get('side')==side
+                and sweep.get('pattern') in ('ENGULFING','M5_SWEEP_ENGULFING'))
+    if max(crosses)<0 and not reversal:
+        return 'AGAINST_VWAP_EMA20'
+    return None
+
+
 def vwap_priority(plan, snapshot, tick):
     result=session_vwap(snapshot)
     aligned=(result['value'] is not None and

@@ -25,7 +25,7 @@ def entry_scenarios(snapshot, cfg, engine, rows, side):
                         'tp1':round(row['entry']+side*risk,10),'tp2':row['tp2'],
                         'qualification_tp1':row['tp1'], 'actionable':bool(row.get('actionable')),
                         'low':row.get('low'),'high':row.get('high'),'kind':row.get('kind')}
-    base = setup_scanner.consolidation_base(m15,side,cfg.tick,engine,prospective=True)
+    base = setup_scanner.consolidation_base(m15,side,cfg.tick,engine,prospective=True,snapshot=snapshot)
     breakout = None
     if base:
         edge = base['reference']
@@ -143,6 +143,11 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None)
 
     if not enabled(cfg):
         return None
+    from market_wave import SNIPER_REVERSAL, witnessed
+
+    if zone.get('kind')==SNIPER_REVERSAL:
+        regime = regime if regime is not None else engine.policy.execution_regime(snapshot,cfg,engine)
+        return None if witnessed(zone,snapshot,cfg,engine,regime) else 'CURRENT_WAVE_PROOF_EXPIRED'
     plan = build(snapshot, cfg, engine)
     if range_retest(snapshot, zone, side, cfg.tick, entry):
         return None
@@ -154,7 +159,7 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None)
             return 'DEALING_RANGE_UNAVAILABLE'
         if (entry <= rng['discount'] if side == -1 else entry >= rng['premium']):
             return 'BLOCKED_DEALING_RANGE_30_70'
-    from market_wave import BASE, BREAKDOWN, breakdown_zones, breakdown_intact, trend_zone, witnessed
+    from market_wave import BASE, BREAKDOWN, breakdown_zones, breakdown_intact, trend_zone
     if trend and regime.get('trend_anchor_side')==side and zone.get('side')==side:
         if zone.get('wave_proof') and (trend_zone(zone,regime) or zone['kind'] in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM')):
             if witnessed(zone,snapshot,cfg,engine,regime):

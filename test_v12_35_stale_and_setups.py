@@ -103,16 +103,17 @@ class PositionGuard(unittest.TestCase):
                 self.assertEqual(trade['close_reason'], 'CLOSED_STALE_TIME_STOP')
                 self.assertAlmostEqual(trade['exit'], price)
 
-    def test_confirmed_choch_exits_in_loss_after_three_hours(self):
+    def test_two_adverse_closes_exit_in_loss_after_three_hours(self):
         p, book, cfg = self.make_position()
         end = NOW+12*M15
-        rows = [engine.Candle(end-(8-i)*M15, 98.40, 98.60, low, close)
-                for i, (low, close) in enumerate([(98.22,98.45)]*4+[(98.10,98.44),(98.23,98.47),
-                                                                    (98.24,98.48),(97.60,97.70)])]
+        levels = [(98.22,98.45)]*17+[(98.10,98.44)]+[(98.22,98.45)]*4+[(97.68,97.76),(97.62,97.70)]
+        rows = [engine.Candle(end-(24-i)*M15, 98.40, 98.60, low, close)
+                for i, (low,close) in enumerate(levels)]
         snapshot = engine.Snapshot(end, 97.70, {'15m': rows})
-        self.bar(book, cfg, end, 98.40, 98.42, 97.60, 97.70, snapshot)
+        with patch.object(engine.policy,'trend_references',return_value=(98.20,98.30)):
+            self.bar(book, cfg, end, 98.40, 98.42, 97.60, 97.70, snapshot)
         trade, = book['trades']
-        self.assertEqual((trade['protection_structure_ts'], trade['close_reason']),
+        self.assertEqual((trade['adverse_close_pair']['known_ts'],trade['close_reason']),
                          (end, 'CLOSED_ADVERSE_STRUCTURE_SHIFT'))
 
     def test_quote_regime_flip_alone_keeps_position(self):

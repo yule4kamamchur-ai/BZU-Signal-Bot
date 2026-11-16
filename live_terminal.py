@@ -76,7 +76,7 @@ def build(state, snapshot, result, cfg, engine):
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
             'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
             'tp1_fraction': plan.get('partials', {}).get('TP1', 1.),
-            'remaining': plan.get('remaining', 1.), 'tp1_hit': bool(plan.get('tp1_hit')),
+            'remaining': plan.get('remaining', 1.), 'tp1_hit': position_monitor.partial_taken(plan),
             'tp1_partial': partial,
             'be_waits_for_structure': not plan.get('scale_policy') and engine.bzu_policy.partial_tp1_time(plan) is not None,
             'effective_ts': plan.get('effective_ts', plan.get('placed_ts')),
@@ -253,6 +253,8 @@ def build(state, snapshot, result, cfg, engine):
         z.update(calc)
         z['institutional_family'] = (geometry or {}).get('institutional_family')
         z['scale_policy'] = (geometry or {}).get('scale_policy')
+        if profile and engine.scanner.structural_pullback(z):
+            z['market_pullback_max'] = .12*atr15
         z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)

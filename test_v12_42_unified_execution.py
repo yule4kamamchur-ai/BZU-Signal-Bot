@@ -66,14 +66,12 @@ class UnifiedExecution(unittest.TestCase):
         self.assertEqual((audit['decision'],audit['reason'],audit['candidate_id']),
                          ('REQUEST_REPLACEMENT','REPLACED_BY_CLOSER_SETUP','new'))
 
-    def test_adverse_exit_waits_45_minutes_and_needs_drawdown(self):
+    def test_single_adverse_break_is_not_a_brent_exit(self):
         p,_,cfg=position_fixtures.PositionGuard().make_position(entry=93.69,risk=.88)
         p.update(protection_structure_ts=NOW+STEP,protection_structure_side=-1,
                  protection_structure_timeframe='15m')
-        self.assertFalse(position_monitor.evaluate_active_trade_lifecycle(p,NOW+2*STEP,93.60,cfg,engine)['should_exit'])
-        self.assertFalse(position_monitor.evaluate_active_trade_lifecycle(p,NOW+3*STEP,93.60,cfg,engine)['should_exit'])
-        self.assertEqual(position_monitor.evaluate_active_trade_lifecycle(p,NOW+3*STEP,93.37,cfg,engine)['exit_reason'],
-                         'CLOSED_ADVERSE_STRUCTURE_SHIFT')
+        for ts in (NOW+3*STEP,NOW+8*STEP):
+            self.assertFalse(position_monitor.evaluate_active_trade_lifecycle(p,ts,93.37,cfg,engine)['should_exit'])
 
     def test_impulse_uses_shallow_body_retest(self):
         snap,cfg=base_fixture()

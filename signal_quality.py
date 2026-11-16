@@ -315,9 +315,11 @@ def confluence(plan, snapshot, proof, cfg, engine):
                         plan['side'] * (snapshot.price - vwap['value']) > 0)
         evidence = [e['rvol'] for e in volume.get('events', []) if e.get('rvol') is not None]
         market_trigger = plan.get('market_trigger') or {}
-        recent = scanner.closed_five_minutes(snapshot) if market_trigger.get('pattern') == 'M5_ZONE_ENGULFING' else direction.closed(snapshot, '15m')
+        is_m5 = (market_trigger.get('pattern') in ('M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL')
+                 or zone.get('kind') == scanner.wave.SNIPER_REVERSAL)
+        recent = scanner.closed_five_minutes(snapshot) if is_m5 else direction.closed(snapshot, '15m')
         if recent:
-            timeframe, step = ('5m', 300_000) if market_trigger.get('pattern') == 'M5_ZONE_ENGULFING' else ('15m', 900_000)
+            timeframe, step = ('5m', 300_000) if is_m5 else ('15m', 900_000)
             recent_volume = scanner.event_rvol(snapshot, timeframe, recent[-1].ts + step)
             if recent_volume['rvol'] is not None:
                 evidence.append(recent_volume['rvol'])

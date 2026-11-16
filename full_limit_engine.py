@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v13.0.1-intraday"
-REPORT_RELEASE = 'v13.0.1'
+VERSION = "full-ict-v13.1.0-intraday"
+REPORT_RELEASE = 'v13.1.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -1354,7 +1354,7 @@ def close_trade(state: dict, p: dict, price: float, ts: int, reason: str, cfg: C
     fees = (p["entry"]*p.get("entry_fee_rate",cfg.maker_fee)/risk+p.get("realized_exit_fees_r",0)+remaining*price*cfg.taker_fee/risk) if cfg.include_commission else 0.
     closed = {**copy.deepcopy(p), "status": "CLOSED", "exit": price, "closed_ts": ts,
               "remaining": 0.0, "final_exit_fraction": remaining,
-              "closed_at": iso(ts), "close_reason": reason, "gross_r": gross,
+              "closed_at": iso(ts), "close_reason": reason, "gross_r": gross, "realized_r": gross,
               "fees_r": fees, "net_r": gross-fees, "pnl_r": gross-fees,
               "stop_initial": p["initial_stop"], "stop_at_close": p["stop"],
               "bot_version_at_entry": trade_entry_version(p),
@@ -1804,6 +1804,9 @@ def pending_scenario_error(plan, snapshot, cfg):
         return None
     engine = sys.modules[__name__]
     side, entry = plan['side'], plan['entry']
+    filter_error = policy.trend_entry_error(snapshot,side,snapshot.price,zone)
+    if filter_error:
+        return filter_error
     if zone.get('kind') == scanner.wave.BREAKDOWN:
         if not scanner.wave.breakdown_intact(zone,snapshot,cfg.tick):
             return 'BREAKDOWN_EXPIRED'
@@ -2253,23 +2256,42 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             continue
         if single_limit:
             trigger = candidate.get('market_trigger') or {}
+            side = candidate['side']
+            if policy.trend_entry_error(s,side,s.price,zone):
+                continue
             if candidate.get('order_type')=='MARKET':
-                quote = s.ask if candidate['side']==1 else s.bid
-                if trigger.get('pattern') == 'M15_BREAKDOWN_MOMENTUM':
+                quote = s.ask if side==1 else s.bid
+                proof_quote = quote
+                if scanner.structural_pullback(zone):
+                    level = trigger.get('limit_entry')
+                    distal = zone.get('low' if side==1 else 'high')
+                    a15 = atr(policy.closed(s,'15m'))
+                    if (level is None or distal is None or
+                            not scanner.pullback_quote_allowed(side,level,distal,quote,a15)):
+                        continue
+                    if side*(quote-level)<0:
+                        proof_quote = level
+                if policy.trend_entry_error(s,side,quote,zone):
+                    continue
+                if trigger.get('pattern') == 'M5_SNIPER_REVERSAL':
+                    proof = entry_adverse_selection.sniper_reversal_trigger(
+                        s,side,zone,trigger['retest_entry'],trigger['initial_risk'],quote,
+                        atr(policy.closed(s,'15m')),cfg.tick)
+                elif trigger.get('pattern') == 'M15_BREAKDOWN_MOMENTUM':
                     proof = entry_adverse_selection.breakdown_market_trigger(
                         s,zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)
                 elif trigger.get('pattern') == 'M15_LEVEL_REJECTION':
                     proof = entry_adverse_selection.rejection_trigger(
-                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick)
+                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],proof_quote,cfg.tick)
                 elif trigger.get('pattern') == 'M15_TREND_ZONE' and market.get('trend_anchor_side')==candidate['side']:
                     proof = entry_adverse_selection.trend_zone_market_trigger(
-                        s,candidate['side'],zone,trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                        s,candidate['side'],zone,trigger['initial_risk'],proof_quote,cfg.tick,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M15_STRUCTURAL_IMPULSE':
                     proof = entry_adverse_selection.structural_impulse_market_trigger(
-                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],proof_quote,cfg.tick,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M5_ZONE_ENGULFING' and market.get('trend_anchor_side')==candidate['side']:
                     proof = entry_adverse_selection.m5_reaction_market_trigger(
-                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                        s,candidate['side'],zone,trigger['limit_entry'],trigger['initial_risk'],proof_quote,cfg.tick,sys.modules[__name__])
                 else:
                     proof = None
                 if not proof or proof['known_ts'] != trigger.get('known_ts') or abs(quote-candidate['entry']) > 1e-8:
@@ -2894,6 +2916,9 @@ REASON_UA = {
     'ANCHOR_COOLDOWN':'рівень ще на паузі',
     'STOP_INSIDE_NOISE':'стоп усередині цінового шуму',
     'DETECTOR_ERROR':'помилка аналізу цього сетапу',
+    'BASE_TREND_REFERENCES_MISSING':'для пробою бази потрібні EMA20 і повний сесійний VWAP',
+    'BASE_AGAINST_VWAP_EMA20':'пробій бази не узгоджується з EMA20 та VWAP',
+    'AGAINST_VWAP_EMA20':'ціна проти напрямку входу відносно EMA20 та VWAP',
     'DEPENDENT_ENTRY_ALREADY_RESERVED':'близький залежний вхід уже займає місце',
     'ICT_LIQUIDITY_SWEEP_NOT_CONFIRMED':'ліквідність позначено, але зняття та повернення ціни ще немає',
     'BETTER_LIMIT_CANCELLING_BEFORE_REPLACEMENT':'очікуємо підтвердження скасування слабшого ліміту',
@@ -3652,7 +3677,7 @@ def main(core) -> int:
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

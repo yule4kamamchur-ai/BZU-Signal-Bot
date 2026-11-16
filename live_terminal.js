@@ -199,7 +199,7 @@ function targetRatiosValid(row, rr1, rr2) {
 }
 function marketCandidate(row) {
   return row.order_type === 'MARKET' &&
-    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
      (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function validCandidate(row) {
@@ -210,14 +210,16 @@ function validCandidate(row) {
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
     'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','BREAKDOWN_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
-    'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION','CONSOLIDATION_BREAKOUT_BASE'];
+    'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION',
+    'CONSOLIDATION_BREAKOUT_BASE','VWAP_TREND_CONTINUATION','M5_SNIPER_REVERSAL'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
   if (!['low','high','entry','stop','tp1','tp2'].every(k=>number(row[k])&&row[k]>0)||!number(row.score)||row.score<0) return false;
   const risk=row.side*(row.entry-row.stop);
   const proximal=row.side===1?row.high:row.low;
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
-    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING'].includes(row.market_trigger.pattern) ?
+    (row.market_trigger.sniper_pullback ? pullbackQuoteAllowed(row, row.entry) :
+    ['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'].includes(row.market_trigger.pattern) ?
       Math.abs(row.entry - row.market_trigger.limit_entry) <= (row.market_trigger.max_distance ?? .20*row.market_trigger.initial_risk) + 1e-8 :
       row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
       row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
@@ -254,6 +256,13 @@ function followsBias(row) {
   return !state.primary_bias || row.side === state.primary_bias ||
     row.reversal_override === true;
 }
+function pullbackQuoteAllowed(row, price) {
+  const level = row.market_trigger?.limit_entry ?? row.entry;
+  const tolerance = row.market_trigger?.max_distance ?? row.market_pullback_max;
+  const distal = row.side === 1 ? row.low : row.high;
+  return number(price) && number(tolerance) && row.side * (price-distal) >= -1e-8 &&
+    row.side * (price-level) <= tolerance + 1e-8;
+}
 function actionablePlan(row, price, tracking = false) {
   if (row.actionable !== true || row.execution_admitted !== true || !['A','B+'].includes(row.grade) ||
       row.status !== 'CANDIDATE' || row.gate_reason || !['LIMIT','REACTION_M5','MARKET'].includes(row.tactic) ||
@@ -261,7 +270,9 @@ function actionablePlan(row, price, tracking = false) {
       (state.organic_risk_profile?.model === 'ORGANIC_OIL_V32' && !organicPlan(row))) return false;
   const stage = livePlanState(row, price);
   if (marketCandidate(row)) {
-    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING'].includes(row.market_trigger.pattern))
+    if (row.market_trigger.sniper_pullback)
+      return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) && pullbackQuoteAllowed(row, price);
+    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'].includes(row.market_trigger.pattern))
       return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
         number(price) && Math.abs(price-row.market_trigger.limit_entry) <= row.market_trigger.max_distance + 1e-8;
     const risk = row.side * (row.entry - row.stop);
@@ -498,7 +509,8 @@ function closedM5Pattern(row, bars, tick) {
 function m5QuotePlan(row, price) {
   const settings = state.reaction_config ?? {};
   const risk = row.side * (price - row.stop);
-  const projected = row.institutional_family && row.target_projection;
+  const strictPullback = number(row.market_pullback_max);
+  const projected = !strictPullback && row.institutional_family && row.target_projection;
   const tp1 = projected?.tp1 ? price + row.side*1.45*risk : row.tp1;
   const tp2 = projected?.tp2 ? price + row.side*1.90*risk : row.tp2;
   const rr = risk > 0 ? row.side * (tp1 - price) / risk : 0;
@@ -509,7 +521,8 @@ function m5QuotePlan(row, price) {
   const maxChase = (settings.max_chase_r ?? .25) * plannedRisk;
   const floor = organicPlan(row) ? row.organic_risk.floor ?? Math.max(1.15, Math.round(price*1.25)/100) : row.risk_floor ?? .22;
   const cap = organicPlan(row) ? row.organic_risk.cap ?? Math.max(2.10, Math.round(price*2.2)/100) : row.risk_cap ?? .65;
-  if (move < 0 || move > maxChase || risk < floor - 1e-8 || risk > cap + 1e-8 ||
+  const near = strictPullback ? pullbackQuoteAllowed(row, price) : move >= 0 && move <= maxChase;
+  if (!near || risk < floor - 1e-8 || risk > cap + 1e-8 ||
       !targetRatiosValid(row, rr, rr2) ||
       (organicPlan(row) ? rr <= (price + tp1) * (settings.taker_fee ?? 0) / risk :
         rr2 - costs / risk < (settings.min_net_rr ?? 1.8) - 1e-8)) return null;
@@ -623,8 +636,10 @@ function conditionText(row, price) {
       (row.low <= price && price <= row.high ? '. Для входу потрібні допуск і закрита реакція M5.' : '.');
   }
   if (marketCandidate(row)) {
+    if (row.market_trigger.pattern === 'M5_SNIPER_REVERSAL') return 'Закрита M5 підтвердила розворот після свіпу ліквідності.';
     if (row.market_trigger.pattern === 'M15_BREAKDOWN_MOMENTUM') return 'Закрита M15 підтвердила імпульсний пробій підтримки.';
-    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING'].includes(row.market_trigger.pattern)) return 'Закрита M15 підтвердила продовження від робочої зони.';
+    if (row.market_trigger.pattern === 'M5_ZONE_ENGULFING') return 'Закрита M5 підтвердила відбій від зони.';
+    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE'].includes(row.market_trigger.pattern)) return 'Закрита M15 підтвердила продовження від робочої зони.';
     return ['POST_TOUCH_REJECTION','M15_LEVEL_REJECTION'].includes(row.market_trigger.pattern) ? 'Зафіксовано відбій від зони.' :
       row.market_trigger.pattern === 'BREAKOUT_CONTINUATION' ? 'Підтверджено імпульсний пробій.' : 'Ціна в межах допуску зони.';
   }
@@ -879,7 +894,7 @@ function management(order, tracker, price, usable) {
   }
   if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
   if (order.position_guard?.mode === 'ROUND_TRIP') return 'Round-Trip активний. Вихід при +0.10R або нижче.';
-  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Структурний вихід після 45 хвилин при підтвердженому зламі M15 та просадці від −0.35R.';
+  if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Структурний вихід після 2 годин. Потрібні два закриття M15 за свінгом і ціна за EMA20 та VWAP.';
   if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп вичерпано. Чекаємо підтвердження дії за журналом.';
   if (order.position_guard?.mode === 'STALE_TIGHTENED') return 'Тайм-стоп застосовано. Чинний SL ' + format(order.stop) + '.';
   return 'Зберігаємо поточний стоп до TP1 ' + format(order.tp1) + '.';

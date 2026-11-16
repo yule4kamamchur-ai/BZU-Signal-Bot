@@ -9,13 +9,14 @@ M5 = 300_000
 EARLY_M15_RECLAIM = 'M15_BOS_EMA20_ATR'
 STRUCTURE_LOOKBACK = 96
 BREAKDOWN = "BREAKDOWN_RECLAIM"
+SNIPER_REVERSAL = "M5_SNIPER_REVERSAL"
 BASE = "CONSOLIDATION_BREAKOUT_BASE"
 VWAP_CONTINUATION = "VWAP_TREND_CONTINUATION"
 BREAKDOWN_MAX_AGE = 2 * M15
 REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
 TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION})
-REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN})
+REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN, SNIPER_REVERSAL})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
 
@@ -385,6 +386,52 @@ def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
                 break
 
 
+def sniper_reversals(snapshot, rows, tick, engine, atr):
+    """The latest closed M5 must engulf a sweep of an already known pool."""
+    if len(rows)<2 or atr<=0:
+        return
+    for index in range(max(1,len(rows)-3),len(rows)):
+        raid, confirmation = rows[index-1:index+1]
+        if raid.ts+M5==confirmation.ts and 0<=snapshot.now-confirmation.ts-M5<M15:
+            yield from _sniper_sweep(snapshot,raid,confirmation,rows[index+1:],tick,engine,atr)
+
+
+def _sniper_sweep(snapshot, raid, confirmation, later, tick, engine, atr):
+    import directional_policy as direction
+
+    known = confirmation.ts+M5
+    before = replace(snapshot, now=raid.ts)
+    session_pools = [*ict.session_liquidity(before)['pools'], *direction.day_extrema(before)]
+    for side in (1,-1):
+        if not ict.reversal_engulfing(raid,confirmation,side,tick,M5):
+            continue
+        extreme = raid.low if side==1 else raid.high
+        suffix = 'LOW' if side==1 else 'HIGH'
+        daily_pools = [p for p in oil_risk.macro_extrema(snapshot,raid.ts,engine,side)
+                       if p.get('timeframe')=='D1']
+        pools = [p for p in [*session_pools,*daily_pools]
+                 if p['name'].endswith(suffix) and p['known_ts']<=raid.ts
+                 and tick-1e-8<=side*(p['level']-extreme)<=max(.20,.8*atr)
+                 and side*(confirmation.close-p['level'])>=tick-1e-8]
+        if not pools or any(side*((bar.low if side==1 else bar.high)-extreme)<-tick/2
+                            for bar in (confirmation,*later)):
+            continue
+        pool = min(pools,key=lambda p:abs(p['level']-extreme))
+        level = pool['level']
+        body = abs(confirmation.close-confirmation.open)
+        retest = engine.round_tick(round(confirmation.close-side*.35*body+tick/2,10),tick)
+        if side*(retest-extreme)<=tick/2:
+            continue
+        low, high = sorted((extreme,retest))
+        sweep = {'pool':pool['name'], 'level':level, 'extreme':extreme, 'side':side,
+                 'known_ts':known, 'reference_known_ts':pool['known_ts'], 'raid_ts':raid.ts,
+                 'pattern':'M5_SWEEP_ENGULFING', 'reclaim_close':confirmation.close}
+        zone = _zone(SNIPER_REVERSAL, side, low, high, confirmation, M5, retest,
+                     raid_ts=raid.ts, confirmation_close=confirmation.close,
+                     liquidity_level=level)
+        yield {**zone,'sweep':sweep}
+
+
 def _breakers(rows, cfg, engine):
     tick = cfg.tick
     swings = {(i, side): pivot for i, side, pivot, _
@@ -703,11 +750,12 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_sweep(m15, trend, M15, tick, engine))
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
+        results.extend(sniper_reversals(snapshot,m5,tick,engine,atr))
         vwap = vwap_continuation(snapshot, m15, trend, atr, tick, direction)
         if vwap:
             results.append(vwap)
         for offset in (0,1):
-            base = scanner.consolidation_base(m15[:len(m15)-offset],trend,cfg.tick,engine,require_breakout=True)
+            base = scanner.consolidation_base(m15[:len(m15)-offset],trend,cfg.tick,engine,require_breakout=True,snapshot=snapshot)
             if base and all(trend*(bar.close-(base['low'] if trend==1 else base['high']))>=-cfg.tick/2
                             for bar in m15[len(m15)-offset:]):
                 results.append(base)
@@ -743,6 +791,11 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
     """Consume the sweep that the planner already reconstructed from candles."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
+    if zone.get('kind') == SNIPER_REVERSAL:
+        return (sweep.get('side') == side and sweep.get('pattern') == 'M5_SWEEP_ENGULFING'
+                and 0 < sweep.get('reference_known_ts',0) <= sweep.get('raid_ts',0)
+                and 0 <= snapshot.now-zone.get('known_ts',0) < M15
+                and side*(snapshot.price-sweep['extreme']) > tick/2)
     if zone.get('kind') == BREAKDOWN:
         return side == -1 and breakdown_intact(zone,snapshot,tick)
     if zone.get('kind') in ('MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM'):

@@ -76,7 +76,7 @@ STALE_MFE = .60
 STALE_STOP_R = .35
 STALE_BARS = 24
 REPLACEMENT_BARS = 16
-ADVERSE_HOLD_BARS = 3
+ADVERSE_HOLD_BARS = 8
 ADVERSE_EXIT_R = -.35
 EPS = 1e-8
 
@@ -137,6 +137,32 @@ def backfill(position, snapshot, checkpoint):
     update_trade_excursions(position, snapshot.candles.get('15m', ()), as_of)
 
 
+def partial_taken(position):
+    return bool(position.get('tp1_hit') or position.get('partial_tp1_hit'))
+
+
+def adverse_close_pair(position, snapshot, tick, engine):
+    """Require two closes beyond one pivot known before the pair."""
+    rows = _recent(snapshot,'15m',24)
+    if not rows:
+        return None
+    first, last = rows[-2:]
+    step = STEPS['15m']
+    if first.ts < (position.get('filled_ts') or position.get('placed_ts') or snapshot.now):
+        return None
+    ema, vwap = engine.policy.trend_references(snapshot)
+    side = position['side']
+    if ema is None or vwap is None or any(side*(last.close-x)>=0 for x in (ema,vwap)):
+        return None
+    kind = 'LOW' if side==1 else 'HIGH'
+    swing = next((p for p in reversed(engine.pivots(rows[:-2],strength=2))
+                  if p['kind']==kind and p['known_ts']+step<=first.ts),None)
+    if not swing or any(side*(bar.close-swing['level'])>-tick+EPS for bar in (first,last)):
+        return None
+    return {'known_ts':last.ts+step, 'level':swing['level'],
+            'ema20':ema, 'session_vwap':vwap}
+
+
 def observe_structure(position, snapshot, ts, cfg, engine):
     if snapshot is None:
         return
@@ -146,6 +172,12 @@ def observe_structure(position, snapshot, ts, cfg, engine):
     position['protection_structure_bucket'] = bucket
     entered = position.get('filled_ts') or ts
     as_of = replace(snapshot, now=ts)
+    if oil_risk.enabled(cfg):
+        pair = adverse_close_pair(position,as_of,cfg.tick,engine)
+        if pair is None:
+            position.pop('adverse_close_pair',None)
+        else:
+            position['adverse_close_pair'] = pair
     rows = _recent(as_of, '15m', 15)
     atr = engine.atr(rows[:-1])
     position.pop('adverse_impulse_ts', None)
@@ -189,7 +221,7 @@ def guard(position, ts):
     regime = position.get('position_regime', 'UNKNOWN')
     regime_opposes = position.get('position_regime_side') == -position['side']
     confirmed_break = adverse_structure(position, ts)
-    if position.get('tp1_hit'):
+    if partial_taken(position):
         mode = 'POST_TP1'
     elif position.get('stale_stop') is not None:
         mode = 'STALE_TIGHTENED'
@@ -213,25 +245,29 @@ def guard(position, ts):
             'round_trip_trigger_r': .10, 'round_trip_mfe_r': ROUND_TRIP_MFE,
             'stale_mfe_r': STALE_MFE, 'structure': 'ADVERSE' if confirmed_break else (
                 'COUNTER_TREND' if regime_opposes else position.get('position_structure_status', 'UNKNOWN')),
-            'adverse_exit_r': ADVERSE_EXIT_R, 'regime': regime}
+            'adverse_hold_bars': ADVERSE_HOLD_BARS,
+            'adverse_close_pair': position.get('adverse_close_pair'), 'regime': regime}
 
 
 def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
     """Decide from information already known at the executable observation."""
     decision = {'should_exit': False, 'exit_reason': None, 'stop': None}
-    if position['risk'] <= 0:
+    if position['risk'] <= 0 or partial_taken(position):
         return decision
     info = guard(position, ts)
     side, entry, risk = position['side'], position['entry'], position['risk']
     bars, peak, rr = info['bars_in_trade'], info['max_favorable_r'], current_r(position, price)
-    swing = position.get('protection_structure_level')
-    beyond_swing = swing is None or side*(price-swing)<=EPS
-    adverse_exit = (bars >= ADVERSE_HOLD_BARS and info['structure'] == 'ADVERSE'
-                    and beyond_swing and rr <= ADVERSE_EXIT_R + EPS)
-    if position.get('tp1_hit'):
-        if adverse_exit:
-            return dict(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT',stop=None)
-        return decision
+    if oil_risk.enabled(cfg):
+        proof = position.get('adverse_close_pair')
+        adverse_exit = bool(bars >= ADVERSE_HOLD_BARS and proof and
+                            0 <= ts-proof['known_ts'] < STEPS['15m']
+                            and all(side*(price-proof[key]) < 0
+                                    for key in ('level','ema20','session_vwap')))
+    else:
+        swing = position.get('protection_structure_level')
+        beyond_swing = swing is None or side*(price-swing)<=EPS
+        adverse_exit = (bars >= 3 and info['structure']=='ADVERSE' and
+                        beyond_swing and rr <= ADVERSE_EXIT_R+EPS)
     reason = None
     if bars >= STALE_BARS and peak < STALE_MFE - EPS:
         stop = engine.round_tick(round(entry - side * STALE_STOP_R * risk + cfg.tick / 2, 10), cfg.tick)
@@ -259,7 +295,7 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
 
 def bounce_breakeven(position, snapshot, ts, price, tick):
     """Return the newly confirmed adverse M15 engulfing timestamp."""
-    if (snapshot is None or position.get('tp1_hit')
+    if (snapshot is None or partial_taken(position)
             or metrics(position,ts)['max_favorable_r'] < .40-EPS):
         return None
     side = position['side']

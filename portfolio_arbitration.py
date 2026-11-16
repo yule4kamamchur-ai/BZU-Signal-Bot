@@ -83,9 +83,9 @@ def cluster_rank(plan, snapshot, tick):
 
 def should_reverse_on_exhaustion_peak(position, candidates, snapshot, cfg, engine):
     """Release a profitable incumbent only for an executable opposite signal."""
-    from position_monitor import current_r
+    from position_monitor import current_r, partial_taken
 
-    if position.get('tp1_hit') or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask:
+    if partial_taken(position) or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask:
         return None
     side = position['side']
     quote = snapshot.bid if side == 1 else snapshot.ask
@@ -111,10 +111,10 @@ def should_reverse_on_exhaustion_peak(position, candidates, snapshot, cfg, engin
 
 
 def stale_replacement(position, candidates, snapshot, cfg, engine):
-    from position_monitor import REPLACEMENT_BARS, current_r, duration
+    from position_monitor import REPLACEMENT_BARS, current_r, duration, partial_taken
 
     filled = position.get('filled_ts')
-    if filled is None or position.get('tp1_hit') or duration(position, snapshot.now)[1] < REPLACEMENT_BARS:
+    if filled is None or partial_taken(position) or duration(position, snapshot.now)[1] < REPLACEMENT_BARS:
         return None
     exit_quote = snapshot.bid if position['side'] == 1 else snapshot.ask
     if (not 0 < snapshot.bid <= snapshot.ask or abs(current_r(position, exit_quote)) > .15 + 1e-8

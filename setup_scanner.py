@@ -94,7 +94,12 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING'):
+        if trigger.get('sniper_pullback'):
+            distal = low if side==1 else high
+            if (side*(entry-distal)<-1e-8 or
+                    side*(entry-trigger['limit_entry'])>trigger['max_distance']+1e-8):
+                return 'MARKET_CHASE_LIMIT'
+        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL'):
             if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -216,9 +221,23 @@ def reversal_market_trigger(snapshot, zone, quote, confirmation_ts):
     return None
 
 
+def structural_pullback(zone):
+    kind = zone.get('kind', '')
+    return kind in ('SR_FLIP_RECLAIM','RECLAIM_BREAKER',wave.VWAP_CONTINUATION,
+                    'M5_IMPULSE_OB','CONTINUATION_PULLBACK','BULLISH_BREAKER','BEARISH_BREAKER',
+                    'BULL_BREAKER','BEAR_BREAKER','BREAKER_BULL','BREAKER_BEAR') or any(
+                        name in kind for name in ('FVG','_OB','ORDER_BLOCK','BREAKER_BLOCK','BREAKER_FLIP'))
+
+
+def pullback_quote_allowed(side, level, distal, quote, atr):
+    """Allow executable quotes at/better than the adjacent edge of a retest."""
+    return (quote > 0 and atr > 0 and side*(quote-distal) >= -1e-8
+            and side*(quote-level) <= .12*atr+1e-8)
+
+
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -818,7 +837,7 @@ ORGANIC_REVERSAL = 'SESSION_SWEEP_ENGULFING_15M'
 ORGANIC_FORMATIONS = ORGANIC_MOMENTUM | {ORGANIC_REVERSAL}
 
 
-def consolidation_base(rows, side, tick, engine, *, prospective=False, require_breakout=False):
+def consolidation_base(rows, side, tick, engine, *, prospective=False, require_breakout=False, snapshot=None):
     """Find a closed trend impulse, a 4–10 bar base, and its fresh M15 trigger."""
     from strategy_organics import ema20
 
@@ -828,6 +847,15 @@ def consolidation_base(rows, side, tick, engine, *, prospective=False, require_b
     if signal and side*(signal.close-signal.open)<tick-1e-8:
         return None
     history = rows if prospective else rows[:-1]
+    vwap = None
+    if snapshot is not None:
+        from dataclasses import replace
+        from directional_policy import trend_references
+        close_ts = rows[-1].ts + wave.M15
+        as_of = replace(snapshot, now=close_ts)
+        ema, vwap = trend_references(as_of)
+        if ema is None or vwap is None or side*(rows[-1].close-ema)<=0 or side*(rows[-1].close-vwap)<=0:
+            return None
     for count in range(10,3,-1):
         base = history[-count:]
         impulse = history[-count-3:-count]
@@ -845,8 +873,10 @@ def consolidation_base(rows, side, tick, engine, *, prospective=False, require_b
         low,high = min(c.low for c in base),max(c.high for c in base)
         if not 2*tick-1e-8<=high-low<=1.+1e-8:
             continue
-        extremes = [bar.low if side==1 else bar.high for bar in base[-3:]]
-        if any(side*(b-a)<-tick/2 for a,b in zip(extremes,extremes[1:])):
+        levels = base if snapshot is not None else base[-3:]
+        extremes = [bar.low if side==1 else bar.high for bar in levels]
+        minimum_step = tick/2 if snapshot is not None else -tick/2
+        if any(side*(b-a)<minimum_step for a,b in zip(extremes,extremes[1:])):
             continue
         edge = high if side==1 else low
         middle = engine.round_tick(round((low+high)/2,10),tick,up=side==1)
@@ -895,6 +925,8 @@ def institutional_family(kind):
         return 'SR_FLIP_RECLAIM'
     if any(key in kind for key in ('CONSOLIDATION', 'FLAG_RETEST', 'BOS_CONTINUATION')):
         return 'HIGH_TIGHT_BREAKOUT'
+    if kind == wave.SNIPER_REVERSAL:
+        return 'LIQUIDITY_SWEEP_REV'
     if any(key in kind for key in ('SWEEP_REV', 'TURTLE', 'SWEEP_RECLAIM', 'SWEEP_ENGULF', 'MULTIBAR_SWEEP', 'LIQUIDITY_SWEEP', 'SESSION_OB')):
         return 'LIQUIDITY_SWEEP_REV'
     if any(key in kind for key in ('BREAKER', 'CHOCH', 'MSS')):
@@ -925,7 +957,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         if brent and retired_brent_setup(family, setup):
             continue
         proximal = zone['high'] if side == 1 else zone['low']
-        raw_entry = (zone['reference'] if family in wave.TREND_ZONES else
+        raw_entry = (zone['reference'] if family in wave.TREND_ZONES or family==wave.SNIPER_REVERSAL else
                      (zone['low'] + zone['high']) / 2 if family in ('DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M', 'CONTINUATION_PULLBACK')
                      else proximal)
         entry = engine.round_tick(round(raw_entry + cfg.tick/2, 10), cfg.tick)

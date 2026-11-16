@@ -430,6 +430,23 @@ def m5_reaction_market_trigger(snapshot, side, zone, entry, risk, quote, tick, e
     return None
 
 
+def sniper_reversal_trigger(snapshot, side, zone, entry, risk, quote, atr, tick):
+    from market_wave import M5, SNIPER_REVERSAL, reversal_override
+
+    if (zone.get('kind') != SNIPER_REVERSAL
+            or not reversal_override(side,zone,snapshot,tick)
+            or not snapshot.trusted or risk<=0 or quote<=0
+            or not 0 <= snapshot.now-snapshot.ticker_ts <= 120_000
+            or not 0 <= snapshot.ticker_ts-zone['known_ts'] < M5):
+        return None
+    close = zone['wave_proof']['confirmation_close']
+    span = max(tick,.12*atr)
+    if abs(quote-close)>span+1e-8:
+        return None
+    return {'pattern':'M5_SNIPER_REVERSAL','known_ts':zone['known_ts'],
+            'initial_risk':risk,'limit_entry':close,'retest_entry':entry,'max_distance':span}
+
+
 def breakdown_limit_distance(zone):
     atr = (zone.get('wave_proof') or {}).get('breakdown_atr') or 0
     return max(.10,min(.50,atr))

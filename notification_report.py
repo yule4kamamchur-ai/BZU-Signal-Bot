@@ -150,8 +150,8 @@ def position_diagnostics(position, now, cfg, engine, *, frozen=False):
             outcome = 'діє перевірка рівня −0.35R'
         lines.append(f'🚨 Тайм-стоп {moment} вичерпано (прострочено на {duration_text(now-deadline)}) · {outcome}.')
     if mode == 'ADVERSE_CHOCH' or view['structure'] in ('ADVERSE', 'COUNTER_TREND'):
-        lines.append('Структура або режим проти позиції. Структурний вихід після 45 хвилин '
-                     'за підтвердженого зламу M15 та просадки від −0.35R.')
+        lines.append('Структура або режим проти позиції. Для Brent структурний вихід після 2 годин '
+                     'потребує двох закриттів M15 за свінгом і ціни за EMA20 та VWAP.')
     if view['max_favorable_r'] >= view['round_trip_mfe_r'] - 1e-8 and now >= view['round_trip_at']:
         lines.append(f"Round-Trip активний від входу {position['entry']:.8g}. Вихід при +0.10R або нижче.")
     elif now < view['round_trip_at'] or mode == 'OBSERVING':

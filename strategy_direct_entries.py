@@ -119,6 +119,11 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     from directional_policy import closed
 
     low, high = zone['low'], zone['high']
+    if zone['kind'] in ('VWAP_TREND_CONTINUATION','SR_FLIP_RECLAIM','RECLAIM_BREAKER'):
+        entry = engine.round_tick(round(zone['reference']+side*.03,10),tick)
+        return entry, 'STRUCTURAL_REFERENCE_BUFFER'
+    if zone['kind'] == 'M5_SNIPER_REVERSAL':
+        return zone['reference'], 'M5_ENGULFING_RETEST'
     if (any(token in zone['kind'] for token in ('FVG', 'DEMAND_OB', 'SUPPLY_OB', 'FLIP_RECLAIM', 'RECLAIM_BREAKER'))):
         edge = zone.get('reference', high if side == 1 else low) if 'RECLAIM' in zone['kind'] else (high if side == 1 else low)
         return engine.round_tick(round(edge + side*.04,10),tick), 'ZONE_EDGE_BUFFER'
