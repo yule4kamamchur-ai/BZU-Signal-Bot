@@ -64,6 +64,8 @@ def build(state, snapshot, result, cfg, engine):
             'setup': plan.get('source_strategy') or plan.get('setup'),
             'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
             'tp1': engine.bzu_policy.partial_target(plan),
+            'missed_target_level': None if active else engine.bzu_policy.missed_target_level(plan),
+            'target_cancel_armed': not active and plan.get('target_cancel_armed', True),
             'qualification_tp1': plan.get('tp1'), 'scale_policy': plan.get('scale_policy'),
             'institutional_family': plan.get('institutional_family'), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),
@@ -399,7 +401,9 @@ def build(state, snapshot, result, cfg, engine):
     if healthy and oil_risk.enabled(cfg):
         focus = analysis.get('scenario_plan') or engine.scenario_planner.focus(
             snapshot,cfg,engine,regime,orders=plans,admitted=admitted,action=result.get('action'))
-    ranked_zones = sorted(all_zones,key=lambda z:(not bool(z.get('order_id')),
+    ranked_zones = sorted((z for z in all_zones if z.get('status') != 'CANCELLING'
+                          and by_order.get(z.get('order_id'), {}).get('status') != 'CANCELLING'),
+                         key=lambda z:(not bool(z.get('order_id')),
         not z['actionable'], z['side']!=primary_side if primary_side else False,
         z.get('risk_gate')=='EXHAUSTED_MOVE', abs(snapshot.price-z['entry']),-z['score']))
     scanner_top = [primary] if primary else []

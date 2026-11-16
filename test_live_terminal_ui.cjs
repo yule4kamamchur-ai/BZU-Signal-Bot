@@ -325,5 +325,26 @@ ctx.fixtureBackup=cleanFixture;
  feed(98.98,1000);
  assert.match(text('entry-scenarios'),/Рівень стопа пройдено/);
  assert.equal(run('state.orders.length'),1);
+
+ // #208 is suppressed from the chart and scanner while the ledger reconciles.
+ reset(-1,{entry:90.94,low:90.97,high:91.15,stop:91.59,tp1:89.99,tp2:89.7});
+ run(`state.cockpit_schema=5;
+      state.orders=[{...orderFixture,id:"order-208",number:208,side:-1,entry:91.49,stop:92.47,
+        tp1:90.51,tp2:89.62,risk:.98,entry_max_distance:2.2,missed_target_level:90.706,
+        target_cancel_armed:true,expires_ts:Date.now()+3600000}];
+      state.scanner_top=[{...state.candidates[0],id:"old-zone",order_id:"order-208",entry:91.49},
+        state.candidates[0]];`);
+ feed(90.78,1000);
+ assert.ok(priceLines.some(l=>l.title.includes('#208')));
+ assert.match(text('zones'),/Лімітка/);
+ feed(90.70,1000);
+ assert.doesNotMatch(text('state-pill'),/ВИСТАВЛЕНА/);
+ assert.match(text('state-title'),/ЗВІРКИ ЛІМІТКИ/);
+ assert.ok(priceLines.every(l=>!l.title.includes('#208')));
+ assert.doesNotMatch(text('zones'),/91.49/);
+ assert.match(text('zones'),/90.94/);
+ run('state.orders=[];render();');
+ assert.doesNotMatch(text('state-title'),/ЗВІРКИ ЛІМІТКИ/);
+ assert.match(text('zones'),/90.94/);
  console.log('PASS: offline UI lifecycle, actionable radar, chart cleanup and live entry scenarios.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -445,7 +445,9 @@ function observeLive(market) {
     notify(row,t,'ZONE_SL','SL плану '+format(row.stop)+' пробито · зону списано локально');
   }
   for (const row of [...poolRows().filter(row => !row.order_id), ...state.orders.filter(order => order.status === 'PENDING')]) {
-    if (number(row.tp1) && row.side * (market.price - row.tp1) >= -1e-8) {
+    const spent = row.status === 'PENDING' ? pendingTargetReached(row, market.price) :
+      number(row.tp1) && row.side * (market.price - row.tp1) >= -1e-8;
+    if (spent) {
       exhaustedPlans.add(exhaustionKey(row));
     }
   }
@@ -655,18 +657,32 @@ function conditionText(row, price) {
   return row.tactic === 'REACTION_M5' ? 'Чекаємо підходу та відбою на закритій M5.' : 'Чекаємо підходу до рівня лімітки.';
 }
 
+function pendingTargetReached(order, price) {
+  if (orderTracker(order).touch) return false;
+  if (!number(order.missed_target_level)) return targetExhausted(order, price);
+  return order.target_cancel_armed !== false &&
+    (exhaustedPlans.has(exhaustionKey(order)) ||
+      number(price) && order.side * (price - order.missed_target_level) >= -1e-8);
+}
+function pendingInvalidation(order, price) {
+  if (number(order.expires_ts) && order.expires_ts <= Date.now())
+    return 'Строк лімітки минув. Чекаємо оновлення журналу.';
+  if (pendingTargetReached(order, price))
+    return 'Рух досяг порога скасування. Чекаємо звірки виконання за журналом.';
+  if (!number(order.entry) || Math.abs(price - order.entry) > maximumDistance(order) + 1e-8)
+    return 'Рівень лімітки вийшов за робочу відстань. Чекаємо оновлення журналу.';
+  return null;
+}
 function pendingIsCurrent(order, price) {
-  return number(order.entry) && !targetExhausted(order, price) &&
-    Math.abs(price - order.entry) <= maximumDistance(order) + 1e-8;
+  return !pendingInvalidation(order, price);
 }
 function chartOrders() {
   const price = displayedPrice();
   return state.orders.filter(order => order.status === 'OPEN' ||
-    (order.status === 'PENDING' && pendingIsCurrent(order, price) &&
-      (!number(order.expires_ts) || order.expires_ts > Date.now())));
+    (order.status === 'PENDING' && pendingIsCurrent(order, price)));
 }
 function chartPlan() {
-  if (state.orders.length) return null;
+  if (chartOrders().length) return null;
   return mainPlan();
 }
 function visibleZones() {
@@ -725,10 +741,17 @@ function renderEntryScenarios(price, isLive) {
   }
 }
 
+function scannerRows(price) {
+  return (state.scanner_top ?? state.zones.slice(0,5)).filter(zone => {
+    if (!zone.order_id) return true;
+    const order = state.orders.find(row => row.id === zone.order_id);
+    return order?.status === 'OPEN' || (order?.status === 'PENDING' && pendingIsCurrent(order, price));
+  });
+}
 function renderZones(price) {
   const container = $('zones');
   container.replaceChildren();
-  const visible = state.scanner_top ?? state.zones.slice(0,5);
+  const visible = scannerRows(price);
   $('zone-count').textContent = visible.length + ' зон';
   const focusable = chartPlan()?.id;
   for (const z of visible) {
@@ -738,8 +761,7 @@ function renderZones(price) {
     name.append(element('strong', (z.timeframe ?? '') + ' ' + zoneName(z.kind)),
       element('small', sideLabel(z.side) + ' · ' + format(z.low) + '–' + format(z.high)));
     const approved = ready(Date.now()) && actionablePlan(z, price);
-    const order = state.orders.find(o => o.id === z.order_id || (o.side === z.side &&
-      number(z.entry) && Math.abs(o.entry-z.entry) < (state.tick ?? .01)/2));
+    const order = state.orders.find(o => o.id === z.order_id);
     const risk = z.side*(z.entry-z.stop);
     const status = order?.status === 'PENDING' ? 'Лімітка' : order?.status === 'OPEN' ? 'В угоді' :
       targetExhausted(z, price) ? 'Ціль пройдена' : livePlanState(z,price)==='INVALID' ? 'SL пробито' :
@@ -951,7 +973,7 @@ function renderBanner(price, usable, live) {
   let pill = focus?.primary?.status === 'DEVELOPING' ? 'СЕТАП У РОЗРОБЦІ' : 'ПОШУК ТОЧКИ ВХОДУ';
   let title = focus?.headline ?? 'ОЧІКУЄМО УГОДУ';
   let detail = focus?.market?.phase_text ?? 'Готових сетапів немає.';
-  const reference = state.scanner_top?.[0];
+  const reference = state.scanner_top && scannerRows(price)[0];
   if (usable && reference && !candidate) {
     title = 'СПОСТЕРЕЖЕННЯ ' + sideLabel(reference.side) + ' • Робоча зона ' + format(reference.entry) +
       ' (Стоп ' + format(reference.stop) + ' | Тейк ' + format(reference.tp1) + ')';
@@ -990,13 +1012,14 @@ function renderBanner(price, usable, live) {
     detail = 'Очікуємо виконання лімітки.';
     if (tracker.touch) detail = 'Ціна торкнулася входу, чекаємо підтвердження виконання.';
     if (tracker.end) detail = management(pending, tracker, price, usable);
-    if (!pendingIsCurrent(pending, price)) {
+    const invalidation = pendingInvalidation(pending, price);
+    if (invalidation) {
+      pill = 'ЗВІРКА ЛІМІТКИ';
       title = 'ЧЕКАЄМО ЗВІРКИ ЛІМІТКИ';
-      detail = targetExhausted(pending, price) ?
-        'Першу ціль уже пройдено. Статус лімітки уточнюється за журналом.' :
-        'Рівень лімітки вийшов за робочу відстань. Чекаємо оновлення журналу.';
+      detail = invalidation;
     }
   } else if (state.orders.length) {
+    pill = 'ЗВІРКА ЛІМІТКИ';
     title = 'СКАСУВАННЯ ЛІМІТКИ';
     detail = 'Чекаємо підтвердження скасування за журналом.';
   } else if (closed?.kind === 'CLOSED' && number(closed.ts) &&
@@ -1505,6 +1528,11 @@ setInterval(() => {
   for (const node of document.querySelectorAll('[data-trade-entered]')) tradeDeadline(node, now);
   const live=quote && now-quote.ts<=QUOTE_MAX_AGE && quote.ts<=now+3000;
   renderBanner(price,ready(now),live); renderReaction(ready(now),live);
+  if (state.orders.some(order => order.status === 'PENDING' && number(order.expires_ts) &&
+      order.expires_ts <= now && order.expires_ts > now - 2000)) {
+    renderZones(price);
+    drawLevels();
+  }
 },1000);
 setInterval(pollTicker, 3000);
 setInterval(pollState, 30_000);

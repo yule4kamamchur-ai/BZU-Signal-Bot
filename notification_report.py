@@ -236,7 +236,8 @@ def build(state, snapshot, result, cfg, engine):
         latest=rotations[-1]
         old_label=engine.display_order(state,latest.get('replaced_id',''))
         new_label=engine.display_order(state,latest.get('replacement_id',''))
-        lines += [f'Заміна ліміту: {old_label} → {new_label}; в одному циклі, без третього ордера.']
+        label = 'Вхід MARKET після зняття ліміту' if latest.get('order_type') == 'MARKET' else 'Заміна ліміту'
+        lines += [f'{label}: {old_label} → {new_label} • без третього ордера.']
     elif state.get('portfolio_rotation_intent') and not frozen:
         intent=state['portfolio_rotation_intent']
         if intent.get('status')=='PREPARED_WAIT_RECONCILIATION':
@@ -348,7 +349,10 @@ def build(state, snapshot, result, cfg, engine):
             reason=event.get('reason')
             if reason=='REPLACED_BY_CLOSER_SETUP':
                 text += ' • ближчий підтверджений сетап'
-            elif reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED','CAPITULATION_RECOVERY_LOST','PORTFOLIO_DIRECTION_CONFLICT','BETTER_OPPOSING_SCENARIO','LEGACY_PENDING_EXCESS_CAP_2'):
+            elif reason in ('DAILY_RISK_LIMIT_REACHED','LEVEL_PASSED_WHILE_UNARMED','EXECUTION_CONTROL_REVERSED',
+                            'CAPITULATION_RECOVERY_LOST','PORTFOLIO_DIRECTION_CONFLICT','BETTER_OPPOSING_SCENARIO',
+                            'LEGACY_PENDING_EXCESS_CAP_2', 'CANCEL_TARGET_REACHED_WITHOUT_FILL',
+                            'DYNAMIC_TREND_TRAILING_REPLACE', 'LIMIT_TTL'):
                 text += ' • '+engine.REASON_UA[reason]
         lines += [f"{engine.display_order(state, order_id)} • {text}"]
     represented = {p['id'] for p in active+pending+cancelling} | set(closed) | set(no_entry)

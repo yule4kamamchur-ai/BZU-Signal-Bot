@@ -271,7 +271,7 @@ class MinuteLifecycle(unittest.TestCase):
         state=book(p,cfg)
         advance(state,cfg,[bar(NOW,100.5,p['tp1']+.02,100.4,100.5)])
         self.assertFalse(e.pending_plans(state));self.assertFalse(state['trades'])
-        self.assertEqual(state['orders'][0]['reason'],'TARGET_REACHED_WITHOUT_FILL')
+        self.assertEqual(state['orders'][0]['reason'],e.MISSED_TARGET_REASON)
 
     def test_minute_gap_freezes_lifecycle_checkpoint(self):
         snap,cfg,ctx,a,p=fixture()

@@ -33,6 +33,7 @@ VERSION = "full-ict-v14.0.0-intraday"
 REPORT_RELEASE = 'v14.0.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
+MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
 import signal_quality as quality
 import setup_scanner as scanner
 import price_forecast
@@ -1688,6 +1689,17 @@ def paper_limit_touch(plan, candle, cfg):
     return plan['side']*(extreme-plan['entry']) <= tolerance+1e-8
 
 
+def missed_target_on_bar(plan, candle, cfg, target):
+    side = plan['side']
+    opened_past_target = side * (candle.open - target) >= -1e-8
+    armed = plan.get('target_cancel_armed', True) or not opened_past_target
+    plan['target_cancel_armed'] = armed or side * (candle.close - target) < -1e-8
+    extreme = candle.high if side == 1 else candle.low
+    # If both levels are inside the bar, its extremes cannot prove target first.
+    return (armed and side * (extreme - target) >= -1e-8
+            and (opened_past_target or not paper_limit_touch(plan, candle, cfg)))
+
+
 def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True, *, entry_gates_checked=False) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
     tf, step = execution_series(s)
@@ -1719,14 +1731,14 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         if cancel_ts and c.ts >= cancel_ts:
             end_order(state, p, "CANCELLED", p["cancel_reason"], cancel_ts)
             continue
+        if c.ts >= p["expires_ts"]:
+            end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
+            continue
         if not entry_gates_checked and bzu_policy.is_precision(p):
             gate = pending_entry_gate(p, state['trades'], replace(s, now=c.ts, price=c.open), cfg)
             if gate:
                 end_order(state, p, 'CANCELLED', gate, c.ts)
                 continue
-        if c.ts >= p["expires_ts"]:
-            end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
-            continue
         permitted = allow_fill and (entry_gates_checked or
             not hold_pending_approach(p,replace(s,now=c.ts,price=c.open),cfg))
         fill = permitted and (c.low <= p["entry"]-cfg.tick+cfg.tick*1e-8 if p["side"] == 1 else c.high >= p["entry"]+cfg.tick-cfg.tick*1e-8)
@@ -1739,21 +1751,15 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         # TTL inside a candle: order of fill vs expiry is unknowable from OHLC.
         if end > p["expires_ts"]:
             end_order(state, p, "UNRESOLVED" if fill else "EXPIRED",
-                      "EXPIRY_INSIDE_BAR" if fill else "LIMIT_TTL", p["expires_ts"])
+                      "EXPIRY_INSIDE_BAR" if fill else p.get('expiry_reason', 'LIMIT_TTL'), p["expires_ts"])
             continue
         if bzu_policy.is_new(p):
             fill = permitted and (p.get('action_type')=='ACTIVE_ENTRY' or
                 paper_limit_touch(p,c,cfg))
-            target = p['tp1']
-            target_hit = c.high>=target if p['side']==1 else c.low<=target
-            before_fill = p['side']*(c.open-target)>=0
-            armed=p.get('target_cancel_armed',True)
-            if p['side']*(c.open-target)<0:
-                armed=True
-            if target_hit and armed and (not fill or before_fill):
-                end_order(state,p,'CANCELLED','TARGET_REACHED_WITHOUT_FILL',end)
+            target = bzu_policy.missed_target_level(p)
+            if target is not None and not cancel_ts and missed_target_on_bar(p,c,cfg,target):
+                end_order(state,p,'CANCELLED',MISSED_TARGET_REASON,end)
                 continue
-            p['target_cancel_armed']=armed or p['side']*(c.close-target)<0
         if fill:
             fill_reason = 'PAPER_ONE_TICK_PENETRATION'
             if oil_risk.enabled(cfg) and oil_risk.is_organic(p):
@@ -1833,6 +1839,35 @@ def pending_entry_gate(plan, trades, as_of, cfg):
             bzu_policy.breaker_structure_error(plan, as_of, cfg, sys.modules[__name__]))
 
 
+def prepare_pending_limits(state, snapshot, cfg):
+    """Apply the new wait limit and recover a missed excursion after upgrading."""
+    tf, step = execution_series(snapshot)
+    missed = set()
+    for plan in pending_plans(state):
+        target = bzu_policy.missed_target_level(plan)
+        if target is None:
+            continue
+        # A previously committed interval still belongs to the old expiry.
+        deadline = max(plan['placed_ts'] + bzu_policy.PENDING_LIMIT_TTL_MS, state.get('last_run_ts', 0))
+        if deadline < plan['expires_ts']:
+            plan.update(expires_ts=deadline, expiry_reason='LIMIT_TTL')
+        if plan.get('missed_target_initialized') or plan.get('cancel_requested_ts'):
+            continue
+        placement_price = plan.get('placement_price')
+        if placement_price is not None:
+            plan['target_cancel_armed'] = plan['side'] * (placement_price - target) < -1e-8
+        plan['missed_target_initialized'] = True
+        replayed_through = plan.get('last_bar', -1) + plan.get('last_execution_step_ms', step)
+        effective = plan.get('effective_ts', plan['placed_ts'])
+        for bar in snapshot.candles.get(tf, []):
+            if (bar.confirmed and effective <= bar.ts
+                    and bar.ts + step <= min(replayed_through, snapshot.now)
+                    and missed_target_on_bar(plan, bar, cfg, target)):
+                missed.add(plan['id'])
+                break
+    return missed
+
+
 def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
     tf, step = execution_series(s)
     state['execution_step_ms']=step
@@ -1868,7 +1903,8 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             if c.ts<=plan.get('last_bar',-1):
                 remaining.append(plan)
                 continue
-            if bzu_policy.is_precision(plan) and c.ts >= plan.get('effective_ts', plan['placed_ts']):
+            if (bzu_policy.is_precision(plan)
+                    and plan.get('effective_ts', plan['placed_ts']) <= c.ts < plan['expires_ts']):
                 gate = pending_entry_gate(plan, state['trades'], at_open, cfg)
                 if gate:
                     book={**state,'pending':plan,'active':None,'reconciliation':None}
@@ -1990,6 +2026,15 @@ def migrate_organic_pending(state, snapshot, cfg):
 
 def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     """Shared causal cancellation policy for the book, learning and scenarios."""
+    if pending.get('cancel_requested_ts'):
+        return
+    target = bzu_policy.missed_target_level(pending)
+    if target is not None and snapshot.ticker_ts >= pending['placed_ts']:
+        if pending['side'] * (snapshot.price - target) < -1e-8:
+            pending['target_cancel_armed'] = True
+        elif pending.get('target_cancel_armed', True):
+            request_cancel(state, pending, MISSED_TARGET_REASON, snapshot.now)
+            return
     zone = pending.get('entry_zone') or {}
     timeframe = zone.get('timeframe') or pending.get('formation_timeframe')
     if zone.get('kind') == 'MICRO_BOS_FVG' or (timeframe and timeframe not in scanner.PRIMARY):
@@ -2013,7 +2058,7 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
         return
     runner = trend or pending.get('trend_rel') == scanner.REVERSAL_RELATION
     a15 = atr(policy.closed(snapshot, '15m'))
-    if scanner.exhausted_move(pending['side'], snapshot.price, pending.get('tp1') or pending.get('tp')):
+    if target is None and scanner.exhausted_move(pending['side'], snapshot.price, pending.get('tp1') or pending.get('tp')):
         request_cancel(state, pending, 'EXHAUSTED_MOVE', snapshot.now)
         return
     if a15 > 0 and scanner.entry_window(pending['side'], snapshot.price, pending['entry'], a15, cfg,
@@ -2043,8 +2088,6 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
             if reason:
                 request_cancel(state,pending,reason,snapshot.now)
                 return
-        if pending['side']*(snapshot.price-pending['tp1'])<0:
-            pending['target_cancel_armed']=True
         flip_frames = ('15m', '1H')
         if (bzu_policy.is_precision(pending)
                 and regime.get('active_structure', {}).get('side') == pending['side']):
@@ -2055,8 +2098,6 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
             request_cancel(state,pending,'STRUCTURE_FLIPPED',snapshot.now)
         elif pending.get('policy') not in (bzu_policy.POLICY, bzu_policy.MOMENTUM_POLICY) and snapshot.now>=session_cutoff(snapshot.now,cfg):
             request_cancel(state,pending,'SESSION_ENDED',snapshot.now)
-        elif pending.get('target_cancel_armed',True) and pending['side']*(snapshot.price-pending['tp1'])>=0:
-            request_cancel(state,pending,'TARGET_REACHED_WITHOUT_FILL',snapshot.now)
         return
     if cfg.core is not None and setup_paths.recovery_failed(pending,snapshot,cfg,sys.modules[__name__]):
         request_cancel(state,pending,'CAPITULATION_RECOVERY_LOST',snapshot.now)
@@ -2123,7 +2164,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     bind_order_numbers(state)
     for position in active_plans(state):
         position_monitor.backfill(position, s, state.get('last_run_ts', 0))
+    missed_before_upgrade = prepare_pending_limits(state, s, cfg)
     advance_lifecycle(state, s, cfg)
+    for pending in pending_plans(state):
+        if pending['id'] in missed_before_upgrade:
+            request_cancel(state, pending, MISSED_TARGET_REASON, s.now)
     if active_plans(state):
         check_quote_exits(state, s, cfg)
     sar = arbitration.stop_and_reverse(state['events'][start:],state['trades']) if oil_risk.enabled(cfg) else None
@@ -2159,7 +2204,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                        'MICRO_PRECURSOR':analysis.get('early_context',analysis['full_context'])})
     ctx = analysis.get("contexts", {})
     for pending in list(pending_plans(state)):
-        if pending and (ctx or bzu_policy.is_precision(pending)):
+        if pending and (ctx or bzu_policy.is_new(pending)):
             review_waiting_conditions(state,pending,s,cfg,ctx.get('1H',{}).get('side',0),
                                       ctx.get('4H',{}).get('side',0))
     release_unconfirmed_paper(state,s.now,cfg)
@@ -2383,11 +2428,17 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         state.pop('portfolio_rotation_intent',None)
     if pending and not active and not manual_block and not analysis['health'] and can_place \
             and not any(p.get('cancel_requested_ts') for p in pending):
-        proposed_for_rotation,_,_=policy.choose(valid,s.price,cfg.tick,cfg.conflict_margin)
+        reserved_events = set(state['used_events'])
+        for incumbent in pending:
+            reserved_events.update((incumbent['event_key'], *incumbent.get('parent_keys', [])))
+        challengers = [p for p in valid if not reserved_events.intersection(
+            (p['event_key'], *p.get('parent_keys', [])))]
+        proposed_for_rotation,_,_=policy.choose(challengers,s.price,cfg.tick,cfg.conflict_margin)
         pending_sides_for_rotation={p['side'] for p in pending}
         if len(pending_sides_for_rotation)==1 and proposed_for_rotation in pending_sides_for_rotation:
-            arbitration_audit=arbitration.decision(pending,valid,s,cfg,policy,
-                                                   state.get('last_portfolio_swap_ts',0),sys.modules[__name__])
+            arbitration_audit=arbitration.decision(pending,challengers,s,cfg,policy,
+                                                   state.get('last_portfolio_swap_ts',0),sys.modules[__name__],
+                                                   regime=market)
         else:
             arbitration_audit={'decision':'SKIPPED','reason':'DIRECTION_NOT_CONFIRMED_FOR_ROTATION'}
         if arbitration_audit['decision']=='REQUEST_REPLACEMENT':
@@ -2550,7 +2601,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             plan['decision_forecast']=copy.deepcopy(plan.get('outcome_forecast') or {})
             plan['placed_ts']=s.now
             plan.setdefault('effective_ts',((s.now+TF['3m']-1)//TF['3m'])*TF['3m'])
-            plan.setdefault('target_cancel_armed',plan['side']*(s.price-plan['tp'])<0)
+            target = bzu_policy.missed_target_level(plan)
+            if target is not None:
+                plan.update(target_cancel_armed=plan['side']*(s.price-target) < -1e-8,
+                            missed_target_initialized=True)
+            else:
+                plan.setdefault('target_cancel_armed',plan['side']*(s.price-plan['tp'])<0)
             park_pending(state,pending_plans(state)+[plan])
             bind_order_numbers(state)
             selected.append(plan)
@@ -2558,6 +2614,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if intent and intent.get('candidate_event_key')==plan.get('event_key'):
                 emit(state,'PORTFOLIO_ROTATION_COMMITTED',s.now,
                      replacement_id=plan['id'],replaced_id=intent['replaced_id'],
+                     order_type=plan.get('order_type', 'LIMIT'),
                      decision_ts=intent['decided_ts'],no_third_limit=True)
                 state.pop('portfolio_rotation_intent',None)
             emit(state,'PLACED',s.now,order_id=plan['id'],side=plan['side'],entry=plan['entry'],
@@ -2802,7 +2859,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         reasons = {'CONFIRMED_HTF_FLIP':'змінився напрямок', 'STRUCTURE_INVALIDATED_NOW':'сетап утратив чинність',
                    'TARGET_REACHED_WITHOUT_FILL':'ціль досягнута без входу',
                    'REPLACED_BY_CLOSER_SETUP':'ближчий підтверджений сетап'}
-        suffix = '; '+reasons[event['reason']] if event.get('reason') in reasons else ''
+        reason = reasons.get(event.get('reason'), REASON_UA.get(event.get('reason')))
+        suffix = '; '+reason if reason else ''
         return f"⚪ {at} {label} Ліміт {text}, угода НЕ відкрилася{suffix}"
     if kind=='CANCEL_REQUESTED':
         return f"{at} {label} Скасувати невиконаний ліміт; перевірити, чи не було входу"
@@ -2814,6 +2872,9 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
+    MISSED_TARGET_REASON:'рух від входу досяг 0.80R або першої цілі без виконання лімітки',
+    'DYNAMIC_TREND_TRAILING_REPLACE':'з’явився ближчий підтверджений сетап за трендом',
+    'LIMIT_TTL':'вичерпано строк очікування лімітки',
     'POST_TP_EXHAUSTION_COOLDOWN':'після тейка великої хвилі потрібен відкат від 38.2% або пауза 2 год',
     'CONTINUATION_RETRACE_REQUIRED':'для MARKET потрібен відкат 35–50% від імпульсу',
     'BLOCKED_DEALING_RANGE_30_70':'вхід у крайніх 30% торгового діапазону',

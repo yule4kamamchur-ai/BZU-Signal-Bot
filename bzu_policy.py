@@ -29,6 +29,8 @@ STOP_POLICY = 'TP1_PARTIAL_M5_CONFIRMED'
 SCALE_POLICY = 'SCALE_OUT_1R'
 SCALE_STOP_POLICY = 'SCALE_OUT_NEXT_BAR'
 MINUTE = 60_000
+PENDING_LIMIT_TTL_MS = 6 * 15 * MINUTE
+MISSED_TARGET_R = .80
 
 
 def is_new(plan):
@@ -37,6 +39,18 @@ def is_new(plan):
 
 def is_precision(plan):
     return plan.get('policy') in (POLICY,MOMENTUM_POLICY,MASTER_POLICY,PRECISION_POLICY)
+
+
+def missed_target_level(plan):
+    """Price at which a passive plan's move is spent before entry."""
+    if not is_new(plan) or plan.get('action_type') == 'ACTIVE_ENTRY' or plan.get('order_type') == 'MARKET':
+        return None
+    side, entry, risk = plan['side'], plan['entry'], plan['risk']
+    distance = MISSED_TARGET_R * risk
+    target = partial_target(plan)
+    if target is not None and side * (target - entry) > 0:
+        distance = min(distance, side * (target - entry))
+    return round(entry + side * distance, 10)
 
 
 def round_target(entry, target, side, tick):
@@ -632,6 +646,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     effective = snapshot.now if action == 'ACTIVE_ENTRY' else ((snapshot.now+MINUTE-1)//MINUTE)*MINUTE
     cutoff = entry_cutoff(snapshot.now)
     horizon = anchor.expires_ts if trend or multibar else effective + cfg.ttl_minutes * 60_000
+    if action != 'ACTIVE_ENTRY':
+        horizon = min(horizon, snapshot.now + PENDING_LIMIT_TTL_MS)
     expires = min(horizon, cutoff)
     if expires <= effective:
         return None, 'SESSION_CLOSED'

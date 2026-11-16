@@ -11,6 +11,8 @@ import math
 MIN_ADVANTAGE=14.0   # score points; conservative, NOT estimated expected R
 MIN_AGE_MS=9*60_000 # do not churn a freshly queued order
 COOLDOWN_MS=15*60_000
+TRAILING_DISTANCE_ATR = 1.15
+TRAILING_DISTANCE_DOLLARS = .55
 
 
 def loss_cooldown(plan, trades, now):
@@ -151,7 +153,42 @@ def stale_replacement(position, candidates, snapshot, cfg, engine):
             'candidate_id': best['id'], 'exit_quote': exit_quote}
 
 
-def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=None):
+def trend_challenger(incumbent, candidates, snapshot, cfg, policy, engine, regime):
+    side = incumbent['side']
+    gap = side * (snapshot.price - incumbent['entry'])
+    a15 = engine.atr(policy.closed(snapshot, '15m'))
+    distance = min(TRAILING_DISTANCE_DOLLARS, TRAILING_DISTANCE_ATR * a15) if a15 > 0 else TRAILING_DISTANCE_DOLLARS
+    if (gap <= distance + 1e-8 or incumbent['expires_ts'] <= snapshot.now
+            or regime.get('trend_anchor_side') != side):
+        return None
+    eligible = []
+    for plan in candidates:
+        zone = plan.get('entry_zone') or {}
+        trigger = plan.get('market_trigger') or {}
+        known = max(zone.get('known_ts') or 0, trigger.get('known_ts') or 0)
+        if (plan.get('side') != side or plan.get('trend_rel') != 'WITH_TREND'
+                or plan.get('id') == incumbent['id'] or plan.get('event_key') == incumbent.get('event_key')
+                or not incumbent['placed_ts'] < known <= snapshot.now
+                or not (plan.get('quality') or {}).get('accepted') or plan['expires_ts'] <= snapshot.now):
+            continue
+        if engine.scanner.market_plan(plan):
+            level = trigger.get('limit_entry', trigger.get('retest_entry', plan['entry']))
+        elif (plan.get('action_type') == 'NEW_PENDING_LIMIT'
+                and engine.execution_atlas.passive_at_open(plan, snapshot.price, cfg.tick)):
+            level = plan['entry']
+        else:
+            continue
+        if side * (level - incumbent['entry']) >= cfg.tick - 1e-8 and abs(snapshot.price - level) < gap:
+            eligible.append(plan)
+    best = max(eligible, key=lambda p: policy.ranking(p, snapshot.price, cfg.tick), default=None)
+    if best:
+        return dict(decision='REQUEST_REPLACEMENT', candidate_id=best['id'], replace_id=incumbent['id'],
+                    advantage=0., reason='DYNAMIC_TREND_TRAILING_REPLACE',
+                    distance_dollars=gap, distance_atr=gap/a15 if a15 > 0 else None)
+    return None
+
+
+def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=None, regime=None):
     """Propose at most ONE replacement per cycle; return auditable diagnostics.
 
     Called only for the unfilled book and with quality+ICT accepted candidates.
@@ -172,11 +209,20 @@ def decision(pending, candidates, snapshot, cfg, policy, last_swap_ts=0, engine=
         audit['decision']='EMPTY_BOOK'
         return audit
     if len(current)==1 and engine:
+        import bzu_policy
         from market_wave import BASE, M15
         from oil_risk import enabled
         import directional_policy
 
         incumbent = current[0]
+        if enabled(cfg) and bzu_policy.is_new(incumbent) and incumbent.get('trend_rel') == 'WITH_TREND':
+            market = regime if regime is not None else policy.execution_regime(snapshot, cfg, engine)
+            replacement = trend_challenger(incumbent, candidates, snapshot, cfg, policy, engine, market)
+            if replacement:
+                audit.update(replacement)
+                return audit
+            audit.update(decision='KEEP_TREND_PRELIMIT', capacity=1)
+            return audit
         side = incumbent['side']
         gap = side*(snapshot.price-incumbent['entry'])
         atr = engine.atr(directional_policy.closed(snapshot,'15m'))
