@@ -11,8 +11,7 @@ import math
 MIN_ADVANTAGE=14.0   # score points; conservative, NOT estimated expected R
 MIN_AGE_MS=9*60_000 # do not churn a freshly queued order
 COOLDOWN_MS=15*60_000
-TRAILING_DISTANCE_ATR = 1.15
-TRAILING_DISTANCE_DOLLARS = .55
+TRAILING_DISTANCE_ATR = .70
 
 
 def loss_cooldown(plan, trades, now):
@@ -157,8 +156,8 @@ def trend_challenger(incumbent, candidates, snapshot, cfg, policy, engine, regim
     side = incumbent['side']
     gap = side * (snapshot.price - incumbent['entry'])
     a15 = engine.atr(policy.closed(snapshot, '15m'))
-    distance = min(TRAILING_DISTANCE_DOLLARS, TRAILING_DISTANCE_ATR * a15) if a15 > 0 else TRAILING_DISTANCE_DOLLARS
-    if (gap <= distance + 1e-8 or incumbent['expires_ts'] <= snapshot.now
+    distance = TRAILING_DISTANCE_ATR * a15
+    if (a15 <= 0 or gap < distance - 1e-8 or incumbent['expires_ts'] <= snapshot.now
             or regime.get('trend_anchor_side') != side):
         return None
     eligible = []
@@ -183,7 +182,7 @@ def trend_challenger(incumbent, candidates, snapshot, cfg, policy, engine, regim
     best = max(eligible, key=lambda p: policy.ranking(p, snapshot.price, cfg.tick), default=None)
     if best:
         return dict(decision='REQUEST_REPLACEMENT', candidate_id=best['id'], replace_id=incumbent['id'],
-                    advantage=0., reason='DYNAMIC_TREND_TRAILING_REPLACE',
+                    advantage=0., reason='CANCELLED_REPLACED_BY_LIVE_SETUP',
                     distance_dollars=gap, distance_atr=gap/a15 if a15 > 0 else None)
     return None
 

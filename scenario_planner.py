@@ -145,6 +145,9 @@ def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None)
         return None
     from market_wave import BOS_IMPULSE, SNIPER_REVERSAL, V_REVERSAL, witnessed
 
+    if zone.get('kind') in ('FAILED_BREAKOUT_TRAP','TURTLE_SOUP') and engine.policy.edge_reversal(
+            side, zone, snapshot, cfg.tick):
+        return None
     if zone.get('kind') in (SNIPER_REVERSAL,BOS_IMPULSE,V_REVERSAL):
         regime = regime if regime is not None else engine.policy.execution_regime(snapshot,cfg,engine)
         return None if witnessed(zone,snapshot,cfg,engine,regime) else 'CURRENT_WAVE_PROOF_EXPIRED'

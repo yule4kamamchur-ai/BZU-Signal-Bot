@@ -238,6 +238,17 @@ def pullback_quote_allowed(side, level, distal, quote, atr):
             and abs(quote-level) <= .15*atr+1e-8)
 
 
+
+MARKET_IMPULSE_BAND_ATR = .65
+MARKET_IMPULSE_MIN_RR = 1.40
+
+
+def impulse_market_entry(side, quote, reference, atr15, tick):
+    """Current executable quote inside the confirmed breakout band."""
+    move = side * (quote - reference)
+    return quote if atr15 > 0 and quote > 0 and tick * .5 <= move <= MARKET_IMPULSE_BAND_ATR * atr15 + 1e-8 else None
+
+
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
     return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET') or

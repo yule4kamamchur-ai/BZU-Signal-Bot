@@ -43,7 +43,7 @@ class PendingLimitLifecycle(TestCase):
         plan = waiting()
         book = self.book(plan)
         threshold = bzu_policy.missed_target_level(plan)
-        self.assertEqual(threshold, 90.706)
+        self.assertEqual(threshold, 90.755)
         self.assertEqual(bzu_policy.partial_target(plan), 90.51)
         wick = engine.Candle(NOW, 90.78, 90.86, 90.70, 90.82)
         retest = engine.Candle(NOW+MINUTE, 90.82, 91.53, 90.80, 91.42)
@@ -132,7 +132,7 @@ class PendingLimitLifecycle(TestCase):
         book = self.book(plan)
         s = engine.Snapshot(NOW+MINUTE, 90.65, {}, ticker_ts=NOW+MINUTE)
         initial = live_terminal.build(book, s, {'action':'DATA_HOLD'}, self.cfg, engine)
-        self.assertEqual(initial['orders'][0]['missed_target_level'], 90.706)
+        self.assertEqual(initial['orders'][0]['missed_target_level'], 90.755)
         book['execution_step_ms'] = MINUTE
         engine.review_waiting_conditions(book, plan, s, self.cfg)
         final = live_terminal.build(book, s, {'action':'DATA_HOLD'}, self.cfg, engine)
@@ -148,7 +148,7 @@ class PendingLimitLifecycle(TestCase):
         engine.emit(book, 'PORTFOLIO_ROTATION_COMMITTED', s.now, replaced_id=plan['id'],
                     replacement_id='next', order_type='MARKET')
         report = engine.build_message(book, s, {'action':'ACTIVE_ENTRY','events':book['events']}, self.cfg)
-        self.assertIn('рух від входу досяг 0.80R', report)
+        self.assertIn('рух від входу досяг 0.75R', report)
         self.assertIn('Вхід MARKET після зняття ліміту', report)
 
 
@@ -166,17 +166,17 @@ class TrendReplacement(TestCase):
                                 'known_ts':now, 'side':side})
         return plan
 
-    def test_either_distance_threshold_works_symmetrically(self):
+    def test_backend_replacement_threshold_works_symmetrically(self):
         for side in (-1, 1):
             old = waiting(side, NOW-15*MINUTE)
             new = self.candidates(old, side)
             new['entry'] = old['entry']+side*.16
-            for gap, a15, expected in ((.50,.40,True),(.60,.90,True),(.55,.90,False),(.45,.40,False)):
+            for gap, a15, expected in ((.50,.40,True),(.63,.90,True),(.60,.90,False),(.27,.40,False)):
                 with self.subTest(side=side, gap=gap, atr=a15), patch.object(engine, 'atr', return_value=a15):
                     s = engine.Snapshot(NOW, old['entry']+side*gap, {})
                     result = arbitration.decision([old], [new], s, self.cfg, engine.policy,
                                                   engine=engine, regime={'trend_anchor_side':side})
-                    self.assertEqual(result.get('reason') == 'DYNAMIC_TREND_TRAILING_REPLACE', expected)
+                    self.assertEqual(result.get('reason') == 'CANCELLED_REPLACED_BY_LIVE_SETUP', expected)
 
     def test_stale_future_or_unapproved_challenger_cannot_cancel_the_limit(self):
         old = waiting(-1, NOW-15*MINUTE)
@@ -197,8 +197,9 @@ class TrendReplacement(TestCase):
         s = engine.Snapshot(NOW, 90.88, {})
         new.update(action_type='ACTIVE_ENTRY', order_type='MARKET', entry=90.87,
                    market_trigger={'pattern':'TREND_CONTINUATION_MARKET','known_ts':NOW,'limit_entry':90.94})
-        result = arbitration.decision([old], [new], s, self.cfg, engine.policy,
-                                      engine=engine, regime={'trend_anchor_side':-1})
+        with patch.object(engine, 'atr', return_value=.5):
+            result = arbitration.decision([old], [new], s, self.cfg, engine.policy,
+                                          engine=engine, regime={'trend_anchor_side':-1})
         self.assertEqual(result['candidate_id'], new['id'])
 
     def test_rotation_through_the_router_releases_the_slot_before_placing(self):
@@ -207,6 +208,8 @@ class TrendReplacement(TestCase):
         book = engine.new_state(self.cfg)
         engine.park_pending(book, [old])
         s = snapshot(NOW, price=90.89)
+        s.candles['15m'] = [replace(c, open=90.89, high=91.14, low=90.64, close=90.89)
+                           for c in s.candles['15m']]
         s.candles['1m'] = [engine.Candle(NOW-MINUTE, 90.9, 90.93, 90.86, 90.89)]
         old['last_bar'] = NOW-MINUTE
         market = {'state':'BEARISH_ACTIVE','trend_anchor_side':-1}
@@ -222,6 +225,6 @@ class TrendReplacement(TestCase):
             result = engine.run_cycle(book, s, self.cfg)
         self.assertEqual(result['analysis']['portfolio_arbitration']['decision'], 'FAST_ROTATE_SAME_CYCLE')
         self.assertEqual([p['id'] for p in engine.pending_plans(book)], ['near'])
-        self.assertEqual(book['orders'][-1]['reason'], 'DYNAMIC_TREND_TRAILING_REPLACE')
+        self.assertEqual(book['orders'][-1]['reason'], 'CANCELLED_REPLACED_BY_LIVE_SETUP')
         self.assertEqual([e['kind'] for e in book['events'] if e['kind'] in ('CANCELLED', 'PLACED')],
                          ['CANCELLED', 'PLACED'])

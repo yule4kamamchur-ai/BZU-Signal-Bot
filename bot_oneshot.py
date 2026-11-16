@@ -85,7 +85,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v14.0.0-intraday"
+BOT_VERSION = "full-ict-v14.1.0-intraday"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -1392,7 +1392,7 @@ def fetch_timeframe(bar: str, direct_limit: int, resample_minutes: int = 0) -> t
     return resampled, f"RESAMPLE_15M_TO_{resample_minutes}M"
 
 
-def collect_market_data() -> dict[str, Any]:
+def collect_market_data(cache=None) -> dict[str, Any]:
     """One snapshot of every timeframe the bot reasons about."""
     # Independent public OHLC/ticker requests run concurrently. Previously
     # six sequential HTTP calls could each consume their entire retry/timeout
@@ -1402,13 +1402,27 @@ def collect_market_data() -> dict[str, Any]:
     started = time.monotonic()
     smt_id = resolve_smt_asset_id()
     with ThreadPoolExecutor(max_workers=7, thread_name_prefix='bzu-market') as pool:
-        fminute = pool.submit(get_okx_candles, OKX_INST_ID, '1m', 300)
-        f3 = pool.submit(get_okx_candles, OKX_INST_ID, '3m', CANDLES_3M_LIMIT)
-        f15 = pool.submit(get_okx_candles, OKX_INST_ID, '15m', CANDLES_15M_LIMIT)
-        f1 = pool.submit(fetch_timeframe, '1H', CANDLES_1H_LIMIT, 60)
-        f4 = pool.submit(fetch_timeframe, '4H', CANDLES_4H_LIMIT, 240)
+        now = int(time.time() * 1000)
+        def candles(key, minutes, fetch, *args):
+            # Leave the current minute uncached for intrabar invalidation.
+            step = minutes * 60_000
+            existing = cache.get(key) if cache is not None and minutes > 1 else None
+            if existing and existing[0] == now // step:
+                return existing[1]
+            result = fetch(*args)
+            rows = result[0] if isinstance(result, tuple) else result
+            end = (now // step) * step
+            if cache is not None and minutes > 1 and any(c.confirmed and c.ts+step == end for c in rows):
+                cache[key] = (now // step, result)
+            return result
+
+        fminute = pool.submit(candles, '1m', 1, get_okx_candles, OKX_INST_ID, '1m', 300)
+        f3 = pool.submit(candles, '3m', 3, get_okx_candles, OKX_INST_ID, '3m', CANDLES_3M_LIMIT)
+        f15 = pool.submit(candles, '15m', 15, get_okx_candles, OKX_INST_ID, '15m', CANDLES_15M_LIMIT)
+        f1 = pool.submit(candles, '1H', 60, fetch_timeframe, '1H', CANDLES_1H_LIMIT, 60)
+        f4 = pool.submit(candles, '4H', 240, fetch_timeframe, '4H', CANDLES_4H_LIMIT, 240)
         fticker = pool.submit(get_okx_ticker, OKX_INST_ID)
-        fsmt = pool.submit(get_okx_candles, smt_id, '15m', SMT_CANDLES_15M_LIMIT) if smt_id else None
+        fsmt = pool.submit(candles, smt_id, 15, get_okx_candles, smt_id, '15m', SMT_CANDLES_15M_LIMIT) if smt_id else None
         cminute = fminute.result()
         c3m = f3.result()
         c15m = f15.result()

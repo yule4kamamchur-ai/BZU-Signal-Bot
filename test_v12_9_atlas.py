@@ -304,14 +304,14 @@ class WorkerClock(unittest.TestCase):
         cleaned=notification_report.clean_queued_message(text)
         self.assertIn('#001 LONG • Вхід: 100',cleaned)
         self.assertIn('#002 • денний ліміт ризику',cleaned)
-    def test_scan_every_three_minutes_report_every_fifteen(self):
+    def test_scan_every_three_seconds_report_every_fifteen_minutes(self):
         checkpoint={};calls=[]
         def run(notify):calls.append(notify);return 0
-        for minute in range(61):
-            checkpoint,_=continuous_worker.step(NOW+minute*60000+5000,checkpoint,run)
-        self.assertEqual(len(calls),21)
+        for elapsed in range(0, 3_600_001, 3_000):
+            checkpoint,_=continuous_worker.step(NOW+elapsed+5000,checkpoint,run)
+        self.assertEqual(len(calls),1201)
         self.assertEqual(sum(calls),5)
-        self.assertEqual([i for i,v in enumerate(calls) if v],[0,5,10,15,20])
+        self.assertEqual([i for i,v in enumerate(calls) if v],[0,300,600,900,1200])
 
     def test_delivery_failure_does_not_rebuild_a_report_every_second(self):
         now=NOW+5000
@@ -325,7 +325,7 @@ class WorkerClock(unittest.TestCase):
         self.assertEqual(original,{})
 
     def test_settlement_delay_waits_for_closed_candle_publication(self):
-        p={'scan_bucket':NOW//180000-1,'report_bucket':NOW//900000-1}
+        p={'scan_bucket':NOW//continuous_worker.SCAN_MS-1,'report_bucket':NOW//900000-1}
         self.assertFalse(continuous_worker.due(NOW+4999,p)[0])
         self.assertTrue(continuous_worker.due(NOW+5000,p)[1])
 

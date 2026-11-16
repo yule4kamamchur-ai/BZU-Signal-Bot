@@ -346,5 +346,58 @@ ctx.fixtureBackup=cleanFixture;
  run('state.orders=[];render();');
  assert.doesNotMatch(text('state-title'),/ЗВІРКИ ЛІМІТКИ/);
  assert.match(text('zones'),/90.94/);
+
+ // v14.1 uses a dedicated paper state and executable bid/ask.
+ clock.value = Date.parse('2026-11-16T17:01:00Z');
+ run(`state={...fixtureBackup, snapshot_ts:Date.now(), ledger_ts:Date.now(),
+   brain_config:{schema:1,missed_target_r:.75,browser_replace_atr:1,market_band_atr:.65,
+     market_min_rr:1.40,risk_floor:.65,risk_cap:1.15,ttl_ms:5400000}, orders:[{
+       ...orderFixture,id:'paper-208',number:208,status:'PENDING',side:-1,
+       entry:91.49,stop:92.47,risk:.98,tp1:90.51,tp2:89.62,placed_ts:Date.now()-60000,
+       effective_ts:Date.now()-60000,expires_ts:Date.now()+5400000,scale_policy:'SCALE_OUT_1R'
+   }]}; position.clear();syncBrain(state,true);
+   brain.matrix={side:-1,atr:.4,ema9:91,ema20:91.4,ema50:91.8,vwap:91.9};
+   brain.computed=Date.now(); quote={price:91.50,bid:91.49,ask:91.51,ts:Date.now()+1};
+   advanceBrain(quote,brain.matrix,[]); render();`);
+ assert.match(text('state-title'),/ВХІД ВИКОНАНО · ENTERED/);
+ assert.equal(run('state.orders[0].status'),'PENDING');
+ assert.equal(run('displayOrders()[0].status'),'OPEN');
+ run(`quote={price:90.49,bid:90.48,ask:90.50,ts:Date.now()+2};
+   advanceBrain(quote,brain.matrix,[]); render();`);
+ assert.equal(run('displayOrders()[0].remaining'),.5);
+ assert.ok(Math.abs(run('displayOrders()[0].stop')-91.34)<1e-8);
+ assert.match(text('state-status'),/Live Brain · 3s Sync/);
+ assert.ok(priceLines.some(l=>Math.abs(l.price-91.34)<1e-8 && l.title.includes('ЗАХИЩЕНИЙ')));
+ // A server refresh within the same open minute cannot erase the observed partial.
+ run('state={...state,snapshot_ts:Date.now()+3,ledger_ts:Date.now()+3};syncBrain(state,false);render();');
+ assert.equal(run('displayOrders()[0].remaining'),.5);
+ run(`const replacement={id:'new-paper-market',order_type:'MARKET',market_now:true,side:-1,entry:90.75,
+    reference:90.85,stop:91.40,risk:.65,tp1:89.58,tp2:89.45,actionable:true,known_ts:Date.now()};
+   state={...state,snapshot_ts:Date.now()+10,orders:[{...state.orders[0],id:'paper-replace'}]};
+   syncBrain(state,true); brain.matrix={side:-1,atr:.4,ema9:91,ema20:91.4,ema50:91.8,vwap:91.9};
+   quote={price:90.75,bid:90.75,ask:90.76,ts:Date.now()+11};
+   advanceBrain(quote,brain.matrix,[replacement]); render();`);
+ assert.equal(run('displayOrders()[0].id'),'new-paper-market');
+ assert.equal(run('displayOrders()[0].entry'),90.75);
+ assert.equal(run('displayOrders()[0].status'),'OPEN');
+ assert.match(text('state-title'),/MARKET SHORT/);
+
+ // A 3s recomputation builds indicators and a MARKET setup from closed M15 data.
+ clock.value=Date.parse('2026-11-16T17:10:00Z');
+ run(`state={...state,orders:[],snapshot_ts:Date.now(),ledger_ts:Date.now()};syncBrain(state,true);
+   const end=Math.floor(Date.now()/900000)*900000;
+   const history15=Array.from({length:120},(_,i)=>{
+     const c=i<106?90.65:90.95+(i-106)*.021;
+     return {ts:end-(120-i)*900000,open:c-.04,close:c,low:c-.11,high:c+.095,volume:100};
+   });
+   history15[94].high=92.50;
+   Object.assign(history15[119],{open:91.16,low:91.14,high:91.53,close:91.44});
+   brain.series['15m']=history15;
+   quote={price:91.42,bid:91.41,ask:91.43,ts:Date.now()+1};
+   recalculateBrain(quote);render();`);
+ assert.ok(run('brain.matrix.ema9>brain.matrix.ema20'));
+ assert.ok(run('brain.matrix.vwap>0 && brain.matrix.atr>0'));
+ assert.ok(run('brain.rows.some(z=>z.market_now && z.entry===quote.ask && z.rr1>=1.4)'));
+ assert.match(text('state-title'),/MARKET LONG/);
  console.log('PASS: offline UI lifecycle, actionable radar, chart cleanup and live entry scenarios.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

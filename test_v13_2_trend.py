@@ -92,12 +92,12 @@ class TrendBreakout(TestCase):
                 boundary = zone['reference']
                 atr15 = engine.atr(snap.candles['15m'][:-1])
                 trigger = adverse.trend_execution_trigger(snap,side,zone,boundary,.95,
-                    boundary+side*.29*atr15,cfg.tick,engine)
+                    boundary+side*.60*atr15,cfg.tick,engine)
                 self.assertIsNotNone(trigger)
-                self.assertAlmostEqual(trigger['max_distance'],.32*atr15)
+                self.assertAlmostEqual(trigger['max_distance'],.65*atr15)
                 self.assertIsNone(adverse.trend_execution_trigger(snap,side,zone,boundary,.95,
-                    boundary+side*.33*atr15,cfg.tick,engine))
-                hot = {**zone,'wave_proof':{**zone['wave_proof'],'impulse_range':1.86*atr15}}
+                    boundary+side*.66*atr15,cfg.tick,engine))
+                hot = {**zone,'wave_proof':{**zone['wave_proof'],'impulse_range':2.31*atr15}}
                 with patch.object(wave,'bos_impulse_zones',return_value=[hot]):
                     self.assertIsNone(adverse.trend_execution_trigger(
                         snap,side,hot,boundary,.95,snap.price,cfg.tick,engine))

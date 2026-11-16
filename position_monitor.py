@@ -7,7 +7,7 @@ from dataclasses import replace
 import strategy_organics
 import oil_risk
 
-STEPS = {'3m': 180_000, '15m': 900_000, '1H': 3_600_000, '4H': 14_400_000}
+STEPS = {'1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000, '1H': 3_600_000, '4H': 14_400_000}
 
 
 def audit(position, snapshot, cfg, engine):
@@ -15,9 +15,10 @@ def audit(position, snapshot, cfg, engine):
     import copy
     book={'active':copy.deepcopy(position),'pending':None,'reconciliation':None,
           'orders':[],'trades':[],'events':[],'used_events':{}}
-    engine._advance_slot_lifecycle(book,snapshot,cfg,allow_fill=False)
+    tf, step = engine.execution_series(snapshot)
+    engine._advance_slot_lifecycle(book,snapshot,cfg,allow_fill=False,execution=(tf,step))
     return {'active':book['active'],'closed':book['trades'],'events':book['events'],
-            'timeframe':engine.execution_series(snapshot)[0]}
+            'timeframe':tf}
 
 
 def _recent(snapshot, tf, minimum):

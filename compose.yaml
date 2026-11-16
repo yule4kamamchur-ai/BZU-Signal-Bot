@@ -1,4 +1,4 @@
-# Dedicated always-on worker. NEVER run simultaneously with GitHub's 5m job.
+# Set BZU_SERVER_MODE=WORKER in GitHub before starting this worker.
 services:
   bzu-worker:
     build: .
@@ -13,6 +13,9 @@ services:
       SIGNAL_JOURNAL_FILE: /app/data/signal_journal_v6_4.json
       MARKET_HISTORY_FILE: /app/data/market_history_v12.json
       RESEARCH_ARCHIVE_FILE: /app/data/research_market_v12_6.json
+      LIVE_STATE_FILE: /app/data/live_state.json
+      LIVE_HTTP_BIND: 0.0.0.0
+      LIVE_HTTP_PORT: "8080"
       WORKER_CHECKPOINT_FILE: /app/data/worker_schedule_v12_9.json
       ANALYSIS_SCAN_MINUTES: "3"
       INCLUDE_COMMISSION: "true"
@@ -21,5 +24,7 @@ services:
       ABS_MIN_STOP_PCT: "0.010"
       LIMIT_MAX_STOP_ATR: "4.00"
       MIN_TP1_DISTANCE_PCT: "0.020"
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/app/data

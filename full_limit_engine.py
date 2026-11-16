@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.0.0-intraday"
-REPORT_RELEASE = 'v14.0.0'
+VERSION = "full-ict-v14.1.0-intraday"
+REPORT_RELEASE = 'v14.1.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -1307,7 +1307,11 @@ def emit(state: dict, kind: str, ts: int, **fields: Any) -> None:
 
 
 def execution_series(s):
-    return ('1m',60_000) if s.candles.get('1m') else ('3m',180_000)
+    if s.candles.get('1m'):
+        return '1m', 60_000
+    if s.candles.get('5m') and not s.candles.get('3m'):
+        return '5m', 300_000
+    return '3m', 180_000
 
 
 def execution_health(s: Snapshot, state: dict) -> list[str]:
@@ -1320,7 +1324,7 @@ def execution_health(s: Snapshot, state: dict) -> list[str]:
     checkpoint=state.get('last_run_ts',0)
     if checkpoint:
         first=(checkpoint//step)*step
-        needed=[c for c in rows if c.ts>=first]
+        needed=[c for c in rows if c.confirmed and first<=c.ts and c.ts+step<=s.now]
         if first+step<=s.now and (not needed or needed[0].ts!=first):
             return ['LIFECYCLE_HISTORY_GAP']
         if any(b.ts-a.ts!=step for a,b in zip(needed,needed[1:])):
@@ -1700,9 +1704,9 @@ def missed_target_on_bar(plan, candle, cfg, target):
             and (opened_past_target or not paper_limit_touch(plan, candle, cfg)))
 
 
-def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True, *, entry_gates_checked=False) -> None:
+def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True, *, entry_gates_checked=False, execution=None) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
-    tf, step = execution_series(s)
+    tf, step = execution or execution_series(s)
     for c in s.candles.get(tf, []):
         if not c.confirmed or c.ts+step>s.now:
             continue
@@ -1851,12 +1855,12 @@ def prepare_pending_limits(state, snapshot, cfg):
         deadline = max(plan['placed_ts'] + bzu_policy.PENDING_LIMIT_TTL_MS, state.get('last_run_ts', 0))
         if deadline < plan['expires_ts']:
             plan.update(expires_ts=deadline, expiry_reason='LIMIT_TTL')
-        if plan.get('missed_target_initialized') or plan.get('cancel_requested_ts'):
+        if plan.get('missed_target_r') == bzu_policy.MISSED_TARGET_R or plan.get('cancel_requested_ts'):
             continue
         placement_price = plan.get('placement_price')
         if placement_price is not None:
             plan['target_cancel_armed'] = plan['side'] * (placement_price - target) < -1e-8
-        plan['missed_target_initialized'] = True
+        plan['missed_target_r'] = bzu_policy.MISSED_TARGET_R
         replayed_through = plan.get('last_bar', -1) + plan.get('last_execution_step_ms', step)
         effective = plan.get('effective_ts', plan['placed_ts'])
         for bar in snapshot.candles.get(tf, []):
@@ -1948,7 +1952,7 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
     waiting=[]
     for plan in pending_plans(state):
         book={**state,'pending':plan,'active':None,'reconciliation':None}
-        _advance_slot_lifecycle(book,Snapshot(s.now,s.price,{tf:[]}),cfg,allow_fill=False)
+        _advance_slot_lifecycle(book,Snapshot(s.now,s.price,{tf:[]}),cfg,allow_fill=False,execution=(tf,step))
         if book.get('pending'):
             waiting.append(book['pending'])
     park_pending(state,waiting)
@@ -2159,7 +2163,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     lifecycle_faults = execution_health(s, state) if open_plans(state) else []
     if lifecycle_faults or any(x in faults for x in ("UNTRUSTED_PRICE", "WRONG_INSTRUMENT", "STALE_TICKER", "STALE_3m")):
         return {"action": "DATA_HOLD", "events": [], "analysis": {"health": faults+lifecycle_faults}}
-    state["execution_audit"]={"timeframe":execution_series(s)[0],"minute_precision":bool(s.candles.get("1m")),"as_of_ts":s.now}
+    execution_tf, execution_step = execution_series(s)
+    state['execution_audit'] = {
+        'timeframe':execution_tf, 'minute_precision':execution_tf=='1m', 'as_of_ts':s.now,
+        'closed_through_ts':max((bar.ts+execution_step for bar in s.candles.get(execution_tf, [])
+                                 if bar.confirmed and bar.ts+execution_step<=s.now), default=0),
+    }
     release_unconfirmed_paper(state,s.now,cfg)
     bind_order_numbers(state)
     for position in active_plans(state):
@@ -2321,9 +2330,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         proof_quote = level
                 if policy.trend_entry_error(s,side,quote,zone,cfg.tick):
                     continue
-                if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' and market.get('trend_anchor_side')==side:
+                if trigger.get('pattern')=='TREND_CONTINUATION_MARKET':
                     proof = entry_adverse_selection.trend_execution_trigger(
-                        s,side,zone,trigger['limit_entry'],trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
+                        s,side,zone,trigger.get('initial_entry',trigger['limit_entry']),trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M5_SNIPER_REVERSAL':
                     proof = entry_adverse_selection.sniper_reversal_trigger(
                         s,side,zone,trigger['retest_entry'],trigger['initial_risk'],quote,
@@ -2356,7 +2365,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             _, room_r = oil_risk.structural_room(candidate['side'],candidate['entry'],candidate['risk'],
                 scenario_planner.structure_levels(s,sys.modules[__name__]),
                 trend=candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
-            if gate or (room_r is not None and room_r < 1.35-1e-8):
+            min_room = (scanner.MARKET_IMPULSE_MIN_RR if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' else 1.35)
+            if gate or (room_r is not None and room_r < min_room-1e-8):
                 continue
         if (dominant and candidate['side'] != dominant
                 and not candidate.get('local_reversal_override')
@@ -2604,7 +2614,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             target = bzu_policy.missed_target_level(plan)
             if target is not None:
                 plan.update(target_cancel_armed=plan['side']*(s.price-target) < -1e-8,
-                            missed_target_initialized=True)
+                            missed_target_r=bzu_policy.MISSED_TARGET_R)
             else:
                 plan.setdefault('target_cancel_armed',plan['side']*(s.price-plan['tp'])<0)
             park_pending(state,pending_plans(state)+[plan])
@@ -2872,7 +2882,8 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 
 REASON_UA = {
-    MISSED_TARGET_REASON:'рух від входу досяг 0.80R або першої цілі без виконання лімітки',
+    MISSED_TARGET_REASON:'рух від входу досяг 0.75R або першої цілі без виконання лімітки',
+    'CANCELLED_REPLACED_BY_LIVE_SETUP':'новий підтверджений сетап ближче до поточної ціни',
     'DYNAMIC_TREND_TRAILING_REPLACE':'з’явився ближчий підтверджений сетап за трендом',
     'LIMIT_TTL':'вичерпано строк очікування лімітки',
     'POST_TP_EXHAUSTION_COOLDOWN':'після тейка великої хвилі потрібен відкат від 38.2% або пауза 2 год',
@@ -3484,12 +3495,12 @@ def resolve_live_config(cfg: Config) -> Config:
     return effective
 
 
-def collect_snapshot(cfg: Config, checkpoint: int = 0) -> Snapshot:
+def collect_snapshot(cfg: Config, checkpoint: int = 0, market_cache=None) -> Snapshot:
     core = cfg.core
-    data = core.collect_market_data()
+    data = core.collect_market_data() if market_cache is None else core.collect_market_data(cache=market_cache)
     data.setdefault('candles',{})
     for tf in ('1m','3m'):
-        raw = data['candles'].get(tf,[])
+        raw = list(data['candles'].get(tf,[]))
         if checkpoint and raw:
             for _ in range(24):
                 earliest=min(c.ts for c in raw)
@@ -3535,7 +3546,8 @@ def notification_checkpoint(state, path):
 
 
 def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
-             ack: bool = False, auto_report: bool = False, report_allowed: bool = True) -> int:
+             ack: bool = False, auto_report: bool = False, report_allowed: bool = True,
+             market_cache=None) -> int:
     if core.BOT_VERSION != VERSION:
         raise ValueError('Неповне оновлення: оновіть bot_oneshot.py і full_limit_engine.py з одного архіву')
     expected=os.environ.get('EXPECTED_BOT_VERSION')
@@ -3557,8 +3569,18 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         stage_start = now
     with locked(Path(str(state_path)+'.lock')):
         if snapshot_path is None:
-            cfg = resolve_live_config(cfg)
-        state = load_state(state_path,cfg)
+            hour = int(time.time() // 3600)
+            cached = market_cache.get('live_config') if market_cache is not None else None
+            if cached and cached[0] == hour:
+                cfg = cached[1]
+            else:
+                cfg = resolve_live_config(cfg)
+                if market_cache is not None:
+                    market_cache['live_config'] = (hour, cfg)
+        state = market_cache.get('runtime_state') if market_cache is not None else None
+        first_worker_tick = state is None
+        if state is None:
+            state = load_state(state_path,cfg)
         checkpoint_path=state_path.with_name('notification_checkpoint_v12.json')
         recovery=read_json(checkpoint_path)
         if recovery and recovery.get('last_run_ts',0)>=state.get('last_run_ts',0):
@@ -3578,7 +3600,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             # and the closed-bar confirmation policy remain available.
             state['quality_model_warning']={'reason':str(exc),'ts':int(time.time()*1000)}
             print('QUALITY_MODEL_REJECTED: '+str(exc)+'; continuing lifecycle',file=sys.stderr)
-        read_json(journal_path)
+        if first_worker_tick:
+            read_json(journal_path)
         if ack and state.get('reconciliation'):
             state.setdefault('reconciliation_history',[]).append({**copy.deepcopy(state['reconciliation']),
                                                                  'acknowledged_ts':int(time.time()*1000)})
@@ -3591,7 +3614,8 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             emit(state,'RECONCILIATION_ACKNOWLEDGED',int(time.time()*1000),order_id=r['order_id'])
             state['second_slot']['reconciliation'] = None
         stage('init_state_and_model')
-        snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else collect_snapshot(cfg,state['last_run_ts'])
+        snap = Snapshot.parse(read_json(snapshot_path)) if snapshot_path else (collect_snapshot(cfg,state['last_run_ts']) if market_cache is None
+                    else collect_snapshot(cfg,state['last_run_ts'],market_cache))
         stage('market_snapshot')
         old_events = len(state.get('events',[]))
         # Every invocation scans closed data. Only auto_report/notify builds
@@ -3626,7 +3650,7 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             print('[TELEGRAM] 15m report queued; pages: '
                   +str(len(state['notification_queue'])),flush=True)
         delivery_ok=True
-        if state['notification_queue']:
+        if state['notification_queue'] and (notify or market_cache is None):
             notification_checkpoint(state,checkpoint_path)
             if not core.TELEGRAM_TOKEN or not core.TELEGRAM_CHAT_ID:
                 delivery_ok=False
@@ -3648,9 +3672,17 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
             state['market_history_status']={'status':'CAPTURE_DISABLED'}
         stage('research_archive')
         live_path = os.environ.get('LIVE_STATE_FILE') if snapshot_path is None else None
+        checkpoint_minute = snap.now // bzu_policy.MINUTE
+        persist_journal = first_worker_tick or bool(result['events']) or notify
+        persist_state = persist_journal or market_cache is None or checkpoint_minute != market_cache.get('state_minute')
         live_terminal.sync_active_signal_to_journal(
             state, snap, result, cfg, sys.modules[__name__], state_path=state_path,
-            journal_path=journal_path, live_path=Path(live_path) if live_path else None)
+            journal_path=journal_path, live_path=Path(live_path) if live_path else None,
+            persist_state=persist_state, persist_journal=persist_journal)
+        if market_cache is not None:
+            market_cache['runtime_state'] = state
+            if persist_state:
+                market_cache['state_minute'] = checkpoint_minute
         stage('save_state_journal_and_terminal')
 
         if checkpoint_path.exists():

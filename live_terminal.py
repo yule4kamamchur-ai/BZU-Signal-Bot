@@ -6,6 +6,7 @@ Unassessed market zones remain explicitly unassessed, not zero-score signals.
 from __future__ import annotations
 
 from math import isfinite
+import os
 
 import oil_risk
 import position_monitor
@@ -24,10 +25,13 @@ def zone_rank(zone):
             sum(numeric(zone.get(k)) for k in ('stop', 'tp1', 'tp2')), zone.get('score') or 0)
 
 
-def sync_active_signal_to_journal(state, snapshot, result, cfg, engine, *, state_path, journal_path, live_path=None):
+def sync_active_signal_to_journal(state, snapshot, result, cfg, engine, *, state_path, journal_path,
+                                  live_path=None, persist_state=True, persist_journal=True):
     """Commit the selected paper order and its UI projection under the engine lock."""
-    engine.atomic_write(state_path, state)
-    engine.export_journal(journal_path, state, cfg.core)
+    if persist_state:
+        engine.atomic_write(state_path, state)
+    if persist_journal:
+        engine.export_journal(journal_path, state, cfg.core)
     if live_path:
         duplicate = result['action'] == 'DUPLICATE_OR_OUT_OF_ORDER'
         recover_projection = (duplicate and snapshot.now == state.get('last_run_ts')
@@ -81,6 +85,7 @@ def build(state, snapshot, result, cfg, engine):
             'remaining': plan.get('remaining', 1.), 'tp1_hit': position_monitor.partial_taken(plan),
             'tp1_partial': partial,
             'be_waits_for_structure': not plan.get('scale_policy') and engine.bzu_policy.partial_tp1_time(plan) is not None,
+            'placed_ts': plan.get('placed_ts'),
             'effective_ts': plan.get('effective_ts', plan.get('placed_ts')),
             'expires_ts': plan.get('expires_ts'), 'filled_ts': plan.get('filled_ts'),
             'pending_stop': stop_amendment.get('price'),
@@ -435,7 +440,16 @@ def build(state, snapshot, result, cfg, engine):
             'stop_and_reverse': analysis.get('stop_and_reverse'),
             'trend_phase':regime.get('trend_phase'), 'wave_phase':regime.get('wave_phase'), 'structure_sync':regime.get('structure_sync') or None, 'trend_matrix':regime.get('trend_matrix') or None,
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
-            'execution':'SIGNAL_LEDGER','daily':engine.day_stats(state,snapshot.now,cfg),
+            'execution':'SIGNAL_LEDGER','execution_audit':state.get('execution_audit'),
+            'daily':engine.day_stats(state,snapshot.now,cfg),
+            'brain_config':{
+                'schema':1, 'missed_target_r':engine.bzu_policy.MISSED_TARGET_R,
+                'browser_replace_atr':1., 'market_band_atr':engine.scanner.MARKET_IMPULSE_BAND_ATR,
+                'market_min_rr':engine.scanner.MARKET_IMPULSE_MIN_RR, 'risk_floor':oil_risk.STOP_FLOOR,
+                'risk_cap':oil_risk.STOP_CAP, 'ttl_ms':engine.bzu_policy.PENDING_LIMIT_TTL_MS,
+                'worker_interval_ms':int(os.getenv('BZU_WORKER_INTERVAL_MS','0')),
+                'uncertain':sum(bool(view.get('reconciliation')) for _,view in engine.slot_views(state)),
+            } if oil_risk.enabled(cfg) else None,
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),
             'max_new_pending': 1 if profile else 2, 'organic_risk_profile': profile,
             'recent_events':recent[-20:], 'last_event':recent[-1] if recent else None,

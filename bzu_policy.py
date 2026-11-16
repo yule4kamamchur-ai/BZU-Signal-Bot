@@ -30,7 +30,7 @@ SCALE_POLICY = 'SCALE_OUT_1R'
 SCALE_STOP_POLICY = 'SCALE_OUT_NEXT_BAR'
 MINUTE = 60_000
 PENDING_LIMIT_TTL_MS = 6 * 15 * MINUTE
-MISSED_TARGET_R = .80
+MISSED_TARGET_R = .75
 
 
 def is_new(plan):
@@ -177,7 +177,9 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
                     scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
     obstacle, room_r = (oil_risk.structural_room(side, entry, risk, scenario_planner.structure_levels(snapshot, engine),trend=trend)
                         if organic else (None, None))
-    if room_r is not None and room_r < 1.35-1e-8:
+    impulse_market = (market_trigger or {}).get('pattern') == 'TREND_CONTINUATION_MARKET'
+    min_room = scanner.MARKET_IMPULSE_MIN_RR if impulse_market else 1.35
+    if room_r is not None and room_r < min_room-1e-8:
         return None, 'BLOCKED_NO_ROOM_TO_STRUCTURE'
     tp1_gate = oil_risk.entry_tp1_error(side, entry, risk, geometry['tp1'])
     if tp1_gate:
@@ -199,7 +201,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     costs = (entry * entry_fee + tp2 * exit_fee) / risk
     rr1 = side * (tp1 - entry) / risk
     if organic:
-        if (market_trigger or {}).get('pattern')=='TREND_CONTINUATION_MARKET' and rr1<1.40-1e-8:
+        if impulse_market and rr1<scanner.MARKET_IMPULSE_MIN_RR-1e-8:
             return None, 'TREND_MARKET_RR_BELOW_1_40'
         if not oil_risk.target_range_valid(rr1,rr2):
             return None, 'ORGANIC_TARGET_RANGE'
@@ -489,7 +491,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         market_trigger = adverse.breakdown_market_trigger(snapshot,zone,entry,risk,quote,cfg.tick)
     elif oil:
         aligned = regime.get('trend_anchor_side')==side
-        if aligned and adverse.trend_supports_wide(zone):
+        if (aligned or local_reversal) and adverse.trend_supports_wide(zone):
             market_trigger = adverse.trend_execution_trigger(snapshot,side,zone,entry,risk,quote,cfg.tick,engine)
         elif zone['kind'] not in (scanner.wave.BASE,scanner.wave.BOS_IMPULSE):
             if aligned and pullback:
@@ -534,7 +536,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
         return None, 'ZONE_NOT_AHEAD_OF_PRICE'
     allowed, why = direction.regime_admission(
-        side, entry, regime, snapshot, cfg.tick, engine, linked_sweep or zone, require_macro=bool(oil))
+        side, quote if market_trigger else entry, regime, snapshot, cfg.tick, engine, linked_sweep or zone, require_macro=bool(oil))
     mark('HTF_ALIGNMENT', allowed)
     if not allowed:
         return None, why
@@ -551,9 +553,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                       'move_r': catchup['move_r'], 'pattern': 'CONFIRMED_RETEST'}
     action = 'NEW_PENDING_LIMIT'
     geometry = None
-    target_trend = trend or exhaustion_bonus or reclaim or sniper_reversal
+    target_trend = (trend or exhaustion_bonus or reclaim or sniper_reversal or
+                    (market_trigger or {}).get('pattern') == 'TREND_CONTINUATION_MARKET')
     if market_trigger:
-        freeze_geometry = pullback or market_trigger['pattern']=='TREND_CONTINUATION_MARKET'
+        impulse_market = market_trigger['pattern']=='TREND_CONTINUATION_MARKET'
+        freeze_geometry = pullback or impulse_market
         if breakdown or market_trigger['pattern']=='TREND_CONTINUATION_MARKET':
             gate = scenario_planner.entry_error(snapshot,cfg,engine,side,quote,zone,trend=True,regime=regime)
             if gate:
@@ -572,14 +576,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                        and side*(quote_profile['boundary']-stop) >= quote_profile['buffer']-1e-8)
         if fixed_valid and (freeze_geometry or not quote_profile['gate']):
             quote_stop, quote_risk = stop, fixed_risk
-        if quote_profile['gate'] or (freeze_geometry and not fixed_valid):
+        if quote_profile['gate'] or (freeze_geometry and not impulse_market and not fixed_valid):
             why = quote_profile['gate'] or 'STRUCTURAL_STOP_TOO_WIDE'
         if why is None:
             geometry, why = protected_targets(
                 context, snapshot, anchor, cfg, engine, quote, quote_stop, side, a15, active=True,
                 zone=zone, trend=target_trend, market_trigger=market_trigger, reference_geometry=reference)
         if geometry is None:
-            if not can_wait:
+            if not can_wait or market_trigger['pattern']=='TREND_CONTINUATION_MARKET':
                 return None, why
             market_trigger = None
         else:
@@ -678,6 +682,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'round_level_protection':copy.deepcopy(diag['round_level_protection']),
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
          'order_type':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
+         'execution_preference':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
          'market_trigger':market_trigger, 'obstacle':geometry.get('obstacle'), 'structural_room_r':geometry.get('room_r'), 'checkpoints':geometry.get('checkpoints', []),
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
          'risk':risk, 'organic_risk':organic_risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,

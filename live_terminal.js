@@ -576,6 +576,309 @@ async function pollM5() {
   finally { m5Busy = false; }
 }
 
+const brainMinute = 60_000;
+const brainQuarter = 15 * brainMinute;
+const brain = {series: {}, rows: [], orders: [], used: new Set(), sourceTs: 0, lastTs: 0, computed: 0};
+const liveBrainEnabled = () => state?.brain_config?.schema === 1;
+const liveBrainFresh = (now = Date.now()) => liveBrainEnabled() && now - brain.computed < QUOTE_MAX_AGE;
+const displayOrders = () => liveBrainEnabled() && brain.sourceTs === state.snapshot_ts ? brain.orders : state.orders;
+const newYorkClock = new Intl.DateTimeFormat('en-US', {
+  timeZone:'America/New_York', weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'
+});
+
+function brainSessionAllowed(ts) {
+  const utc = new Date(ts).getUTCHours();
+  const ny = Object.fromEntries(newYorkClock.formatToParts(ts).map(p => [p.type,p.value]));
+  const minute = Number(ny.hour)*60 + Number(ny.minute);
+  return utc >= 1 && utc < 22 &&
+    !(!['Sat','Sun'].includes(ny.weekday) && minute >= 570 && minute < 585) &&
+    !(ny.weekday === 'Wed' && minute >= 615 && minute < 645);
+}
+
+function brainCandles(raw, step, now) {
+  const rows = new Map();
+  for (const item of raw) {
+    const [ts,open,high,low,close,volume] = item.slice(0,6).map(Number);
+    if (String(item[8]) === '1' && [ts,open,high,low,close,volume].every(number) &&
+        ts > 0 && ts % step === 0 && ts+step <= now && low > 0 && volume >= 0 &&
+        low <= Math.min(open,close) && high >= Math.max(open,close))
+      rows.set(ts,{ts,open,high,low,close,volume});
+  }
+  return [...rows.values()].sort((a,b) => a.ts-b.ts);
+}
+
+function brainAtr(rows) {
+  return rows.slice(-14).reduce((total,b,i) => {
+    const prev = rows[rows.length-15+i].close;
+    return total + Math.max(b.high-b.low, Math.abs(b.high-prev), Math.abs(b.low-prev));
+  },0)/14;
+}
+
+function brainIndicators(rows, minutes, market) {
+  if (rows.length < 50 || rows.at(-1).ts + brainQuarter > market.ts ||
+      market.ts - rows.at(-1).ts - brainQuarter >= brainQuarter ||
+      rows.some((bar,i) => i && bar.ts - rows[i-1].ts !== brainQuarter)) return null;
+  const ema = (period, bars) => bars.slice(1).reduce((value,bar) =>
+    value+(bar.close-value)*2/(period+1),bars[0].close);
+  const end = rows.at(-1).ts+brainQuarter, midnight = Math.floor(end/86_400_000)*86_400_000;
+  const quarters = rows.filter(b => b.ts >= midnight);
+  // Use a complete daily prefix. Prefer minute data where the full quarter exists.
+  const fine = new Map(minutes.map(b => [b.ts,b]));
+  const day = quarters.flatMap(b => {
+    const chunk = Array.from({length:15},(_,i)=>fine.get(b.ts+i*brainMinute));
+    return chunk.every(Boolean) ? chunk : [b];
+  });
+  // Add the closed M1 tail of the current M15 without reusing any volume.
+  const minuteEnd = Math.floor(market.ts/brainMinute)*brainMinute;
+  for (let ts=end; ts<minuteEnd && fine.has(ts); ts+=brainMinute) day.push(fine.get(ts));
+  const volume = day.reduce((total,b)=>total+b.volume,0);
+  const vwap = quarters[0]?.ts === midnight && volume > 0 ?
+    day.reduce((total,b)=>total+(b.high+b.low+b.close)/3*b.volume,0)/volume : null;
+  const ema9=ema(9,rows.slice(-120)), ema20=ema(20,rows.slice(-60)), ema50=ema(50,rows.slice(-120));
+  const side = [1,-1].find(s => number(vwap) && s*(market.price-ema20)>0 &&
+    s*(rows.at(-1).close-ema20)>0 && s*(market.price-vwap)>0 && s*(ema9-ema20)>0) ?? 0;
+  const liveEma = (value,period) => value+(market.price-value)*2/(period+1);
+  return {ema9,ema20,ema50,vwap,atr:brainAtr(rows),side,
+    liveEma9:liveEma(ema9,9),liveEma20:liveEma(ema20,20),liveEma50:liveEma(ema50,50)};
+}
+
+function brainScan(rows, m5, market, matrix, config, tick) {
+  if (matrix.atr <= 0) return [];
+  const {atr,side:trend} = matrix;
+  const result = new Map(), last = rows.at(-1), prior = rows.slice(-13,-1);
+  const wick = (row,side) => side === 1 ? row.low : row.high;
+  const far = (row,side) => side === 1 ? row.high : row.low;
+  const roundOut = (price,side) => Math.round((side === 1 ?
+    Math.ceil(price/tick-1e-8) : Math.floor(price/tick+1e-8))*tick*1e8)/1e8;
+  const quoteFor = side => side === 1 ? market.ask : market.bid;
+  const add = (kind, side, ref, anchor, bar, step, trigger) => {
+    const known = bar.ts+step;
+    if (known > market.ts || market.ts-known >= 3*brainQuarter) return;
+    const low = Math.min(ref,anchor), high = Math.max(ref,anchor);
+    if (low === high) return;
+    const quote = quoteFor(side);
+    const marketReady = trigger && number(quote) && market.ts-known < step &&
+      side*(quote-ref) >= tick/2-1e-8 && side*(quote-ref) <= config.market_band_atr*atr+1e-8;
+    const entry = marketReady ? quote : roundOut(ref+side*tick,side);
+    if (rows.some(b => b.ts >= known && side*(wick(b,side)-anchor) < -tick)) return;
+    const riskFloor = config.risk_floor;
+    const stop = roundOut(entry-side*Math.max(riskFloor,side*(entry-anchor)+Math.max(2*tick,.12*atr)),-side);
+    const risk = side*(entry-stop);
+    const pivots = rows.slice(1,-1).filter((b,i) => b.ts < bar.ts &&
+      side*(far(b,side)-far(rows[i],side))>0 && side*(far(b,side)-far(rows[i+2],side))>0);
+    const levels = [...new Set(pivots.map(b=>far(b,side)))].filter(p=>side*(p-entry)>0)
+      .sort((a,b)=>side*(a-b));
+    const nearest = levels[0];
+    const rr1 = number(nearest) ? side*(nearest-entry)/risk : 0;
+    const valid = risk >= riskFloor-1e-8 && risk <= config.risk_cap+1e-8 &&
+      rr1 >= config.market_min_rr-1e-8;
+    const tp2 = levels.find(p => side*(p-entry)/risk >= Math.max(1.85,rr1+tick/risk)) ??
+      roundOut(entry+side*Math.max(1.90,rr1+tick/risk)*risk,side);
+    const gap = side*(market.price-entry);
+    const orderType = valid && marketReady ? 'MARKET' :
+      valid && !marketReady && gap >= tick && gap < config.missed_target_r*risk ? 'LIMIT' : null;
+    const id = ['paper',kind,side,known,ref.toFixed(4)].join(':');
+    result.set(id,{id,kind,setup:kind,side,entry,stop,risk,low,high,reference:ref,
+      tp1:nearest,tp2,rr1,known_ts:known,timeframe:step===brainQuarter?'15m':'5m',
+      order_type:orderType,actionable:!!orderType,market_now:orderType==='MARKET',local:true});
+  };
+  for (const side of [1,-1]) {
+    const edge = f => side*Math.max(...prior.map(b=>side*f(b,side)));
+    const breakout=edge(far), sweep=-side*Math.max(...prior.map(b=>-side*wick(b,side)));
+    const body=side*(last.close-last.open);
+    if (side===trend && side*(last.close-breakout)>tick && body>=.5*atr && last.high-last.low<=2.3*atr) {
+      const base=prior.slice(-5), span=Math.max(...base.map(b=>b.high))-Math.min(...base.map(b=>b.low));
+      add(span<=1.30*atr?'CONSOLIDATION_BREAKOUT_BASE':'BOS_IMPULSE_BREAKOUT',
+        side,breakout,wick(last,side),last,brainQuarter,true);
+    }
+    if (side*(wick(last,side)-sweep)<-tick && side*(last.close-sweep)>tick && body>=.30*atr)
+      add('TURTLE_SOUP',side,sweep,wick(last,side),last,brainQuarter,true);
+    const [left,neck,right,confirm] = rows.slice(-4);
+    if (side*(wick(right,side)-wick(left,side))>=tick &&
+        side*(far(neck,side)-wick(right,side))>=.45*atr &&
+        side*(right.close-far(neck,side))<=0 && side*(confirm.close-far(neck,side))>tick &&
+        side*(confirm.close-confirm.open)>=.30*atr)
+      add('V_REVERSAL_CHOCH',side,far(neck,side),wick(right,side),confirm,brainQuarter,true);
+    for (let i=rows.length-3;i<rows.length;i++) {
+      const b=rows[i], old=rows[i-2];
+      if (side===trend && side*(wick(b,side)-far(old,side))>=.12*atr)
+        add(side===1?'FVG_BULL':'FVG_BEAR',side,wick(b,side),far(old,side),b,brainQuarter,false);
+    }
+    const fresh=m5.at(-1), previous=m5.at(-2), impulse=m5.at(-3), m5step=5*brainMinute;
+    if (side===trend && fresh && previous?.ts===fresh.ts-m5step && impulse?.ts===previous.ts-m5step &&
+        side*(fresh.close-fresh.open)>tick) {
+      if (side*(matrix.ema20-matrix.ema50)>0 && Math.abs(wick(fresh,side)-matrix.ema9)<=.35*atr &&
+          side*(fresh.close-matrix.ema9)>tick && side*(impulse.close-impulse.open)>=.30*atr &&
+          Math.abs(previous.close-previous.open)<=.35*atr)
+        add('EMA9_MOMENTUM_SURF',side,matrix.ema9,wick(fresh,side),fresh,m5step,true);
+      const base = m5.slice(-9,-3);
+      if (base.length>=5 && base.every((b,i)=>!i||b.ts-base[i-1].ts===m5step)) {
+        const level=side*Math.max(...base.map(b=>side*far(b,side)));
+        if (side*(impulse.close-level)>tick && side*(previous.close-level)>=0 &&
+            Math.abs(wick(fresh,side)-level)<=.38*atr && side*(fresh.close-level)>tick)
+          add(side*(impulse.open-level)>=0 ? 'RECLAIM_BREAKER' : 'SR_FLIP_RECLAIM',
+            side,level,wick(fresh,side),fresh,m5step,true);
+      }
+    }
+  }
+  return [...result.values()].sort((a,b)=>Number(b.actionable)-Number(a.actionable) ||
+    Math.abs(a.entry-market.price)-Math.abs(b.entry-market.price));
+}
+
+function syncBrain(snapshot, first) {
+  if (!liveBrainEnabled()) return;
+  const covered = snapshot.execution_audit?.closed_through_ts ??
+    Math.floor((snapshot.ledger_ts ?? snapshot.snapshot_ts)/brainMinute)*brainMinute;
+  if (first || !brain.sourceTs) {
+    Object.assign(brain,{series:{},rows:[],used:new Set(),computed:0,lastTs:covered,event:null,orders:[]});
+  }
+  for (const event of snapshot.recent_events ?? []) {
+    if (['CANCELLED','EXPIRED','CLOSED'].includes(event.kind)) brain.used.add(event.order_id);
+  }
+  const canonical = snapshot.orders;
+  const current = brain.orders;
+  const previous = brain.canonicalIds ?? [];
+  const newLedgerOrder = canonical.some(o=>!previous.includes(o.id));
+  const observed = brain.event;
+  const coversProjection = observed && observed.ts < covered;
+  const browserOnly = current.length && current.every(o=>o.browser_created);
+  const ledgerProgress = canonical.some(o=>o.status==='OPEN' &&
+    (observed?.kind==='ENTERED' || (observed?.kind==='TP1' && o.tp1_partial)));
+  const ledgerFinished = observed && (snapshot.recent_events??[]).some(e=>e.order_id===observed.orderId &&
+    ['CLOSED','CANCELLED','EXPIRED'].includes(e.kind) && e.ts >= observed.ts);
+  if (!observed || newLedgerOrder || ledgerProgress || ledgerFinished ||
+      (coversProjection && !browserOnly && !observed.browserCreated)) {
+    brain.orders = canonical.map(o=>({...o}));
+    brain.lastTs = Math.max(brain.lastTs,covered);
+    brain.event = null;
+  }
+  if (canonical.some(o=>o.status==='CANCELLING')) {
+    brain.orders=canonical.map(o=>({...o}));
+    brain.event=null;
+  }
+  brain.canonicalIds = canonical.map(o=>o.id);
+  brain.sourceTs = snapshot.snapshot_ts;
+}
+
+function brainEvent(order, kind, ts, message) {
+  brain.event={kind,ts,side:order.side,orderId:order.id,browserCreated:order.browser_created===true,detail:message};
+  order.local = true;
+  notify(order,orderTracker(order),'BROWSER_'+kind,message+' · PAPER');
+}
+
+function advanceBrain(market, matrix, rows) {
+  if (market.ts <= brain.lastTs || !number(market.bid) || !number(market.ask) ||
+      market.bid <= 0 || market.ask < market.bid) return;
+  const config = state.brain_config;
+  brain.lastTs = market.ts;
+  const order=brain.orders[0];
+  const oppositeQuote = side => side === 1 ? market.bid : market.ask;
+  const eligible = rows.filter(z=>z.actionable && !brain.used.has(z.id));
+  const choose = (side) => eligible.find(z=>(!side || side===z.side) && z.market_now) ??
+    eligible.find(z=>!side || side===z.side);
+  let next = choose();
+  const remove = (kind,message) => {
+    brain.used.add(order.id);
+    brain.orders=[];
+    brainEvent(order,kind,market.ts,message);
+  };
+  if (order?.status === 'CANCELLING' || brain.orders.length>1) return;
+  if (order?.status === 'PENDING') {
+    const side = order.side, move = side*(market.price-order.entry);
+    const target = Math.min(config.missed_target_r*order.risk,
+      number(order.tp1) ? side*(order.tp1-order.entry) : Infinity);
+    const closer = eligible.filter(z=>z.side===side && z.known_ts>(order.placed_ts ?? order.effective_ts ?? 0) &&
+      Math.abs((z.market_now ? z.reference : z.entry)-market.price)<move && z.id!==order.id);
+    const replacement = matrix?.side===side && matrix.atr>0 && move>config.browser_replace_atr*matrix.atr &&
+      (closer.find(z=>z.market_now) ?? closer[0]);
+    if (market.ts >= order.expires_ts) remove('EXPIRED','Строк ліміту минув');
+    else if (market.ts >= (order.effective_ts ?? 0) &&
+        side*((side===1?market.ask:market.bid)-order.entry)<=1e-8) {
+      Object.assign(order,{status:'OPEN',filled_ts:market.ts});
+      brainEvent(order,'ENTERED',market.ts,'Вхід виконано '+format(order.entry));
+    } else if (move>=target-1e-8 && order.target_cancel_armed!==false) {
+      remove('CANCELLED','Рух досяг 0.75R або TP1 без входу');
+      next = choose(side);
+    } else if (replacement) {
+      remove('CANCELLED','Ближчий підтверджений сетап');
+      next = replacement;
+    } else if (move<target-1e-8) order.target_cancel_armed=true;
+  }
+  if (order?.status === 'OPEN' && brain.orders[0] === order) {
+    const side=order.side, usedQuote=oppositeQuote(side);
+    if (side*(usedQuote-order.stop)<=1e-8) {
+      const realized=(order.remaining??1)*side*(usedQuote-order.entry)/order.risk+(order.paper_realized_r??0);
+      remove('SL','Захисний стоп · '+signed(realized)+'R');
+      return;
+    }
+    const scale = order.scale_policy==='SCALE_OUT_1R';
+    const first = scale ? order.entry+side*order.risk : order.tp1;
+    if (!order.tp1_hit && number(first) && side*(usedQuote-first)>=-1e-8) {
+      const fraction=scale ? .5 : order.tp1_fraction ?? 1;
+      order.paper_realized_r=fraction*side*(first-order.entry)/order.risk;
+      if (fraction===1) {
+        remove('TP1','Вихід на першій цілі');
+        return;
+      }
+      Object.assign(order,{tp1: first,tp1_hit:true,tp1_partial:true,remaining:1-fraction});
+      if (scale) {
+        const tick=state.tick??.01;
+        const raw=(order.entry+side*.15*order.risk)/tick;
+        order.stop=(side===1?Math.ceil(raw-1e-8):Math.floor(raw+1e-8))*tick;
+        order.be_stop=order.stop;
+        order.be_confirmed_ts=market.ts;
+      }
+      brainEvent(order,'TP1',market.ts,'Зафіксовано '+Math.round(fraction*100)+'% на '+format(first));
+    }
+    if (order.tp1_hit && number(order.tp2) && side*(usedQuote-order.tp2)>=-1e-8)
+      remove('TP2','Вихід залишку на TP2');
+    return;
+  }
+  if (!brain.orders.length && next && !config.uncertain && brainSessionAllowed(market.ts)) {
+    const marketEntry=next.order_type==='MARKET';
+    const order={...next, browser_created:true, status:marketEntry?'OPEN':'PENDING',
+      qualification_tp1:next.tp1,tp1:next.entry+next.side*next.risk,placed_ts:market.ts,
+      effective_ts:market.ts,expires_ts:Math.min(market.ts+config.ttl_ms,
+        Math.floor(market.ts/86_400_000)*86_400_000+22*3_600_000),
+      scale_policy:'SCALE_OUT_1R',tp1_fraction:.5,remaining:1,target_cancel_armed:true,
+      filled_ts:marketEntry?market.ts:null};
+    brain.used.add(order.id);
+    brain.orders=[order];
+    brainEvent(order,marketEntry?'ENTERED':'PLACED',market.ts,
+      (marketEntry?'MARKET · вхід виконано ':'Ліміт виставлено ')+format(order.entry));
+  }
+}
+
+function recalculateBrain(market) {
+  if (!liveBrainEnabled() || !market || Math.abs(Date.now()-market.ts)>QUOTE_MAX_AGE || document.hidden) return;
+  const rows=(brain.series['15m']??[]).filter(b=>b.ts+brainQuarter<=market.ts);
+  const minutes=(brain.series['1m']??[]).filter(b=>b.ts+brainMinute<=market.ts);
+  const m5=(brain.series['5m']??[]).filter(b=>b.ts+5*brainMinute<=market.ts);
+  const matrix=brainIndicators(rows,minutes,market);
+  brain.matrix=matrix;
+  brain.rows=matrix ? brainScan(rows,m5,market,matrix,state.brain_config,state.tick??.01) : [];
+  brain.computed=matrix ? Date.now() : 0;
+  advanceBrain(market,matrix,brain.rows);
+}
+
+let brainBusy = false;
+async function pollBrainCandles() {
+  if (!liveBrainEnabled() || brainBusy || document.hidden) return;
+  brainBusy=true;
+  const instrument=state.instrument, now=Date.now();
+  try {
+    const timeframes=[['1m',brainMinute,30],['5m',5*brainMinute,16],['15m',brainQuarter,120]];
+    await Promise.allSettled(timeframes.map(async ([bar,step,limit])=>{
+      if (brain.series[bar]?.at(-1)?.ts+step === Math.floor(now/step)*step) return;
+      const data=await json(OKX+'/candles?'+new URLSearchParams({instId:instrument,bar,limit}),2700);
+      if (state.instrument===instrument && data.code==='0' && Array.isArray(data.data))
+        brain.series[bar]=brainCandles(data.data,step,Date.now());
+    }));
+    recalculateBrain(quote);
+    render();
+  } finally { brainBusy=false; }
+}
+
 function zoneName(kind) {
   if (typeof kind !== 'string') return 'Структурна зона';
   if (kind.includes('OTE')) return 'Відкат імпульсу OTE';
@@ -589,7 +892,7 @@ function zoneName(kind) {
            BREAKER_BLOCK:'Дзеркальний рівень', BOS_CONTINUATION:'Мілкий ретест пробою', FVG_PULLBACK:'Відкат у FVG',
            FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
            EMA9_MOMENTUM_SURF:'Продовження від EMA9', V_REVERSAL_CHOCH:'Розворот із пробоєм шиї',
-           FAILED_BREAKOUT_TRAP:'Хибний пробій із поверненням',
+           FAILED_BREAKOUT_TRAP:'Хибний пробій із поверненням', TURTLE_SOUP:'Turtle Soup · хибний пробій',
            MULTIBAR_SWEEP:'Свіп із поглинанням', BREAKDOWN_RECLAIM:'Ведмежий пробій підтримки', SR_FLIP_RECLAIM:'Дзеркальний рівень', RECLAIM_BREAKER:'Ретест повернутого рівня',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            CONSOLIDATION_BREAKOUT_BASE:'Наторговка після імпульсу',
@@ -659,6 +962,7 @@ function conditionText(row, price) {
 
 function pendingTargetReached(order, price) {
   if (orderTracker(order).touch) return false;
+  if (liveBrainEnabled() && brain.sourceTs === state.snapshot_ts) return false;
   if (!number(order.missed_target_level)) return targetExhausted(order, price);
   return order.target_cancel_armed !== false &&
     (exhaustedPlans.has(exhaustionKey(order)) ||
@@ -669,7 +973,7 @@ function pendingInvalidation(order, price) {
     return 'Строк лімітки минув. Чекаємо оновлення журналу.';
   if (pendingTargetReached(order, price))
     return 'Рух досяг порога скасування. Чекаємо звірки виконання за журналом.';
-  if (!number(order.entry) || Math.abs(price - order.entry) > maximumDistance(order) + 1e-8)
+  if (!number(order.entry) || (!liveBrainEnabled() && Math.abs(price - order.entry) > maximumDistance(order) + 1e-8))
     return 'Рівень лімітки вийшов за робочу відстань. Чекаємо оновлення журналу.';
   return null;
 }
@@ -678,16 +982,17 @@ function pendingIsCurrent(order, price) {
 }
 function chartOrders() {
   const price = displayedPrice();
-  return state.orders.filter(order => order.status === 'OPEN' ||
+  return displayOrders().filter(order => order.status === 'OPEN' ||
     (order.status === 'PENDING' && pendingIsCurrent(order, price)));
 }
 function chartPlan() {
   if (chartOrders().length) return null;
-  return mainPlan();
+  return liveBrainFresh() ? brain.rows.find(row=>row.actionable) ?? null : mainPlan();
 }
 function visibleZones() {
   const orders = chartOrders();
-  if (orders.length) return state.zones.filter(zone => orders.some(order => order.id === zone.order_id));
+  if (orders.length) return [...state.zones.filter(zone => orders.some(order => order.id === zone.order_id)),
+    ...orders.filter(order=>order.browser_created)];
   const primary = chartPlan();
   if (primary) return [primary];
   const price = displayedPrice();
@@ -742,11 +1047,16 @@ function renderEntryScenarios(price, isLive) {
 }
 
 function scannerRows(price) {
-  return (state.scanner_top ?? state.zones.slice(0,5)).filter(zone => {
+  const orders=displayOrders();
+  const ledger = (state.scanner_top ?? state.zones.slice(0,5)).filter(zone => {
     if (!zone.order_id) return true;
-    const order = state.orders.find(row => row.id === zone.order_id);
+    const order = orders.find(row => row.id === zone.order_id);
     return order?.status === 'OPEN' || (order?.status === 'PENDING' && pendingIsCurrent(order, price));
   });
+  if (!liveBrainFresh()) return ledger;
+  const rows=brain.rows.map(z=>orders.some(o=>o.id===z.id) ? {...z,order_id:z.id} : z);
+  return [...rows, ...ledger.filter(z=>!rows.some(r=>r.side===z.side && r.kind===z.kind &&
+    Math.abs(r.reference-z.entry)<=(state.tick??.01)*2))].slice(0,5);
 }
 function renderZones(price) {
   const container = $('zones');
@@ -761,9 +1071,11 @@ function renderZones(price) {
     name.append(element('strong', (z.timeframe ?? '') + ' ' + zoneName(z.kind)),
       element('small', sideLabel(z.side) + ' · ' + format(z.low) + '–' + format(z.high)));
     const approved = ready(Date.now()) && actionablePlan(z, price);
-    const order = state.orders.find(o => o.id === z.order_id);
+    const order = displayOrders().find(o => o.id === z.order_id);
     const risk = z.side*(z.entry-z.stop);
-    const status = order?.status === 'PENDING' ? 'Лімітка' : order?.status === 'OPEN' ? 'В угоді' :
+    const status = order?.status === 'PENDING' ? (order.local?'PAPER · лімітка':'Лімітка') :
+      order?.status === 'OPEN' ? (order.local?'PAPER · в угоді':'В угоді') :
+      z.local ? (z.actionable ? 'Live Brain · '+z.order_type : 'Live Brain · спостереження') :
       targetExhausted(z, price) ? 'Ціль пройдена' : livePlanState(z,price)==='INVALID' ? 'SL пробито' :
       approved && z.market_now ? 'Вхід за ринком' :
       number(price) && ((number(z.low) && number(z.high) && z.low<=price && price<=z.high) ||
@@ -964,8 +1276,9 @@ function setBannerMode(mode) {
   return banner;
 }
 function renderBanner(price, usable, live) {
-  const active = state.orders.find(order => order.status === 'OPEN');
-  const pending = state.orders.find(order => order.status === 'PENDING');
+  const orders=displayOrders();
+  const active = orders.find(order => order.status === 'OPEN');
+  const pending = orders.find(order => order.status === 'PENDING');
   const candidate = chartPlan();
   const closed = state.last_closed;
   let mode = 'WAITING';
@@ -973,7 +1286,7 @@ function renderBanner(price, usable, live) {
   let pill = focus?.primary?.status === 'DEVELOPING' ? 'СЕТАП У РОЗРОБЦІ' : 'ПОШУК ТОЧКИ ВХОДУ';
   let title = focus?.headline ?? 'ОЧІКУЄМО УГОДУ';
   let detail = focus?.market?.phase_text ?? 'Готових сетапів немає.';
-  const reference = state.scanner_top && scannerRows(price)[0];
+  const reference = (state.scanner_top || liveBrainFresh()) && scannerRows(price)[0];
   if (usable && reference && !candidate) {
     title = 'СПОСТЕРЕЖЕННЯ ' + sideLabel(reference.side) + ' • Робоча зона ' + format(reference.entry) +
       ' (Стоп ' + format(reference.stop) + ' | Тейк ' + format(reference.tp1) + ')';
@@ -991,7 +1304,7 @@ function renderBanner(price, usable, live) {
       title = (candidate.market_now ? 'СИГНАЛ MARKET ' : 'ГОТУЄМО ') + sideLabel(candidate.side) + ' ВІД ' +
         format(candidate.entry) + ' • ' + candidate.timeframe + ' ' + zoneName(candidate.kind);
       title += ' (Стоп ' + format(candidate.stop) + ' | Тейк ' + format(candidate.tp1) + ')';
-      detail = conditionText(candidate, price);
+      detail = candidate.local ? 'Розрахунок Live Brain' : conditionText(candidate, price);
     } else {
       detail = 'Чекаємо підходу до ' + format(candidate.entry) + '.';
     }
@@ -1005,9 +1318,14 @@ function renderBanner(price, usable, live) {
     title = (managing ? 'В СУПРОВОДІ' : 'В УГОДІ') + ' • ' +
       (entryType ? entryType + ' ' : '') + sideLabel(active.side) + ' @ ' + format(active.entry);
     detail = management(active, tracker, price, usable);
+    if (active.local) {
+      title = (managing?'СУПРОВІД':'ВХІД ВИКОНАНО · ENTERED')+' • '+entryType+' '+sideLabel(active.side)+' @ '+format(active.entry);
+      pill = 'PAPER · LIVE BRAIN';
+      detail = managing ? 'Частину зафіксовано · захисний SL '+format(active.stop) : 'Вхід змодельовано за живим котируванням.';
+    }
   } else if (pending) {
     const tracker = orderTracker(pending);
-    pill = 'ЛІМІТКА ВИСТАВЛЕНА';
+    pill = pending.local ? 'PAPER · ЛІМІТКА' : 'ЛІМІТКА ВИСТАВЛЕНА';
     title = 'ОЧІКУЄМО ВХІД • LIMIT ' + sideLabel(pending.side) + ' @ ' + format(pending.entry);
     detail = 'Очікуємо виконання лімітки.';
     if (tracker.touch) detail = 'Ціна торкнулася входу, чекаємо підтвердження виконання.';
@@ -1018,10 +1336,20 @@ function renderBanner(price, usable, live) {
       title = 'ЧЕКАЄМО ЗВІРКИ ЛІМІТКИ';
       detail = invalidation;
     }
-  } else if (state.orders.length) {
+  } else if (orders.length) {
     pill = 'ЗВІРКА ЛІМІТКИ';
     title = 'СКАСУВАННЯ ЛІМІТКИ';
     detail = 'Чекаємо підтвердження скасування за журналом.';
+  } else if (liveBrainEnabled() && ['SL','TP1','TP2'].includes(brain.event?.kind) &&
+             Date.now()-brain.event.ts<15*brainMinute) {
+    mode = 'CLOSED';
+    title = 'УГОДУ ЗАКРИТО · PAPER';
+    pill = 'PAPER · LIVE BRAIN';
+    detail = brain.event.detail;
+  } else if (liveBrainEnabled() && ['CANCELLED','EXPIRED'].includes(brain.event?.kind) &&
+             Date.now()-brain.event.ts<5*brainMinute) {
+    pill = 'PAPER · ЛІМІТ ЗНЯТО';
+    detail = brain.event.detail;
   } else if (closed?.kind === 'CLOSED' && number(closed.ts) &&
              closed.ts <= state.snapshot_ts && Date.now() - closed.ts < 15 * 60_000) {
     mode = 'CLOSED';
@@ -1029,7 +1357,7 @@ function renderBanner(price, usable, live) {
     title = 'УГОДУ ЗАКРИТО • ' + sideLabel(closed.side);
     detail = eventText(closed) + ' о ' + stamp(closed.ts) + '.';
   }
-  if (!usable) {
+  if (!usable && !liveBrainFresh()) {
     if (mode === 'WAITING') {
       pill = 'СИГНАЛИ ПРИЗУПИНЕНО';
       title = state.status === 'DATA_HOLD' ? 'ПЕРЕВІРКА РИНКОВИХ ДАНИХ' : 'ЧЕКАЄМО ОНОВЛЕННЯ СТАНУ';
@@ -1043,7 +1371,7 @@ function renderBanner(price, usable, live) {
   if (mode !== 'WAITING' || pending || !usable) title += detail ? ' • ' + detail : '';
   $('state-title').textContent=title; $('state-detail').textContent=detail; $('state-pill').textContent=pill;
   $('state-eyebrow').textContent=banner.classList.contains('near') ? 'ЦІНА БІЛЯ ЛІМІТКИ · ПРИГОТУЙТЕСЯ ДО ПЕРЕВІРКИ ВХОДУ' : 'ПОТОЧНИЙ СТАН СИСТЕМИ';
-  for (const [id,enabled] of [['step-scan',usable && !state.orders.length],['step-pending',usable && !active && !!pending],['step-active',usable && !!active]]) {
+  for (const [id,enabled] of [['step-scan',usable && !orders.length],['step-pending',usable && !active && !!pending],['step-active',usable && !!active]]) {
     $(id).classList.toggle('current',enabled);
     if (enabled) $(id).setAttribute('aria-current','step'); else $(id).removeAttribute('aria-current');
   }
@@ -1115,9 +1443,11 @@ function render() {
   const market=usable && live && !document.hidden ? quote : null;
   $('price').textContent=format(price);
   $('quote-status').textContent=live ? 'Live · ' + stamp(quote.ts) : (feedError ? 'OKX недоступний' : 'Котирування застаріло') + ' · зліпок';
-  $('stamp').textContent=stamp(state.snapshot_ts); $('instrument').textContent=state.instrument;
+  $('stamp').textContent=stamp(liveBrainFresh(now)?brain.computed:state.snapshot_ts); $('instrument').textContent=state.instrument;
   $('regime').textContent=(usable ? state.scenario_plan?.market?.phase_text : null) ?? ({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
+  if (liveBrainFresh(now) && brain.matrix) $('regime').textContent=
+    ({1:'Висхідний',[-1]:'Низхідний',0:'Діапазон'})[brain.matrix.side];
   const structureSync=state.structure_sync;
   $('regime').title=structureSync?.proof === 'RECENT_SWING_IMPULSE'
     ? 'Хвиля від останнього підтвердженого свінга · ' + format(structureSync.wave_atr) + ' ATR'
@@ -1135,13 +1465,19 @@ function render() {
     ? 'Пробій M15 ' + format(structureSync.level) + ' · хвиля ' + Math.round(structureSync.wave_adr * 100) + '% ADR'
     : '';
   $('state-status').textContent=usable ? 'Журнал актуальний' : state.status==='DATA_HOLD' ? 'Дані на перевірці' : 'Потрібен новий зліпок';
-  $('capacity').textContent=(state.occupied_slots ?? state.orders.length) + '/' + (state.max_new_pending ?? 2) + ' місць';
+  if (liveBrainFresh(now)) {
+    $('state-status').textContent='Live Brain · 3s Sync · журнал '+stamp(state.ledger_ts??state.snapshot_ts);
+    $('regime').title='EMA9 '+format(brain.matrix.liveEma9??brain.matrix.ema9)+' · EMA20 '+format(brain.matrix.liveEma20??brain.matrix.ema20)+
+      ' · EMA50 '+format(brain.matrix.liveEma50??brain.matrix.ema50)+' · VWAP '+format(brain.matrix.vwap)+' · ATR14 '+format(brain.matrix.atr);
+  }
+  const orders=displayOrders();
+  $('capacity').textContent=(liveBrainEnabled()?Math.max(orders.length,state.brain_config?.uncertain??0):(state.occupied_slots ?? state.orders.length)) + '/' + (state.max_new_pending ?? 2) + ' місць';
   $('daily').textContent=state.daily ? state.daily.entries + ' уг. · ' + signed(state.daily.net_r) + 'R' : '—';
-  $('order-count').textContent=state.orders.length;
+  $('order-count').textContent=orders.length;
   const cards=$('orders'); cards.replaceChildren();
-  for (const order of [...state.orders].sort((a,b)=>(b.status==='OPEN')-(a.status==='OPEN'))) {
+  for (const order of [...orders].sort((a,b)=>(b.status==='OPEN')-(a.status==='OPEN'))) {
     const tracker=orderTracker(order);
-    if (usable && !document.hidden) track(order,tracker,market,now);
+    if (!liveBrainEnabled() && usable && !document.hidden) track(order,tracker,market,now);
     const pending=order.status==='PENDING';
     const move=order.side*(price-order.entry);
     const card=element('article',null,'order');
@@ -1149,11 +1485,14 @@ function render() {
       tracker.tp1 ? 'target' : order.status==='OPEN' ? 'entry' : 'approach';
     if (now-tracker.flash<900) card.classList.add('pulse');
     card.append(element('h3',(order.number ? '#'+order.number+' · ' : '') + sideLabel(order.side) + ' · ' + (order.order_type ?? order.type) + ' @ ' + format(order.entry)),
-      element('p',order.status==='OPEN' ? 'Позиція за журналом' : order.status==='CANCELLING' ? 'Скасування за журналом' : 'Лімітка за журналом','order-label'));
-    if (order.status==='OPEN') card.append(element('p',signed(move,' $/од.') + (order.risk>0 ? ' · '+signed(move/order.risk)+'R' : ''), 'pnl '+(move>=0?'long':'short')),
+      element('p',order.local ? 'PAPER · розрахунок у вкладці' : order.status==='OPEN' ? 'Позиція за журналом' : order.status==='CANCELLING' ? 'Скасування за журналом' : 'Лімітка за журналом','order-label'));
+    const pnlR = (order.paper_realized_r ?? (order.tp1_partial ? order.tp1_fraction*order.side*(order.tp1-order.entry)/order.risk : 0)) +
+      (order.remaining??1)*move/order.risk;
+    if (order.status==='OPEN') card.append(element('p',signed(move,' $/од.') + (order.risk>0 ? ' · '+signed(pnlR)+'R' : ''), 'pnl '+(move>=0?'long':'short')),
       element('small',(live ? 'Live' : 'Зліпок') + ' · ціновий рух без комісій; грошовий PnL залежить від обсягу'), lifecycle(order,price));
     else card.append(proximity(order,price));
-    card.append(element('p',management(order,tracker,price,usable),'action'));
+    card.append(element('p',order.local && order.tp1_partial ? 'Частину зафіксовано · тейк залишку '+format(order.tp2) :
+      management(order,tracker,price,usable),'action'));
     const details=element('dl');
     const rr=order.risk>0 && number(order.tp1) ? order.side*(order.tp1-order.entry)/order.risk : null;
     const fields=[['Сетап',order.setup ?? 'Не вказано'],['Бал / клас за журналом',scoreText(order)],['Entry / SL',format(order.entry)+' / '+format(order.stop)],
@@ -1364,7 +1703,8 @@ function acceptTicker(row) {
   if (row?.instId !== state?.instrument || !number(price) || price <= 0 ||
       !number(ts) || ts <= 0 || ts > Date.now() + 3000 || (quote && ts < quote.ts)) return false;
   if (quote&&ts===quote.ts) return price===quote.price;
-  quote = { price, ts };
+  quote = {price,ts,bid:positiveNumber(row.bidPx),ask:positiveNumber(row.askPx)};
+  recalculateBrain(quote);
   observeLive(quote);
   feedError = false;
   if (Date.now() - ts <= QUOTE_MAX_AGE && !document.hidden) sampleCandle(quote);
@@ -1428,7 +1768,6 @@ async function pollState() {
     if (state && next.snapshot_ts < state.snapshot_ts) return;
     stateError = false;
     if (state && next.snapshot_ts === state.snapshot_ts) {
-      await loadCandles();
       render();
       return;
     }
@@ -1441,6 +1780,7 @@ async function pollState() {
     }
     const previousSnapshot = state?.snapshot_ts;
     state = next;
+    syncBrain(next, first);
     const knownZones = new Set([...poolRows().map(zoneFingerprint), ...next.orders.map(exhaustionKey)]);
     for (const cache of [invalidZones, exhaustedPlans]) {
       for (const fingerprint of cache) if (!knownZones.has(fingerprint)) cache.delete(fingerprint);
@@ -1448,7 +1788,7 @@ async function pollState() {
     if (!first) {
       for (const event of next.recent_events ?? []) {
         const tracker = position.get(event.order_id);
-        if (tracker && ['CANCELLED','EXPIRED'].includes(event.kind) && event.ts >= previousSnapshot) {
+        if (tracker && !tracker.events.has('BROWSER_'+event.kind) && ['CANCELLED','EXPIRED'].includes(event.kind) && event.ts >= previousSnapshot) {
           notify(event, tracker, event.kind, (event.kind === 'CANCELLED' ?
             'Бот скасував лімітку ' : 'Час дії лімітки минув ') + format(event.entry));
         }
@@ -1460,8 +1800,10 @@ async function pollState() {
     const keep=new Set(reactionRows().map(reactionKey));
     for (const [key,t] of reactions) if (!keep.has(key)&&!['INVALID','MISSED'].includes(t.stage)) reactions.delete(key);
     render();
-    void pollTicker(); void pollM5();
-    await loadCandles(first);
+    if (first) {
+      void pollTicker(); void pollM5(); void pollBrainCandles();
+      await loadCandles(true);
+    }
   } catch {
     stateError = true;
     $('state-status').textContent = 'Зліпок бота недоступний';
@@ -1535,9 +1877,13 @@ setInterval(() => {
   }
 },1000);
 setInterval(pollTicker, 3000);
+setInterval(() => {
+  if (state?.brain_config?.worker_interval_ms) void pollState();
+},3000);
 setInterval(pollState, 30_000);
 setInterval(pollM5,3000);
+setInterval(pollBrainCandles,3000);
 document.addEventListener('visibilitychange', () => {
   pauseReactions();
-  if (!document.hidden) { void pollState(); void pollTicker(); void pollM5(); }
+  if (!document.hidden) { void pollState(); void pollTicker(); void pollM5(); void pollBrainCandles(); }
 });

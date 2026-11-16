@@ -431,21 +431,24 @@ def m5_reaction_market_trigger(snapshot, side, zone, entry, risk, quote, tick, e
 
 
 def trend_supports_wide(zone):
-    from market_wave import BASE, BOS_IMPULSE, EMA9_SURF, VWAP_CONTINUATION
+    from market_wave import BASE, BOS_IMPULSE, EMA9_SURF, VWAP_CONTINUATION, V_REVERSAL, FAILED_TRAP
 
-    return zone.get('kind') in (BASE,BOS_IMPULSE,EMA9_SURF,VWAP_CONTINUATION,'SR_FLIP_RECLAIM','RECLAIM_BREAKER')
+    return zone.get('kind') in (BASE,BOS_IMPULSE,EMA9_SURF,VWAP_CONTINUATION,V_REVERSAL,
+                                FAILED_TRAP,'TURTLE_SOUP','SR_FLIP_RECLAIM','RECLAIM_BREAKER')
 
 
 def trend_execution_trigger(snapshot, side, zone, entry, risk, quote, tick, engine):
     """Use a larger quote band only for a fresh, aligned closed confirmation."""
     import directional_policy as direction
     import setup_scanner as scanner
-    from market_wave import BASE, BOS_IMPULSE, EMA9_SURF, M5, M15, VWAP_CONTINUATION, bos_impulse_zones
+    from market_wave import BASE, BOS_IMPULSE, EMA9_SURF, M5, M15, VWAP_CONTINUATION, V_REVERSAL, FAILED_TRAP, bos_impulse_zones
 
     kind = zone.get('kind')
+    reversal = kind in (V_REVERSAL, FAILED_TRAP, 'TURTLE_SOUP')
     if (not trend_supports_wide(zone) or risk<=0 or quote<=0 or not snapshot.trusted
             or not 0<=snapshot.now-snapshot.ticker_ts<=120_000
-            or not direction.aligned_references(side,quote,*direction.trend_references(snapshot))):
+            or not (direction.aligned_references(side,quote,*direction.trend_references(snapshot))
+                    or (reversal and direction.edge_reversal(side,zone,snapshot,tick)))):
         return None
     proof = zone.get('wave_proof') or {}
     m15 = direction.closed(snapshot,'15m')
@@ -466,6 +469,9 @@ def trend_execution_trigger(snapshot, side, zone, entry, risk, quote, tick, engi
     elif kind==BASE:
         if proof.get('break_ts')!=known or proof.get('trigger')!='BREAKOUT':
             return None
+    elif reversal:
+        if zone.get('known_ts') != known or not direction.edge_reversal(side,zone,snapshot,tick):
+            return None
     elif kind in (VWAP_CONTINUATION,EMA9_SURF):
         if zone['known_ts']!=known:
             return None
@@ -478,13 +484,15 @@ def trend_execution_trigger(snapshot, side, zone, entry, risk, quote, tick, engi
             return None
     atr = engine.atr(rows[:-1])
     span = proof.get('impulse_range',bar.high-bar.low)
-    if span>1.85*proof.get('impulse_atr',atr)+1e-8:
+    if span>2.30*proof.get('impulse_atr',atr)+1e-8:
         return None
     atr15 = engine.atr(m15[:-1])
-    distance = .32*atr15
-    if distance<=0 or max(abs(quote-entry),abs(bar.close-entry))>distance+1e-8:
+    level = zone.get('reference', entry)
+    distance = scanner.MARKET_IMPULSE_BAND_ATR * atr15
+    if not scanner.impulse_market_entry(side,quote,level,atr15,tick):
         return None
-    return {'pattern':'TREND_CONTINUATION_MARKET','known_ts':known,'limit_entry':entry,
+    return {'pattern':'TREND_CONTINUATION_MARKET','known_ts':known,'limit_entry':level,
+            'market_entry':quote, 'initial_entry':entry,
             'initial_risk':risk,'max_distance':distance,'confirmation_timeframe':'5m' if is_m5 else '15m'}
 
 
