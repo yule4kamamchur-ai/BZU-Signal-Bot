@@ -19,7 +19,7 @@ class Sniper(TestCase):
     def test_market_radius_and_better_quote_are_symmetric(self):
         for side in (1,-1):
             distal = 93.70-side*.15
-            for move, allowed in ((-.16,False),(-.12,True),(.06,True),(.061,False),(.17,False)):
+            for move, allowed in ((-.16,False),(-.076,False),(-.075,True),(.075,True),(.076,False),(.17,False)):
                 quote = 93.70+side*move
                 self.assertIs(engine.scanner.pullback_quote_allowed(side,93.70,distal,quote,.50),allowed)
 

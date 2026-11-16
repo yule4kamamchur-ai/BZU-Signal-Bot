@@ -94,7 +94,7 @@ class TrendPullback(unittest.TestCase):
         self.assertEqual(arbitration.decision([pending], [], snap, cfg, direction)['decision'],
                          'KEEP_TREND_PRELIMIT')
 
-    def test_countertrend_macro_sweep_still_needs_closed_choch(self):
+    def test_countertrend_macro_sweep_at_range_edge_has_witnessed_override(self):
         m15 = [(97.51, 97.70, 97.30, 97.52)] * 79 + [(97.63, 97.82, 97.53, 97.53)]
         m5 = [(97.53, 97.64, 97.48, 97.55)] * 7 + [(97.63, 97.82, 97.53, 97.53)]
         snap, cfg = snapshot(97.53, m15, m5)
@@ -107,9 +107,12 @@ class TrendPullback(unittest.TestCase):
             macro = next(a for a in scanner.organic_anchors(snap, cfg, context, engine)
                          if (a.evidence['entry_zone'].get('sweep') or {}).get('macro_timeframe') == '1H')
             with patch.object(direction, 'structural_flip', return_value={'confirmed':False}):
-                self.assertEqual(engine.full_plan(macro, context, snap, cfg, {})[1], 'COUNTER_CHOCH_REQUIRED')
-            with patch.object(direction, 'structural_flip', return_value={'confirmed':True,'known_ts':NOW}):
-                self.assertEqual(engine.full_plan(macro, context, snap, cfg, {})[1], 'COUNTER_M5_REQUIRED')
+                plan, reason = engine.full_plan(macro, context, snap, cfg, {})
+                self.assertEqual(reason, 'ACCEPTED')
+                self.assertTrue(plan['local_reversal_override'])
+            with patch.object(direction,'edge_reversal',return_value=False), \
+                 patch.object(direction,'structural_flip',return_value={'confirmed':False}):
+                self.assertEqual(engine.full_plan(macro,context,snap,cfg,{})[1], 'COUNTER_CHOCH_REQUIRED')
         self.assertEqual(scanner.min_plan_score('COUNTER_TREND'), 78)
 
     def test_trend_runner_projection_keeps_untested_first_exit_barriers(self):

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v13.2.0-intraday"
-REPORT_RELEASE = 'v13.2.0'
+VERSION = "full-ict-v14.0.0-intraday"
+REPORT_RELEASE = 'v14.0.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 import signal_quality as quality
@@ -821,7 +821,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
                 if p:
                     lockout = bzu_policy.adverse_reentry_reason(
-                        p['side'], state['trades'], s, cfg, sys.modules[__name__])
+                        p['side'], state['trades'], s, cfg, sys.modules[__name__], plan=p)
                     if lockout:
                         p, reason = None, lockout
                 zone=diagnostics.get('entry_zone')
@@ -1174,7 +1174,8 @@ def park_pending(state: dict, waiting: list[dict]) -> None:
 def entry_loss_cooldown(plan, trades, snapshot, cfg):
     if not oil_risk.enabled(cfg):
         return arbitration.loss_cooldown(plan, trades, snapshot.now)
-    reason = bzu_policy.adverse_reentry_reason(plan['side'], trades, snapshot, cfg, sys.modules[__name__])
+    reason = bzu_policy.adverse_reentry_reason(
+        plan['side'],trades,snapshot,cfg,sys.modules[__name__],plan=plan)
     return {'allowed': reason is None, 'reason': reason or 'COOLDOWN_CLEAR'}
 
 
@@ -1434,7 +1435,8 @@ def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
             position['guard_exit_trigger_level'] = decision['exit_trigger_level']
         close_at_observed_price(state, position, price, ts, decision['exit_reason'], cfg)
         return
-    bounce = position_monitor.bounce_breakeven(position,snapshot,ts,price,cfg.tick)
+    bounce = (position_monitor.bounce_breakeven(position,snapshot,ts,price,cfg.tick)
+              if not oil_risk.enabled(cfg) else None)
     if bounce is not None:
         position.update(stop=position['entry'],bounce_stop_ts=ts,bounce_confirmation_ts=bounce)
         emit(state,'PAPER_STOP_AMENDED',ts,order_id=position['id'],stop=position['stop'],
@@ -1804,7 +1806,7 @@ def pending_scenario_error(plan, snapshot, cfg):
         return None
     engine = sys.modules[__name__]
     side, entry = plan['side'], plan['entry']
-    filter_error = policy.trend_entry_error(snapshot,side,snapshot.price,zone)
+    filter_error = policy.trend_entry_error(snapshot,side,snapshot.price,zone,cfg.tick)
     if filter_error:
         return filter_error
     if zone.get('kind') == scanner.wave.BREAKDOWN:
@@ -1996,8 +1998,9 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     if (pending.get('setup') or pending.get('setup_type')) == 'SESSION_MEAN_RECLAIM':
         request_cancel(state, pending, 'SESSION_MEAN_LIMIT_DISABLED', snapshot.now)
         return
-    gate = (bzu_policy.adverse_reentry_reason(pending['side'],state.get('trades', ()),
-            snapshot,cfg,sys.modules[__name__]) or scanner.pending_tp1_error(pending))
+    cooldown = entry_loss_cooldown(pending,state.get('trades', ()),snapshot,cfg)
+    gate = (cooldown['reason'] if oil_risk.enabled(cfg) and not cooldown['allowed'] else
+            scanner.pending_tp1_error(pending))
     if gate:
         request_cancel(state, pending, gate, snapshot.now)
         return
@@ -2200,11 +2203,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     # Compare both directions on the same execution/exit model BEFORE
     # deciding the portfolio direction (not only after selecting one side).
     for candidate in valid[:6]:
+        if bzu_policy.is_new(candidate):
+            continue  # The completed forecast already exists; its ranking weight is zero.
         use_full_exit(candidate,s.now)
         lifecycle_forecast.select_full_exit(candidate,s,cfg,sys.modules[__name__])
         adjustment=lifecycle_forecast.decision_adjustment(candidate['outcome_forecast'])
-        if bzu_policy.is_new(candidate):
-            adjustment=0.
         candidate['direction_score']=round(candidate.get('direction_score',
             candidate.get('decision_score',candidate.get('score',0)))+adjustment,4)
     # The target may have changed since initial analysis; re-evaluate the
@@ -2257,7 +2260,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if single_limit:
             trigger = candidate.get('market_trigger') or {}
             side = candidate['side']
-            if policy.trend_entry_error(s,side,s.price,zone):
+            if policy.trend_entry_error(s,side,s.price,zone,cfg.tick):
                 continue
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
@@ -2271,7 +2274,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         continue
                     if side*(quote-level)<0:
                         proof_quote = level
-                if policy.trend_entry_error(s,side,quote,zone):
+                if policy.trend_entry_error(s,side,quote,zone,cfg.tick):
                     continue
                 if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' and market.get('trend_anchor_side')==side:
                     proof = entry_adverse_selection.trend_execution_trigger(
@@ -3537,7 +3540,6 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         stage('strategy_and_lifecycle')
         if notify:
             result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
-        stage('research_archive')
         import live_terminal
         if notify and os.environ.get('LIVE_STATE_FILE') and snapshot_path is None:
             result['public_projection'] = live_terminal.build(state,snap,result,cfg,sys.modules[__name__])
@@ -3571,16 +3573,18 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
                 delivery_ok=notify_queue(state,core.TELEGRAM_TOKEN,core.TELEGRAM_CHAT_ID,
                     checkpoint_path,persist=lambda:notification_checkpoint(state,checkpoint_path))
         stage('telegram_delivery')
-        archive_path=Path(os.environ.get('RESEARCH_ARCHIVE_FILE',str(state_path.with_name('research_market_v12_6.json'))))
-        try:
-            # Offline/test snapshots never acquire live provenance just because
-            # a caller requested --snapshot or patched collect_snapshot.
-            if snapshot_path is not None:
-                snap.metadata.pop('research_provenance',None)
-            state['market_history_status']=research_evidence.record(archive_path,snap,cfg,sys.modules[__name__])
-        except (ValueError,OSError) as exc:
-            state['market_history_status']={'status':'FAILED','error':str(exc)}
-            print('Market evidence recording failed: '+str(exc),file=sys.stderr)
+        if os.environ.get('RESEARCH_CAPTURE','').strip().lower() in ('1','true','yes'):
+            archive_path = Path(os.environ.get('RESEARCH_ARCHIVE_FILE',
+                                               str(state_path.with_name('research_market_v12_6.json'))))
+            try:
+                if snapshot_path is not None:
+                    snap.metadata.pop('research_provenance',None)
+                state['market_history_status']=research_evidence.record(archive_path,snap,cfg,sys.modules[__name__])
+            except (ValueError,OSError) as exc:
+                state['market_history_status']={'status':'FAILED','error':str(exc)}
+                print('Market evidence recording failed: '+str(exc),file=sys.stderr)
+        else:
+            state['market_history_status']={'status':'CAPTURE_DISABLED'}
         stage('research_archive')
         live_path = os.environ.get('LIVE_STATE_FILE') if snapshot_path is None else None
         live_terminal.sync_active_signal_to_journal(
@@ -3660,7 +3664,7 @@ def main(core) -> int:
                     'test_v12_34_dual_execution', 'test_v12_35_stale_and_setups',
                     'test_v12_36_reversal_8850', 'test_v12_37_structure_sync'))
                 # These fixtures require superseded entry permissions, exact
-                # prices, or the v12.37 early-unlock contract.
+                # prices, or now-retired ADR and discretionary Brent exits.
                 superseded = {
                     'test_weak_single_body_can_break_a_two_touch_shelf',
                     'test_live_reaction_can_publish_organic_plan_and_cannot_place',
@@ -3677,11 +3681,21 @@ def main(core) -> int:
                     'test_breaker_gate_requires_both_higher_lows_and_higher_highs_above_emas',
                     'test_reclaim_can_find_a_level_older_than_36_bars',
                     'test_unlock_needs_closed_bos_and_recovery_of_entry',
+                    'test_m15_bos_switches_at_75_percent_adr_and_survives_retest',
+                    'test_only_a_confirmed_macro_reclaim_can_override_the_old_trend',
+                    'test_replacement_accepts_a_or_a_plus_and_needs_opposite_structure',
+                    'test_round_trip_at_98_26_after_three_hours',
+                    'test_round_trip_uses_closed_peak_and_exits_below_old_band',
+                    'test_stale_time_stop_is_committed_without_swing_and_can_close_at_quote',
+                    'test_short_185_overdue_guard_commits_close_to_both_outputs',
+                    'test_projection_and_telegram_have_same_guard',
+                    'test_bounce_sets_entry_stop_before_90_minutes',
+                    'test_market_early_impulse_failure_closes_through_execution',
                 }
                 retained = [case for module in historical for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain'))
                 organic = runner.run(unittest.TestSuite([*retained, current]))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:

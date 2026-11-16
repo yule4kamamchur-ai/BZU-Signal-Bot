@@ -84,8 +84,9 @@ def cluster_rank(plan, snapshot, tick):
 def should_reverse_on_exhaustion_peak(position, candidates, snapshot, cfg, engine):
     """Release a profitable incumbent only for an executable opposite signal."""
     from position_monitor import current_r, partial_taken
+    import oil_risk
 
-    if partial_taken(position) or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask:
+    if oil_risk.enabled(cfg) or partial_taken(position) or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask:
         return None
     side = position['side']
     quote = snapshot.bid if side == 1 else snapshot.ask
@@ -112,7 +113,10 @@ def should_reverse_on_exhaustion_peak(position, candidates, snapshot, cfg, engin
 
 def stale_replacement(position, candidates, snapshot, cfg, engine):
     from position_monitor import REPLACEMENT_BARS, current_r, duration, partial_taken
+    import oil_risk
 
+    if oil_risk.enabled(cfg):
+        return None  # Brent releases the slot through its position guard and the normal resolver.
     filled = position.get('filled_ts')
     if filled is None or partial_taken(position) or duration(position, snapshot.now)[1] < REPLACEMENT_BARS:
         return None

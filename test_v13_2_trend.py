@@ -53,11 +53,9 @@ class TrendBreakout(TestCase):
             original = {'state':'BULLISH_ACTIVE' if side==-1 else 'BEARISH_ACTIVE',
                         'side_1h':-side,'side_4h':-side,'active_structure':{'side':-side}}
             directions = (93.36,93.64) if side==-1 else (106.64,106.36)
-            stale = {'side':-side,'known_ts':NOW-14*STEP,'break_ts':NOW-14*STEP,'level':94.}
             with self.subTest(side=side), patch.object(engine.policy,'market_regime',return_value=original), \
                  patch.object(engine.policy,'trend_references',return_value=directions), \
                  patch.object(wave,'displacement_override',return_value={}), \
-                 patch.object(wave,'structure_sync',return_value=stale), \
                  patch.object(wave,'early_structure_reclaim',return_value={}), \
                  patch.object(wave,'breakdown_zones',return_value=[]), \
                  patch.object(wave,'bos_impulse_zones',return_value=[]):
@@ -81,7 +79,9 @@ class TrendBreakout(TestCase):
                     self.assertAlmostEqual(proof['relative_volume'],1.32)
                     self.assertLess(proof['reference_known_ts'],snap.now)
                     self.assertFalse(wave.bos_impulse_zones(replace(snap,now=snap.now-1),cfg.tick,engine))
-                    low_volume,_ = self.breakout_fixture(side,timeframe,114)
+                    threshold,_ = self.breakout_fixture(side,timeframe,110)
+                    self.assertTrue(wave.bos_impulse_zones(threshold,cfg.tick,engine))
+                    low_volume,_ = self.breakout_fixture(side,timeframe,109)
                     self.assertFalse(wave.bos_impulse_zones(low_volume,cfg.tick,engine))
 
     def test_wide_quote_cap_and_overheated_signal(self):
@@ -94,10 +94,10 @@ class TrendBreakout(TestCase):
                 trigger = adverse.trend_execution_trigger(snap,side,zone,boundary,.95,
                     boundary+side*.29*atr15,cfg.tick,engine)
                 self.assertIsNotNone(trigger)
-                self.assertAlmostEqual(trigger['max_distance'],.30*atr15)
+                self.assertAlmostEqual(trigger['max_distance'],.32*atr15)
                 self.assertIsNone(adverse.trend_execution_trigger(snap,side,zone,boundary,.95,
-                    boundary+side*.31*atr15,cfg.tick,engine))
-                hot = {**zone,'wave_proof':{**zone['wave_proof'],'impulse_range':1.81*atr15}}
+                    boundary+side*.33*atr15,cfg.tick,engine))
+                hot = {**zone,'wave_proof':{**zone['wave_proof'],'impulse_range':1.86*atr15}}
                 with patch.object(wave,'bos_impulse_zones',return_value=[hot]):
                     self.assertIsNone(adverse.trend_execution_trigger(
                         snap,side,hot,boundary,.95,snap.price,cfg.tick,engine))

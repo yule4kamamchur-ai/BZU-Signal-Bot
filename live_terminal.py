@@ -84,7 +84,8 @@ def build(state, snapshot, result, cfg, engine):
             'pending_stop': stop_amendment.get('price'),
             'pending_stop_effective_ts': stop_amendment.get('effective_ts'),
             **({**position_monitor.metrics(plan, snapshot.now),
-                'position_guard': position_monitor.guard(plan, snapshot.now)} if active else {}),
+                'position_guard': position_monitor.guard(
+                    plan,snapshot.now,structural_only=engine.oil_risk.enabled(cfg))} if active else {}),
             'zone': {k:(plan.get('entry_zone') or {}).get(k) for k in ('kind','low','high','timeframe','known_ts')},
         })
 
@@ -254,7 +255,7 @@ def build(state, snapshot, result, cfg, engine):
         z['institutional_family'] = (geometry or {}).get('institutional_family')
         z['scale_policy'] = (geometry or {}).get('scale_policy')
         if profile and engine.scanner.structural_pullback(z):
-            z['market_pullback_max'] = .12*atr15
+            z['market_pullback_max'] = .15*atr15
         z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
         z['entry_source']='ENGINE_PLAN' if calc['plan_basis']=='ENGINE_GEOMETRY' else 'STRUCTURAL_PREPLAN'
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
@@ -428,7 +429,7 @@ def build(state, snapshot, result, cfg, engine):
             'price':snapshot.price,'ticker_ts':snapshot.ticker_ts,'market_regime':mode,
             'scenario_plan':focus,'entry_scenarios':entry_scenarios,'developing_setup':focus['developing_setup'] if focus else None,
             'stop_and_reverse': analysis.get('stop_and_reverse'),
-            'trend_phase':regime.get('trend_phase'), 'wave_phase':regime.get('wave_phase'), 'structure_sync':regime.get('structure_sync') or None,
+            'trend_phase':regime.get('trend_phase'), 'wave_phase':regime.get('wave_phase'), 'structure_sync':regime.get('structure_sync') or None, 'trend_matrix':regime.get('trend_matrix') or None,
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
             'execution':'SIGNAL_LEDGER','daily':engine.day_stats(state,snapshot.now,cfg),
             'occupied_slots':engine.occupied_slots(state)+len(engine.pending_plans(state)),

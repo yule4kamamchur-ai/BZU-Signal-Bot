@@ -124,7 +124,7 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
         return entry, 'STRUCTURAL_REFERENCE_BUFFER'
     if zone['kind'] == 'FVG_PULLBACK' and (zone.get('wave_proof') or {}).get('first_retest'):
         return zone['reference'], 'STRUCTURAL_REFERENCE'
-    if zone['kind'] == 'BOS_IMPULSE_BREAKOUT':
+    if zone['kind'] in ('BOS_IMPULSE_BREAKOUT','EMA9_MOMENTUM_SURF','V_REVERSAL_CHOCH'):
         return zone['reference'], 'STRUCTURAL_REFERENCE'
     if zone['kind'] == 'M5_SNIPER_REVERSAL':
         return zone['reference'], 'M5_ENGULFING_RETEST'

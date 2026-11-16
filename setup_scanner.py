@@ -148,7 +148,8 @@ def standalone_zone_error(zone, snapshot, cfg, engine, atr15, regime):
         return 'ZONE_MITIGATED'
     distance = max(low - snapshot.price, snapshot.price - high, 0)
     if regime in ('RANGE', 'RANGE_LIQUIDITY_ROTATION') and distance < .15 * atr15 - 1e-8:
-        return 'RANGE_ZONE_TOO_CLOSE'
+        if not (oil_risk.enabled(cfg) and engine.policy.edge_reversal(side,zone,snapshot,cfg.tick)):
+            return 'RANGE_ZONE_TOO_CLOSE'
     return None
 
 
@@ -172,7 +173,7 @@ def target_crossed(side, snapshot, target, known):
 
 
 CONTINUATION_SETUPS = frozenset({'CONTINUATION_PULLBACK','PULLBACK_CONTINUATION','TREND_PULLBACK',
-    'BOS_CONTINUATION',wave.BOS_IMPULSE,wave.VWAP_CONTINUATION,wave.BREAKDOWN,'FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
+    'BOS_CONTINUATION',wave.BOS_IMPULSE,wave.EMA9_SURF,wave.VWAP_CONTINUATION,wave.BREAKDOWN,'FLAG_RETEST','FRESH_BASE_CONTINUATION','SWEEP_CONTINUATION',
     wave.BASE,
     'ACCELERATION_PULLBACK_REENTRY','ACCEPTANCE_RETEST_CONTINUATION','MOMENTUM_NO_PULLBACK_CONTINUATION'})
 REVERSAL_RELATION = 'CONFIRMED_REVERSAL'
@@ -234,7 +235,7 @@ def structural_pullback(zone):
 def pullback_quote_allowed(side, level, distal, quote, atr):
     """Allow executable quotes at/better than the adjacent edge of a retest."""
     return (quote > 0 and atr > 0 and side*(quote-distal) >= -1e-8
-            and side*(quote-level) <= .12*atr+1e-8)
+            and abs(quote-level) <= .15*atr+1e-8)
 
 
 def market_plan(plan):
@@ -930,13 +931,13 @@ def institutional_family(kind):
         return 'SR_FLIP_RECLAIM'
     if kind==wave.BOS_IMPULSE or any(key in kind for key in ('CONSOLIDATION', 'FLAG_RETEST', 'BOS_CONTINUATION')):
         return 'HIGH_TIGHT_BREAKOUT'
-    if kind == wave.SNIPER_REVERSAL:
+    if kind in (wave.SNIPER_REVERSAL,wave.V_REVERSAL,wave.FAILED_TRAP):
         return 'LIQUIDITY_SWEEP_REV'
     if any(key in kind for key in ('SWEEP_REV', 'TURTLE', 'SWEEP_RECLAIM', 'SWEEP_ENGULF', 'MULTIBAR_SWEEP', 'LIQUIDITY_SWEEP', 'SESSION_OB')):
         return 'LIQUIDITY_SWEEP_REV'
     if any(key in kind for key in ('BREAKER', 'CHOCH', 'MSS')):
         return 'BREAKER_STRUCTURE_SHIFT'
-    if any(key in kind for key in ('VWAP', 'CONTINUATION', 'ROTATION', 'STAIRCASE')):
+    if kind==wave.EMA9_SURF or any(key in kind for key in ('VWAP', 'CONTINUATION', 'ROTATION', 'STAIRCASE')):
         return 'VWAP_TREND_CONTINUATION'
     return 'FVG_OB_PULLBACK'
 
@@ -962,7 +963,7 @@ def organic_anchors(snapshot, cfg, context, engine):
         if brent and retired_brent_setup(family, setup):
             continue
         proximal = zone['high'] if side == 1 else zone['low']
-        raw_entry = (zone['reference'] if family in wave.TREND_ZONES or family==wave.SNIPER_REVERSAL else
+        raw_entry = (zone['reference'] if family in wave.TREND_ZONES or family in (wave.SNIPER_REVERSAL,wave.V_REVERSAL) else
                      (zone['low'] + zone['high']) / 2 if family in ('DISPLACEMENT_CATCHER_15M', 'IMPULSE_OTE_15M', 'CONTINUATION_PULLBACK')
                      else proximal)
         entry = engine.round_tick(round(raw_entry + cfg.tick/2, 10), cfg.tick)

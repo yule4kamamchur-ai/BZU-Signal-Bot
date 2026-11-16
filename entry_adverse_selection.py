@@ -385,7 +385,7 @@ def structural_impulse_market_trigger(snapshot, side, zone, entry, risk, quote, 
     known = bar.ts+M15
     atr = engine.atr(rows[:-1])
     kind = zone.get('kind','')
-    structural = any(token in kind for token in ('SWEEP','OB','FVG','CHOCH','BREAKER'))
+    structural = any(token in kind for token in ('SWEEP','OB','FVG','CHOCH','BREAKER','FAILED_BREAKOUT_TRAP'))
     if (not 0<=snapshot.ticker_ts-known<M15
             or not structural or atr<=0
             or known not in (zone['known_ts'],zone.get('impulse_known_ts'))
@@ -431,16 +431,16 @@ def m5_reaction_market_trigger(snapshot, side, zone, entry, risk, quote, tick, e
 
 
 def trend_supports_wide(zone):
-    from market_wave import BASE, BOS_IMPULSE, VWAP_CONTINUATION
+    from market_wave import BASE, BOS_IMPULSE, EMA9_SURF, VWAP_CONTINUATION
 
-    return zone.get('kind') in (BASE,BOS_IMPULSE,VWAP_CONTINUATION,'SR_FLIP_RECLAIM','RECLAIM_BREAKER')
+    return zone.get('kind') in (BASE,BOS_IMPULSE,EMA9_SURF,VWAP_CONTINUATION,'SR_FLIP_RECLAIM','RECLAIM_BREAKER')
 
 
 def trend_execution_trigger(snapshot, side, zone, entry, risk, quote, tick, engine):
     """Use a larger quote band only for a fresh, aligned closed confirmation."""
     import directional_policy as direction
     import setup_scanner as scanner
-    from market_wave import BASE, BOS_IMPULSE, M5, M15, VWAP_CONTINUATION, bos_impulse_zones
+    from market_wave import BASE, BOS_IMPULSE, EMA9_SURF, M5, M15, VWAP_CONTINUATION, bos_impulse_zones
 
     kind = zone.get('kind')
     if (not trend_supports_wide(zone) or risk<=0 or quote<=0 or not snapshot.trusted
@@ -466,26 +466,54 @@ def trend_execution_trigger(snapshot, side, zone, entry, risk, quote, tick, engi
     elif kind==BASE:
         if proof.get('break_ts')!=known or proof.get('trigger')!='BREAKOUT':
             return None
-    elif kind==VWAP_CONTINUATION:
+    elif kind in (VWAP_CONTINUATION,EMA9_SURF):
         if zone['known_ts']!=known:
             return None
     else:
         level = zone['reference']
         atr = engine.atr(rows[:-1])
         extreme = bar.low if side==1 else bar.high
-        if (proof.get('break_ts',known)>bar.ts or abs(extreme-level)>.40*atr+1e-8
+        if (proof.get('break_ts',known)>bar.ts or abs(extreme-level)>.38*atr+1e-8
                 or side*(rows[-2].close-level)<-tick/2 or side*(bar.close-level)<tick-1e-8):
             return None
     atr = engine.atr(rows[:-1])
     span = proof.get('impulse_range',bar.high-bar.low)
-    if span>1.8*proof.get('impulse_atr',atr)+1e-8:
+    if span>1.85*proof.get('impulse_atr',atr)+1e-8:
         return None
     atr15 = engine.atr(m15[:-1])
-    distance = .30*atr15
+    distance = .32*atr15
     if distance<=0 or max(abs(quote-entry),abs(bar.close-entry))>distance+1e-8:
         return None
     return {'pattern':'TREND_CONTINUATION_MARKET','known_ts':known,'limit_entry':entry,
             'initial_risk':risk,'max_distance':distance,'confirmation_timeframe':'5m' if is_m5 else '15m'}
+
+
+def climactic_breakout(snapshot, side, zone, engine):
+    """Reject a wide terminal candle only after an already extended M15 leg."""
+    from directional_policy import closed
+    from market_wave import BASE, BOS_IMPULSE, M15
+
+    proof = zone.get('wave_proof') or {}
+    if zone.get('kind') not in (BASE,BOS_IMPULSE):
+        return False
+    known = proof.get('break_ts',0)
+    impulse_start = proof.get('impulse_ts',known-M15)
+    rows = closed(snapshot,'15m')
+    prior = [b for b in rows if b.ts+M15<=impulse_start]
+    if len(prior)<12:
+        return False
+    atr = engine.atr(prior)
+    span = proof.get('impulse_range')
+    if span is None:
+        bar = next((b for b in reversed(rows) if b.ts+M15==known),None)
+        if bar is None:
+            return False
+        span = bar.high-bar.low
+    signal_atr = proof.get('impulse_atr',atr)
+    leg = prior[-7:]
+    return (atr>0 and signal_atr>0 and span>2.30*signal_atr
+            and side*(leg[-1].close-leg[0].open)>2.30*atr
+            and sum(side*(b.close-b.open)>0 for b in leg)>=5)
 
 
 def sniper_reversal_trigger(snapshot, side, zone, entry, risk, quote, atr, tick):
@@ -498,7 +526,7 @@ def sniper_reversal_trigger(snapshot, side, zone, entry, risk, quote, atr, tick)
             or not 0 <= snapshot.ticker_ts-zone['known_ts'] < M5):
         return None
     close = zone['wave_proof']['confirmation_close']
-    span = max(tick,.12*atr)
+    span = .15*atr
     if abs(quote-close)>span+1e-8:
         return None
     return {'pattern':'M5_SNIPER_REVERSAL','known_ts':zone['known_ts'],

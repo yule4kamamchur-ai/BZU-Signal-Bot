@@ -11,14 +11,17 @@ STRUCTURE_LOOKBACK = 96
 BREAKDOWN = "BREAKDOWN_RECLAIM"
 BOS_IMPULSE = "BOS_IMPULSE_BREAKOUT"
 RECENT_SWING = "RECENT_SWING_IMPULSE"
+EMA_MATRIX = "EMA9_EMA20_SESSION_VWAP"
+EMA9_SURF = "EMA9_MOMENTUM_SURF"
+V_REVERSAL = "V_REVERSAL_CHOCH"
+FAILED_TRAP = "FAILED_BREAKOUT_TRAP"
 SNIPER_REVERSAL = "M5_SNIPER_REVERSAL"
 BASE = "CONSOLIDATION_BREAKOUT_BASE"
 VWAP_CONTINUATION = "VWAP_TREND_CONTINUATION"
 BREAKDOWN_MAX_AGE = 2 * M15
-REVERSAL_ORIGIN_BARS = 192
 TREND_ZONE_AGE = 6 * 60 * 60_000
-TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION, BOS_IMPULSE})
-REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN, SNIPER_REVERSAL})
+TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION, BOS_IMPULSE, EMA9_SURF})
+REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN, SNIPER_REVERSAL, V_REVERSAL, FAILED_TRAP})
 CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_PULLBACK',
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
 
@@ -125,66 +128,6 @@ def early_structure_reclaim(snapshot, tick, engine):
     return {}
 
 
-def structure_sync(snapshot, tick, engine):
-    """A closed M15 BOS and a 0.75 ADR leg can supersede the hourly bias."""
-    import directional_policy as direction
-
-    cache = vars(snapshot).setdefault('_m15_structure_sync', {})
-    key = (snapshot.now, tick)
-    if key not in cache:
-        rows = direction.closed(snapshot, '15m')[-(REVERSAL_ORIGIN_BARS + STRUCTURE_LOOKBACK):]
-        cache[key] = _confirmed_structure_sync(rows, snapshot, tick, engine)
-    return cache[key]
-
-
-def _confirmed_structure_sync(rows, snapshot, tick, engine):
-    if not rows or snapshot.now - rows[-1].ts - M15 >= 2 * M15:
-        return {}
-    from strategy_organics import ema20
-
-    hourly = oil_risk.closed(snapshot.candles.get('1H', []), oil_risk.H1, snapshot.now)
-    current_ema = ema20(hourly)
-    if current_ema is None:
-        return {}
-    ranges = oil_risk.daily_ranges(rows, hourly,
-        oil_risk.closed(snapshot.candles.get('4H', []), oil_risk.H4, snapshot.now))
-    hourly_points = [{**p, 'known_ts': p['known_ts'] + oil_risk.H1 - M15}
-                     for p in engine.pivots(hourly[-96:], strength=1)]
-    points = engine.pivots(rows, strength=1)
-    proofs = []
-    for i, side, pivot, _ in structure_breaks(rows, M15, tick, engine, STRUCTURE_LOOKBACK, hourly_points):
-        if side * (rows[-1].close - current_ema) <= 0:
-            continue
-        bar = rows[i]
-        prior = [c for c in rows[:i] if bar.ts - REVERSAL_ORIGIN_BARS * M15 <= c.ts]
-        daily = [high - low for start, (high, low, _) in ranges.items()
-                 if start + oil_risk.DAY <= bar.ts + M15][-14:]
-        if not daily or not prior:
-            continue
-        adr = sum(daily) / len(daily)
-        origin_bar = min(prior, key=lambda c: c.low) if side == 1 else max(prior, key=lambda c: c.high)
-        origin = origin_bar.low if side == 1 else origin_bar.high
-        protected = next((p['level'] for p in reversed(points) if p['kind'] == ('LOW' if side == 1 else 'HIGH')
-                          and origin_bar.ts <= p['ts'] and p['known_ts'] + M15 <= bar.ts), origin)
-        leg = rows[i:]
-        if (any(b.ts - a.ts != M15 for a, b in zip(leg, leg[1:]))
-                or any(side * (c.close - protected) < -tick / 2 for c in leg)):
-            continue
-        for c in leg:
-            edge = c.high if side == 1 else c.low
-            distance = side * (edge - origin)
-            if side * (c.close - pivot['level']) <= 0 or adr <= 0 or distance < .75 * adr - 1e-8:
-                continue
-            ema = ema20([h for h in hourly if h.ts + oil_risk.H1 <= c.ts + M15])
-            if ema is not None and side * (c.close - ema) > 0:
-                proofs.append({'side': side, 'known_ts': c.ts + M15, 'break_ts': bar.ts + M15,
-                               'level': pivot['level'], 'protected_level': protected,
-                               'origin': origin, 'origin_ts': origin_bar.ts, 'close': c.close,
-                               'adr': adr, 'wave_adr': distance / adr, 'ema20_1h': ema, 'proof': 'M15_BOS_75_ADR'})
-                break
-    return max(proofs, key=lambda p: (p['known_ts'], -p['break_ts']), default={})
-
-
 def displacement_override(snapshot, tick, engine):
     import directional_policy as direction
 
@@ -257,7 +200,7 @@ def bos_impulse_zones(snapshot, tick, engine):
             if atr<=0 or not baseline or any(not b.volume>=0 for b in bars):
                 continue
             relative = sum(b.volume for b in bars)/(count*baseline)
-            if not 1.15-1e-8<=relative<float('inf'):
+            if not 1.10-1e-8<=relative<float('inf'):
                 continue
             ema, vwap = direction.trend_references(replace(snapshot,now=known))
             high,low = max(b.high for b in bars),min(b.low for b in bars)
@@ -339,7 +282,7 @@ def breakdown_intact(zone, snapshot, tick):
             not any(c.close>zone['high'] for c in closed(snapshot,'15m') if c.ts>=known))
 
 
-def _reclaim_breakers(rows, tick, engine, *, proactive=False, trend_side=0):
+def _reclaim_breakers(rows, tick, engine, *, proactive=False):
     """Revisit a causal pivot or shelf from the preceding 24 hours."""
     points = engine.pivots(rows[-2 * STRUCTURE_LOOKBACK:], strength=1)
     for index in range(max(8, len(rows) - STRUCTURE_LOOKBACK), len(rows)):
@@ -353,7 +296,7 @@ def _reclaim_breakers(rows, tick, engine, *, proactive=False, trend_side=0):
                 if not ict.reclaim_break(rows, index, side, level, tick, atr):
                     continue
                 zone = _confirmed_retest_zone(rows,index,side,level,reference_ts,tick,atr,
-                                              tolerance_atr=.40 if trend_side==side else .28)
+                                              tolerance_atr=.38)
                 if proactive:
                     if zone:
                         zone['kind'] = 'SR_FLIP_RECLAIM'
@@ -373,7 +316,7 @@ def _reclaim_breakers(rows, tick, engine, *, proactive=False, trend_side=0):
                     break
 
 
-def _confirmed_retest_zone(rows,index,side,level,reference_ts,tick,atr,*,tolerance_atr=.28,**proof):
+def _confirmed_retest_zone(rows,index,side,level,reference_ts,tick,atr,*,tolerance_atr=.38,**proof):
     width = min(.25, max(2 * tick, .30 * atr))
     low, high = sorted((level, level - side * width))
     distal = low if side == 1 else high
@@ -461,9 +404,17 @@ def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
                          and side * (bar.close - level) >= tick - 1e-8)
                 confirmation = bar
                 shift = None
+                pattern = 'WICK_RECLAIM'
                 if swept:
                     kind = 'SWEEP_REVERSAL'
+                elif (step==M15 and side*(bar.close-level)<=-tick+1e-8 and i+1<len(rows)
+                      and side*(rows[i+1].close-level)>=tick-1e-8
+                      and ict.reversal_engulfing(bar,rows[i+1],side,tick,step)):
+                    confirmation = rows[i+1]
+                    extreme = (min(extreme,confirmation.low) if side==1 else max(extreme,confirmation.high))
+                    kind, pattern = FAILED_TRAP, 'FAILED_BREAKOUT_TRAP'
                 else:
+                    pattern = 'EXTREME_CHOCH'
                     for j in range(i, min(i + delay + 1, len(rows))):
                         test = rows[j]
                         test_extreme = test.low if side == 1 else test.high
@@ -479,14 +430,15 @@ def _reversals(snapshot, rows, step, tick, engine, atr15, require_macro):
                 low, high = sorted((level, extreme))
                 sweep = {'pool': pool['name'], 'level': level, 'extreme': extreme, 'side': side,
                          'known_ts': confirmation.ts + step, 'reference_known_ts': pool['known_ts'],
-                         'pattern': 'WICK_RECLAIM' if swept else 'EXTREME_CHOCH',
+                         'pattern': pattern,
                          'macro_timeframe': pool.get('timeframe'), 'raid_ts': bar.ts,
                          'reclaim_close': confirmation.close,
                          'wick_ratio': ict.wick_reclaim(bar, side, level, tick)}
                 zone = _zone(kind, side, low, high, confirmation, step, level, pool=pool,
                              raid_ts=bar.ts, shift_level=shift['level'] if shift else None)
-                yield {**zone, 'sweep': sweep}
-                break
+                if kind!=FAILED_TRAP or range_edge(side,extreme,direction.closed(snapshot,'15m')[-96:]):
+                    yield {**zone, 'sweep': sweep}
+                    break
 
 
 def sniper_reversals(snapshot, rows, tick, engine, atr):
@@ -818,6 +770,84 @@ def vwap_continuation(snapshot, rows, side, atr, tick, direction):
                        break_ts=bar.ts+M15, impulse_ts=bar.ts, reference_vwap=vwap)
 
 
+def range_edge(side, price, rows):
+    """Use the completed range, including the two reversal pivots."""
+    if len(rows)<12:
+        return False
+    lowest,highest = min(b.low for b in rows),max(b.high for b in rows)
+    if highest<=lowest:
+        return False
+    position = (price-lowest)/(highest-lowest)
+    return position<=.20+1e-8 if side==1 else position>=.80-1e-8
+
+
+def v_reversals(rows, snapshot, tick, engine):
+    """Higher low / lower high, then a close through the known neckline."""
+    if len(rows)<24:
+        return
+    points = engine.pivots(rows[-96:],strength=1)
+    for i in range(max(len(rows)-3,20),len(rows)):
+        bar, prior = rows[i], rows[i-1]
+        known = bar.ts+M15
+        atr = engine.atr(rows[:i])
+        if not 0<=snapshot.now-known<3*M15 or atr<=0 or bar.ts-prior.ts!=M15:
+            continue
+        pivots = [p for p in points if p['known_ts']+M15<=bar.ts and bar.ts-p['ts']<=36*M15]
+        for first,neck,second in reversed(list(zip(pivots,pivots[1:],pivots[2:]))):
+            side = 1 if first['kind']=='LOW' else -1
+            if first['kind']!=second['kind'] or first['kind']==neck['kind']:
+                continue
+            left,middle,right = first['level'],neck['level'],second['level']
+            if not tick-1e-8<=side*(right-left)<=.80*atr or side*(middle-right)<.45*atr:
+                continue
+            if (not range_edge(side,left,rows[max(0,i-96):i]) or
+                    side*(prior.close-middle)>tick/2 or side*(bar.close-middle)<tick-1e-8
+                    or side*(bar.close-bar.open)<.30*atr
+                    or any(side*(later.close-middle)<-tick/2 for later in rows[i+1:])):
+                continue
+            bounds = sorted((middle,middle-side*max(tick,.12*atr)))
+            yield _trend_zone(V_REVERSAL,side,bounds,bar,M15,middle,break_ts=known,
+                              reversal_confirmed=True, neck=middle, first_swing=left,
+                              second_swing=right, invalidation=right, reference_known_ts=neck['known_ts']+M15)
+            break
+
+
+def ema9_momentum_surf(m5, snapshot, side, atr, tick, engine):
+    """Retest of EMA9 after a one-to-three M5 pause in an ordered M15 fan."""
+    import directional_policy as direction
+
+    if len(m5)<5 or atr<=0 or side not in (1,-1):
+        return None
+    bar = m5[-1]
+    known = bar.ts+M5
+    matrix = direction.market_matrix(replace(snapshot,now=bar.ts))
+    fast,average,slow = (matrix[key] for key in ('ema9','ema20','ema50'))
+    if (not 0<=snapshot.now-known<M5 or matrix['side']!=side or slow is None or fast is None
+            or side*(average-slow)<=0 or side*(bar.close-fast)<=0
+            or side*(bar.close-bar.open)<tick-1e-8):
+        return None
+    extreme = bar.low if side==1 else bar.high
+    end_close = matrix['close']
+    if side*(end_close-fast)<=0 or abs(extreme-fast)>.35*atr:
+        return None
+    atr5 = engine.atr(m5[:-1])
+    if atr5<=0:
+        return None
+    for count in (3,2,1):
+        pause = m5[-count-1:-1]
+        impulse = m5[-count-2]
+        chain = [impulse,*pause,bar]
+        if (any(b.ts-a.ts!=M5 for a,b in zip(chain,chain[1:]))
+                or side*(impulse.close-impulse.open)<.50*atr5
+                or any(side*(p.close-fast)<-.35*atr or abs(p.close-p.open)>.80*atr5 for p in pause)):
+            continue
+        invalidation = (min(p.low for p in [*pause,bar]) if side==1 else max(p.high for p in [*pause,bar]))
+        bounds = sorted((fast,fast-side*max(tick,.10*atr)))
+        return _trend_zone(EMA9_SURF,side,bounds,bar,M5,fast,break_ts=known,
+                           pause_bars=count,invalidation=invalidation,ema9=fast,ema20=average,ema50=slow)
+    return None
+
+
 def fast_trend_retest(snapshot, m15, m5, side, atr, tick, engine):
     """Use a closed M5 rejection of EMA9 or a recently broken M5 level."""
     import directional_policy as direction
@@ -898,6 +928,10 @@ def zones(snapshot, cfg, engine, regime):
         results.extend(_trend_sweep(m5, trend, M5, tick, engine))
     if oil_risk.enabled(cfg):
         results.extend(sniper_reversals(snapshot,m5,tick,engine,atr))
+        results.extend(v_reversals(m15,snapshot,tick,engine))
+        surf = ema9_momentum_surf(m5,snapshot,trend,atr,tick,engine)
+        if surf:
+            results.append(surf)
         results.extend(z for z in bos_impulse_zones(snapshot,tick,engine) if z['side']==trend)
         fast = fast_trend_retest(snapshot,m15,m5,trend,atr,tick,engine)
         if fast:
@@ -911,9 +945,7 @@ def zones(snapshot, cfg, engine, regime):
                             for bar in m15[len(m15)-offset:]):
                 results.append(base)
         results.extend(_multibar_zones(m15,tick,engine,oil_risk.snapshot_profile(snapshot)['adr_d1']))
-        aligned_trend = trend if trend and direction.aligned_references(
-            trend,snapshot.price,*direction.trend_references(snapshot)) else 0
-        results.extend(_reclaim_breakers(m15,tick,engine,proactive=True,trend_side=aligned_trend))
+        results.extend(_reclaim_breakers(m15,tick,engine,proactive=True))
         results.extend(breakdown_zones(snapshot,tick,engine))
         reclaims = {}
         other = []
@@ -944,6 +976,12 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
     """Consume the sweep that the planner already reconstructed from candles."""
     zone = zone or {}
     sweep = zone.get('sweep') or {}
+    if zone.get('kind')==V_REVERSAL:
+        proof = zone.get('wave_proof') or {}
+        return (proof.get('reversal_confirmed') is True and zone.get('side')==side
+                and 0<=snapshot.now-zone.get('known_ts',0)<3*M15
+                and isinstance(proof.get('invalidation'),(int,float))
+                and side*(snapshot.price-proof['invalidation'])>tick/2)
     if zone.get('kind') == SNIPER_REVERSAL:
         return (sweep.get('side') == side and sweep.get('pattern') == 'M5_SWEEP_ENGULFING'
                 and 0 < sweep.get('reference_known_ts',0) <= sweep.get('raid_ts',0)
@@ -959,7 +997,7 @@ def reversal_override(side, zone, snapshot, tick, *, require_macro=True):
             and (not require_macro or (sweep.get('macro_timeframe') in ('1H', '4H', 'D1')
                  and sweep.get('reference_known_ts', 0) <= sweep.get('raid_ts', -1)
                  and side * (sweep.get('reclaim_close', sweep['level']) - sweep['level']) >= tick - 1e-8))
-            and sweep.get('pattern') in ('WICK_RECLAIM', 'EXTREME_CHOCH')
+            and sweep.get('pattern') in ('WICK_RECLAIM', 'EXTREME_CHOCH', FAILED_TRAP)
             and 0 < sweep.get('reference_known_ts', 0) <= zone.get('known_ts', 0)
             and 0 <= snapshot.now - zone.get('known_ts', 0) < 30 * 60_000
             and side * (snapshot.price - sweep['extreme']) > tick / 2)
@@ -987,7 +1025,10 @@ def focus_context(snapshot, regime, dealing_range, tick):
     wave_side = regime_side(regime)
     proof = regime.get('structure_sync') or {}
     early = proof.get('proof')==EARLY_M15_RECLAIM and proof.get('side')==wave_side and bool(wave_side)
-    trend_side = wave_side if early or ema_side == wave_side else 0
+    matrix_side = (regime.get('trend_matrix') or {}).get('side',0)
+    wave_proof = proof.get('proof') in (RECENT_SWING,BOS_IMPULSE,EMA_MATRIX,'DISPLACEMENT_MSS_FVG')
+    trend_side = wave_side if early or wave_proof or matrix_side==wave_side or ema_side==wave_side else 0
+    range_side = trend_side or ema_side
     location = None
     if dealing_range:
         low, high = dealing_range['low'], dealing_range['high']
@@ -996,8 +1037,8 @@ def focus_context(snapshot, regime, dealing_range, tick):
     premium = location is not None and location > 70
     phase = ('BULLISH_RECLAIM' if early and wave_side==1 else
              'BEARISH_RECLAIM' if early else
-             'BEARISH_DISCOUNT' if ema_side == -1 and discount else
-             'BULLISH_PREMIUM' if ema_side == 1 and premium else
+             'BEARISH_DISCOUNT' if range_side == -1 and discount else
+             'BULLISH_PREMIUM' if range_side == 1 and premium else
              'BEARISH' if trend_side == -1 else 'BULLISH' if trend_side == 1 else
              'RANGE' if regime.get('state') in ('RANGE','RANGE_LIQUIDITY_ROTATION') else 'TRANSITION')
     labels = {'BULLISH_RECLAIM':'Підтверджений висхідний злам M15',

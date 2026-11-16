@@ -74,12 +74,30 @@ def trend_references(snapshot):
     return cache[snapshot.now]
 
 
+def market_matrix(snapshot):
+    """Closed M15 close, EMA fan and full session VWAP at one observation time."""
+    from strategy_organics import ema
+
+    cache = vars(snapshot).setdefault('_market_matrix', {})
+    if snapshot.now not in cache:
+        rows = closed(snapshot,'15m')[-120:]
+        average, vwap = trend_references(snapshot)
+        quick, slow = ema(rows,9), ema(rows,50)
+        close = rows[-1].close if rows else None
+        side = next((s for s in (1,-1) if close is not None and quick is not None
+                     and aligned_references(s,close,average,vwap) and s*(quick-average)>0),0)
+        cache[snapshot.now] = {'side':side,'close':close,'ema9':quick,'ema20':average,
+                               'ema50':slow,'session_vwap':vwap,
+                               'known_ts':rows[-1].ts+TF['15m'] if rows else 0}
+    return cache[snapshot.now]
+
+
 def aligned_references(side, price, ema, vwap):
     return (ema is not None and vwap is not None and side*(price-ema)>0
             and side*(price-vwap)>0)
 
 
-def trend_entry_error(snapshot, side, price, zone):
+def trend_entry_error(snapshot, side, price, zone, tick=.01):
     """Veto entries against both references, with a witnessed sweep exception."""
     import market_wave
 
@@ -97,7 +115,7 @@ def trend_entry_error(snapshot, side, price, zone):
                                    'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE')
                 and sweep.get('side')==side
                 and sweep.get('pattern') in ('ENGULFING','M5_SWEEP_ENGULFING'))
-    if max(crosses)<0 and not reversal:
+    if max(crosses)<0 and not (reversal or edge_reversal(side,zone,snapshot,tick)):
         return 'AGAINST_VWAP_EMA20'
     return None
 
@@ -244,13 +262,12 @@ def execution_regime(snapshot, cfg, engine):
     if not oil_risk.enabled(cfg):
         return regime
     from market_wave import (
-        BOS_IMPULSE, RECENT_SWING, bos_impulse_zones, breakdown_intact, breakdown_zones,
-        chronological_wave, displacement_override, early_structure_reclaim, structure_sync,
+        BOS_IMPULSE, EMA_MATRIX, RECENT_SWING, bos_impulse_zones, breakdown_intact, breakdown_zones,
+        chronological_wave, displacement_override, early_structure_reclaim,
     )
 
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
-    sync = displacement_override(snapshot, cfg.tick, engine) or (
-        structure_sync(snapshot, cfg.tick, engine) if one or four else {})
+    sync = displacement_override(snapshot,cfg.tick,engine)
     recent_breakdown = next((z for z in reversed(breakdown_zones(snapshot,cfg.tick,engine))
                              if breakdown_intact(z,snapshot,cfg.tick)), None)
     if recent_breakdown and recent_breakdown['known_ts'] >= sync.get('known_ts',0):
@@ -275,20 +292,25 @@ def execution_regime(snapshot, cfg, engine):
     ema, vwap = trend_references(snapshot)
     if sync and aligned_references(-sync['side'],snapshot.price,ema,vwap):
         sync = {}
+    matrix = market_matrix(snapshot)
+    if matrix['side'] and (not sync or sync['side']!=matrix['side']):
+        sync = {'side':matrix['side'],'known_ts':matrix['known_ts'],'proof':EMA_MATRIX}
     side = sync.get('side') or one or four
     if not side or (not sync and one and four and one != four):
-        return regime
+        return {**regime,'trend_matrix':matrix}
     m15 = closed(snapshot, '15m')
     local = regime.get('active_structure', {}).get('side') or regime.get('local_structure', {}).get('side')
     pullback = local == -side or (len(m15) >= 3 and side * (snapshot.price - m15[-3].close) < -cfg.tick)
-    if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE):
+    if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE,EMA_MATRIX):
         pullback = False
     phase = None
     if sync:
         phase = ('BULLISH' if side == 1 else 'BEARISH') + ('_PULLBACK' if pullback else '_IMPULSE')
     return {**regime, 'state': 'BULLISH_ACTIVE' if side == 1 else 'BEARISH_ACTIVE', 'wave_phase': phase,
-            'active_structure': sync if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE)
-                                else regime['active_structure'],
+            'trend_state': ('BULLISH_TREND' if side==1 else 'BEARISH_TREND') if sync else regime.get('trend_state'),
+            'active_structure': sync if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE,EMA_MATRIX)
+                                else regime.get('active_structure',{}),
+            'trend_matrix':matrix,
             'trend_anchor_side': side, 'trend_anchor_timeframe': '15m' if sync else '1H' if one else '4H',
             'structure_sync': sync,
             'trend_phase': ('BULLISH_PULLBACK_OPPORTUNITY' if side == 1 else 'BEARISH_PULLBACK_OPPORTUNITY')
@@ -433,9 +455,40 @@ def reversal_sweep_override(side, zone, snapshot, tick):
                 and side * (snapshot.price - sweep['extreme']) > tick / 2)
 
 
+def edge_reversal(side, zone, snapshot, tick):
+    """A closed sweep, failed break or CHoCH near a completed range extreme."""
+    from market_wave import V_REVERSAL, range_edge, reversal_override
+
+    if zone.get('kind')==V_REVERSAL:
+        return reversal_override(side,zone,snapshot,tick)
+    sweep = zone.get('sweep') or {}
+    extreme = sweep.get('extreme')
+    if sweep.get('side')!=side or not isinstance(extreme,(int,float)):
+        return False
+    if not range_edge(side,extreme,closed(snapshot,'15m')[-96:]):
+        return False
+    return (reversal_sweep_override(side,zone,snapshot,tick)
+            or reversal_override(side,zone,snapshot,tick,require_macro=False))
+
+
+def aligned_setup(snapshot, side, zone, regime):
+    """One direction gate for scanners, order selection and waiting limits."""
+    from market_wave import trend_zone
+
+    return (regime.get('trend_anchor_side')==side and
+            aligned_references(side,snapshot.price,*trend_references(snapshot))
+            and (trend_zone(zone,regime) or zone.get('kind') in (
+                'RECLAIM_BREAKER','SR_FLIP_RECLAIM','DEMAND_OB','SUPPLY_OB','FVG_BULL','FVG_BEAR',
+                'BULLISH_BREAKER','BEARISH_BREAKER')))
+
+
 def regime_admission(side, entry, regime, snapshot, tick, engine, zone=None, *, require_macro=True):
     from market_wave import reversal_override
 
+    if zone and require_macro and aligned_setup(snapshot,side,zone,regime):
+        return True, 'CONFIRMED_EMA_VWAP_DIRECTION'
+    if zone and require_macro and edge_reversal(side,zone,snapshot,tick):
+        return True, 'CONFIRMED_RANGE_EDGE_REVERSAL'
     if ((zone or {}).get('kind') in ('RECLAIM_BREAKER','SR_FLIP_RECLAIM')
             and regime.get('structure_sync', {}).get('side') == -side):
         return False, 'M15_STRUCTURE_OPPOSES_ENTRY'

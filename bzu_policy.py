@@ -200,7 +200,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
 ADVERSE_LOCK_BARS = 16
 
 
-def adverse_reentry_reason(side, trades, snapshot, cfg, engine):
+def adverse_reentry_reason(side, trades, snapshot, cfg, engine, *, plan=None):
     """Reconstruct the same-side cooldown from observed journal exits and closed M15."""
     if not oil_risk.enabled(cfg):
         return None
@@ -211,6 +211,13 @@ def adverse_reentry_reason(side, trades, snapshot, cfg, engine):
     if (previous is None or (previous.get('net_r') or 0) > -.50+1e-8 or not previous.get('entry')
             or snapshot.now >= previous['closed_ts'] + duration):
         return None
+    since = previous['closed_ts']
+    if plan is not None:
+        if (plan.get('score',0)>=68 and plan.get('quality',{}).get('accepted')
+                and fresh_reentry_confirmation(side,since,snapshot,cfg.tick,engine)):
+            return None
+        return 'ADVERSE_STRUCTURE_LOCKOUT'
+    # Historical replay callers have no contemporaneous candidate score.
     if previous.get('close_reason') in ('STOP','STOP_GAP','SL','STOP_LOSS'):
         stop = previous.get('stop_at_close') or previous.get('stop') or previous.get('initial_stop')
         if stop is not None and ict.stop_sweep_recovery(direction.closed(snapshot,'15m')[-96:],
@@ -219,6 +226,32 @@ def adverse_reentry_reason(side, trades, snapshot, cfg, engine):
     if direction.bos_recovers_level(snapshot, side, previous['closed_ts'], None, cfg.tick, engine):
         return None
     return 'ADVERSE_STRUCTURE_LOCKOUT'
+
+
+def fresh_reentry_confirmation(side, since, snapshot, tick, engine):
+    """Only post-exit closed evidence can release the four-hour lock."""
+    cache = vars(snapshot).setdefault('_adverse_reentry_confirmations',{})
+    key = (side,since,snapshot.now,tick)
+    if key not in cache:
+        cache[key] = (direction.structural_flip(snapshot,side,since,tick,engine,timeframes=('15m',))['confirmed']
+                      or direction.bos_recovers_level(snapshot,side,since,None,tick,engine)
+                      or _high_volume_engulfing_since(side,since,snapshot,tick))
+    return cache[key]
+
+
+def _high_volume_engulfing_since(side,since,snapshot,tick):
+    m15 = direction.closed(snapshot,'15m')
+    m5 = scanner.closed_five_minutes(snapshot)
+    for timeframe, rows, step in (('15m',m15,oil_risk.M15),('5m',m5,300_000)):
+        window = [b for b in rows if b.ts>=since-step and b.ts+step<=snapshot.now]
+        for previous, bar in zip(window,window[1:]):
+            known = bar.ts+step
+            engulfed = (side*(previous.close-previous.open)<=-tick+1e-8
+                        and ict.reversal_engulfing(previous,bar,side,tick,step))
+            if (bar.ts>=since and engulfed
+                    and (scanner.event_rvol(snapshot,timeframe,known).get('rvol') or 0)>=1.25-1e-8):
+                return True
+    return False
 
 
 def breaker_structure_error(plan, snapshot, cfg, engine):
@@ -292,12 +325,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     sniper_reversal = zone['kind']==scanner.wave.SNIPER_REVERSAL and origin.get('wave_confirmed')
     if sniper_reversal:
         sweep_override = True
-    local_reversal = sniper_reversal or (sweep_override and regime.get('trend_anchor_side') != -side
+    edge_reversal = oil_risk.enabled(cfg) and origin.get('confirmed') and direction.edge_reversal(side,zone,snapshot,cfg.tick)
+    local_reversal = sniper_reversal or edge_reversal or (sweep_override and regime.get('trend_anchor_side') != -side
                       and not regime.get('side_1h') == regime.get('side_4h') == -side)
     breakdown = zone['kind'] == scanner.wave.BREAKDOWN and origin.get('wave_confirmed')
     multibar = breakdown or sniper_reversal or bool(sweep_override and zone['kind'] in ('MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM')
                     and origin.get('wave_confirmed'))
-    reclaim = multibar and bool(zone['wave_proof'].get('structural_reclaim'))
+    reclaim = (multibar and bool(zone['wave_proof'].get('structural_reclaim'))
+               or (edge_reversal and zone.get('kind')==scanner.wave.V_REVERSAL))
     linked_sweep = None
     if oil_risk.enabled(cfg) and zone['kind'] in (
             'DEMAND_OB','SUPPLY_OB','SESSION_OB','BREAKER_BLOCK','BULLISH_BREAKER','BEARISH_BREAKER'):
@@ -312,9 +347,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         bool((zone.get('wave_proof') or {}).get('exhausted_adr')) or linked_sweep is not None or
         scanner.wave.exhausted_adr(structure.closed(snapshot,'15m'),zone.get('sweep') or {},
                                        oil_risk.snapshot_profile(snapshot)['adr_d1'])))
-    if multibar:
+    if multibar or edge_reversal:
         relation = scanner.REVERSAL_RELATION
-    if oil_risk.enabled(cfg) and not (local_reversal or multibar):
+    if oil_risk.enabled(cfg) and not (local_reversal or multibar or direction.aligned_setup(snapshot,side,zone,regime)):
         anchor_side = (regime.get('trend_anchor_side') or direction.regime_side(regime) or
                        direction.regime_side({'state': regime.get('trend_state')}))
         if anchor_side == -side:
@@ -429,9 +464,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     pullback = bool(oil and scanner.structural_pullback(zone))
     proof_quote = entry if pullback and side*(quote-entry)<0 else quote
     if oil:
-        gate = direction.trend_entry_error(snapshot, side, snapshot.price, zone)
+        gate = direction.trend_entry_error(snapshot,side,snapshot.price,zone,cfg.tick)
         if gate:
             return None, gate
+    if oil and adverse.climactic_breakout(snapshot,side,zone,engine):
+        return None, 'CLIMACTIC_BREAKOUT'
     if sniper_reversal:
         market_trigger = adverse.sniper_reversal_trigger(snapshot,side,zone,entry,risk,quote,a15,cfg.tick)
     elif breakdown:
@@ -449,10 +486,17 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 market_trigger = adverse.rejection_trigger(snapshot,side,zone,entry,risk,proof_quote,cfg.tick)
     if pullback and market_trigger and market_trigger['pattern']!='TREND_CONTINUATION_MARKET':
         if scanner.pullback_quote_allowed(side,entry,distal,quote,a15):
-            market_trigger = {**market_trigger, 'limit_entry':entry, 'max_distance':.12*a15,
+            market_trigger = {**market_trigger, 'limit_entry':entry, 'max_distance':.15*a15,
                               'sniper_pullback':True}
         else:
             market_trigger = None
+    if (oil and market_trigger and not pullback and
+            market_trigger['pattern'] not in ('TREND_CONTINUATION_MARKET','M5_SNIPER_REVERSAL','M15_BREAKDOWN_MOMENTUM')):
+        width = .15*a15
+        if abs(quote-entry)>width+1e-8:
+            market_trigger = None
+        else:
+            market_trigger = {**market_trigger,'limit_entry':entry,'max_distance':width}
     if (oil and zone['kind']==scanner.wave.BASE and
             (zone.get('wave_proof') or {}).get('trigger')!='BREAKOUT'):
         diag['status']='WATCHING'
@@ -558,6 +602,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         elif not can_wait:
             return None, direct_failure
     if geometry is None:
+        if ((zone.get('wave_proof') or {}).get('first_retest') and distance>1.20*a15+1e-8):
+            return None, 'FVG_FIRST_RETEST_TOO_DISTANT'
         if anchor.setup_type == 'SESSION_MEAN_RECLAIM':
             return None, 'SESSION_MEAN_LIMIT_DISABLED'
         if not can_wait:
@@ -903,7 +949,8 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     if p.get('tp1_hit') and second and proved(p['tp2']):
         close(state,p,p['tp2']*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg,engine)
         return
-    if p.get('time_exit_enabled') and ts >= p['exit_deadline']:
+    if (p.get('time_exit_enabled') and ts >= p['exit_deadline']
+            and not (oil_risk.enabled(cfg) and (p.get('partial_tp1_hit') or p.get('scale_policy')==SCALE_POLICY))):
         close(state,p,c.close*(1-side*cfg.slippage_bps/10_000),ts,'INTRADAY_TIME_EXIT',cfg,engine)
         return
     arm_breakeven(state, p, snapshot, ts, c.close, cfg, engine)

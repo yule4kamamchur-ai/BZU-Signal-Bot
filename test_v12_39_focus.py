@@ -45,8 +45,7 @@ class SingleFocus(unittest.TestCase):
             before_close = replace(snap, now=snap.now-1-engine.TF['15m'])
             with patch.object(engine.policy,'market_regime',return_value=slow), \
                  patch.object(market_wave,'displacement_override',return_value={}), \
-                 patch.object(market_wave,'breakdown_zones',return_value=[]), \
-                 patch.object(market_wave,'structure_sync',return_value={}):
+                 patch.object(market_wave,'breakdown_zones',return_value=[]):
                 before = engine.policy.execution_regime(before_close,cfg,engine)
                 self.assertEqual(before['state'],old_state)
                 ema_test = replace(before_close,price=90.10 if side==1 else 89.90)

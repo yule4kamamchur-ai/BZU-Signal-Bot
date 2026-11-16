@@ -24,6 +24,10 @@ SETUP_LABELS = {
     'DIRECTION_FLIP_15M': 'Ретест зміни напрямку',
     'TREND_IGNITION': 'Ретест виходу зі стиснення',
     'BREAKOUT_RETEST': 'Ретест пробитого рівня',
+    'BOS_IMPULSE_BREAKOUT': 'Імпульсний пробій структури',
+    'EMA9_MOMENTUM_SURF': 'Продовження від EMA9',
+    'V_REVERSAL_CHOCH': 'Розворот із пробоєм шиї',
+    'FAILED_BREAKOUT_TRAP': 'Хибний пробій із поверненням',
     'RANGE_COMPRESSION_BREAKOUT': 'Межа стиснутого діапазону',
     'OPENING_RANGE_BREAKOUT': 'Пробій початкового діапазону',
     'LIQUIDITY_LADDER': 'Рівень повторних дотиків',
@@ -124,7 +128,9 @@ def duration_text(ms):
 
 
 def position_diagnostics(position, now, cfg, engine, *, frozen=False):
-    view = position_monitor.guard(position, now)
+    import oil_risk
+
+    view = position_monitor.guard(position,now,structural_only=oil_risk.enabled(cfg))
     mode = view['mode']
     time = duration_text(view['time_in_trade_ms'])
     lines = [f"⏱ {time} • MFE {view['max_favorable_r']:+.2f}R ({view['peak_price']:.8g}) • MAE {(-view['max_adverse_r']):.2f}R"]
@@ -135,6 +141,13 @@ def position_diagnostics(position, now, cfg, engine, *, frozen=False):
             timing = ' з наступної свічки' if effective else ''
             return [*lines, f'50% зафіксовано на +1R. SL залишку {stop:.8g}{timing}.']
         return [*lines, 'TP1 зафіксовано. Залишок ведемо за штатним стопом до TP2.']
+    if view['structural_only']:
+        if mode == 'STRUCTURAL_HOLD':
+            until = engine.report_deadline(view['structural_hold_until'],now,cfg)
+            lines.append(f'Початковий структурний SL до {until}.')
+        else:
+            lines.append('Структурний вихід після двох закриттів M15 за свінгом, EMA20 та VWAP.')
+        return lines
     deadline = view['stale_at']
     moment = engine.report_deadline(deadline, now, cfg)
     if now < deadline:

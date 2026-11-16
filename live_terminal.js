@@ -209,7 +209,7 @@ function validCandidate(row) {
   const neutral=['CONFIRMED_FVG','BREAKER_FLIP_15M','MOMENTUM_STAIRCASE_15M','DISPLACEMENT_CATCHER_15M',
     'LIQUIDITY_RAID_ENGULFING_15M','STRUCTURAL_LEVEL','SESSION_SWEEP_ENGULFING',
     'SESSION_SWEEP_ENGULFING_15M','SWEEP_RECLAIM_ZONE','SESSION_OB','IMPULSE_OTE_15M',
-    'SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','BREAKDOWN_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
+    'FAILED_BREAKOUT_TRAP','V_REVERSAL_CHOCH','EMA9_MOMENTUM_SURF','SWEEP_REVERSAL','M15_CHOCH','BREAKER_CHOCH','MULTIBAR_SWEEP','RECLAIM_BREAKER','SR_FLIP_RECLAIM','BREAKDOWN_RECLAIM','CONTINUATION_PULLBACK','M5_IMPULSE_OB','FLAG_RETEST',
     'BREAKER_BLOCK','FVG_PULLBACK','FIB_OTE_ZONE','SWEEP_CONTINUATION','BOS_CONTINUATION',
     'CONSOLIDATION_BREAKOUT_BASE','VWAP_TREND_CONTINUATION','M5_SNIPER_REVERSAL','BOS_IMPULSE_BREAKOUT'];
   if (locked[row.kind] ? locked[row.kind]!==row.side : !neutral.includes(row.kind)) return false;
@@ -261,7 +261,7 @@ function pullbackQuoteAllowed(row, price) {
   const tolerance = row.market_trigger?.max_distance ?? row.market_pullback_max;
   const distal = row.side === 1 ? row.low : row.high;
   return number(price) && number(tolerance) && row.side * (price-distal) >= -1e-8 &&
-    row.side * (price-level) <= tolerance + 1e-8;
+    Math.abs(price-level) <= tolerance + 1e-8;
 }
 function actionablePlan(row, price, tracking = false) {
   if (row.actionable !== true || row.execution_admitted !== true || !['A','B+'].includes(row.grade) ||
@@ -586,6 +586,8 @@ function zoneName(kind) {
            M15_CHOCH:'Розворот структури M15', BREAKER_CHOCH:'Розворот структури M5',
            BREAKER_BLOCK:'Дзеркальний рівень', BOS_CONTINUATION:'Мілкий ретест пробою', FVG_PULLBACK:'Відкат у FVG',
            FIB_OTE_ZONE:'Відкат 50–61.8%', SWEEP_CONTINUATION:'Зняття ліквідності за трендом',
+           EMA9_MOMENTUM_SURF:'Продовження від EMA9', V_REVERSAL_CHOCH:'Розворот із пробоєм шиї',
+           FAILED_BREAKOUT_TRAP:'Хибний пробій із поверненням',
            MULTIBAR_SWEEP:'Свіп із поглинанням', BREAKDOWN_RECLAIM:'Ведмежий пробій підтримки', SR_FLIP_RECLAIM:'Дзеркальний рівень', RECLAIM_BREAKER:'Ретест повернутого рівня',
            CONTINUATION_PULLBACK:'Відкат поточної хвилі', M5_IMPULSE_OB:'Імпульсна зона M5',
            CONSOLIDATION_BREAKOUT_BASE:'Наторговка після імпульсу',
@@ -863,7 +865,8 @@ function positionMetrics(details, order, tracker, now) {
     element('dt','Пік прибутку (MFE)'), element('dd', signed(mfe) + 'R (' + format(peak) + ') · MAE ' +
       signed(-mae) + 'R' + (quoteOnly ? ' · оцінка за тиками' : '')),
     element('dt','Статус структури'), element('dd', structure + (regime ? ' (' + regime + ')' : '')));
-  const labels = {ROUND_TRIP:['ROUND-TRIP GUARD ACTIVE','guard'], ROUND_TRIP_TIMER:['ROUND-TRIP · З ' + stamp(info.round_trip_at),'guard'],
+  const labels = {STRUCTURAL_HOLD:['ПОЧАТКОВИЙ СТРУКТУРНИЙ SL','guard'],
+    STRUCTURAL_WATCH:['КОНТРОЛЬ СТРУКТУРИ M15','guard'], ROUND_TRIP:['ROUND-TRIP GUARD ACTIVE','guard'], ROUND_TRIP_TIMER:['ROUND-TRIP · З ' + stamp(info.round_trip_at),'guard'],
     STALE_WARNING:['STALE TRADE WARNING','warning'], STALE_TIMEOUT:['ТАЙМ-СТОП · ПЕРЕВІРКА','warning'],
     STALE_TIGHTENED:['ТАЙМ-СТОП · SL ' + format(info.stale_stop),'warning'], ADVERSE_CHOCH:['СТРУКТУРА ПРОТИ ПОЗИЦІЇ','warning']};
   const badge = labels[info.mode];
@@ -898,6 +901,8 @@ function management(order, tracker, price, usable) {
       'TP1 зафіксовано, чекаємо структуру M5 для перенесення стопа.';
   }
   if (tracker.tp1) return 'Ціна досягла TP1, чекаємо підтвердження фіксації.';
+  if (order.position_guard?.mode === 'STRUCTURAL_HOLD') return 'Діє початковий стоп за структурою.';
+  if (order.position_guard?.mode === 'STRUCTURAL_WATCH') return 'Для дострокового виходу потрібні два закриття M15 за свінгом, EMA20 та VWAP.';
   if (order.position_guard?.mode === 'ROUND_TRIP') return 'Round-Trip активний. Вихід при +0.10R або нижче.';
   if (order.position_guard?.mode === 'ADVERSE_CHOCH') return 'Структурний вихід після 2 годин. Потрібні два закриття M15 за свінгом і ціна за EMA20 та VWAP.';
   if (order.position_guard?.mode === 'STALE_TIMEOUT') return 'Тайм-стоп вичерпано. Чекаємо підтвердження дії за журналом.';
@@ -1093,6 +1098,8 @@ function render() {
   const structureSync=state.structure_sync;
   $('regime').title=structureSync?.proof === 'RECENT_SWING_IMPULSE'
     ? 'Хвиля від останнього підтвердженого свінга · ' + format(structureSync.wave_atr) + ' ATR'
+    : structureSync?.proof === 'EMA9_EMA20_SESSION_VWAP'
+    ? 'Закриття M15 та EMA9 відносно EMA20 · напрямок підтверджує VWAP'
     : structureSync?.proof === 'BOS_IMPULSE_BREAKOUT'
     ? 'Закритий пробій структури · EMA20, VWAP та обсяг'
     : structureSync?.proof === 'BEARISH_BREAKDOWN_MSS'
