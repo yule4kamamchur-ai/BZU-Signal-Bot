@@ -124,7 +124,7 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
         return entry, 'STRUCTURAL_REFERENCE_BUFFER'
     if zone['kind'] == 'FVG_PULLBACK' and (zone.get('wave_proof') or {}).get('first_retest'):
         return zone['reference'], 'STRUCTURAL_REFERENCE'
-    if zone['kind'] in ('BOS_IMPULSE_BREAKOUT','EMA9_MOMENTUM_SURF','V_REVERSAL_CHOCH'):
+    if zone['kind'] in ('BOS_IMPULSE_BREAKOUT','EMA9_MOMENTUM_SURF','V_REVERSAL_CHOCH','TURTLE_SOUP','FAILED_BREAKOUT_TRAP'):
         return zone['reference'], 'STRUCTURAL_REFERENCE'
     if zone['kind'] == 'M5_SNIPER_REVERSAL':
         return zone['reference'], 'M5_ENGULFING_RETEST'
@@ -145,7 +145,7 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     if impulse:
         pullback = impulse.close - .275*(impulse.close-impulse.open)
         reference = zone.get('reference',pullback)
-        entry = reference if .15<=side*(snapshot.price-reference)<=.28 else pullback
+        entry = reference if low-tick <= reference <= high+tick else pullback
         return engine.round_tick(round(entry+tick/2,10),tick), 'SHALLOW_M15_RETEST'
     if atr > 0 and side*(rows[index].close-rows[index].open) > 1.4*atr:
         if 'FVG' in zone['kind']:

@@ -277,7 +277,7 @@ class MicroBrake(unittest.TestCase):
 
 
 class Integration(unittest.TestCase):
-    def test_same_interval_reaction_reaches_planner_now_and_waits_if_missing(self):
+    def test_confirmed_touch_reaches_market_and_respects_approach_brake(self):
         for side in (-1,1):
             snap,cfg,ctx,a,_,target=master_fixture(side)
             micro,zone=micro_snapshot(side)
@@ -295,10 +295,11 @@ class Integration(unittest.TestCase):
                 plan,why=engine.full_plan(a,ctx,snap,cfg,{})
             self.assertIsNotNone(plan,why)
             self.assertEqual(plan['placed_ts'],NOW)
-            self.assertEqual(plan['action_type'],'NEW_PENDING_LIMIT')
-            self.assertEqual(plan['approach']['confirmation_timeframe'],'5m')
-            snap.candles['5m']=[]
-            self.assertEqual(engine.full_plan(a,ctx,snap,cfg,{})[1],'IMPULSE_CONFIRMATION_REQUIRED')
+            self.assertEqual(plan['action_type'],'ACTIVE_ENTRY')
+            self.assertEqual(plan['market_trigger']['pattern'],'INSTANT_TOUCH_MARKET_FILL')
+            self.assertEqual(plan['entry'],snap.ask if side==1 else snap.bid)
+            with patch.object(adverse,'approach_velocity',return_value={'blocked':True}):
+                self.assertEqual(engine.full_plan(a,ctx,snap,cfg,{})[1],'CONFIRMATION_REQUIRED')
 
     def test_real_analyzer_keeps_confirmed_long_and_short_after_gates(self):
         for side in (-1,1):

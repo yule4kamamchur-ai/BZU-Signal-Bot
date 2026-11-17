@@ -105,14 +105,14 @@ class TrendBreakout(TestCase):
     def test_market_rr_uses_unchanged_targets(self):
         snap,cfg = base_fixture()
         anchor = type('Anchor', (), {'side':'LONG'})()
-        geometry = {'tp1':94.39,'tp2':94.90,'path_clear':True,'structural_tp1':True,'structural_tp2':True}
+        geometry = {'tp1':94.34,'tp2':94.90,'path_clear':True,'structural_tp1':True,'structural_tp2':True}
         with patch.object(engine.scenario_planner,'structure_levels',return_value=[]), \
              patch.object(engine.scanner,'target_crossed',return_value=False):
             result, reason = bzu_policy.protected_targets({},snap,anchor,cfg,engine,93.,92.,1,.5,True,
                 market_trigger={'pattern':'TREND_CONTINUATION_MARKET','known_ts':snap.now},
                 reference_geometry=geometry)
         self.assertIsNone(result)
-        self.assertEqual(reason,'TREND_MARKET_RR_BELOW_1_40')
+        self.assertEqual(reason,'BLOCKED_LOW_RR_135')
 
     def test_aligned_short_at_range_floor_uses_structure_checks(self):
         snap,cfg = base_fixture()

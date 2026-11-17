@@ -177,8 +177,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
                     scanner.planned_targets(entry, risk, side, targets, snapshot, cfg, engine, zone or {}, a15))
     obstacle, room_r = (oil_risk.structural_room(side, entry, risk, scenario_planner.structure_levels(snapshot, engine),trend=trend)
                         if organic else (None, None))
-    impulse_market = (market_trigger or {}).get('pattern') == 'TREND_CONTINUATION_MARKET'
-    min_room = scanner.MARKET_IMPULSE_MIN_RR if impulse_market else 1.35
+    min_room = (scanner.MARKET_IMPULSE_MIN_RR if active else scanner.LIMIT_NEW_MIN_RR) if organic else 1.35
     if room_r is not None and room_r < min_room-1e-8:
         return None, 'BLOCKED_NO_ROOM_TO_STRUCTURE'
     tp1_gate = oil_risk.entry_tp1_error(side, entry, risk, geometry['tp1'])
@@ -201,8 +200,8 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     costs = (entry * entry_fee + tp2 * exit_fee) / risk
     rr1 = side * (tp1 - entry) / risk
     if organic:
-        if impulse_market and rr1<scanner.MARKET_IMPULSE_MIN_RR-1e-8:
-            return None, 'TREND_MARKET_RR_BELOW_1_40'
+        if rr1 < min_room-1e-8:
+            return None, 'RR_BELOW_1_35' if active else 'LIMIT_RR_BELOW_1_40'
         if not oil_risk.target_range_valid(rr1,rr2):
             return None, 'ORGANIC_TARGET_RANGE'
         if rr1 <= (entry * entry_fee + tp1 * exit_fee) / risk:
@@ -332,7 +331,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     diag['entry_zone'] = dict(zone)
     diag['zone_origin'] = origin
     zone_error = scanner.standalone_zone_error({**zone, 'side': side}, snapshot, cfg, engine, a15, regime.get('state'))
-    if zone_error:
+    if zone_error and zone_error != 'RANGE_ZONE_TOO_CLOSE':
         return None, zone_error
     trend = oil_risk.enabled(cfg) and scanner.wave.trend_zone(zone, regime, origin)
     relation = 'WITH_TREND' if trend else None
@@ -513,6 +512,15 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             market_trigger = None
         else:
             market_trigger = {**market_trigger,'limit_entry':entry,'max_distance':width}
+    if (oil and market_trigger and scanner.touch_only_market_zone(zone)
+            and abs(quote-entry)>scanner.MARKET_TOUCH_ATR*a15+1e-8):
+        market_trigger = None
+    if oil and not market_trigger and not reaction_only and anchor.setup_type != 'SESSION_MEAN_RECLAIM':
+        market_trigger = scanner.instant_touch_trigger(snapshot,side,zone,entry,risk,a15,cfg.tick)
+    range_market_gate = (scenario_planner.market_range_error(snapshot,cfg,engine,side,quote,zone,regime)
+                         if oil and market_trigger else None)
+    if range_market_gate:
+        market_trigger = None
     if (oil and zone['kind']==scanner.wave.BASE and
             (zone.get('wave_proof') or {}).get('trigger')!='BREAKOUT'):
         diag['status']='WATCHING'
@@ -557,7 +565,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                     (market_trigger or {}).get('pattern') == 'TREND_CONTINUATION_MARKET')
     if market_trigger:
         impulse_market = market_trigger['pattern']=='TREND_CONTINUATION_MARKET'
-        freeze_geometry = pullback or impulse_market
+        instant_touch = market_trigger['pattern']=='INSTANT_TOUCH_MARKET_FILL'
+        freeze_geometry = pullback or impulse_market or instant_touch
         if breakdown or market_trigger['pattern']=='TREND_CONTINUATION_MARKET':
             gate = scenario_planner.entry_error(snapshot,cfg,engine,side,quote,zone,trend=True,regime=regime)
             if gate:
@@ -565,7 +574,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         reference, why = None, None
         if freeze_geometry:
             reference, reference_reason = protected_targets(
-                context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False,
+                context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=True,
                 zone=zone, trend=target_trend)
             if reference is None:
                 why = reference_reason
@@ -576,14 +585,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                        and side*(quote_profile['boundary']-stop) >= quote_profile['buffer']-1e-8)
         if fixed_valid and (freeze_geometry or not quote_profile['gate']):
             quote_stop, quote_risk = stop, fixed_risk
-        if quote_profile['gate'] or (freeze_geometry and not impulse_market and not fixed_valid):
+        if quote_profile['gate'] or (freeze_geometry and not (impulse_market or instant_touch) and not fixed_valid):
             why = quote_profile['gate'] or 'STRUCTURAL_STOP_TOO_WIDE'
         if why is None:
             geometry, why = protected_targets(
                 context, snapshot, anchor, cfg, engine, quote, quote_stop, side, a15, active=True,
                 zone=zone, trend=target_trend, market_trigger=market_trigger, reference_geometry=reference)
         if geometry is None:
-            if not can_wait or market_trigger['pattern']=='TREND_CONTINUATION_MARKET':
+            if not can_wait or impulse_market or instant_touch or scanner.touch_only_market_zone(zone):
                 return None, why
             market_trigger = None
         else:
@@ -625,19 +634,19 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if anchor.setup_type == 'SESSION_MEAN_RECLAIM':
             return None, 'SESSION_MEAN_LIMIT_DISABLED'
         if not can_wait:
-            return None, 'WAIT_RETEST'
+            return None, range_market_gate or 'WAIT_RETEST'
         geometry, why = protected_targets(
             context, snapshot, anchor, cfg, engine, entry, stop, side, a15, active=False, zone=zone, trend=target_trend)
         if geometry is None:
             mark('TARGET_RR', False)
             return None, why
         distance_gate = scanner.entry_window(side, snapshot.price, entry, a15, cfg, trend=trend or multibar)
-        if (zone.get('wave_proof') and zone['kind'] in ('BULLISH_BREAKER', 'BEARISH_BREAKER')
+        if (not oil and zone.get('wave_proof') and zone['kind'] in ('BULLISH_BREAKER', 'BEARISH_BREAKER')
                 and distance < .20 - 1e-8 and not reaction_only):
             distance_gate = distance_gate or 'ENTRY_TOO_CLOSE'
         if distance_gate and not ((reaction_only or breakdown or pullback or sniper_reversal)
                                   and distance_gate == 'ENTRY_TOO_CLOSE'):
-            return None, distance_gate
+            return None, range_market_gate or distance_gate
     volume = scanner.formation_volume(zone, snapshot)
     mark('PASSIVE_LIMIT', True)
     mark('TARGET_RR', True)

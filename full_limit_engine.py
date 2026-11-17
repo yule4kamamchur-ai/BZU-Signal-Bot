@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.1.0-intraday"
-REPORT_RELEASE = 'v14.1.0'
+VERSION = "full-ict-v14.2.0-intraday"
+REPORT_RELEASE = 'v14.2.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -1816,7 +1816,7 @@ def pending_scenario_error(plan, snapshot, cfg):
         return None
     engine = sys.modules[__name__]
     side, entry = plan['side'], plan['entry']
-    filter_error = policy.trend_entry_error(snapshot,side,snapshot.price,zone,cfg.tick)
+    filter_error = policy.trend_entry_error(snapshot,side,entry,zone,cfg.tick)
     if filter_error:
         return filter_error
     if zone.get('kind') == scanner.wave.BREAKDOWN:
@@ -1830,7 +1830,7 @@ def pending_scenario_error(plan, snapshot, cfg):
     if gate:
         return gate
     _, room_r = oil_risk.structural_room(side,entry,plan['risk'],scenario_planner.structure_levels(snapshot,engine),trend=trend)
-    return 'BLOCKED_NO_ROOM_TO_STRUCTURE' if room_r is not None and room_r < 1.35-1e-8 else None
+    return 'PENDING_ROOM_BELOW_1_15' if room_r is not None and room_r < scanner.LIMIT_CANCEL_MIN_RR-1e-8 else None
 
 
 def pending_entry_gate(plan, trades, as_of, cfg):
@@ -2319,7 +2319,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
                 proof_quote = quote
-                if scanner.structural_pullback(zone) and trigger.get('pattern')!='TREND_CONTINUATION_MARKET':
+                if scanner.structural_pullback(zone) and trigger.get('pattern') not in ('TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL'):
                     level = trigger.get('limit_entry')
                     distal = zone.get('low' if side==1 else 'high')
                     a15 = atr(policy.closed(s,'15m'))
@@ -2330,7 +2330,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         proof_quote = level
                 if policy.trend_entry_error(s,side,quote,zone,cfg.tick):
                     continue
-                if trigger.get('pattern')=='TREND_CONTINUATION_MARKET':
+                if scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
+                    continue
+                if trigger.get('pattern')=='INSTANT_TOUCH_MARKET_FILL':
+                    proof = scanner.instant_touch_trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
+                                                         atr(policy.closed(s,'15m')),cfg.tick)
+                elif trigger.get('pattern')=='TREND_CONTINUATION_MARKET':
                     proof = entry_adverse_selection.trend_execution_trigger(
                         s,side,zone,trigger.get('initial_entry',trigger['limit_entry']),trigger['initial_risk'],quote,cfg.tick,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M5_SNIPER_REVERSAL':
@@ -2358,14 +2363,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
                 candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN or
-                trigger.get('pattern') in ('M15_TREND_ZONE','TREND_CONTINUATION_MARKET') else
+                trigger.get('pattern') in ('M15_TREND_ZONE','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL') else
                 trigger.get('limit_entry',candidate['entry']),zone,
                 trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
                     candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')),regime=market)
             _, room_r = oil_risk.structural_room(candidate['side'],candidate['entry'],candidate['risk'],
                 scenario_planner.structure_levels(s,sys.modules[__name__]),
                 trend=candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
-            min_room = (scanner.MARKET_IMPULSE_MIN_RR if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' else 1.35)
+            min_room = scanner.MARKET_IMPULSE_MIN_RR if scanner.market_plan(candidate) else scanner.LIMIT_NEW_MIN_RR
             if gate or (room_r is not None and room_r < min_room-1e-8):
                 continue
         if (dominant and candidate['side'] != dominant
@@ -2382,8 +2387,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
             continue
         if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
-                                        min_score=scanner.min_plan_score(relation, candidate.get('market_trigger'),
-                                            structural=oil_risk.is_organic(candidate)), min_rr=1.40):
+                                        min_score=max(60,scanner.min_plan_score(relation, candidate.get('market_trigger'),
+                                            structural=oil_risk.is_organic(candidate))), min_rr=min_room if single_limit else 1.40):
             continue
         assessment = scanner.calculate_zone_trade_plan(
             zone, s, cfg, sys.modules[__name__], dominant, analysis.get('full_context', {}),
@@ -2637,7 +2642,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 reason = ('CURRENT_QUOTE_MOMENTUM' if direct.get('pattern') in ('BREAKOUT', 'ZONE_REACTION')
                           else 'CURRENT_QUOTE_CATCH_UP')
                 if scanner.market_plan(plan):
-                    reason = 'PAPER_MARKET_' + plan['market_trigger']['pattern']
+                    pattern = plan['market_trigger']['pattern']
+                    reason = pattern if pattern=='INSTANT_TOUCH_MARKET_FILL' else 'PAPER_MARKET_' + pattern
                 end_order(book,plan,'FILLED',reason,s.now)
                 quote=Candle(s.now,plan['entry'],plan['entry'],plan['entry'],plan['entry'])
                 filled=bzu_policy.first_fill(plan,quote,sys.modules[__name__],cfg,60_000)
@@ -2674,6 +2680,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         sar['outcome'] = 'ORDER_SELECTED' if selected else 'AWAITING_VALID_OPPOSITE_ENTRY'
     analysis['reaction_plans'] = copy.deepcopy(watch)
     analysis['admitted_plans'] = copy.deepcopy(selected + watch)
+    radar_events = set(state['used_events'])
+    radar_events.update(p['event_key'] for p in open_plans(state))
+    analysis['radar_plans'] = [p for p in valid if p['event_key'] not in radar_events
+                               and p['expires_ts']>s.now] if watch_allowed else []
+
     # Convert the market-ready state into the ACTUAL portfolio decision, so a
     # suppressed duplicate or a full book is never described as unexplained.
     tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
@@ -2892,7 +2903,10 @@ REASON_UA = {
     'BLOCKED_OUTSIDE_HTF_POI':'вхід поза підтвердженою зоною старшого таймфрейму',
     'BREAKDOWN_EXPIRED':'ведмежий пробій втратив чинність',
     'DISTANT_BREAKDOWN_RETEST':'ціна надто далеко від зони мікроретесту',
-    'BLOCKED_NO_ROOM_TO_STRUCTURE':'до найближчої структурної перешкоди менше 1.35R',
+    'BLOCKED_NO_ROOM_TO_STRUCTURE':'замало простору до найближчої структурної перешкоди',
+    'PENDING_ROOM_BELOW_1_15':'простір від зафіксованої ціни лімітки впав нижче 1.15R',
+    'LIMIT_RR_BELOW_1_40':'для нової лімітки потрібно щонайменше 1.40R',
+    'MARKET_BLOCKED_RANGE_MIDDLE':'MARKET у середині діапазону заблоковано',
     'CONFIRMATION_REQUIRED':'чекаємо підтвердження гальмування на M15',
     'BREAKER_SWEEP_FVG_REQUIRED':'брейкер потребує свіпу та підтвердженого FVG',
     'BLOCKED_LOW_RR_135':'відстань до TP1 менша за 1.40 початкового ризику',

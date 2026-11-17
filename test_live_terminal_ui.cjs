@@ -26,9 +26,11 @@ const document={hidden:false,activeElement:null,body:new Node('body'),getElement
     const all=[],visit=n=>{if(n.dataset[dataKey]!==undefined)all.push(n);n.children.forEach(visit);};nodes.forEach(visit);return all;
   }};
 const priceLines=[], chartCalls={data:[],text:[]};let clipboard='';
-const clock={value:Date.now()};
+const clock={value:Date.parse('2026-11-17T08:01:00Z')};
 class TestDate extends Date {static now(){return clock.value;}}
-const ctx={document,window:{innerWidth:1440},navigator:{clipboard:{writeText:async text=>{clipboard=text;}}},
+const storage=new Map();
+const ctx={localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),
+  removeItem:key=>storage.delete(key)},document,window:{innerWidth:1440},navigator:{clipboard:{writeText:async text=>{clipboard=text;}}},
   Intl,URLSearchParams,AbortSignal,Date:TestDate,console,setInterval(){},clearInterval(){},WebSocket:function(){},
   fetch:async()=>({ok:false,status:503,json:async()=>({})})};
 const series={setData(data){chartCalls.data=data;},update(){},applyOptions(){},priceToCoordinate:p=>400-(p-98)*100,
@@ -38,7 +40,7 @@ ctx.window.LightweightCharts={CandlestickSeries:{},LineStyle:{Dashed:2,Solid:0},
   timeScale:()=>({fitContent(){},timeToCoordinate:()=>0}),priceScale:()=>({applyOptions(){}})};}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('live_terminal.js','utf8'),ctx);
 const run=source=>vm.runInContext(source,ctx),text=id=>nodes.get(id).textContent;
-const now=Date.now();
+const now=clock.value;
 const zone=(id,side,low,high,entry)=>({id,kind:side===1?'MOMENTUM_STAIRCASE_15M':'FVG_BEAR',timeframe:'15m',side,low,high,entry,
  known_ts:now-3600000,score:74,grade:'A',score_source:'CONTEXT',entry_source:'PLANNER',status:'CANDIDATE',stop:entry-side*.4,
  tp1:entry+side*.6,tp2:entry+side*1.1,reason:'ACCEPTED',actionable:true,execution_admitted:true,formation_volume:{confirmed:true},tactic:'LIMIT',reaction_eligible:true,valid_until:now+25*60000});
@@ -52,352 +54,86 @@ const fixture={schema:1,cockpit_schema:4,primary_bias:0,min_structural_spread:.6
 ctx.fixture=fixture;ctx.orderFixture=order;
 const cleanFixture=JSON.parse(JSON.stringify(fixture));
 ctx.fixtureBackup=cleanFixture;
+
 (async()=>{
- // Flush the initial failed fetch before assigning the synthetic state.
  await new Promise(resolve=>setImmediate(resolve));
- run('state=fixture;stateError=false;quote={price:99.84,ts:Date.now()};render();');
- assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);assert.equal(nodes.get('radar').children.length,2);
- assert.equal(run('visibleZones().length'),1);assert.match(text('last-event'),/Ліміт скасовано/);
- assert.equal(priceLines.length,3);
- run('state.scenario_plan={headline:"ПОШУК РОЗВОРОТУ ВІД ДНА (LONG)",phase_text:"Низхідна структура · 21% діапазону",market:{phase_text:"Низхідна структура"},primary:{status:"DEVELOPING",side:1,level:99.66,label:"Свіп дна",trigger:"Прокол 99.66 та закриття M15 вище рівня",invalidation:"Скасування при закритті під рівнем",preview:{entry:99.71,stop:98.31,tp1:101.81,rr1:1.5,preview_only:true}},alternative:{side:-1,trigger:"Тест EMA20 100.55 та ведмежий відбій"}};state.candidates=[];state.zones=[];state.radar={};render();');
- assert.equal(nodes.has('scenario-plan'),false);
- assert.match(text('state-title'),/АКТИВНИЙ ПОШУК LONG.*99.66.*Стоп 98.31.*Тейк 101.81/);
- assert.match(text('regime'),/Низхідна структура/);
- assert.equal(priceLines.length,0);
- run('Object.assign(state.scenario_plan,{headline:"ЧЕКАЄМО ВІДКАТ ЗА ТРЕНДОМ",primary:null,alternative:{side:-1,trigger:"Закриття M15 нижче 98.80"}});render();');
- assert.match(text('state-title'), /ЧЕКАЄМО ВІДКАТ ЗА ТРЕНДОМ/);
- assert.equal(priceLines.length,0);
- run('state.scenario_plan=null;state.candidates=[...fixtureBackup.candidates];state.zones=[...fixtureBackup.zones];state.radar=fixtureBackup.radar;render();');
- assert.equal(document.querySelectorAll('[data-focus]').some(x=>x.dataset.zone==='far'),false);
- assert.ok(nodes.get('state-banner').classList.contains('banner-waiting'));
- run('selectedZone=null;state.orders=[orderFixture];render();');
- assert.match(text('state-title'),/ОЧІКУЄМО ВХІД.*99.66/);assert.match(text('orders'),/41 хв|42 хв/);
- assert.ok(priceLines.some(l=>l.title.includes('LIMIT')));
- assert.match(text('chart-levels'),/LIMIT/);
- const copy=document.querySelectorAll('[data-focus]').find(x=>x.dataset.copyLabel==='Entry');
- await nodes.get('orders').listeners.click({target:copy});assert.equal(clipboard,'99.66');
- run('quote={price:99.71,ts:Date.now()+1};render();');assert.ok(nodes.get('state-banner').classList.contains('near'));
- run('quote={price:99.65,ts:Date.now()+2};render();');assert.match(text('state-detail'),/торкнулася входу/);
- assert.equal(nodes.get('state-banner').dataset.mode,'WAITING');
- run('state.orders=[{...orderFixture,status:"OPEN",filled_ts:Date.now()-1000}];quote={price:99.66,ts:Date.now()+3};render();');
- assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
- assert.ok(nodes.get('state-banner').classList.contains('banner-entered'));
- run('quote={price:99.90,ts:Date.now()+4};render();');
- assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');assert.match(text('orders'),/\+0.24/);
- run('quote={price:99.40,ts:Date.now()+5};render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
- run('quote={price:100.25,ts:Date.now()+6};render();');
- assert.match(text('orders'),/чекаємо підтвердження фіксації/);
- assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
- assert.equal(document.querySelectorAll('[data-focus]').some(x=>x.dataset.copyLabel==='Б/У'),false);
- run('state.orders[0].tp1_hit=true;state.orders[0].tp1_partial=true;state.orders[0].remaining=.5;render();');
- assert.match(text('state-detail'),/чекаємо структуру M5/);
- assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');
- run('state.orders[0].pending_stop=99.68;state.orders[0].be_confirmed_ts=Date.now();state.orders[0].pending_stop_effective_ts=Date.now()+60000;render();');
- assert.match(text('orders'),/стоп Б\/У 99.68/);assert.doesNotMatch(text('orders'),/вже захищає/);
- run('state.orders[0].stop=99.68;delete state.orders[0].pending_stop;render();');assert.match(text('orders'),/Стоп уже захищає залишок/);
- run('state.status="DATA_HOLD";render();');assert.equal(nodes.get('state-banner').dataset.mode,'MANAGING');
- run('state.status="READY";state.orders=[{...orderFixture,status:"OPEN",side:-1,entry:100.15,stop:100.55,risk:.4,tp1:99.55,tp2:99.05}];quote={price:99.9,ts:Date.now()+6};render();');
- assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');assert.match(text('state-title'),/SHORT/);assert.match(text('orders'),/\+0.25/);
- assert.ok(priceLines.some(l=>l.title.includes('SL')&&l.title.includes('−1.00R')));
- run('state.orders[0].order_type="MARKET";render();');
- assert.match(text('state-title'),/MARKET SHORT/);
- assert.match(text('orders'),/MARKET/);
- assert.ok(priceLines.some(l=>l.title.includes('MARKET @ 100.15')));
- run('Object.assign(state.orders[0], {filled_ts:Date.now()-3*3600000,max_favorable_r:.60,max_adverse_r:.20,position_guard:{mode:"ROUND_TRIP",stale_at:Date.now()+3*3600000,structure:"COUNTER_TREND",regime:"BULLISH_ACTIVE"}});render();');
- assert.match(text('orders'),/Час в угоді \/ Ліміт.*3 год 0 хв/);
- assert.match(text('orders'),/Пік прибутку \(MFE\).*\+0.60R/);
- assert.match(text('orders'),/Контртренд \(Висхідний\)/);
- assert.match(text('orders'),/ROUND-TRIP GUARD ACTIVE/);
- run('state.orders[0].position_guard.mode="STALE_WARNING";render();');
- assert.match(text('orders'),/STALE TRADE WARNING/);
- run('state.orders[0].position_guard.stale_at=Date.now()-2*3600000;render();');
- assert.match(text('orders'),/ВИЧЕРПАНО на 2 год 0 хв/);
+ run(`state={...fixtureBackup,primary_bias:-1,price:89.54,candidates:[
+    {id:'bad-rr',kind:'TURTLE_SOUP',side:-1,entry:89.54,stop:90.19,tp1:89.48,tp2:88,
+     score:95,actionable:true,timeframe:'15m'},
+    {id:'bad-score',kind:'FVG_BEAR',side:-1,entry:89.64,stop:90.29,tp1:88.60,tp2:88.3,
+     score:59,actionable:true},
+    {id:'blocked',kind:'TURTLE_SOUP',side:-1,entry:89.67,stop:90.32,tp1:88.70,tp2:88,
+     score:80,actionable:true,gate_reason:'BLOCKED_LOW_RR_135'},
+    {id:'valid',kind:'FVG_BEAR',side:-1,entry:89.71,stop:90.36,tp1:88.73,tp2:88.3,
+     score:80,actionable:true,timeframe:'15m',low:89.7,high:89.8},
+    {...fixtureBackup.candidates[0],entry:89.50,stop:88.85,tp1:90.5,tp2:91}
+ ]};stateError=false;quote={price:89.54,ts:Date.now()};render();`);
+ assert.match(text('state-title'),/SHORT @ 89.71/);
+ assert.match(text('tactical-focus'),/ОЧІКУЄМО SHORT/);
+ assert.match(text('radar-primary'),/89.71.*90.36.*88.73/);
+ assert.doesNotMatch(text('state-title')+text('radar-primary')+text('zones'),/89\.48|89\.64|89\.67|0\.09R/);
+ assert.deepEqual(priceLines.map(line=>line.price).sort((a,b)=>a-b),[88.3,88.73,89.71,90.36]);
+ assert.equal(run('visibleZones()[0].id'),'valid');
+ run('quote={price:89.59,ts:Date.now()};render();');
+ assert.match(text('state-title'),/SHORT @ 89.71.*0.12/);
+ assert.ok(!html.includes('Кандидати на вхід'));
+ assert.ok(!html.includes('Зони сканера'));
 
-
- run('state.snapshot_ts=Date.now()-28*60000;render();');assert.equal(nodes.get('state-banner').dataset.mode,'ENTERED');
- run('state.snapshot_ts=Date.now();quote={price:100.1,ts:Date.now()-20000};render();');assert.match(text('state-title'),/В УГОДІ/);
- run('state.orders=[];state.zones=[];state.candidates=[];state.recent_events=[];render();');assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);
- assert.match(text('orders'),/Скануємо ринок/);
- // UI fields use text nodes even when a public label contains markup.
- ctx.injection='<img src=x onerror=alert(1)>';run('state.zones=[{...fixture.zones[0],kind:injection}];render();');
- assert.doesNotMatch(text('zones'),/<img src=x/);assert.equal(nodes.get('zones').children[0].children[0].children[0].tagName,'STRONG');
-
- // A confirmed close, independent of subsequent diagnostic events, controls the red banner.
- run('state.last_closed={kind:"CLOSED",side:1,net_r:-1.15,ts:Date.now()-1000};render();');
- assert.ok(nodes.get('state-banner').classList.contains('banner-closed'));
- assert.match(text('state-detail'),/1.15R/);
- run('state.last_closed.ts=Date.now()-16*60000;render();');
- assert.equal(nodes.get('state-banner').dataset.mode,'WAITING');
-
- const reset=(side=1,overrides={},keepClock=false)=>{
-   if(!keepClock)clock.value=Math.floor(clock.value/300000)*300000+60000;
-   const entry=side===1?99.7:100.3;
-   const row={id:'reaction-'+side,kind:side===1?'FVG_BULL':'FVG_BEAR',side,entry,low:entry-.05,high:entry+.05,
-     stop:entry-side*.4,tp1:entry+side*.8,tp2:entry+side*1.2,score:75,score_source:'CONTEXT',status:'CANDIDATE',
-     reaction_eligible:true,actionable:true,execution_admitted:true,formation_volume:{confirmed:true},timeframe:'15m',tactic:'REACTION_M5',grade:'A',known_ts:clock.value-300000,valid_until:clock.value+1500000,...overrides};
-   ctx.scenario={...cleanFixture,price:100,snapshot_ts:clock.value,orders:[],candidates:[row],zones:[row],
-     primary_bias:side,primary_candidate_id:row.id,radar:{LONG:side===1?row:null,SHORT:side===-1?row:null},
-     reaction_config:{retracement:.06,min_samples:3,max_sample_gap_ms:15000,ready_ttl_ms:15000,max_chase_r:.25}};
-   run('state=scenario;stateError=false;quote=undefined;reactions.clear();m5Proofs.clear();invalidZones.clear();exhaustedPlans.clear();selectedPlanIds.clear();previousLiveSample=null;m5Market=null;position.clear();document.hidden=false;');
-   return row;
- };
- const feed=(price,step=3000)=>{
-   clock.value+=step;
-   ctx.tickRow={instId:'BZ-USDT-SWAP',last:String(price),ts:String(clock.value)};
-   const accepted=run('acceptTicker(tickRow)');run('render()');return accepted;
- };
- const stage=()=>run('reactionPresentation(ready(Date.now()),true).stage');
- for(const side of [1,-1]){
-   reset(side);
-   feed(100);assert.equal(stage(),'ARMED');
-   feed(100-side*.27);assert.equal(stage(),'TOUCHED');
-   feed(100-side*.30);assert.equal(stage(),'TOUCHED');
-   feed(100-side*.23);assert.equal(stage(),'READY');
-   assert.match(text('reaction-title'),/LIVE РЕАКЦІЯ/);
-   assert.equal(nodes.get('state-banner').dataset.mode,'WAITING');
-   assert.equal(run('state.orders.length'),0); // A local signal is never a ledger/exchange fill.
-   assert.equal(run('currentReaction().tracker.events.size'),1);
-   feed(100-side*.22,1000);assert.equal(run('currentReaction().tracker.events.size'),1);
- }
- reset(-1,{entry:93.77,low:93.86,high:94.14,stop:95.87,tp1:90.81,tp2:89.78,
-   trend_rel:'WITH_TREND',tactic:'MARKET',order_type:'MARKET',market_now:true,
-   organic_risk:{model:'ORGANIC_OIL_V32'},market_trigger:{pattern:'POST_TOUCH_REJECTION'}});
- run('state.cockpit_schema=5;state.price=93.77;render();');
- assert.match(text('state-title'),/СИГНАЛ MARKET SHORT ВІД 93.77/);
- assert.match(text('state-detail'),/відбій від зони/);
- assert.equal(nodes.get('state-banner').dataset.mode,'WAITING');
- assert.ok(priceLines.some(l=>l.title.includes('MARKET SHORT')));
- run('state.candidates[0].kind="BREAKDOWN_RECLAIM";state.candidates[0].market_trigger={pattern:"M15_BREAKDOWN_MOMENTUM",limit_entry:93.86,initial_risk:2.1};render();');
- assert.match(text('state-detail'),/імпульсний пробій підтримки/);
- run('state.price=92.90;render();');
- assert.equal(run('radarRows().filter(Boolean).length'),0);
- assert.equal(priceLines.length,0);
- reset();feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY'); // Started inside, no witnessed approach.
- reset();feed(100);feed(99.73);feed(99.70);feed(99.77,20000);assert.notEqual(stage(),'READY'); // Data gap revokes touch proof.
- reset();feed(100);feed(99.29);assert.equal(run('radarRows().filter(Boolean).length'),0);feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);
- assert.match(text('alert'),/пробито/);assert.equal(run('invalidZones.size'),1);
- reset();feed(100);feed(99.73);feed(99.70);run('pauseReactions()');feed(99.77);assert.notEqual(stage(),'READY');
- reset();feed(100);feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');
- clock.value+=16000;run('render()');assert.equal(stage(),'WAIT');assert.equal(priceLines.length,0);assert.doesNotMatch(text('state-title'),/LIVE РЕАКЦІЯ/);
- reset();feed(100);feed(99.73);
- const before=run('currentReaction().tracker.lastTs');
- ctx.tickRow={instId:'BZ-USDT-SWAP',last:'99.77',ts:String(clock.value-1000)};
- assert.equal(run('acceptTicker(tickRow)'),false);assert.equal(run('currentReaction().tracker.lastTs'),before);
- ctx.tickRow.ts=String(clock.value+20000);assert.equal(run('acceptTicker(tickRow)'),false);
- reset();feed(100);feed(99.73);feed(99.70);
- ctx.tickRow={instId:'BZ-USDT-SWAP',last:'99.77',ts:String(clock.value-20000)};
- run('quote=undefined;acceptTicker(tickRow);render();');assert.doesNotMatch(text('state-title'),/LIVE РЕАКЦІЯ/);
- reset();run('m5Market={time:Math.floor(Date.now()/300000)*300,open:100,high:100.1,low:99.7,close:99.77,source:"OKX_M5"};');
- feed(100);assert.equal(stage(),'ARMED'); // REST wick is metrics only, never past touch proof.
- reset(1,{tp1:100.27});feed(100);feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'WAIT');assert.equal(priceLines.length,0);
- reset(1,{kind:'FVG_BEAR',stop:100.94});feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);
- reset();run('state.cockpit_schema=1');feed(100);feed(99.73);feed(99.7);feed(99.77);assert.notEqual(stage(),'READY');
- reset();run('state.status="DATA_HOLD"');feed(100);feed(99.73);feed(99.7);feed(99.77);assert.notEqual(stage(),'READY');
- reset();feed(100);feed(99.73);run('document.hidden=true');feed(99.70);run('document.hidden=false');feed(99.77);assert.notEqual(stage(),'READY');
- // A touch in the previous M5 bucket cannot authorize a reaction in the next one.
- clock.value=Math.floor(clock.value/300000)*300000+294000;
- reset(1,{},true);feed(100,1000);feed(99.73,1000);feed(99.70,1000);feed(99.77,4000);assert.notEqual(stage(),'READY');
- reset();feed(100);run('state.orders=[{...orderFixture,status:"OPEN"}]');feed(99.73);feed(99.7);feed(99.77);assert.equal(stage(),'PAUSED');
- // A READY signal also expires at the M5 boundary, even before the next quote.
- clock.value=Math.floor(clock.value/300000)*300000+284000;
- reset(1,{},true);feed(100);feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');
- clock.value+=5000;run('render()');assert.equal(stage(),'WAIT');assert.equal(priceLines.length,0);
- // A pending ledger order can be monitored but a local veto never changes its status.
- const pendingRow=reset();
- ctx.pending={...order,...pendingRow,id:'existing-limit',status:'PENDING',zone:{...pendingRow},expires_ts:clock.value+600000};
- run('state.orders=[pending]');feed(100);assert.equal(run('reactionRows().length'),1);
- feed(99.29);assert.equal(stage(),'INVALID');assert.equal(run('state.orders[0].status'),'PENDING');
- assert.match(text('orders'),/Локальний вхід заблоковано|торкнулася SL/);
- // Axis labels closer than 20 screen pixels are suppressed; exact levels remain in the text legend.
- reset();feed(100);const shown=priceLines.filter(x=>x.axisLabelVisible).map(x=>series.priceToCoordinate(x.price));
- for(let i=0;i<shown.length;i++)for(let j=i+1;j<shown.length;j++)assert.ok(Math.abs(shown[i]-shown[j])>=20);
- assert.match(text('chart-levels'),/СТОП-ЛОС/);
- // An admitted B+ plan can prove a fresh local reaction.
- const approvedReaction=(side=1)=>{
-   const row=reset(side);Object.assign(row,{score:60,grade:'B+',timeframe:'15m',score_source:'ZONE_HEURISTIC',score_model:'ZONE_5_FACTOR_V2',
-     tactic:'REACTION_M5',status:'CANDIDATE',entry_source:'ENGINE_PLAN',plan_basis:'ENGINE_GEOMETRY',rr1:2,rr2:3,display_eligible:true});
-   run('state.cockpit_schema=4;state.plan_pool=state.candidates;');return row;
- };
- approvedReaction();feed(100);assert.match(text('radar'),/клас B\+/);assert.match(text('zones'),/100.50.*2.00R.*До входу/);
- feed(99.73);feed(99.70);feed(99.77);assert.equal(stage(),'READY');assert.equal(run('state.orders.length'),0);
- // Ordinary deep penetration is not a terminal invalidation until the actual SL is breached.
- approvedReaction();feed(100);feed(99.68);assert.equal(stage(),'TOUCHED');feed(99.77);assert.equal(stage(),'READY');
- // SL invalidation immediately selects the next resistance from the existing cached pool.
- const first=approvedReaction(-1);const second={...first,id:'higher-resistance',entry:101.3,low:101.25,high:101.35,stop:101.7,tp1:99.98,tp2:99.82};
- ctx.second=second;run('state.plan_pool.push(second);state.zones.push(second);');
- feed(100);assert.equal(run('radarRows()[1].id'),first.id);
- feed(100.71);assert.equal(run('radarRows()[1].id'),'higher-resistance');
- assert.match(text('radar'),/101.30/);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&Math.abs(l.price-101.7)<.0001));
- assert.match(text('zones'),/SL пробито/);
- // The same invalidated zone cannot reappear simply because the quote returns below it.
- feed(100.67);assert.equal(run('radarRows()[1].id'),'higher-resistance');
- // A weak or blocked plan remains in the table and cannot add chart lines.
- const weak=approvedReaction();weak.score=40;weak.grade='C';weak.tactic='OBSERVE';weak.reaction_eligible=false;
- feed(100);feed(99.73);feed(99.70);feed(99.77);assert.notEqual(stage(),'READY');assert.doesNotMatch(text('radar'),/40\/100/);assert.match(text('zones'),/Спостереження/);assert.doesNotMatch(text('zones'),/40\/100/);
- assert.equal(priceLines.length,0);
- // With no pending order, repeated renders never toggle the near-limit class by passing undefined.
- approvedReaction();feed(100);for(let i=0;i<5;i++)run('render()');assert.equal(nodes.get('state-banner').classList.contains('near'),false);
- run('state.orders=[{...orderFixture,side:-1,entry:null}]');run('render()');
- assert.equal(nodes.get('state-banner').classList.contains('near'),false);assert.doesNotMatch(text('alert'),/Дотик ціни до входу/);
- // Null, blank, boolean and zero API fields do not become valid quote numbers.
- reset();for(const value of [null,'',false,'0','   ']){ctx.badQuote={instId:'BZ-USDT-SWAP',last:value,ts:String(clock.value)};assert.equal(run('acceptTicker(badQuote)'),false);}
- // The main plan's exact Entry, SL and TP1 are drawn even while Entry is near the live quote.
- approvedReaction();feed(99.82);assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')&&l.axisLabelVisible));
- assert.ok(priceLines.some(l=>l.title.includes('ТЕЙК-ПРОФІТ 1')&&l.axisLabelVisible));
- assert.ok(priceLines.some(l=>Math.abs(l.price-99.7)<.0001&&l.axisLabelVisible));
- // A high-score plan with a valid shape but no admission must remain hidden.
- approvedReaction();run('state.plan_pool[0].actionable=false;render();');
- assert.equal(priceLines.length,0);assert.doesNotMatch(text('state-detail'),/Робоча зона/);
- assert.equal(run('radarRows().filter(Boolean).length'),0);
- // Ordinary volume earns no points but does not veto an admitted plan.
- approvedReaction();run('state.plan_pool[0].formation_volume={confirmed:false};render();');
- assert.ok(priceLines.length);assert.equal(run('radarRows().filter(Boolean).length'),1);
- // Once TP1 has traded, bouncing back does not resurrect the same plan.
- feed(100.5);assert.equal(priceLines.length,0);
- assert.match(text('zones'),/Ціль пройдена/);
- feed(100);assert.equal(run('radarRows().filter(Boolean).length'),0);
- // Context bands have no entry/stop/target lines.
- run('state.context_bands=[{id:"context",side:1,kind:"DEMAND_OB",timeframe:"1H",low:99.4,high:99.5}];render();');
- assert.equal(run('visibleZones().length'),1);assert.equal(priceLines.length,0);
- // Blocked and distant reference rows stay out of the headline and chart.
- const blocked=reset(1,{actionable:false,score:59,grade:'C',risk:.4,rr1:2,rr2:3,
-   gate_reason:'BLOCKED_BY_TREND'});
- const reserve={...blocked,id:'reserve',kind:'DEMAND_OB',entry:98.7,low:98.6,high:98.8,
-   stop:98.3,tp1:100.2,tp2:100.9,gate_reason:'DISTANT_ZONE'};
- ctx.refRows=[blocked,reserve];
- run('state.cockpit_schema=5;state.plan_pool=refRows;state.zones=refRows;render();');
- assert.match(text('state-title'),/ОЧІКУЄМО УГОДУ/);
- assert.doesNotMatch(text('state-title'),/99.70|98.70/);
- assert.match(text('radar'),/Далекий резерв @ 98.70/);
- assert.equal(priceLines.length,0);assert.equal(run('reactionRows().length'),0);
- // Only a server-admitted reversal may oppose the displayed trend.
- approvedReaction(-1);
- run('state.primary_bias=1;state.plan_pool[0].kind="SWEEP_REVERSAL";render();');
- assert.equal(priceLines.length,0);
- run('state.plan_pool[0].reversal_override=true;render();');
- assert.ok(priceLines.length);
-
- // A newly opened tab already inside the zone still waits for a closed M5.
- const boundary=Math.floor(clock.value/300000)*300000+300000;
- clock.value=boundary+2000;
- reset(1,{entry_condition:'IN_ZONE_M5_RECLAIM',known_ts:boundary-900000},true);
- run('state.cockpit_schema=5;state.plan_pool=state.candidates;');
- feed(99.74,1000);assert.equal(stage(),'TOUCHED');
- const row=(ts,open,high,low,close,confirmed)=>[ts,open,high,low,close,100,0,0,confirmed?'1':'0'].map(String);
- const previous=row(boundary-600000,99.82,99.87,99.70,99.74,true);
- const last=row(boundary-300000,99.72,99.80,99.62,99.77,false);
- ctx.fetch=async()=>({ok:true,json:async()=>({code:'0',data:[last,previous]})});
- await run('pollM5()');assert.notEqual(stage(),'READY');
- last[8]='1';await run('pollM5()');assert.equal(stage(),'READY');
- assert.match(text('alert'),/Відбій із тінню M5/);
- assert.equal(run('state.orders.length'),0);
- const observed=run('m5Proofs.size');await run('pollM5()');assert.equal(run('m5Proofs.size'),observed);
- feed(99.95,1000);assert.notEqual(stage(),'READY');
- // The organic plan uses gross targets and the same risk window for a live recheck.
- const oil = reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.81, tp2:102.43,
-   organic_risk:{model:'ORGANIC_OIL_V32',atr_1h:.8,adr_d1:3.1,adr_days:14,
-     session_multiplier:1.2,macro_anchor:{timeframe:'1H',level:98.4}}});
- run('state.cockpit_schema=5;state.organic_risk_profile={model:"ORGANIC_OIL_V32"};state.plan_pool=state.candidates;');
- feed(100);
- assert.ok(priceLines.some(l=>l.title.includes('СТОП-ЛОС')));
- assert.match(text('radar'),/Органічний стоп 98.20/);
- assert.doesNotMatch(text('radar'),/ADR|множник сесії/);
- assert.match(text('radar'),/1.41R.*1.82R/);
- assert.ok(run('m5QuotePlan(state.plan_pool[0],99.7)'));
- assert.equal(run('m5QuotePlan(state.plan_pool[0],99.76)'),null);
- oil.tp1=101.22;run('render()');assert.equal(priceLines.length,0);
- // A scored trend pre-limit stays visible beyond the old distance and skips the M5 watch.
- reset(1, {entry:99.7, stop:98.2, risk:1.5, tp1:101.81, tp2:102.43, kind:'BREAKER_BLOCK',
-   trend_rel:'WITH_TREND', score:52, min_score:52, entry_max_distance:1.994, limit_ready:true,
-   organic_risk:{model:'ORGANIC_OIL_V32',atr_1h:.8,adr_d1:3.1,adr_days:14}});
- run('state.cockpit_schema=5;state.plan_pool=state.candidates;state.candidate_rules={max_distance:.65};');
- feed(100.9);
- assert.match(text('radar'),/Рівень допущено до лімітки/);
- run('state.orders=[{...state.plan_pool[0],number:201,status:"PENDING",type:"LIMIT",expires_ts:Date.now()+3600000}];state.plan_pool=[];render();');
- assert.match(text('orders'),/201.*99.70/);
- assert.equal(run('reactionRows().length'),0);
- assert.equal(run('chartOrders().length'),1);
- run('state.entry_scenarios={pullback:{side:1,entry:100,stop:99,tp1:101,tp2:101.9,low:99.95,high:100.1,actionable:true,qualification_tp1:101.45},breakout:{side:1,entry:100.43,edge:100.4,base_confirmed:true}};render();');
- feed(100.06,1000);
- assert.match(text('entry-scenarios'),/Ціна в зоні/);
- feed(100.45,1000);
- assert.match(text('entry-scenarios'),/Рівень пробито.*чекаємо закриття М15/);
- feed(98.98,1000);
- assert.match(text('entry-scenarios'),/Рівень стопа пройдено/);
- assert.equal(run('state.orders.length'),1);
-
- // #208 is suppressed from the chart and scanner while the ledger reconciles.
- reset(-1,{entry:90.94,low:90.97,high:91.15,stop:91.59,tp1:89.99,tp2:89.7});
- run(`state.cockpit_schema=5;
-      state.orders=[{...orderFixture,id:"order-208",number:208,side:-1,entry:91.49,stop:92.47,
-        tp1:90.51,tp2:89.62,risk:.98,entry_max_distance:2.2,missed_target_level:90.706,
-        target_cancel_armed:true,expires_ts:Date.now()+3600000}];
-      state.scanner_top=[{...state.candidates[0],id:"old-zone",order_id:"order-208",entry:91.49},
-        state.candidates[0]];`);
- feed(90.78,1000);
- assert.ok(priceLines.some(l=>l.title.includes('#208')));
- assert.match(text('zones'),/Лімітка/);
- feed(90.70,1000);
- assert.doesNotMatch(text('state-pill'),/ВИСТАВЛЕНА/);
- assert.match(text('state-title'),/ЗВІРКИ ЛІМІТКИ/);
- assert.ok(priceLines.every(l=>!l.title.includes('#208')));
- assert.doesNotMatch(text('zones'),/91.49/);
- assert.match(text('zones'),/90.94/);
- run('state.orders=[];render();');
- assert.doesNotMatch(text('state-title'),/ЗВІРКИ ЛІМІТКИ/);
- assert.match(text('zones'),/90.94/);
-
- // v14.1 uses a dedicated paper state and executable bid/ask.
- clock.value = Date.parse('2026-11-16T17:01:00Z');
- run(`state={...fixtureBackup, snapshot_ts:Date.now(), ledger_ts:Date.now(),
-   brain_config:{schema:1,missed_target_r:.75,browser_replace_atr:1,market_band_atr:.65,
-     market_min_rr:1.40,risk_floor:.65,risk_cap:1.15,ttl_ms:5400000}, orders:[{
-       ...orderFixture,id:'paper-208',number:208,status:'PENDING',side:-1,
-       entry:91.49,stop:92.47,risk:.98,tp1:90.51,tp2:89.62,placed_ts:Date.now()-60000,
-       effective_ts:Date.now()-60000,expires_ts:Date.now()+5400000,scale_policy:'SCALE_OUT_1R'
-   }]}; position.clear();syncBrain(state,true);
-   brain.matrix={side:-1,atr:.4,ema9:91,ema20:91.4,ema50:91.8,vwap:91.9};
-   brain.computed=Date.now(); quote={price:91.50,bid:91.49,ask:91.51,ts:Date.now()+1};
-   advanceBrain(quote,brain.matrix,[]); render();`);
- assert.match(text('state-title'),/ВХІД ВИКОНАНО · ENTERED/);
+ run(`state={...fixtureBackup,brain_config:{schema:1,missed_target_r:.75,browser_replace_atr:1,
+   market_band_atr:.65,market_min_rr:1.35,limit_min_rr:1.40,risk_floor:.65,risk_cap:1.15,ttl_ms:5400000},
+   orders:[{...orderFixture}],execution_audit:{closed_through_ts:Date.now()},
+   dealing_range:{low:99.1,high:100.8}};syncBrain(state,true);
+   quote={price:99.65,bid:99.64,ask:99.66,ts:Date.now()+1000};advanceBrain(quote,null,[]);render();`);
+ assert.equal(run('displayOrders()[0].status'),'OPEN');
  assert.equal(run('state.orders[0].status'),'PENDING');
+ assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*PnL/);
+ assert.match(text('radar-primary'),/В УГОДІ/);
+ const key=run('brainStorageKey(state.instrument)');
+ const persisted=JSON.parse(storage.get(key));
+ assert.equal(persisted.event.orderId,'limit-1');
+ assert.equal(persisted.event.candleTs,Math.floor((now+1000)/60000)*60000);
+ clock.value+=3000;
+ run(`Object.assign(brain,{sourceTs:0,orders:[],event:null});syncBrain(state,true);
+   quote={price:99.77,bid:99.76,ask:99.78,ts:Date.now()+1000};advanceBrain(quote,null,[]);render();`);
  assert.equal(run('displayOrders()[0].status'),'OPEN');
- run(`quote={price:90.49,bid:90.48,ask:90.50,ts:Date.now()+2};
-   advanceBrain(quote,brain.matrix,[]); render();`);
- assert.equal(run('displayOrders()[0].remaining'),.5);
- assert.ok(Math.abs(run('displayOrders()[0].stop')-91.34)<1e-8);
- assert.match(text('state-status'),/Live Brain · 3s Sync/);
- assert.ok(priceLines.some(l=>Math.abs(l.price-91.34)<1e-8 && l.title.includes('ЗАХИЩЕНИЙ')));
- // A server refresh within the same open minute cannot erase the observed partial.
- run('state={...state,snapshot_ts:Date.now()+3,ledger_ts:Date.now()+3};syncBrain(state,false);render();');
- assert.equal(run('displayOrders()[0].remaining'),.5);
- run(`const replacement={id:'new-paper-market',order_type:'MARKET',market_now:true,side:-1,entry:90.75,
-    reference:90.85,stop:91.40,risk:.65,tp1:89.58,tp2:89.45,actionable:true,known_ts:Date.now()};
-   state={...state,snapshot_ts:Date.now()+10,orders:[{...state.orders[0],id:'paper-replace'}]};
-   syncBrain(state,true); brain.matrix={side:-1,atr:.4,ema9:91,ema20:91.4,ema50:91.8,vwap:91.9};
-   quote={price:90.75,bid:90.75,ask:90.76,ts:Date.now()+11};
-   advanceBrain(quote,brain.matrix,[replacement]); render();`);
- assert.equal(run('displayOrders()[0].id'),'new-paper-market');
- assert.equal(run('displayOrders()[0].entry'),90.75);
- assert.equal(run('displayOrders()[0].status'),'OPEN');
- assert.match(text('state-title'),/MARKET SHORT/);
+ assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*\+0.27R/);
+ assert.equal(priceLines.length,4);
+ run('state={...state,snapshot_ts:Date.now()+5000,orders:[{...state.orders[0],status:"OPEN",filled_ts:Date.now()+1000}]};syncBrain(state,false);render();');
+ assert.equal(run('displayOrders()[0].local'),undefined);
+ assert.equal(storage.has(key),false);
 
- // A 3s recomputation builds indicators and a MARKET setup from closed M15 data.
- clock.value=Date.parse('2026-11-16T17:10:00Z');
- run(`state={...state,orders:[],snapshot_ts:Date.now(),ledger_ts:Date.now()};syncBrain(state,true);
-   const end=Math.floor(Date.now()/900000)*900000;
-   const history15=Array.from({length:120},(_,i)=>{
-     const c=i<106?90.65:90.95+(i-106)*.021;
-     return {ts:end-(120-i)*900000,open:c-.04,close:c,low:c-.11,high:c+.095,volume:100};
-   });
-   history15[94].high=92.50;
-   Object.assign(history15[119],{open:91.16,low:91.14,high:91.53,close:91.44});
-   brain.series['15m']=history15;
-   quote={price:91.42,bid:91.41,ask:91.43,ts:Date.now()+1};
-   recalculateBrain(quote);render();`);
- assert.ok(run('brain.matrix.ema9>brain.matrix.ema20'));
- assert.ok(run('brain.matrix.vwap>0 && brain.matrix.atr>0'));
- assert.ok(run('brain.rows.some(z=>z.market_now && z.entry===quote.ask && z.rr1>=1.4)'));
- assert.match(text('state-title'),/MARKET LONG/);
- console.log('PASS: offline UI lifecycle, actionable radar, chart cleanup and live entry scenarios.');
+ clock.value+=7000;
+ run(`state={...state,snapshot_ts:Date.now()+1000,orders:[],candidates:[],primary_bias:0};
+   syncBrain(state,true);
+   quote={price:89.54,bid:89.53,ask:89.55,ts:Date.now()+1500};
+   const marketFixture={id:'fresh-market',actionable:true,market_now:true,order_type:'MARKET',
+     side:-1,entry:89.53,stop:90.18,tp1:88.55,tp2:88.1,risk:.65,score:70};
+   const lowReward={...marketFixture,id:'low-reward',tp1:89.48};
+   advanceBrain(quote,null,[lowReward,marketFixture]);render();`);
+ assert.equal(run('displayOrders()[0].id'),'fresh-market');
+ clock.value+=3000;
+ run('quote={price:88.85,bid:88.84,ask:88.86,ts:Date.now()+1500};advanceBrain(quote,null,[]);render();');
+ assert.equal(run('displayOrders()[0].remaining'),.5);
+ assert.equal(run('displayOrders()[0].stop'),89.43);
+ assert.ok(priceLines.some(line=>line.price===89.43 && line.title.includes('ЗАХИЩЕНИЙ SL')));
+
+ const copy=document.querySelectorAll('[data-focus]').find(n=>n.dataset.copyLabel==='Entry');
+ await nodes.get('radar-primary').listeners.click({target:copy});
+ assert.equal(clipboard,'89.53');
+
+ clock.value+=4000;
+ run(`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));
+   state={...state,snapshot_ts:Date.now(),orders:[],candidates:[]};syncBrain(state,true);
+   const newLimit={id:'fresh-limit',order_type:'LIMIT',actionable:true,side:1,
+     entry:89.40,stop:88.75,tp1:90.35,tp2:90.82,risk:.65,score:72};
+   quote={price:89.54,bid:89.53,ask:89.55,ts:Date.now()+1500};
+   advanceBrain(quote,null,[newLimit]);render();`);
+ assert.equal(run('displayOrders()[0].status'),'PENDING');
+ assert.equal(run('displayOrders()[0].entry'),89.40);
+ assert.match(text('state-title'),/ЛІМІТ ВИСТАВЛЕНО LONG @ 89.40/);
+ assert.equal( nodes.get('state-banner').dataset.mode,'PENDING');
+ run(`state={...state,candidates:Array.from({length:4},(_,i)=>({...newLimit,id:'reserve-'+i,
+   entry:89.28-i*.04,stop:88.63-i*.04,tp1:90.235-i*.04,tp2:90.8-i*.04}))};render();`);
+ assert.equal(nodes.get('zones').children.length,3);
+ console.log('PASS: tactical radar, structural entry, R:R, browser reload, MARKET entry and protected stop.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

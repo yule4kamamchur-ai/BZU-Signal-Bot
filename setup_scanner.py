@@ -89,19 +89,17 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
         if not oil_risk.target_range_valid(rr1,rr2):
             return 'ORGANIC_TARGET_RANGE'
-    elif side*(tp1-entry)/risk < min_rr-1e-8:
+    if side*(tp1-entry)/risk < min_rr-1e-8:
         return 'RR_BELOW_1_35'
     if market_plan(row):
         trigger = row['market_trigger']
         proximal = high if side == 1 else low
-        if trigger.get('pattern')=='TREND_CONTINUATION_MARKET' and side*(tp1-entry)<1.40*risk-1e-8:
-            return 'TREND_MARKET_RR_BELOW_1_40'
         if trigger.get('sniper_pullback'):
             distal = low if side==1 else high
             if (side*(entry-distal)<-1e-8 or
                     side*(entry-trigger['limit_entry'])>trigger['max_distance']+1e-8):
                 return 'MARKET_CHASE_LIMIT'
-        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'):
+        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL'):
             if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -240,7 +238,31 @@ def pullback_quote_allowed(side, level, distal, quote, atr):
 
 
 MARKET_IMPULSE_BAND_ATR = .65
-MARKET_IMPULSE_MIN_RR = 1.40
+MARKET_IMPULSE_MIN_RR = 1.35
+MARKET_TOUCH_ATR = .20
+LIMIT_NEW_MIN_RR = 1.40
+LIMIT_CANCEL_MIN_RR = 1.15
+
+
+def touch_only_market_zone(zone):
+    kind = zone.get('kind','')
+    return kind in ('SR_FLIP_RECLAIM','RECLAIM_BREAKER','TURTLE_SOUP',wave.FAILED_TRAP,wave.EMA9_SURF) or any(
+        token in kind for token in ('FVG','_OB','ORDER_BLOCK'))
+
+
+def instant_touch_trigger(snapshot, side, zone, entry, risk, a15, tick):
+    quote = snapshot.ask if side == 1 else snapshot.bid
+    width = MARKET_TOUCH_ATR * a15
+    known = zone.get('known_ts')
+    if (side not in (-1, 1) or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask
+            or known is None or not known <= snapshot.ticker_ts <= snapshot.now
+            or snapshot.now-snapshot.ticker_ts > 120_000
+            or width <= 0 or abs(quote-entry) > width+1e-8
+            or risk <= 0 or (snapshot.ask-snapshot.bid) > max(2*tick,.15*a15)+1e-8):
+        return None
+    return {'pattern':'INSTANT_TOUCH_MARKET_FILL', 'known_ts':snapshot.ticker_ts,
+            'limit_entry':entry, 'initial_risk':risk, 'max_distance':width}
+
 
 
 def impulse_market_entry(side, quote, reference, atr15, tick):
@@ -251,7 +273,7 @@ def impulse_market_entry(side, quote, reference, atr15, tick):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -268,7 +290,8 @@ def entry_window(side, price, entry, atr15, cfg, *, minimum=True, trend=False):
     distance = side * (price - entry)
     if abs(distance) > (TREND_LIMIT_MAX if trend else max_zone_distance(atr15, cfg)) + 1e-8:
         return 'DISTANT_ZONE'
-    if minimum and distance < (TREND_LIMIT_MIN if trend else .10) - 1e-8:
+    floor = MARKET_TOUCH_ATR*atr15 if oil_risk.enabled(cfg) else TREND_LIMIT_MIN if trend else .10
+    if minimum and distance < floor - 1e-8:
         return 'ZONE_NOT_AHEAD_OF_PRICE' if distance <= 0 else 'ENTRY_TOO_CLOSE'
     return None
 

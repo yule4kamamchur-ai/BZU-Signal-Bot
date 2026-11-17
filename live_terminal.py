@@ -102,7 +102,8 @@ def build(state, snapshot, result, cfg, engine):
     mode = {'BULLISH_TREND':'BULLISH_ACTIVE', 'BEARISH_TREND':'BEARISH_ACTIVE',
             'RANGE_LIQUIDITY_ROTATION':'RANGE'}.get(regime.get('state'), regime.get('state', 'UNKNOWN'))
     zones, context_keys = {}, set()
-    admitted_geometry = {p['id']: p for p in analysis.get('admitted_plans', [])}
+    radar_plans = analysis.get('radar_plans', [])
+    admitted_geometry = {p['id']: p for p in [*radar_plans, *analysis.get('admitted_plans', [])]}
     rejected = []
     atr15 = engine.atr([c for c in snapshot.candles.get('15m', [])
                        if c.confirmed and c.ts + 900_000 <= snapshot.now])
@@ -113,7 +114,7 @@ def build(state, snapshot, result, cfg, engine):
                       max(.65, 1.2 * atr15))
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
     admitted = analysis.get('admitted_plans', [])
-    admitted_rows = {id(plan) for plan in admitted}
+    admitted_rows = {id(plan) for plan in [*radar_plans, *admitted]}
 
     def reject(row, reason):
         rejected.append({'kind':(row.get('entry_zone') or row).get('kind'),
@@ -173,7 +174,7 @@ def build(state, snapshot, result, cfg, engine):
     # Low-detail paths first; real planner proposals take precedence. Never export internals.
     sources = [*analysis.get('watch', state.get('watch', [])),
                *analysis.get('setup_matrix', state.get('setup_matrix', [])),
-               *analysis.get('poi_paths', []), *analysis.get('candidate_plans', []), *admitted, *plans]
+               *analysis.get('poi_paths', []), *analysis.get('candidate_plans', []), *radar_plans, *admitted, *plans]
     for row in sources:
         side, reason = row.get('side'), row.get('reason', (row.get('quality') or {}).get('reason'))
         if side not in (-1, 1) or reason in RETIRED:
@@ -295,7 +296,8 @@ def build(state, snapshot, result, cfg, engine):
         elif not z['execution_admitted'] or calc['plan_basis'] != 'ENGINE_GEOMETRY':
             gate = gate or 'NOT_IN_FINAL_REACTION_PLANS'
         elif engine.scanner.candidate_plan_error({**z, 'score_source': 'CONTEXT'},
-                                                min_score=z['min_score'], min_rr=1.40):
+                                                min_score=max(60,z['min_score']),
+                                                min_rr=engine.scanner.MARKET_IMPULSE_MIN_RR if engine.scanner.market_plan(z) else engine.scanner.LIMIT_NEW_MIN_RR):
             gate = gate or 'INVALID_PLAN_GEOMETRY'
         actionable = gate is None and order is None
         z.update(gate_reason=gate, status='CANDIDATE' if actionable else 'REFERENCE',
@@ -406,7 +408,7 @@ def build(state, snapshot, result, cfg, engine):
     if healthy and oil_risk.enabled(cfg):
         focus = analysis.get('scenario_plan') or engine.scenario_planner.focus(
             snapshot,cfg,engine,regime,orders=plans,admitted=admitted,action=result.get('action'))
-    ranked_zones = sorted((z for z in all_zones if z.get('status') != 'CANCELLING'
+    ranked_zones = sorted((z for z in all_zones if (z['actionable'] or z.get('order_id')) and z.get('status') != 'CANCELLING'
                           and by_order.get(z.get('order_id'), {}).get('status') != 'CANCELLING'),
                          key=lambda z:(not bool(z.get('order_id')),
         not z['actionable'], z['side']!=primary_side if primary_side else False,
@@ -442,10 +444,12 @@ def build(state, snapshot, result, cfg, engine):
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
             'execution':'SIGNAL_LEDGER','execution_audit':state.get('execution_audit'),
             'daily':engine.day_stats(state,snapshot.now,cfg),
+            'dealing_range':engine.scenario_planner.build(snapshot,cfg,engine)['range'] if healthy and profile else None,
             'brain_config':{
                 'schema':1, 'missed_target_r':engine.bzu_policy.MISSED_TARGET_R,
                 'browser_replace_atr':1., 'market_band_atr':engine.scanner.MARKET_IMPULSE_BAND_ATR,
-                'market_min_rr':engine.scanner.MARKET_IMPULSE_MIN_RR, 'risk_floor':oil_risk.STOP_FLOOR,
+                'market_min_rr':engine.scanner.MARKET_IMPULSE_MIN_RR,
+                'limit_min_rr':engine.scanner.LIMIT_NEW_MIN_RR, 'market_touch_atr':engine.scanner.MARKET_TOUCH_ATR, 'risk_floor':oil_risk.STOP_FLOOR,
                 'risk_cap':oil_risk.STOP_CAP, 'ttl_ms':engine.bzu_policy.PENDING_LIMIT_TTL_MS,
                 'worker_interval_ms':int(os.getenv('BZU_WORKER_INTERVAL_MS','0')),
                 'uncertain':sum(bool(view.get('reconciliation')) for _,view in engine.slot_views(state)),

@@ -68,10 +68,10 @@ class RealTimeRelease(TestCase):
                      market_wave.BASE,'SR_FLIP_RECLAIM','RECLAIM_BREAKER'):
             self.assertTrue(adverse.trend_supports_wide({'kind':kind}))
 
-    def test_market_requires_rr_140_from_final_quote(self):
+    def test_market_requires_rr_135_from_final_quote(self):
         snap,cfg = base_fixture()
         anchor = type('Anchor',(),{'side':'LONG'})()
-        for reward,expected in ((1.39,'TREND_MARKET_RR_BELOW_1_40'),(1.40,'ACCEPTED')):
+        for reward,expected in ((1.34,'BLOCKED_LOW_RR_135'),(1.35,'ACCEPTED')):
             with self.subTest(reward=reward), patch.object(engine.oil_risk,'structural_room',return_value=(None,None)), \
                  patch.object(scanner,'target_crossed',return_value=False):
                 geometry = dict(tp1=100.+reward,tp2=102.,path_clear=True,structural_tp1=True,structural_tp2=True)

@@ -138,6 +138,28 @@ def range_retest(snapshot, zone, side, tick, entry):
                 and abs(zone.get('reference',entry)-bound)<=2*tick and side*(entry-bound)>=-tick)
 
 
+def market_range_error(snapshot, cfg, engine, side, quote, zone, regime):
+    if regime.get('state') not in ('SIDEWAYS','RANGE','RANGE_LIQUIDITY_ROTATION'):
+        return None
+    rng = build(snapshot,cfg,engine)['range']
+    if not rng:
+        return 'DEALING_RANGE_UNAVAILABLE'
+    low, high = rng['low'], rng['high']
+    if not low < high or not .30 <= (quote-low)/(high-low) <= .70:
+        return None
+    from market_wave import BASE, BOS_IMPULSE
+    proof = zone.get('wave_proof') or {}
+    known = proof.get('break_ts') or zone.get('known_ts',0)
+    rows = closed(snapshot.candles.get('15m', []),M15,snapshot.now)
+    prior = dealing_range([b for b in rows if b.ts+M15 < known],known-1) if known else None
+    if prior and zone.get('kind') in (BASE,BOS_IMPULSE):
+        edge = prior['high'] if side == 1 else prior['low']
+        bar = next((b for b in rows if b.ts+M15 == known),None)
+        if bar and side*(bar.close-edge) >= cfg.tick and side*(quote-edge) >= cfg.tick:
+            return None
+    return 'MARKET_BLOCKED_RANGE_MIDDLE'
+
+
 def entry_error(snapshot, cfg, engine, side, entry, zone, *, trend, regime=None):
     from oil_risk import enabled
 
