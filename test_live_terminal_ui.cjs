@@ -25,7 +25,7 @@ const document={hidden:false,activeElement:null,body:new Node('body'),getElement
     const dataKey=key.replace(/-([a-z])/g,(_,x)=>x.toUpperCase());
     const all=[],visit=n=>{if(n.dataset[dataKey]!==undefined)all.push(n);n.children.forEach(visit);};nodes.forEach(visit);return all;
   }};
-const priceLines=[], chartCalls={data:[],text:[]};let clipboard='';
+const chartCalls={data:[],text:[]};let clipboard='';
 const clock={value:Date.parse('2026-11-17T08:01:00Z')};
 class TestDate extends Date {static now(){return clock.value;}}
 const storage=new Map();
@@ -34,7 +34,6 @@ const ctx={localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>stor
   Intl,URLSearchParams,AbortSignal,Date:TestDate,console,setInterval(){},clearInterval(){},WebSocket:function(){},
   fetch:async()=>({ok:false,status:503,json:async()=>({})})};
 const series={setData(data){chartCalls.data=data;},update(){},applyOptions(){},priceToCoordinate:p=>400-(p-98)*100,
-  createPriceLine(options){priceLines.push(options);return options;},removePriceLine(line){priceLines.splice(priceLines.indexOf(line),1);},
   attachPrimitive(primitive){primitive.attached({requestUpdate(){}});chartCalls.primitive=primitive;}};
 ctx.window.LightweightCharts={CandlestickSeries:{},LineStyle:{Dashed:2,Solid:0},createChart(){return {addSeries:()=>series,
   timeScale:()=>({fitContent(){},timeToCoordinate:t=>200+(t-clock.value/1000)/30}),priceScale:()=>({applyOptions(){}})};}};
@@ -42,6 +41,7 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('live_terminal.js','utf8')
 const run=source=>vm.runInContext(source,ctx),text=id=>nodes.get(id).textContent;
 const find=(node,name)=>node.classList.contains(name)?node:node.children.map(child=>find(child,name)).find(Boolean);
 const radar=nodes.get('radar-primary'), banner=nodes.get('state-banner');
+const axisViews=()=>chartCalls.primitive.priceAxisViews();
 const tone=()=>['radar-primary','state-banner','tactical-focus'].map(id=>nodes.get(id).dataset.pnlTone);
 const now=clock.value;
 const zone=(id,side,low,high,entry)=>({id,kind:side===1?'MOMENTUM_STAIRCASE_15M':'FVG_BEAR',timeframe:'15m',side,low,high,entry,
@@ -79,7 +79,7 @@ ctx.fixtureBackup=cleanFixture;
  assert.deepEqual(tone(),['neutral','neutral','neutral']);
  assert.match(text('zones'),/89.71.*90.36.*88.73.*Чекаємо підходу/);
  assert.doesNotMatch(text('state-title')+text('radar-primary')+text('zones'),/89\.48|89\.64|89\.67|0\.09R/);
- assert.equal(priceLines.length,0);
+ assert.equal(axisViews().length,0);
  assert.equal(run('positionBox(tacticalRadar().order)'),null);
  assert.equal(nodes.get('chart-legend').hidden,true);
  run('quote={price:89.59,ts:Date.now()};render();');
@@ -105,8 +105,11 @@ ctx.fixtureBackup=cleanFixture;
    quote={price:99.77,bid:99.76,ask:99.78,ts:Date.now()+1000};advanceBrain(quote,null,[]);render();`);
  assert.equal(run('displayOrders()[0].status'),'OPEN');
  assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*\+0.27R/);
- assert.equal(priceLines.length,6);
- assert.ok(priceLines.every(l=>l.title==='' && l.lineVisible===false && l.axisLabelVisible));
+ assert.equal(axisViews().length,6);
+ assert.equal(axisViews()[0].text(),'99.66');
+ assert.equal(axisViews()[0].backColor(),'#303341');
+ assert.ok(axisViews().every(view=>view.visible()&&!view.tickVisible()));
+ assert.equal(find(radar,'target-r-badge').textContent,'+1.41R');
  assert.match(text('chart-levels'),/BSL @ 100\.82.*SSL @ 99\.16/);
  assert.deepEqual(tone(),['profit','profit','profit']);
  assert.match(find(radar,'pnl-badge').textContent,/\+0\.27R/);
@@ -118,6 +121,7 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(find(radar,'pnl-unit').textContent,'−0.11 $/од.');
  assert.match(find(radar,'rr-endpoints').textContent,/До SL · 0\.30 \$.*До TP1 · 0\.69 \$/);
  assert.equal(find(radar,'rr-progress-track').getAttribute('aria-valuenow'),'30');
+ assert.equal(Math.round(parseFloat(find(radar,'rr-progress-fill').style.clipPath.split(' ')[1])),70);
  assert.equal(Math.round(parseFloat(find(radar,'rr-entry-marker').style.left)),41);
  run('quote={price:99.66,ts:Date.now()};render();');
  assert.deepEqual(tone(),['profit','profit','profit']);
@@ -139,7 +143,7 @@ ctx.fixtureBackup=cleanFixture;
  run('quote={price:88.85,bid:88.84,ask:88.86,ts:Date.now()+1500};advanceBrain(quote,null,[]);render();');
  assert.equal(run('displayOrders()[0].remaining'),.5);
  assert.equal(run('displayOrders()[0].stop'),89.43);
- assert.ok(priceLines.some(line=>line.price===89.43 && line.axisLabelVisible));
+ assert.ok(axisViews().some(view=>view.text()==='89.43' && view.visible()));
  assert.match(text('chart-levels'),/ЗАХИЩЕНИЙ SL/);
  assert.match(find(radar,'scale-checkpoint').textContent,/✓ .*50.*Б\/У/);
  assert.match(find(radar,'rr-endpoints').textContent,/До SL · 0\.58 \$.*До TP2 · 0\.75 \$/);
@@ -175,32 +179,42 @@ ctx.fixtureBackup=cleanFixture;
      side:-1,risk:.65,placed_ts:Date.now()-15*60000,expires_ts:Date.now()+60000,
      zone:{kind:'SUPPLY_OB',timeframe:'15m',low:90.12,high:90.48,origin_ts:Date.now()-45*60000}};
    brain.orders=[marked];brain.sourceTs=state.snapshot_ts;render();`);
- const boxes=[], marks=[], labels=[], dashes=[], rayStarts=[], rayEnds=[];
- const context={save(){},restore(){},beginPath(){},arc(...args){marks.push(args);},stroke(){},fill(){},
+ const boxes=[], marks=[], labels=[], outlines=[], dashes=[], rayStarts=[], rayEnds=[], strokes=[];
+ const context={save(){},restore(){},beginPath(){},arc(...args){marks.push(args);},fill(){},
+   stroke(){strokes.push([this.strokeStyle,this.lineWidth]);},
+   strokeRect(){outlines.push([this.strokeStyle,this.lineWidth]);},
    fillRect(...args){boxes.push([this.fillStyle,...args]);},fillText(...args){labels.push(args);},
    measureText:text=>({width:text.length*6}),setLineDash:pattern=>dashes.push([...pattern]),
    moveTo:(...args)=>rayStarts.push(args),lineTo:(...args)=>rayEnds.push(args)};
- const target={useMediaCoordinateSpace(cb){cb({context,mediaSize:{width:800,height:1800}});}};
+ const target={
+   useMediaCoordinateSpace(cb){cb({context,mediaSize:{width:800,height:1800}});},
+   useBitmapCoordinateSpace(cb){cb({context,bitmapSize:{width:1600,height:3600},horizontalPixelRatio:2,verticalPixelRatio:2});},
+ };
  chartCalls.primitive.paneViews()[0].renderer().draw(target);
- const areas=boxes.filter(([color])=>color!=='rgba(11,16,24,.88)');
+ const areas=boxes.filter(([color])=>color!=='rgba(18,21,33,.88)');
  assert.equal(areas.length,3);
  assert.match(areas[0][0],/167,176,191/);
- assert.equal(areas[1][0],'rgba(244,102,125,.14)');
- assert.equal(areas[2][0],'rgba(47,202,179,.14)');
+ assert.equal(areas[1][0],'rgba(244,63,94,.08)');
+ assert.equal(areas[2][0],'rgba(16,185,129,.08)');
+ assert.deepEqual(outlines,[['rgba(244,63,94,.22)',1],['rgba(16,185,129,.22)',1]]);
  assert.ok(areas[0][1]<areas[1][1]);
  assert.equal(marks.length,1);
  assert.equal(labels.filter(([label])=>label.startsWith('POI')).length,1);
  assert.ok(labels.filter(([label])=>!label.startsWith('POI')).every(([label,x])=>label.length<=5 && x>=750));
- assert.ok(dashes.some(pattern=>pattern.join(',')==='8,3,2,3'));
- assert.deepEqual(rayStarts[0], [marks[0][0], rayEnds[0][1]]);
- assert.equal(rayEnds[0][0],800);
+ assert.ok(dashes.some(pattern=>pattern.join(',')==='2,14'));
+ assert.ok(dashes.some(pattern=>pattern.join(',')==='2,6'));
+ assert.ok(dashes.some(pattern=>pattern.join(',')==='8,8'));
+ assert.ok(strokes.some(([color])=>color==='rgba(148,163,184,0.38)'));
+ assert.ok(strokes.every(([,width])=>width===1));
+ assert.deepEqual(rayStarts[0], [Math.round(marks[0][0]*2), rayEnds[0][1]]);
+ assert.equal(rayEnds[0][0],1600);
  run('brain.orders=[];render();');
  boxes.length=0;marks.length=0;labels.length=0;
  chartCalls.primitive.paneViews()[0].renderer().draw(target);
  assert.equal(boxes.length,0);
  assert.equal(marks.length,0);
  assert.equal(labels.length,0);
- assert.equal(priceLines.length,0);
+ assert.equal(axisViews().length,0);
 
  run(`state={...state,recent_events:[
    {kind:'CANCELLED',ts:Date.now()},{kind:'PLACED',ts:Date.now()},{kind:'FILLED',ts:Date.now()}
@@ -249,7 +263,7 @@ ctx.fixtureBackup=cleanFixture;
  assert.ok(run('brain.rows.some(row=>row.kind==="DEMAND_OB" && !row.activation_ready)'));
  assert.match(text('zones'),/Зона попиту/);
  assert.match(text('state-status'),/Real-Time 3s Active/);
- assert.equal(priceLines.length,0);
+ assert.equal(axisViews().length,0);
  clock.value+=3000;ts=clock.value;last=90.11;ask=90.12;
  await run('refreshLiveBrain()');
  assert.equal(run('brain.orders[0].status'),'PENDING');

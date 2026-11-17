@@ -5,12 +5,21 @@ const OKX = 'https://www.okx.com/api/v5/market';
 const STATE_MAX_AGE = 27 * 60_000;
 const QUOTE_MAX_AGE = 15_000;
 const chartFrames = { '5m': 300, '15m': 900 };
+const CHART_LEVEL_STYLES = {
+  ENTRY: { rgb:'226,232,240', axisColor:'#303341', opacity:.48, dash:[1,7], labelColor:'#c4cbd9' },
+  SL:    { rgb:'244,63,94', axisColor:'#4a2938', opacity:.58, dash:[4,4], labelColor:'#f7a7b5' },
+  BE:    { rgb:'255,107,43', axisColor:'#4b312d', opacity:.55, dash:[4,4], labelColor:'#fcc294' },
+  TP1:   { rgb:'16,185,129', axisColor:'#204237', opacity:.58, dash:[4,4], labelColor:'#8be1bb' },
+  TP2:   { rgb:'45,212,191', axisColor:'#234145', opacity:.52, dash:[4,4], labelColor:'#8bded8' },
+  BSL:   { rgb:'148,163,184', axisColor:'#2b3041', opacity:.38, dash:[1,3], labelColor:'#aeb7c8' },
+  SSL:   { rgb:'148,163,184', axisColor:'#2b3041', opacity:.38, dash:[1,3], labelColor:'#aeb7c8' },
+};
 const time = new Intl.DateTimeFormat('uk-UA', {
   timeZone: 'Europe/Kyiv', hour: '2-digit', minute: '2-digit', second: '2-digit'
 });
 const position = new Map();
-let state, quote, chart, series, chartRequest = () => {}, priceLines = [], frame = '15m';
-let chartPosition, chartLevels = [], priceFlash;
+let state, quote, chart, series, chartRequest = () => {}, frame = '15m';
+let chartPosition, chartLevels = [], chartAxisViews = [], priceFlash;
 let history = [], currentBar, lastSampleTime = 0, audio, sound = false, feedError = false;
 let socket, socketAttempt = 0, socketPing;
 const reactions=new Map(), m5Proofs=new Map();
@@ -1019,7 +1028,7 @@ function drawPositionBox(target, box, levels) {
   target.useMediaCoordinateSpace(({context,mediaSize})=>{
     const {width,height}=mediaSize;
     const right=Math.min(width,Math.max(at+38,current+8));
-    const drawRect=(left,end,priceA,priceB,color,label)=>{
+    const drawRect=(left,end,priceA,priceB,color,label,outline)=>{
       const y1=series.priceToCoordinate(priceA), y2=series.priceToCoordinate(priceB);
       if (left===null || y1===null || y2===null) return;
       const x=Math.max(0,left), w=Math.min(width,end)-x;
@@ -1027,77 +1036,91 @@ function drawPositionBox(target, box, levels) {
       if (w<=0 || bottom<=top) return;
       context.fillStyle=color;
       context.fillRect(x,top,w,bottom-top);
-      if (label && bottom-top>=13 && w>27) {
+      if (outline && w>1 && bottom-top>1) {
+        context.lineWidth=1;
+        context.strokeStyle=outline;
+        context.strokeRect(x+.5,top+.5,w-1,bottom-top-1);
+      }
+      if (label && bottom-top>=13 && w>30) {
+        const text=context.measureText(label).width<=w-10 ? label : 'POI';
         context.fillStyle='#e1e8f1';
-        context.fillText(label,x+5,top+Math.min((bottom-top+8)/2,bottom-top-2),w-10);
+        context.fillText(text,x+5,top+Math.min((bottom-top+8)/2,bottom-top-2));
       }
     };
     context.save();
     context.font='11px system-ui';
     if (box.poi) drawRect(timeX(box.poi.start),Math.min(width,current+8),box.poi.low,box.poi.high,
       'rgba(167,176,191,.24)',box.poi.label);
-    if (box.riskR<0) drawRect(at,right,box.entry,box.stop,'rgba(244,102,125,.14)');
-    drawRect(at,right,box.entry,box.target,'rgba(47,202,179,.14)');
-    drawChartRays(context,levels,at,width,height);
+    if (box.riskR<0) drawRect(at,right,box.entry,box.stop,
+      'rgba(244,63,94,.08)',null,'rgba(244,63,94,.22)');
+    drawRect(at,right,box.entry,box.target,'rgba(16,185,129,.08)',null,'rgba(16,185,129,.22)');
     const y=series.priceToCoordinate(box.entry);
     if (at>=0&&at<width&&y!==null&&y>=0&&y<height) {
       context.beginPath();
-      context.arc(at,y,4,0,2*Math.PI);
+      context.arc(at,y,3,0,2*Math.PI);
       if (box.pending) {
-        context.strokeStyle='#88ffe3';
-        context.lineWidth=2;
+        context.strokeStyle='#c4cbd9';
+        context.lineWidth=1;
         context.stroke();
       } else {
-        context.fillStyle='#88ffe3';
+        context.fillStyle='#c4cbd9';
         context.fill();
       }
     }
     context.restore();
   });
+  drawChartRays(target,levels,at);
 }
 
-function drawChartRays(context, levels, origin, width, height) {
-  const left=Math.max(0,origin);
-  if (left>=width) return;
+function drawChartRays(target, levels, origin) {
   const visible=levels.map(level=>({...level,y:series.priceToCoordinate(level.price)}))
-    .filter(level=>number(level.y)&&level.y>=0&&level.y<=height).sort((a,b)=>a.y-b.y);
-  const flagHeight=14, gap=flagHeight+2;
-  const flags=width>=80 ? visible.slice(0,Math.floor(height/gap)) : [];
-  let previous=flagHeight/2-gap;
-  for (const [index,flag] of flags.entries()) {
-    const limit=height-flagHeight/2-(flags.length-index-1)*gap;
-    flag.center=Math.min(limit,Math.max(flag.y,previous+gap));
-    previous=flag.center;
-  }
-
-  context.lineWidth=1;
-  for (const level of visible) {
-    const y=Math.floor(level.y)+.5;
-    context.beginPath();
-    context.strokeStyle=level.color;
-    context.setLineDash(level.label==='ENTRY'||level.label==='LIMIT'?[8,3,2,3]:[3,4]);
-    context.moveTo(left,y);
-    context.lineTo(width,y);
-    context.stroke();
-  }
-  context.setLineDash([]);
-  context.textBaseline='middle';
-  context.font='600 10px system-ui';
-  for (const flag of flags) {
-    const flagWidth=context.measureText(flag.label).width+10;
-    const x=width-2-flagWidth;
-    if (Math.abs(flag.center-flag.y)>1) {
+    .filter(level=>number(level.y)).sort((a,b)=>a.y-b.y);
+  target.useBitmapCoordinateSpace(({context,bitmapSize,horizontalPixelRatio,verticalPixelRatio})=>{
+    const left=Math.max(0,Math.round(origin*horizontalPixelRatio));
+    if (left>=bitmapSize.width) return;
+    context.save();
+    context.lineWidth=1;
+    for (const level of visible) {
+      const y=Math.round(level.y*verticalPixelRatio)+.5;
+      if (y<0 || y>=bitmapSize.height) continue;
       context.beginPath();
-      context.strokeStyle=flag.color;
-      context.moveTo(x-7,flag.y);
-      context.lineTo(x,flag.center);
+      context.strokeStyle=level.color;
+      context.setLineDash(level.dash.map(length=>Math.max(1,Math.round(length*horizontalPixelRatio))));
+      context.moveTo(left,y);
+      context.lineTo(bitmapSize.width,y);
       context.stroke();
     }
-    context.fillStyle='rgba(11,16,24,.88)';
-    context.fillRect(x,flag.center-flagHeight/2,flagWidth,flagHeight);
-    context.fillStyle=flag.color;
-    context.fillText(flag.label,x+5,flag.center);
-  }
+    context.restore();
+  });
+  target.useMediaCoordinateSpace(({context,mediaSize:{width,height}})=>{
+    if (origin>=width || width<80) return;
+    const flagHeight=12, gap=flagHeight+2;
+    const flags=visible.filter(level=>level.y>=0&&level.y<height).slice(0,Math.floor(height/gap));
+    let previous=flagHeight/2-gap;
+    context.save();
+    context.lineWidth=1;
+    context.textBaseline='middle';
+    context.font='600 9px system-ui';
+    for (const [index,flag] of flags.entries()) {
+      const limit=height-flagHeight/2-(flags.length-index-1)*gap;
+      const center=Math.min(limit,Math.max(flag.y,previous+gap));
+      previous=center;
+      const flagWidth=Math.ceil(context.measureText(flag.label).width)+8;
+      const x=width-2-flagWidth;
+      if (Math.abs(center-flag.y)>1) {
+        context.beginPath();
+        context.strokeStyle=flag.color;
+        context.moveTo(x-6,flag.y);
+        context.lineTo(x,center);
+        context.stroke();
+      }
+      context.fillStyle='rgba(18,21,33,.88)';
+      context.fillRect(x,center-flagHeight/2,flagWidth,flagHeight);
+      context.fillStyle=flag.labelColor;
+      context.fillText(flag.label,x+4,center);
+    }
+    context.restore();
+  });
 }
 
 function displayedPrice() {
@@ -1187,6 +1210,9 @@ function renderPositionDistance(order, price) {
   track.setAttribute('aria-valuemin','0');
   track.setAttribute('aria-valuemax','100');
   track.setAttribute('aria-valuenow',String(Math.round(current)));
+  const fill=element('span',null,'rr-progress-fill');
+  fill.style.clipPath='inset(0 '+(100-current)+'% 0 0)';
+  track.append(fill);
   if (number(entry) && entryPercent>=0 && entryPercent<=100) {
     const marker=element('span',null,'rr-entry-marker');
     marker.title='Точка входу · '+format(entry);
@@ -1232,17 +1258,21 @@ function renderTacticalRadar(price, view, pnl, tone) {
   if (order) {
     const active=order.status==='OPEN';
     const kind=order.setup??order.kind;
-    const heading=element('div',null,'bar');
+    const heading=element('div',null,'bar radar-order-heading');
     heading.append(element('h3',(order.timeframe??order.zone?.timeframe??'')+' '+zoneName(kind)+' · '+sideLabel(order.side)),
       element('span',active?'В УГОДІ · '+(order.order_type??order.type??'LIMIT'):
         order.status==='CANCELLING'?'ЗВІРКА':'ЛІМІТНИЙ ОРДЕР','badge'));
     const metrics=element('dl',null,'tactical-metrics');
     for (const [key,label,value] of [['entry','Вхід',format(order.entry)],['stop','Стоп',format(order.stop)],
-      ['tp1','Тейк 1',format(order.tp1)+' · '+signed(order.side*(order.tp1-order.entry)/order.risk)+'R'],
+      ['tp1','Тейк 1',format(order.tp1)],
       ['tp2','Тейк 2',format(order.tp2)]]) {
       const metric=element('div');
       metric.dataset.level=key;
-      metric.append(element('dt',label),element('dd',value));
+      const reading=element('dd',value);
+      if (key==='tp1' && number(order.tp1) && number(order.risk) && order.risk>0) {
+        reading.append(element('span',signed(order.side*(order.tp1-order.entry)/order.risk,'R'),'target-r-badge'));
+      }
+      metric.append(element('dt',label),reading);
       metrics.append(metric);
     }
     primary.append(heading,metrics);
@@ -1419,15 +1449,15 @@ function initChart() {
   }
   chart = lib.createChart($('chart'), {
     autoSize: true,
-    layout: { background: { color: '#101925' }, textColor: '#92a1b5', fontSize: 10 },
-    rightPriceScale: { minimumWidth: 65, scaleMargins: {top:.13, bottom:.12} },
-    grid: { vertLines: { color: '#22324a' }, horzLines: { color: '#22324a' } },
+    layout: { background: { color: '#11131e' }, textColor: '#959db4', fontSize: 10 },
+    rightPriceScale: { minimumWidth: 53, scaleMargins: {top:.13, bottom:.12} },
+    grid: { vertLines: { color: '#1a1d2a' }, horzLines: { color: '#232635' } },
     timeScale: { timeVisible: true, secondsVisible: false, tickMarkFormatter: t => stamp(t * 1000).slice(0,5) },
     localization: { locale: 'uk-UA', timeFormatter: t => stamp(t * 1000) }
   });
   series = chart.addSeries(lib.CandlestickSeries, {
-    upColor: '#4bd2a5', downColor: '#f17785', borderVisible: false, priceLineVisible: false,
-    wickUpColor: '#4bd2a5', wickDownColor: '#f17785',
+    upColor: '#40c79e', downColor: '#f0788d', borderVisible: false, priceLineVisible: false,
+    wickUpColor: '#40c79e', wickDownColor: '#f0788d',
     autoscaleInfoProvider: original => {
       const info=original();
       if (!info || !state) return info;
@@ -1444,16 +1474,16 @@ function initChart() {
   });
   const paneView={renderer:()=>({draw:target=>drawPositionBox(target,chartPosition,chartLevels)}),zOrder:()=> 'bottom'};
   series.attachPrimitive({ attached: ({ requestUpdate }) => { chartRequest = requestUpdate; },
-    paneViews: () => [paneView] });
+    paneViews: () => [paneView], priceAxisViews: () => chartAxisViews });
 }
 
 function drawLevels(view=tacticalRadar()) {
   if (!state) return;
-  for (const line of priceLines) series?.removePriceLine(line);
-  priceLines=[];
   const specs=[];
-  const add=(price,label,description,color) => {
-    if (number(price)) specs.push({price,label,description,color});
+  const add=(price,style,label,description) => {
+    if (!number(price)) return;
+    const {rgb,opacity,dash,labelColor,axisColor}=CHART_LEVEL_STYLES[style];
+    specs.push({price,label,description,color:'rgba('+rgb+','+opacity+')',dash,labelColor,axisColor});
   };
   const order=view.order, box=positionBox(order);
   chartPosition=box;
@@ -1463,29 +1493,36 @@ function drawLevels(view=tacticalRadar()) {
     const prefix=(order.number?'#'+order.number+' ':'')+sideLabel(order.side)+' ';
     const entryLabel=box.pending?'LIMIT':'ENTRY';
     const protectedStop=box.riskR>=0;
-    add(box.entry,entryLabel,prefix+entryLabel,'#c0e0ff');
-    add(box.stop,protectedStop?'Б/У':'SL',prefix+(protectedStop?'ЗАХИЩЕНИЙ SL':'SL')+
-      ' ('+signed(box.riskR)+'R)',protectedStop?'#f4c76b':'#ff8994');
-    add(box.tp1,'TP1',prefix+'TP1 · '+signed(order.side*(box.tp1-box.entry)/order.risk)+'R','#55d6ad');
-    if (box.target!==box.tp1) add(box.target,'TP2',prefix+'TP2 · '+signed(box.reward)+'R','#79e4cd');
+    add(box.entry,'ENTRY',entryLabel,prefix+entryLabel);
+    add(box.stop,protectedStop?'BE':'SL',protectedStop?'Б/У':'SL',prefix+(protectedStop?'ЗАХИЩЕНИЙ SL':'SL')+
+      ' ('+signed(box.riskR)+'R)');
+    add(box.tp1,'TP1','TP1',prefix+'TP1 · '+signed(order.side*(box.tp1-box.entry)/order.risk)+'R');
+    if (box.target!==box.tp1) add(box.target,'TP2','TP2',prefix+'TP2 · '+signed(box.reward)+'R');
     for (const [key,above] of [['bsl',true],['ssl',false]]) {
       const level=box.liquidity[key]?.price;
-      if (number(level)&&(above?level>box.entry:level<box.entry))
-        add(level,key.toUpperCase(),key.toUpperCase(),'#adbacd');
+      const label=key.toUpperCase();
+      if (number(level)&&(above?level>box.entry:level<box.entry)) add(level,label,label,label);
     }
   }
   series?.applyOptions({priceFormat:{type:'price',precision:Math.max(2,(String(state.tick).split('.')[1] ?? '').length),minMove:state.tick || .01}});
-  const axisPrices=new Set();
+  const axisLabels=new Map();
   const legend=[];
-  for (const {price,label,description,color} of specs) {
+  for (const {price,description,axisColor,labelColor} of specs) {
     const axisPrice=format(price);
-    if (series) priceLines.push(series.createPriceLine({price,color,lineVisible:false,title:'',
-      axisLabelVisible:!axisPrices.has(axisPrice),axisLabelTextColor:'#101925'}));
-    axisPrices.add(axisPrice);
+    if (series && !axisLabels.has(axisPrice)) {
+      const position=()=>series.priceToCoordinate(price);
+      axisLabels.set(axisPrice,{
+        coordinate:()=>position()??-1000,
+        visible:()=>position()!==null,
+        text:()=>axisPrice, textColor:()=>labelColor, backColor:()=>axisColor,
+        tickVisible:()=>false,
+      });
+    }
     const item=element('span',description+' @ '+axisPrice);
-    item.style.color=color;
+    item.style.color=labelColor;
     legend.push(item);
   }
+  chartAxisViews=[...axisLabels.values()];
   $('chart-levels').classList.toggle('sr-only',Boolean(series&&(history.length||currentBar)));
   $('chart-levels').replaceChildren(...legend);
   chartRequest();
