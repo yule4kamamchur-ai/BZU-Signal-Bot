@@ -10,6 +10,7 @@ const time = new Intl.DateTimeFormat('uk-UA', {
 });
 const position = new Map();
 let state, quote, chart, series, chartRequest = () => {}, priceLines = [], frame = '15m';
+let chartPosition, chartLevels = [], priceFlash;
 let history = [], currentBar, lastSampleTime = 0, audio, sound = false, feedError = false;
 let socket, socketAttempt = 0, socketPing;
 const reactions=new Map(), m5Proofs=new Map();
@@ -1003,7 +1004,7 @@ function positionBox(order, price=displayedPrice()) {
   };
 }
 
-function drawPositionBox(target, box) {
+function drawPositionBox(target, box, levels) {
   if (!box || !history.length) return;
   const scale=chart.timeScale(), step=chartFrames[frame], latest=currentBar??history.at(-1);
   const timeX=ts=>{
@@ -1018,7 +1019,7 @@ function drawPositionBox(target, box) {
   target.useMediaCoordinateSpace(({context,mediaSize})=>{
     const {width,height}=mediaSize;
     const right=Math.min(width,Math.max(at+38,current+8));
-    const drawRect=(left,end,priceA,priceB,color,label,labelColor)=>{
+    const drawRect=(left,end,priceA,priceB,color,label)=>{
       const y1=series.priceToCoordinate(priceA), y2=series.priceToCoordinate(priceB);
       if (left===null || y1===null || y2===null) return;
       const x=Math.max(0,left), w=Math.min(width,end)-x;
@@ -1026,19 +1027,18 @@ function drawPositionBox(target, box) {
       if (w<=0 || bottom<=top) return;
       context.fillStyle=color;
       context.fillRect(x,top,w,bottom-top);
-      if (bottom-top>=13 && w>27) {
-        context.fillStyle=labelColor;
+      if (label && bottom-top>=13 && w>27) {
+        context.fillStyle='#e1e8f1';
         context.fillText(label,x+5,top+Math.min((bottom-top+8)/2,bottom-top-2),w-10);
       }
     };
     context.save();
     context.font='11px system-ui';
     if (box.poi) drawRect(timeX(box.poi.start),Math.min(width,current+8),box.poi.low,box.poi.high,
-      'rgba(167,176,191,.24)',box.poi.label,'#e1e8f1');
-    if (box.riskR<0) drawRect(at,right,box.entry,box.stop,'rgba(244,102,125,.30)',
-      'SL '+signed(box.riskR)+'R','#ffd4de');
-    drawRect(at,right,box.entry,box.target,'rgba(47,202,179,.30)',
-      (box.target===box.tp1?'TP1 ':'TP2 ')+signed(box.reward)+'R','#c3fff0');
+      'rgba(167,176,191,.24)',box.poi.label);
+    if (box.riskR<0) drawRect(at,right,box.entry,box.stop,'rgba(244,102,125,.14)');
+    drawRect(at,right,box.entry,box.target,'rgba(47,202,179,.14)');
+    drawChartRays(context,levels,at,width,height);
     const y=series.priceToCoordinate(box.entry);
     if (at>=0&&at<width&&y!==null&&y>=0&&y<height) {
       context.beginPath();
@@ -1054,6 +1054,50 @@ function drawPositionBox(target, box) {
     }
     context.restore();
   });
+}
+
+function drawChartRays(context, levels, origin, width, height) {
+  const left=Math.max(0,origin);
+  if (left>=width) return;
+  const visible=levels.map(level=>({...level,y:series.priceToCoordinate(level.price)}))
+    .filter(level=>number(level.y)&&level.y>=0&&level.y<=height).sort((a,b)=>a.y-b.y);
+  const flagHeight=14, gap=flagHeight+2;
+  const flags=width>=80 ? visible.slice(0,Math.floor(height/gap)) : [];
+  let previous=flagHeight/2-gap;
+  for (const [index,flag] of flags.entries()) {
+    const limit=height-flagHeight/2-(flags.length-index-1)*gap;
+    flag.center=Math.min(limit,Math.max(flag.y,previous+gap));
+    previous=flag.center;
+  }
+
+  context.lineWidth=1;
+  for (const level of visible) {
+    const y=Math.floor(level.y)+.5;
+    context.beginPath();
+    context.strokeStyle=level.color;
+    context.setLineDash(level.label==='ENTRY'||level.label==='LIMIT'?[8,3,2,3]:[3,4]);
+    context.moveTo(left,y);
+    context.lineTo(width,y);
+    context.stroke();
+  }
+  context.setLineDash([]);
+  context.textBaseline='middle';
+  context.font='600 10px system-ui';
+  for (const flag of flags) {
+    const flagWidth=context.measureText(flag.label).width+10;
+    const x=width-2-flagWidth;
+    if (Math.abs(flag.center-flag.y)>1) {
+      context.beginPath();
+      context.strokeStyle=flag.color;
+      context.moveTo(x-7,flag.y);
+      context.lineTo(x,flag.center);
+      context.stroke();
+    }
+    context.fillStyle='rgba(11,16,24,.88)';
+    context.fillRect(x,flag.center-flagHeight/2,flagWidth,flagHeight);
+    context.fillStyle=flag.color;
+    context.fillText(flag.label,x+5,flag.center);
+  }
 }
 
 function displayedPrice() {
@@ -1114,19 +1158,76 @@ function activationText(plan,price) {
 }
 
 function grossPnlR(plan, price) {
+  if (!number(price) || !number(plan.entry) || !number(plan.risk) || plan.risk<=0) return null;
   const initial=plan.paper_realized_r ??
     (plan.tp1_partial ? (plan.tp1_fraction??.5)*plan.side*(plan.tp1-plan.entry)/plan.risk : 0);
   return initial+(plan.remaining??1)*plan.side*(price-plan.entry)/plan.risk;
 }
 
-function renderTacticalRadar(price, view) {
+function renderPositionDistance(order, price) {
+  const targetKey=order.tp1_partial?'TP2':'TP1';
+  const target=order[targetKey.toLowerCase()];
+  const {side,stop,entry}=order;
+  const box=element('div',null,'telemetry-distance');
+  const labels=element('div',null,'rr-endpoints');
+  const distance=value=>number(price)&&number(value)?format(Math.max(0,value))+' $':'—';
+  const toStop=number(stop)?side*(price-stop):null;
+  const toTarget=number(target)?side*(target-price):null;
+  labels.append(element('span','До SL · '+distance(toStop),'rr-stop'),
+    element('span','До '+targetKey+' · '+distance(toTarget),'rr-target'));
+  box.append(labels);
+  const span=side*(target-stop);
+  if (![price,target,stop].every(number) || span<=0) return box;
+  const percent=value=>side*(value-stop)/span*100;
+  const current=Math.min(100,Math.max(0,percent(price)));
+  const entryPercent=percent(entry);
+  const track=element('div',null,'rr-progress-track');
+  track.setAttribute('role','meter');
+  track.setAttribute('aria-label','Положення ціни від SL до '+targetKey);
+  track.setAttribute('aria-valuemin','0');
+  track.setAttribute('aria-valuemax','100');
+  track.setAttribute('aria-valuenow',String(Math.round(current)));
+  if (number(entry) && entryPercent>=0 && entryPercent<=100) {
+    const marker=element('span',null,'rr-entry-marker');
+    marker.title='Точка входу · '+format(entry);
+    marker.style.left=entryPercent+'%';
+    track.append(marker);
+  }
+  const cursor=element('span',null,'rr-price-marker');
+  cursor.title='Ціна · '+format(price);
+  cursor.style.left=current+'%';
+  track.append(cursor);
+  box.append(track);
+  return box;
+}
+
+function renderScaleOut(order) {
+  const completed=order.tp1_partial;
+  const protectedStop=order.side*(order.stop-order.entry)>=0;
+  const fraction=order.tp1_fraction??.5;
+  const share=new Intl.NumberFormat('uk-UA',{style:'percent',maximumFractionDigits:2}).format(fraction);
+  const text=completed
+    ? 'Зафіксовано '+share+(protectedStop?' · Б/У '+format(order.stop):' · чекаємо захисного стопа')
+    : order.scale_policy==='SCALE_OUT_1R'?'Scale-Out +1.0R · очікуємо фіксації '+share:'Очікуємо TP1';
+  const chip=element('p',null,'scale-checkpoint');
+  chip.dataset.complete=String(Boolean(completed));
+  const icon=element('span',completed?'✓':'◷','scale-icon');
+  icon.setAttribute('aria-hidden','true');
+  chip.append(icon,element('span',text));
+  if (order.local) chip.append(element('span','PAPER','scale-paper'));
+  return chip;
+}
+
+function renderTacticalRadar(price, view, pnl, tone) {
   const {order,queue,direction,focus}=view;
   const header=$('tactical-focus');
   header.textContent=focus;
   header.dataset.side=direction===1?'long':direction===-1?'short':'range';
+  header.dataset.pnlTone=tone;
   $('radar-source').textContent=liveBrainFresh()?'REAL-TIME · 3 С':'ЗА ЖУРНАЛОМ';
   const primary=$('radar-primary');
   primary.hidden=!order;
+  primary.dataset.pnlTone=tone;
   primary.replaceChildren();
   if (order) {
     const active=order.status==='OPEN';
@@ -1136,23 +1237,29 @@ function renderTacticalRadar(price, view) {
       element('span',active?'В УГОДІ · '+(order.order_type??order.type??'LIMIT'):
         order.status==='CANCELLING'?'ЗВІРКА':'ЛІМІТНИЙ ОРДЕР','badge'));
     const metrics=element('dl',null,'tactical-metrics');
-    for (const [label,value] of [['Вхід',format(order.entry)],['Стоп',format(order.stop)],
-      ['Тейк 1',format(order.tp1)+' · '+signed(order.side*(order.tp1-order.entry)/order.risk)+'R'],
-      ['Тейк 2',format(order.tp2)]]) {
+    for (const [key,label,value] of [['entry','Вхід',format(order.entry)],['stop','Стоп',format(order.stop)],
+      ['tp1','Тейк 1',format(order.tp1)+' · '+signed(order.side*(order.tp1-order.entry)/order.risk)+'R'],
+      ['tp2','Тейк 2',format(order.tp2)]]) {
       const metric=element('div');
+      metric.dataset.level=key;
       metric.append(element('dt',label),element('dd',value));
       metrics.append(metric);
     }
-    const detail=active?'PnL '+signed(grossPnlR(order,price))+'R · '+signed(grossPnlR(order,price)*order.risk,' $/од.'):
-      'До входу '+format(Math.abs(price-order.entry))+' $';
-    const management=order.tp1_partial? 'Scale-Out виконано · '+(order.side*(order.stop-order.entry)>=0?
-       'Breakeven · SL '+format(order.stop):'чекаємо захисного стопа'):
-      order.scale_policy==='SCALE_OUT_1R'?'Scale-Out +1.0R · фіксація 50%':'Очікуємо TP1';
-    const exits=order.tp1_partial?'TP1 виконано · до TP2 '+format(Math.abs(price-order.tp2)):
-      'До TP1 '+format(Math.abs(price-order.tp1));
-    primary.append(heading,metrics,element('p',detail,'tactical-distance'),
-      element('p',exits+' $ · до SL '+format(Math.abs(price-order.stop))+' $','muted'),
-      element('p',management+(order.local?' · PAPER':''),'muted'),copyButtons(order));
+    primary.append(heading,metrics);
+    if (active) {
+      const panel=element('div',null,'position-telemetry');
+      const summary=element('div',null,'telemetry-pnl');
+      const dot=element('span',null,'pnl-dot');
+      dot.setAttribute('aria-hidden','true');
+      summary.append(dot,element('span','Поточний PnL','telemetry-label'),
+        element('strong',signed(pnl,'R'),'pnl-badge'),
+        element('span',signed(number(pnl)?pnl*order.risk:null,' $/од.'),'pnl-unit'));
+      panel.append(summary,renderPositionDistance(order,price));
+      primary.append(panel);
+    } else {
+      primary.append(element('p','До входу '+(number(price)?format(Math.abs(price-order.entry))+' $':'—'),'tactical-distance'));
+    }
+    primary.append(renderScaleOut(order),copyButtons(order));
   }
   $('queue-title').textContent=order?'Резервні сетапи':'Черга сетапів на радарі · Спостереження';
   $('tactical-reserves').hidden=!queue.length;
@@ -1195,6 +1302,7 @@ function renderActivity() {
   $('last-event').textContent = events.length ? 'Останнє рішення (' + eventTime(events[0].ts) + '): ' + eventText(events[0]) : 'У журналі ще немає подій.';
   $('events').replaceChildren(...events.map(e => {
     const item=element('li');
+    item.dataset.eventTone=({FILLED:'entry',PLACED:'order',CANCELLED:'inactive',EXPIRED:'inactive'})[e.kind]??'neutral';
     item.append(element('time',eventTime(e.ts)),element('span',eventText(e)));
     return item;
   }));
@@ -1207,15 +1315,15 @@ function setBannerMode(mode) {
   }
   return banner;
 }
-function renderBanner(price, usable, view=tacticalRadar(price)) {
+function renderBanner(price, usable, view, pnl, tone) {
   const {order,plan}=view;
   let mode='WAITING', pill='РАДАР', title='РАДАР · СКАНУЄМО РИНОК', detail='Чекаємо підтвердженого сетапу.';
   if (order?.status==='OPEN') {
     mode=order.tp1_partial?'MANAGING':'ENTERED';
     pill=(order.local?'PAPER · ':'В УГОДІ · ')+(order.order_type??order.type??'LIMIT');
-    const pnl=grossPnlR(order,price);
     title='В УГОДІ '+sideLabel(order.side)+' @ '+format(order.entry);
-    detail='PnL '+signed(pnl)+'R ('+signed(pnl*order.risk,' $/од.')+') · SL '+format(order.stop)+' | TP1 '+format(order.tp1);
+    const pnlText=number(pnl)?signed(pnl,'R')+' ('+signed(pnl*order.risk,' $/од.')+')':'—';
+    detail='PnL '+pnlText+' · SL '+format(order.stop)+' | TP1 '+format(order.tp1);
   } else if (order?.status==='CANCELLING'||(order?.status==='PENDING'&&!pendingIsCurrent(order,price))) {
     pill='ЗВІРКА';
     title='ЗВІРКА ЛІМІТКИ '+sideLabel(order.side)+' @ '+format(order.entry);
@@ -1240,6 +1348,7 @@ function renderBanner(price, usable, view=tacticalRadar(price)) {
     detail=brain.event.detail;
   }
   const banner=setBannerMode(mode);
+  banner.dataset.pnlTone=tone;
   banner.dataset.positionState=order?.status==='OPEN'?'ENTERED':mode==='PENDING'?'LIMIT_PLACED':
     order?'RECONCILING':'FLAT';
   $('state-title').textContent=title+' · '+detail;
@@ -1289,8 +1398,10 @@ function render() {
     for (const order of orders) track(order,orderTracker(order),market,now);
   }
   const view=tacticalRadar(price);
-  renderBanner(price,usable,view);
-  renderTacticalRadar(price,view);
+  const pnl=view.order?.status==='OPEN'?grossPnlR(view.order,price):null;
+  const tone=number(pnl)?(pnl<0?'loss':'profit'):'neutral';
+  renderBanner(price,usable,view,pnl,tone);
+  renderTacticalRadar(price,view,pnl,tone);
   renderActivity();
   drawLevels(view);
   if (focusId) [...document.querySelectorAll('[data-focus]')].find(n=>n.dataset.focus===focusId)?.focus({preventScroll:true});
@@ -1320,7 +1431,7 @@ function initChart() {
     autoscaleInfoProvider: original => {
       const info=original();
       if (!info || !state) return info;
-      const box=positionBox(tacticalRadar().order);
+      const box=chartPosition;
       if (!box) return info;
       const values=[box.entry,box.stop,box.target,box.poi?.low,box.poi?.high,
         ...Object.values(box.liquidity).map(level=>level.price)].filter(number);
@@ -1331,48 +1442,51 @@ function initChart() {
       return info;
     }
   });
-  const paneView={renderer:()=>({draw:target=>{
-    if (state) drawPositionBox(target,positionBox(tacticalRadar().order));
-  }}),zOrder:()=> 'bottom'};
+  const paneView={renderer:()=>({draw:target=>drawPositionBox(target,chartPosition,chartLevels)}),zOrder:()=> 'bottom'};
   series.attachPrimitive({ attached: ({ requestUpdate }) => { chartRequest = requestUpdate; },
     paneViews: () => [paneView] });
 }
 
 function drawLevels(view=tacticalRadar()) {
-  if (!series || !state) return;
-  for (const line of priceLines) series.removePriceLine(line);
+  if (!state) return;
+  for (const line of priceLines) series?.removePriceLine(line);
   priceLines=[];
-  const style=window.LightweightCharts.LineStyle;
   const specs=[];
-  const add=(price,title,color,dashed=true) => {
-    if (number(price)) specs.push({price,title,color,lineWidth:1,lineStyle:dashed?style.Dashed:style.Solid});
+  const add=(price,label,description,color) => {
+    if (number(price)) specs.push({price,label,description,color});
   };
-  const price=displayedPrice();
-  const order=view.order, box=positionBox(order,price);
-  $('chart-legend').hidden=!box;
+  const order=view.order, box=positionBox(order);
+  chartPosition=box;
+  chartLevels=specs;
+  $('chart-legend').hidden=!box||!series;
   if (box) {
     const prefix=(order.number?'#'+order.number+' ':'')+sideLabel(order.side)+' ';
-    add(box.entry,prefix+(box.pending?'LIMIT':'ENTRY')+' @ '+format(box.entry),'#55d6ad',false);
-    add(box.stop,prefix+(box.riskR>=0?'ЗАХИЩЕНИЙ SL':'SL')+' @ '+format(box.stop)+
-      ' ('+signed(box.riskR)+'R)',box.riskR>=0?'#55d6ad':'#ff8994',false);
-    add(box.tp1,prefix+'TP1 · '+signed(order.side*(box.tp1-box.entry)/order.risk)+'R','#7db7ff');
-    if (box.target!==box.tp1) add(box.target,prefix+'TP2 · '+signed(box.reward)+'R','#79e4cd');
+    const entryLabel=box.pending?'LIMIT':'ENTRY';
+    const protectedStop=box.riskR>=0;
+    add(box.entry,entryLabel,prefix+entryLabel,'#c0e0ff');
+    add(box.stop,protectedStop?'Б/У':'SL',prefix+(protectedStop?'ЗАХИЩЕНИЙ SL':'SL')+
+      ' ('+signed(box.riskR)+'R)',protectedStop?'#f4c76b':'#ff8994');
+    add(box.tp1,'TP1',prefix+'TP1 · '+signed(order.side*(box.tp1-box.entry)/order.risk)+'R','#55d6ad');
+    if (box.target!==box.tp1) add(box.target,'TP2',prefix+'TP2 · '+signed(box.reward)+'R','#79e4cd');
     for (const [key,above] of [['bsl',true],['ssl',false]]) {
       const level=box.liquidity[key]?.price;
       if (number(level)&&(above?level>box.entry:level<box.entry))
-        add(level,key.toUpperCase()+' @ '+format(level),'#adbacd');
+        add(level,key.toUpperCase(),key.toUpperCase(),'#adbacd');
     }
   }
-  series.applyOptions({priceFormat:{type:'price',precision:Math.max(2,(String(state.tick).split('.')[1] ?? '').length),minMove:state.tick || .01}});
-  const labels=[price,(currentBar??history.at(-1))?.close].filter(number).map(p=>series.priceToCoordinate(p)).filter(y=>y!==null);
+  series?.applyOptions({priceFormat:{type:'price',precision:Math.max(2,(String(state.tick).split('.')[1] ?? '').length),minMove:state.tick || .01}});
+  const axisPrices=new Set();
   const legend=[];
-  for (const spec of specs) {
-    const y=series.priceToCoordinate(spec.price);
-    const visible=y!==null&&!labels.some(old=>Math.abs(y-old)<20);
-    if (visible) labels.push(y);
-    priceLines.push(series.createPriceLine({...spec,axisLabelVisible:visible}));
-    const item=element('span',spec.title.includes(format(spec.price))?spec.title:spec.title+' @ '+format(spec.price)); item.style.color=spec.color;legend.push(item);
+  for (const {price,label,description,color} of specs) {
+    const axisPrice=format(price);
+    if (series) priceLines.push(series.createPriceLine({price,color,lineVisible:false,title:'',
+      axisLabelVisible:!axisPrices.has(axisPrice),axisLabelTextColor:'#101925'}));
+    axisPrices.add(axisPrice);
+    const item=element('span',description+' @ '+axisPrice);
+    item.style.color=color;
+    legend.push(item);
   }
+  $('chart-levels').classList.toggle('sr-only',Boolean(series&&(history.length||currentBar)));
   $('chart-levels').replaceChildren(...legend);
   chartRequest();
 }
@@ -1437,6 +1551,12 @@ function acceptTicker(row) {
   if (row?.instId !== state?.instrument || !number(price) || price <= 0 ||
       !number(ts) || ts <= 0 || ts > Date.now() + 3000 || (quote && ts < quote.ts)) return false;
   if (quote&&ts===quote.ts) return price===quote.price;
+  if (quote && price!==quote.price && ts-quote.ts<=QUOTE_MAX_AGE && Date.now()-ts<=QUOTE_MAX_AGE &&
+      !document.hidden && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    const flash=price>quote.price?'rgba(16,185,129,.25)':'rgba(239,68,68,.25)';
+    priceFlash?.cancel();
+    priceFlash=$('price').animate?.([{backgroundColor:flash},{backgroundColor:'transparent'}],300);
+  }
   quote = {price,ts,bid:positiveNumber(row.bidPx),ask:positiveNumber(row.askPx)};
   recalculateBrain(quote);
   observeLive(quote);
@@ -1522,6 +1642,8 @@ async function pollState() {
     }
     const first = !state || next.instrument !== state.instrument;
     if (first) {
+      priceFlash?.cancel();
+      priceFlash = undefined;
       quote = undefined; lastSampleTime = 0; history = []; currentBar = undefined;
       if (series) series.setData([]);
       position.clear(); reactions.clear(); m5Proofs.clear(); invalidZones.clear(); exhaustedPlans.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;

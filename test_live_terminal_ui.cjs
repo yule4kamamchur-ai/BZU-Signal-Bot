@@ -40,6 +40,9 @@ ctx.window.LightweightCharts={CandlestickSeries:{},LineStyle:{Dashed:2,Solid:0},
   timeScale:()=>({fitContent(){},timeToCoordinate:t=>200+(t-clock.value/1000)/30}),priceScale:()=>({applyOptions(){}})};}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('live_terminal.js','utf8'),ctx);
 const run=source=>vm.runInContext(source,ctx),text=id=>nodes.get(id).textContent;
+const find=(node,name)=>node.classList.contains(name)?node:node.children.map(child=>find(child,name)).find(Boolean);
+const radar=nodes.get('radar-primary'), banner=nodes.get('state-banner');
+const tone=()=>['radar-primary','state-banner','tactical-focus'].map(id=>nodes.get(id).dataset.pnlTone);
 const now=clock.value;
 const zone=(id,side,low,high,entry)=>({id,kind:side===1?'MOMENTUM_STAIRCASE_15M':'FVG_BEAR',timeframe:'15m',side,low,high,entry,
  known_ts:now-3600000,score:74,grade:'A',score_source:'CONTEXT',entry_source:'PLANNER',status:'CANDIDATE',stop:entry-side*.4,
@@ -72,7 +75,8 @@ ctx.fixtureBackup=cleanFixture;
  ]};stateError=false;quote={price:89.54,ts:Date.now()};render();`);
  assert.match(text('state-title'),/SHORT .*@ 89.71/);
  assert.match(text('tactical-focus'),/ОЧІКУЄМО SHORT/);
- assert.equal(nodes.get('radar-primary').hidden,true);
+ assert.equal(radar.hidden,true);
+ assert.deepEqual(tone(),['neutral','neutral','neutral']);
  assert.match(text('zones'),/89.71.*90.36.*88.73.*Чекаємо підходу/);
  assert.doesNotMatch(text('state-title')+text('radar-primary')+text('zones'),/89\.48|89\.64|89\.67|0\.09R/);
  assert.equal(priceLines.length,0);
@@ -102,8 +106,21 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('displayOrders()[0].status'),'OPEN');
  assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*\+0.27R/);
  assert.equal(priceLines.length,6);
- assert.ok(priceLines.some(l=>l.title.startsWith('BSL')));
- assert.ok(priceLines.some(l=>l.title.startsWith('SSL')));
+ assert.ok(priceLines.every(l=>l.title==='' && l.lineVisible===false && l.axisLabelVisible));
+ assert.match(text('chart-levels'),/BSL @ 100\.82.*SSL @ 99\.16/);
+ assert.deepEqual(tone(),['profit','profit','profit']);
+ assert.match(find(radar,'pnl-badge').textContent,/\+0\.27R/);
+
+ // A live move from profit to loss uses one PnL for all three surfaces.
+ run('quote={price:99.55,ts:Date.now()};render();');
+ assert.deepEqual(tone(),['loss','loss','loss']);
+ assert.equal(find(radar,'pnl-badge').textContent,'−0.27R');
+ assert.equal(find(radar,'pnl-unit').textContent,'−0.11 $/од.');
+ assert.match(find(radar,'rr-endpoints').textContent,/До SL · 0\.30 \$.*До TP1 · 0\.69 \$/);
+ assert.equal(find(radar,'rr-progress-track').getAttribute('aria-valuenow'),'30');
+ assert.equal(Math.round(parseFloat(find(radar,'rr-entry-marker').style.left)),41);
+ run('quote={price:99.66,ts:Date.now()};render();');
+ assert.deepEqual(tone(),['profit','profit','profit']);
  assert.equal(nodes.get('chart-legend').hidden,false);
  run('state={...state,snapshot_ts:Date.now()+5000,orders:[{...state.orders[0],status:"OPEN",filled_ts:Date.now()+1000}]};syncBrain(state,false);render();');
  assert.equal(run('displayOrders()[0].local'),undefined);
@@ -122,7 +139,12 @@ ctx.fixtureBackup=cleanFixture;
  run('quote={price:88.85,bid:88.84,ask:88.86,ts:Date.now()+1500};advanceBrain(quote,null,[]);render();');
  assert.equal(run('displayOrders()[0].remaining'),.5);
  assert.equal(run('displayOrders()[0].stop'),89.43);
- assert.ok(priceLines.some(line=>line.price===89.43 && line.title.includes('ЗАХИЩЕНИЙ SL')));
+ assert.ok(priceLines.some(line=>line.price===89.43 && line.axisLabelVisible));
+ assert.match(text('chart-levels'),/ЗАХИЩЕНИЙ SL/);
+ assert.match(find(radar,'scale-checkpoint').textContent,/✓ .*50.*Б\/У/);
+ assert.match(find(radar,'rr-endpoints').textContent,/До SL · 0\.58 \$.*До TP2 · 0\.75 \$/);
+ assert.equal(find(radar,'rr-progress-track').getAttribute('aria-valuenow'),'44');
+ assert.equal(find(radar,'rr-entry-marker'),undefined);
 
  const copy=document.querySelectorAll('[data-focus]').find(n=>n.dataset.copyLabel==='Entry');
  await nodes.get('radar-primary').listeners.click({target:copy});
@@ -138,7 +160,10 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('displayOrders()[0].status'),'PENDING');
  assert.equal(run('displayOrders()[0].entry'),89.40);
  assert.match(text('state-title'),/ЛІМІТ ВИСТАВЛЕНО LONG @ 89.40/);
- assert.equal( nodes.get('state-banner').dataset.mode,'PENDING');
+ assert.equal(banner.dataset.mode,'PENDING');
+ assert.deepEqual(tone(),['neutral','neutral','neutral']);
+ assert.equal(find(radar,'telemetry-pnl'),undefined);
+ assert.deepEqual(find(radar,'tactical-metrics').children.map(node=>node.dataset.level),['entry','stop','tp1','tp2']);
  run(`state={...state,candidates:Array.from({length:4},(_,i)=>({...newLimit,id:'reserve-'+i,
    entry:89.28-i*.04,stop:88.63-i*.04,tp1:90.235-i*.04,tp2:90.8-i*.04}))};render();`);
  assert.equal(nodes.get('zones').children.length,3);
@@ -150,23 +175,47 @@ ctx.fixtureBackup=cleanFixture;
      side:-1,risk:.65,placed_ts:Date.now()-15*60000,expires_ts:Date.now()+60000,
      zone:{kind:'SUPPLY_OB',timeframe:'15m',low:90.12,high:90.48,origin_ts:Date.now()-45*60000}};
    brain.orders=[marked];brain.sourceTs=state.snapshot_ts;render();`);
- const boxes=[], marks=[];
+ const boxes=[], marks=[], labels=[], dashes=[], rayStarts=[], rayEnds=[];
  const context={save(){},restore(){},beginPath(){},arc(...args){marks.push(args);},stroke(){},fill(){},
-   fillRect(...args){boxes.push([this.fillStyle,...args]);},fillText(){}};
+   fillRect(...args){boxes.push([this.fillStyle,...args]);},fillText(...args){labels.push(args);},
+   measureText:text=>({width:text.length*6}),setLineDash:pattern=>dashes.push([...pattern]),
+   moveTo:(...args)=>rayStarts.push(args),lineTo:(...args)=>rayEnds.push(args)};
  const target={useMediaCoordinateSpace(cb){cb({context,mediaSize:{width:800,height:1800}});}};
  chartCalls.primitive.paneViews()[0].renderer().draw(target);
- assert.equal(boxes.length,3);
- assert.match(boxes[0][0],/167,176,191/);
- assert.match(boxes[1][0],/244,102,125/);
- assert.match(boxes[2][0],/47,202,179/);
- assert.ok(boxes[0][1]<boxes[1][1]);
+ const areas=boxes.filter(([color])=>color!=='rgba(11,16,24,.88)');
+ assert.equal(areas.length,3);
+ assert.match(areas[0][0],/167,176,191/);
+ assert.equal(areas[1][0],'rgba(244,102,125,.14)');
+ assert.equal(areas[2][0],'rgba(47,202,179,.14)');
+ assert.ok(areas[0][1]<areas[1][1]);
  assert.equal(marks.length,1);
+ assert.equal(labels.filter(([label])=>label.startsWith('POI')).length,1);
+ assert.ok(labels.filter(([label])=>!label.startsWith('POI')).every(([label,x])=>label.length<=5 && x>=750));
+ assert.ok(dashes.some(pattern=>pattern.join(',')==='8,3,2,3'));
+ assert.deepEqual(rayStarts[0], [marks[0][0], rayEnds[0][1]]);
+ assert.equal(rayEnds[0][0],800);
  run('brain.orders=[];render();');
- boxes.length=0;marks.length=0;
+ boxes.length=0;marks.length=0;labels.length=0;
  chartCalls.primitive.paneViews()[0].renderer().draw(target);
  assert.equal(boxes.length,0);
  assert.equal(marks.length,0);
+ assert.equal(labels.length,0);
  assert.equal(priceLines.length,0);
+
+ run(`state={...state,recent_events:[
+   {kind:'CANCELLED',ts:Date.now()},{kind:'PLACED',ts:Date.now()},{kind:'FILLED',ts:Date.now()}
+ ]};render();`);
+ assert.deepEqual(nodes.get('events').children.map(node=>node.dataset.eventTone),['entry','order','inactive']);
+
+ const flashes=[];
+ let cancelled=0;
+ nodes.get('price').animate=(frames,ms)=>{flashes.push([frames[0].backgroundColor,ms]);return {cancel:()=>cancelled++};};
+ run(`quote=undefined;
+   const ticks=(last,offset)=>acceptTicker({instId:state.instrument,last,ts:Date.now()+offset});
+   ticks(90,0);ticks(90.01,1000);ticks(90.01,1000);ticks(90,2000);ticks(89.99,1500);
+   window.matchMedia=()=>({matches:true});ticks(89.98,2500);`);
+ assert.deepEqual(flashes,[['rgba(16,185,129,.25)',300],['rgba(239,68,68,.25)',300]]);
+ assert.equal(cancelled,1);
 
  // Cold-start autonomous OB scan with the ledger unavailable.
  clock.value=Date.parse('2026-11-17T08:06:00Z');
@@ -216,5 +265,5 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('brain.orders[0].order_type'),'MARKET');
  assert.equal(run('brain.orders[0].entry'),89.98);
  assert.equal(nodes.get('state-banner').dataset.positionState,'ENTERED');
- console.log('PASS: FLAT radar, PAPER storage, position boxes and autonomous MARKET/LIMIT without a ledger.');
+ console.log('PASS: FLAT radar, PAPER execution and storage, position rays, live telemetry, ticker and ledger.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
