@@ -3080,8 +3080,10 @@ def report_deadline(ts: int, now: int, cfg: Config) -> str:
     return moment.strftime('%H:%M' if moment.date()==current.date() else '%d.%m %H:%M')
 
 
-def build_message(state: dict, s: Snapshot, result: dict, cfg: Config) -> str:
+def build_message(state: dict, s: Snapshot, result: dict, cfg: Config, *, compact: bool = False) -> str:
     import notification_report
+    if compact:
+        return notification_report.build_15m_status_report(state, s, result, cfg, sys.modules[__name__])
     return decorate_message(notification_report.build(state, s, result, cfg, sys.modules[__name__]))
 
 
@@ -3646,10 +3648,10 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         import live_terminal
         if notify and os.environ.get('LIVE_STATE_FILE') and snapshot_path is None:
             result['public_projection'] = live_terminal.build(state,snap,result,cfg,sys.modules[__name__])
-        message = build_message(state,snap,result,cfg) if notify else ''
+        message = build_message(state,snap,result,cfg,compact=True) if notify else ''
         stage('compose_report')
         state.setdefault('last_notified_event_count',old_events)
-        if notify and result['action']!='DUPLICATE_OR_OUT_OF_ORDER':
+        if notify and message.strip():
             state['last_notified_event_count']=len(state['events'])
         if message:
             print(message)

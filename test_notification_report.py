@@ -3,9 +3,11 @@ import copy
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import bot_oneshot as core
 import full_limit_engine as engine
 import notification_report as report
 from analyze_bot import audit, archive_integrity
@@ -243,6 +245,151 @@ class CompactReports(unittest.TestCase):
             with patch.object(engine, 'http_json', return_value={'ok': True}):
                 self.assertTrue(engine.notify_queue(self.state, 'test', 'test', path))
             self.assertFalse(self.state['notification_queue'])
+
+
+class ScheduledTelegramReports(unittest.TestCase):
+    def setUp(self):
+        self.cfg = engine.Config(core=core, slippage_bps=0)
+        self.state = engine.new_state(self.cfg)
+        self.snap = snapshot(price=90.28)
+        self.result = {'action': 'WATCH', 'events': [],
+                       'public_projection': {'market_regime': 'BULLISH_ACTIVE', 'primary_bias': 1}}
+
+    def text(self):
+        return report.build_15m_status_report(self.state, self.snap, self.result, self.cfg, engine)
+
+    def test_waiting_uses_confirmed_pending_plan_or_primary_zone(self):
+        self.state['pending'] = dict(order(), entry=89.73, setup='EMA9_MOMENTUM_SURF')
+        text = self.text()
+        self.assertTrue(text.startswith('⚪️⏳ ОЧІКУЄМО СЕТАП | Brent (BZU)'))
+        self.assertIn('🟢 LONG (висхідний)', text)
+        self.assertIn('89.73 $ (виставлено)', text)
+        self.assertNotIn('Позиція:', text)
+        self.state['pending'] = None
+        self.result['public_projection'].update(primary_candidate_id='zone', candidates=[
+            {'id': 'zone', 'side': -1, 'timeframe': '15m', 'kind': 'SUPPLY_OB',
+             'entry': 89.73, 'low': 89.65, 'high': 89.80}])
+        text = self.text()
+        self.assertIn('🔴 SHORT', text)
+        self.assertIn('тест зони 89.65–89.80 $ (15m OB пропозиції)', text)
+        self.assertNotIn('виставлено', text)
+        self.assertEqual(report.clean_queued_message(text), text)
+
+    def test_active_pnl_signs_and_scale_out_target(self):
+        self.state['active'] = dict(order(), status='OPEN', entry=89.73, stop=88.97,
+                                    risk=.76, scale_policy='SCALE_OUT_1R')
+        before = copy.deepcopy(self.state)
+        text = self.text()
+        self.assertTrue(text.startswith('🟢🚀 В УГОДІ'))
+        self.assertIn('Позиція: 🟢 LONG @ 89.73 $', text)
+        self.assertIn('Поточний PnL: +0.72R (+0.55 $/од.)', text)
+        self.assertIn('SL: 88.97 $ | 🎯 TP1: 90.49 $', text)
+        self.assertEqual(self.state, before)
+        self.state['active']['side'] = -1
+        text = self.text()
+        self.assertTrue(text.startswith('🔴⚠️ В УГОДІ'))
+        self.assertIn('Позиція: 🔴 SHORT', text)
+        self.assertIn('Поточний PnL: -0.72R (-0.55 $/од.)', text)
+
+    def test_partial_fill_and_realized_fraction_enter_net_mark(self):
+        self.cfg = replace(self.cfg, include_commission=True, maker_fee=.001, taker_fee=.002)
+        self.snap.price = 100.50
+        self.state['active'] = dict(
+            order(), status='OPEN', risk_budget=.50, entry_cost=50., filled_fraction=.50,
+            remaining=.25, realized_gross_r=.50, realized_exit_fees_r=.10)
+        self.assertIn('Поточний PnL: +0.45R (+0.45 $/од.)', self.text())
+
+    def test_stale_open_position_never_looks_profitable_by_default(self):
+        self.state['active'] = dict(order(), status='OPEN')
+        self.snap.ticker_ts -= 121_000
+        text = self.text()
+        self.assertTrue(text.startswith('⚪️ В УГОДІ'))
+        self.assertIn('Ціна зараз: —', text)
+        self.assertIn('Поточний PnL: недоступний', text)
+        self.assertNotIn('+0.00R (', text.split('📊 За сьогодні:')[0])
+
+    def test_new_and_previous_closes_are_distinct_and_partial_is_not_closed(self):
+        trade = dict(order(), id='closed', side=-1, closed_ts=NOW-500,
+                     risk=.76, net_r=-.5, close_reason='STOP')
+        self.state['trades'] = [trade]
+        partial = {'kind': 'TP1_PARTIAL', 'order_id': 'some-active', 'ts': NOW}
+        self.result['events'] = [partial]
+        text = self.text()
+        self.assertTrue(text.startswith('⚪️⏳ ОЧІКУЄМО СЕТАП'))
+        self.assertIn('Остання закрита: -0.50R (-0.38 $/од.)', text)
+        self.result['events'].append({'kind': 'CLOSED', 'order_id': trade['id'], 'ts': NOW-500,
+                                      'reason': 'STOP', 'net_r': -.5})
+        text = self.text()
+        self.assertTrue(text.startswith('🏁❌ УГОДУ ЗАКРИТО'))
+        self.assertIn('Закрито: 🔴 SHORT', text)
+        self.assertIn('Закритий PnL: -0.50R (-0.38 $/од.)', text)
+        self.assertIn('За сьогодні: -0.50R (1 закрита угода)', text)
+        trade['net_r'] = self.result['events'][-1]['net_r'] = 1.
+        self.assertTrue(self.text().startswith('🏁✅ УГОДУ ЗАКРИТО'))
+        self.state['active'] = dict(order(), status='OPEN', entry=89.73)
+        text = self.text()
+        self.assertTrue(text.startswith('🟢🚀 В УГОДІ'))
+        self.assertIn('Закритий PnL: +1.00R', text)
+
+    def test_summary_uses_the_kyiv_close_date(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        local = datetime(2026, 11, 17, 0, 5, tzinfo=ZoneInfo('Europe/Kyiv'))
+        self.snap.now = self.snap.ticker_ts = int(local.timestamp() * 1000)
+        self.state['trades'] = [
+            dict(order(), id='previous-day', closed_ts=self.snap.now-360_000, net_r=5.),
+            dict(order(), id='today', closed_ts=self.snap.now-240_000, net_r=.48),
+            dict(order(), id='future', closed_ts=self.snap.now+100, net_r=2.),
+        ]
+        text = self.text()
+        self.assertIn('За сьогодні: +0.48R (1 закрита угода)', text)
+        self.assertIn('00:05 Київ · звіти кожні 15 хв', text)
+
+    def test_one_shot_delivers_compact_reports_once_per_quarter(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            fake_core = SimpleNamespace(
+                BOT_VERSION=engine.VERSION, STATE_FILE=str(path/'state.json'), JOURNAL_FILE=str(path/'journal.json'),
+                TELEGRAM_TOKEN='test-token', TELEGRAM_CHAT_ID='test-chat')
+            engine.atomic_write(Path(fake_core.STATE_FILE), self.state)
+            clock = [NOW]
+            messages = []
+
+            def scan(state, snap, _cfg):
+                if snap.now == NOW+300_000:
+                    state['trades'].append(dict(order(), id='quiet-close', closed_ts=snap.now,
+                                                net_r=.48, close_reason='TAKE_PROFIT'))
+                    engine.emit(state, 'CLOSED', snap.now, order_id='quiet-close',
+                                net_r=.48, reason='TAKE_PROFIT')
+                state['last_run_ts'] = snap.now
+                action = 'DUPLICATE_OR_OUT_OF_ORDER' if snap.now == NOW+900_000 else 'WATCH'
+                return {**self.result, 'action': action}
+
+            def send(_url, payload):
+                messages.append(payload['text'])
+                return {'ok': True}
+
+            with patch.dict(os.environ, {'LIVE_STATE_FILE': '', 'EXPECTED_BOT_VERSION': '', 'RESEARCH_CAPTURE': 'false'}), \
+                 patch.object(engine.time, 'time', side_effect=lambda: clock[0]/1000), \
+                 patch.object(engine, 'resolve_live_config', side_effect=lambda cfg: cfg), \
+                 patch.object(engine, 'collect_snapshot', side_effect=lambda *_: snapshot(now=clock[0], price=89.78)), \
+                 patch.object(engine.quality, 'seed'), patch.object(engine, 'export_journal'), \
+                 patch.object(engine, 'run_cycle', side_effect=scan), patch.object(engine, 'http_json', side_effect=send), \
+                 redirect_stdout(StringIO()):
+                for offset, delivered in [(0, 1), (300_000, 1), (900_000, 2), (1_800_000, 3)]:
+                    clock[0] = NOW+offset
+                    self.assertEqual(engine.run_live(fake_core, auto_report=True), 0)
+                    self.assertEqual(len(messages), delivered)
+            self.assertTrue(messages[0].startswith('⚪️⏳ ОЧІКУЄМО СЕТАП'))
+            self.assertTrue(messages[1].startswith('🏁✅ УГОДУ ЗАКРИТО'))
+            self.assertIn('Закритий PnL: +0.48R', messages[1])
+            self.assertTrue(messages[2].startswith('⚪️⏳ ОЧІКУЄМО СЕТАП'))
+            self.assertIn('Остання закрита: +0.48R', messages[2])
+            self.assertTrue(all(len(message.splitlines()) <= 9 for message in messages))
 
 
 class CohortAudit(unittest.TestCase):

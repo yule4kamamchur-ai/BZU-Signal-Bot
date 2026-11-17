@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from math import isfinite
 from zoneinfo import ZoneInfo
 
 import position_monitor
@@ -200,6 +201,212 @@ def focus_lines(focus):
     return ['', line]
 
 
+_DIVIDER = '━━━━━━━━━━━━━━━━━━'
+_DIRECTION = {1: '🟢 LONG', -1: '🔴 SHORT'}
+
+
+def _number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def _price(value):
+    return f'{value:.2f} $' if value is not None else '—'
+
+
+def _pnl(net_r, risk=None):
+    if net_r is None:
+        return 'недоступний'
+    units = f' ({net_r * risk:+.2f} $/од.)' if risk is not None and risk > 0 else ''
+    return f'{net_r:+.2f}R{units}'
+
+
+def _estimated_net_r(plan, price, cfg, engine):
+    """Estimate the entire filled position including executed partial exits."""
+    risk = _number(plan.get('risk_budget', plan.get('risk')))
+    entry = _number(plan.get('entry'))
+    side = plan.get('side')
+    if risk is None or risk <= 0 or entry is None or side not in _DIRECTION:
+        return None
+    cost = engine.execution_config(plan, cfg)
+    remaining = plan.get('remaining', 1.)
+    gross = plan.get('realized_gross_r', 0.) + remaining * side * (price - entry) / risk
+    entry_cost = plan.get('entry_cost', entry)
+    fees = 0.
+    if cost.include_commission:
+        fees = ((entry_cost * cost.maker_fee + remaining * price * cost.taker_fee) / risk
+                + plan.get('realized_exit_fees_r', 0.))
+    slip = remaining * price * cost.slippage_bps / 10_000 / risk
+    return _number(gross - fees - slip)
+
+
+def _daily_trades(state, now, tz):
+    today = datetime.fromtimestamp(now / 1000, tz).date()
+    daily = []
+    for trade in state.get('trades', []):
+        ts = _number(trade.get('closed_ts'))
+        if ts is not None and 0 < ts <= now and _number(trade.get('net_r')) is not None:
+            if datetime.fromtimestamp(ts / 1000, tz).date() == today:
+                daily.append(trade)
+    return daily
+
+
+def _daily_noun(count):
+    if count % 10 == 1 and count % 100 != 11:
+        return 'закрита угода'
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return 'закриті угоди'
+    return 'закритих угод'
+
+
+def _reported_closes(state, result, now):
+    events = {
+        event['order_id']: event for event in result.get('events', [])
+        if event.get('kind') == 'CLOSED' and event.get('order_id') and 0 < event['ts'] <= now
+    }
+    if not events:
+        return []
+    trades = {trade.get('id'): trade for trade in state.get('trades', [])
+              if trade.get('id') in events}
+    closes = []
+    for order_id, event in sorted(events.items(), key=lambda item: item[1]['ts'], reverse=True):
+        trade = trades.get(order_id, {})
+        closes.append({**trade, 'id': order_id, 'net_r': event.get('net_r', trade.get('net_r')),
+                       'close_reason': event.get('reason') or trade.get('close_reason'),
+                       'ambiguous_ohlc': event.get('ambiguous_ohlc', trade.get('ambiguous_ohlc', False))})
+    return closes
+
+
+def _report_setup(row):
+    zone = row.get('entry_zone') or row.get('zone') or {}
+    timeframe = zone.get('timeframe') or row.get('timeframe') or scanner.timeframe(row)
+    key = row.get('source_strategy') or row.get('setup') or row.get('kind') or zone.get('kind')
+    name = setup_text({**row, 'setup': key})
+    if name == key and key:
+        name = {
+            'DEMAND_OB': 'OB попиту', 'SUPPLY_OB': 'OB пропозиції',
+            'FVG_BULL': 'Бичачий FVG', 'FVG_BEAR': 'Ведмежий FVG',
+        }.get(key, row.get('label') if row.get('label') != key else None) or 'Структурний сетап'
+    return f'{timeframe} {name}'
+
+
+def _waiting_lines(state, snapshot, result, cfg, engine, fresh):
+    projection = result.get('public_projection') or {}
+    analysis = result.get('analysis') or {}
+    focus = projection.get('scenario_plan') or analysis.get('scenario_plan') or {}
+    all_waiting = engine.pending_plans(state)
+    pending = [plan for plan in all_waiting if not plan.get('cancel_requested_ts')]
+    candidate = None
+    if fresh:
+        primary_id = projection.get('primary_candidate_id')
+        projected = next((row for row in projection.get('candidates', [])
+                          if primary_id and row.get('id') == primary_id), None)
+        candidate = (projected or focus.get('primary') or analysis.get('best_scenario')
+                     or scanner.best_scenario(analysis.get('watch', []), snapshot.price))
+        if candidate and candidate.get('status') in ('CANCELLING', 'FOLLOWED', 'PENDING', 'POSITION', 'ERROR'):
+            candidate = None
+    focus_market = focus.get('market') or {}
+    regime = projection.get('market_regime')
+    if fresh and not (regime or focus_market):
+        regime = engine.policy.execution_regime(snapshot, cfg, engine).get('state')
+    trend = (projection.get('primary_bias') or focus_market.get('trend_side')
+             or engine.policy.regime_side({'state': regime})) if fresh else 0
+    side = (pending[0]['side'] if pending else (candidate or {}).get('side')) or trend
+    regime_text = {1: 'висхідний', -1: 'низхідний'}.get(trend)
+    if fresh and (regime in ('RANGE', 'RANGE_LIQUIDITY_ROTATION') or focus_market.get('phase') == 'RANGE'):
+        regime_text = 'діапазон'
+    priority = _DIRECTION.get(side, '⚪️ НЕЙТРАЛЬНО')
+    if regime_text:
+        priority += f' ({regime_text})'
+    lines = [f'🧭 Пріоритет: {priority}']
+    if pending:
+        for plan in pending:
+            lines.append(f"🎯 Очікуємо: {_report_setup(plan)} · ліміт {_DIRECTION.get(plan['side'], '—')}"
+                         f" @ {_price(_number(plan['entry']))} (виставлено)")
+    elif any(view.get('reconciliation') for _, view in engine.slot_views(state)):
+        lines.append('🎯 Очікуємо: підтвердження виконання за журналом')
+    elif all_waiting:
+        lines.append('🎯 Очікуємо: підтвердження скасування ліміту')
+    elif candidate:
+        zone = candidate.get('entry_zone') or candidate.get('zone') or candidate
+        low, high = _number(zone.get('low')), _number(zone.get('high'))
+        level = _number(candidate.get('level') or candidate.get('entry'))
+        label = _report_setup(candidate)
+        if low is not None and high is not None and 0 < low < high:
+            lines.append(f'🎯 Очікуємо: тест зони {low:.2f}–{high:.2f} $ ({label})')
+        elif level is not None:
+            lines.append(f'🎯 Очікуємо: {label} @ {_price(level)} (спостереження)')
+        else:
+            lines.append(f'🎯 Очікуємо: {label} (спостереження)')
+    elif fresh:
+        lines.append('🎯 Очікуємо: нову структурну зону (15m/5m)')
+    else:
+        lines.append('🎯 Очікуємо: оновлення ринкових даних')
+    return lines
+
+
+def build_status_message(state, snapshot, result, cfg, engine):
+    """Compose the scheduled Telegram report from the execution ledger."""
+    now = max(snapshot.now, state.get('last_run_ts') or 0)
+    tz = ZoneInfo('Europe/Kyiv')
+    local = datetime.fromtimestamp(now / 1000, tz)
+    price = _number(snapshot.price)
+    if (not snapshot.trusted or snapshot.instrument != cfg.instrument or price is None
+            or price <= 0 or not 0 <= now - snapshot.ticker_ts <= 120_000):
+        price = None
+    fresh = (price is not None and result.get('action') not in ('DUPLICATE_OR_OUT_OF_ORDER', 'DATA_HOLD')
+             and not (result.get('analysis') or {}).get('health'))
+    daily = _daily_trades(state, now, tz)
+    closes = _reported_closes(state, result, now)
+    positions = engine.active_plans(state)
+
+    body = [f'💵 Ціна зараз: {_price(price)}']
+    if positions:
+        marked = [(plan, _estimated_net_r(plan, price, cfg, engine) if fresh else None)
+                  for plan in positions]
+        first_pnl = marked[0][1]
+        icon = '⚪️' if first_pnl is None else '🟢🚀' if first_pnl >= 0 else '🔴⚠️'
+        heading = f'{icon} В УГОДІ'
+        for plan, net_r in marked:
+            body.append(f"📌 Позиція: {_DIRECTION.get(plan.get('side'), '—')} @ {_price(_number(plan.get('entry')))}")
+            arrow = '📊' if net_r is None else '📈' if net_r >= 0 else '📉'
+            body.append(f"{arrow} Поточний PnL: {_pnl(net_r, _number(plan.get('risk')))}")
+            tp1 = engine.bzu_policy.partial_target(plan)
+            body.append(f"🛡 SL: {_price(_number(plan.get('stop')))} | 🎯 TP1: {_price(_number(tp1))}")
+    elif closes:
+        latest = _number(closes[0].get('net_r'))
+        icon = '🏁' if latest is None else '🏁✅' if latest >= 0 else '🏁❌'
+        heading = f'{icon} УГОДУ ЗАКРИТО'
+    else:
+        heading = '⚪️⏳ ОЧІКУЄМО СЕТАП'
+        body.extend(_waiting_lines(state, snapshot, result, cfg, engine, fresh))
+        if daily:
+            previous = max(daily, key=lambda trade: _number(trade['closed_ts']))
+            body.append(f"🏁 Остання закрита: {_pnl(_number(previous['net_r']), _number(previous.get('risk')))}")
+
+    for trade in closes:
+        side = _DIRECTION.get(trade.get('side'), '—')
+        body.append(f"📌 Закрито: {side} {engine.display_order(state, trade['id'])} ({close_reason(trade)})")
+        body.append(f"💰 Закритий PnL: {_pnl(_number(trade.get('net_r')), _number(trade.get('risk')))}")
+
+    if positions and not fresh:
+        body.append('⚠️ Стан за журналом · ринкові дані не оновлено')
+    total_r = sum(_number(trade['net_r']) for trade in daily)
+    count = len(daily)
+    instrument = 'Brent (BZU)' if cfg.instrument == 'BZ-USDT-SWAP' else cfg.instrument
+    return '\n'.join([
+        f'{heading} | {instrument}', _DIVIDER, *body, _DIVIDER,
+        f'📊 За сьогодні: {total_r:+.2f}R ({count} {_daily_noun(count)})',
+        f'🕒 {local:%H:%M} Київ · звіти кожні 15 хв',
+    ])
+
+
+build_15m_status_report = build_status_message
+
+
 def build(state, snapshot, result, cfg, engine):
     if engine.VERSION in ('full-ict-v12.21.0-bzu-checklist','full-ict-v12.22.0-precision-protection'):
         return build_checklist(state,snapshot,result,cfg,engine)
@@ -387,25 +594,11 @@ def build(state, snapshot, result, cfg, engine):
     # cohorts in the state/journal for research; do not relabel legacy trades.
     # Closure day is interpreted in the configured timezone, NOT UTC and NOT
     # the order entry day. Incomplete/unresolved/expired plans are excluded.
-    today = local.date()
-    daily = []
-    for trade in state.get('trades', []):
-        try:
-            closed_ms = int(trade.get('closed_ts') or 0)
-            if not (0 < closed_ms <= now) or trade.get('net_r') is None:
-                continue
-            closed_day = datetime.fromtimestamp(closed_ms / 1000, ZoneInfo(cfg.timezone)).date()
-            if closed_day == today:
-                daily.append(trade)
-        except (ValueError, TypeError, OverflowError, OSError):
-            # Historical incomplete records are not completed trades.
-            continue
+    daily = _daily_trades(state, now, local.tzinfo)
     total_r = engine.statistics(daily)['net_r']
     result_r = f'{total_r:+.2f}R' if abs(total_r) > 1e-10 else '0.00R'
     count = len(daily)
-    noun = ('закрита угода' if count % 10 == 1 and count % 100 != 11
-            else 'закриті угоди' if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14)
-            else 'закритих угод')
+    noun = _daily_noun(count)
     lines += ['', f'Сьогодні (Київ): {count} {noun} • результат {result_r}']
     return '\n'.join(lines)
 
