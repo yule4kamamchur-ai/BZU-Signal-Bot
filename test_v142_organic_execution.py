@@ -41,7 +41,7 @@ class OrganicExecution(TestCase):
         order = waiting(side=1)
         order['entry_zone'] = {'kind':'FVG_BULL','side':1}
         s = snapshot(NOW, price=order['entry']+.13)
-        for room,expected in ((1.39,None),(1.16,None),(1.15,None),(1.149,'PENDING_ROOM_BELOW_1_15')):
+        for room,expected in ((1.39,None),(1.16,None),(1.05,None),(1.049,'PENDING_ROOM_BELOW_1_05')):
             with self.subTest(room=room), patch.object(engine.policy,'trend_entry_error',return_value=None), \
                  patch.object(scenario_planner,'entry_error',return_value=None), \
                  patch.object(scenario_planner,'structure_levels',return_value=[]), \
@@ -49,12 +49,33 @@ class OrganicExecution(TestCase):
                 self.assertEqual(engine.pending_scenario_error(order,s,cfg),expected)
                 self.assertEqual(measure.call_args.args[:3],(1,order['entry'],order['risk']))
 
-    def test_new_limit_needs_140_while_touch_market_needs_135(self):
+    def test_only_new_confirmed_obstacle_cancels_at_105(self):
+        cfg=engine.Config(tick=.01)
+        pending=waiting(1,NOW-2*60_000)
+        pending['entry_zone']={'kind':'FVG_BULL','side':1}
+        near=pending['entry']+1.04*pending['risk']
+        farther=pending['entry']+1.05*pending['risk']
+        live=snapshot(NOW,price=pending['entry']+.25)
+        for level,known,expected in (
+            (near,pending['placed_ts'],None),
+            (near,NOW+60_000,None),
+            (farther,NOW,None),
+            (near,NOW,'PENDING_ROOM_BELOW_1_05'),
+        ):
+            with self.subTest(level=level,known=known), \
+                 patch.object(engine.policy,'trend_entry_error',return_value=None), \
+                 patch.object(scenario_planner,'entry_error',return_value=None), \
+                 patch.object(scenario_planner,'structure_levels',return_value=[
+                     {'level':level,'known_ts':known,'side':-1,'kind':'15m_SWING_HIGH'},
+                 ]):
+                self.assertEqual(engine.pending_scenario_error(pending,live,cfg),expected)
+
+    def test_new_limit_and_touch_market_both_need_135(self):
         cfg = engine.Config(tick=.01)
         anchor = object()
         s = snapshot(NOW,price=90.)
         for active,obstacle,expected in (
-            (False,1.39,'BLOCKED_NO_ROOM_TO_STRUCTURE'),(False,1.40,'ACCEPTED'),
+            (False,1.34,'BLOCKED_NO_ROOM_TO_STRUCTURE'),(False,1.35,'ACCEPTED'),
             (True,1.34,'BLOCKED_NO_ROOM_TO_STRUCTURE'),(True,1.35,'ACCEPTED'),
         ):
             with self.subTest(active=active,obstacle=obstacle), \

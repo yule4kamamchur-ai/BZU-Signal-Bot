@@ -240,8 +240,10 @@ def pullback_quote_allowed(side, level, distal, quote, atr):
 MARKET_IMPULSE_BAND_ATR = .65
 MARKET_IMPULSE_MIN_RR = 1.35
 MARKET_TOUCH_ATR = .20
-LIMIT_NEW_MIN_RR = 1.40
-LIMIT_CANCEL_MIN_RR = 1.15
+LIMIT_NEW_MIN_RR = 1.35
+LIMIT_CANCEL_MIN_RR = 1.05
+BROWSER_MARKET_TOUCH_ATR = .18
+BROWSER_LIMIT_APPROACH_ATR = .85
 
 
 def touch_only_market_zone(zone):

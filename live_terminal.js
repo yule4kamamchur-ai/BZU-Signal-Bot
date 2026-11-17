@@ -12,7 +12,6 @@ const position = new Map();
 let state, quote, chart, series, chartRequest = () => {}, priceLines = [], frame = '15m';
 let history = [], currentBar, lastSampleTime = 0, audio, sound = false, feedError = false;
 let socket, socketAttempt = 0, socketPing;
-let selectedZone = null;
 const reactions=new Map(), m5Proofs=new Map();
 const invalidZones=new Set(), exhaustedPlans=new Set(), selectedPlanIds=new Map();
 let m5Market=null, previousLiveSample=null, velocity=null, m5Busy=false;
@@ -521,18 +520,42 @@ function brainCandles(raw, step, now) {
 }
 
 function brainAtr(rows) {
-  return rows.slice(-14).reduce((total,b,i) => {
-    const prev = rows[rows.length-15+i].close;
-    return total + Math.max(b.high-b.low, Math.abs(b.high-prev), Math.abs(b.low-prev));
-  },0)/14;
+  const start=Math.max(1,rows.length-14);
+  const ranges=rows.slice(start).map((b,i)=>{
+    const prev=rows[start+i-1].close;
+    return Math.max(b.high-b.low,Math.abs(b.high-prev),Math.abs(b.low-prev));
+  });
+  return ranges.length ? ranges.reduce((sum,tr)=>sum+tr,0)/ranges.length : 0;
+}
+
+function brainPivots(rows, strength, step) {
+  const points=[];
+  for (let i=strength;i<rows.length-strength;i++) {
+    const bar=rows[i], others=[...rows.slice(i-strength,i),...rows.slice(i+1,i+strength+1)];
+    if (others.every(b=>bar.high>b.high)) points.push({side:-1,price:bar.high,known_ts:rows[i+strength].ts+step});
+    if (others.every(b=>bar.low<b.low)) points.push({side:1,price:bar.low,known_ts:rows[i+strength].ts+step});
+  }
+  return points;
+}
+
+function brainLiquidity(points, entry) {
+  const levels={};
+  for (const [label,side] of [['bsl',-1],['ssl',1]]) {
+    const closest=points.filter(p=>p.side===side && side*(entry-p.price)>0)
+      .sort((a,b)=>Math.abs(a.price-entry)-Math.abs(b.price-entry))[0];
+    if (closest) levels[label]={price:closest.price,known_ts:closest.known_ts};
+  }
+  return levels;
 }
 
 function brainIndicators(rows, minutes, market) {
   if (rows.length < 50 || rows.at(-1).ts + brainQuarter > market.ts ||
       market.ts - rows.at(-1).ts - brainQuarter >= brainQuarter ||
       rows.some((bar,i) => i && bar.ts - rows[i-1].ts !== brainQuarter)) return null;
-  const ema = (period, bars) => bars.slice(1).reduce((value,bar) =>
-    value+(bar.close-value)*2/(period+1),bars[0].close);
+  const ema=(period,bars)=>{
+    const seed=bars.slice(0,period).reduce((total,bar)=>total+bar.close,0)/period;
+    return bars.slice(period).reduce((value,bar)=>value+(bar.close-value)*2/(period+1),seed);
+  };
   const end = rows.at(-1).ts+brainQuarter, midnight = Math.floor(end/86_400_000)*86_400_000;
   const quarters = rows.filter(b => b.ts >= midnight);
   // Use a complete daily prefix. Prefer minute data where the full quarter exists.
@@ -541,131 +564,198 @@ function brainIndicators(rows, minutes, market) {
     const chunk = Array.from({length:15},(_,i)=>fine.get(b.ts+i*brainMinute));
     return chunk.every(Boolean) ? chunk : [b];
   });
-  // Add the closed M1 tail of the current M15 without reusing any volume.
-  const minuteEnd = Math.floor(market.ts/brainMinute)*brainMinute;
-  for (let ts=end; ts<minuteEnd && fine.has(ts); ts+=brainMinute) day.push(fine.get(ts));
-  const volume = day.reduce((total,b)=>total+b.volume,0);
-  const vwap = quarters[0]?.ts === midnight && volume > 0 ?
-    day.reduce((total,b)=>total+(b.high+b.low+b.close)/3*b.volume,0)/volume : null;
+  const vwapOf=bars=>{
+    const volume=bars.reduce((total,b)=>total+b.volume,0);
+    return volume>0 ? bars.reduce((total,b)=>total+(b.high+b.low+b.close)/3*b.volume,0)/volume : null;
+  };
+  const covered=quarters[0]?.ts===midnight || end===midnight;
+  const referenceVwap=covered ? vwapOf(day) : null;
+  // The directional matrix uses the last closed M15 boundary, as in Python.
+  const minuteEnd=Math.floor(market.ts/brainMinute)*brainMinute;
+  let cursor=end;
+  for (;cursor<minuteEnd && fine.has(cursor);cursor+=brainMinute) day.push(fine.get(cursor));
+  const vwap=covered && cursor===minuteEnd ? vwapOf(day) : referenceVwap;
   const ema9=ema(9,rows.slice(-120)), ema20=ema(20,rows.slice(-60)), ema50=ema(50,rows.slice(-120));
-  const side = [1,-1].find(s => number(vwap) && s*(market.price-ema20)>0 &&
-    s*(rows.at(-1).close-ema20)>0 && s*(market.price-vwap)>0 && s*(ema9-ema20)>0) ?? 0;
+  const close=rows.at(-1).close;
+  const side = [1,-1].find(s => number(referenceVwap) && s*(close-ema20)>0 &&
+    s*(close-referenceVwap)>0 && s*(ema9-ema20)>0) ?? 0;
   const liveEma = (value,period) => value+(market.price-value)*2/(period+1);
-  const rangeBars=rows.slice(-25,-1);
+  const rangeBars=rows.slice(-192,-1);
   const range={low:Math.min(...rangeBars.map(b=>b.low)),high:Math.max(...rangeBars.map(b=>b.high))};
-  return {ema9,ema20,ema50,vwap,atr:brainAtr(rows),side,range,
+  return {ema9,ema20,ema50,vwap,referenceVwap,atr:brainAtr(rows),side,range,close,
     liveEma9:liveEma(ema9,9),liveEma20:liveEma(ema20,20),liveEma50:liveEma(ema50,50)};
 }
 
-function brainScan(rows, m5, market, matrix, config, tick) {
+function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minutes=[]) {
   if (matrix.atr <= 0) return [];
   const {atr,side:trend} = matrix;
-  const result = new Map(), last = rows.at(-1), prior = rows.slice(-13,-1);
-  const {low:rangeLow,high:rangeHigh} = matrix.range ?? {};
-  const wick = (row,side) => side === 1 ? row.low : row.high;
-  const far = (row,side) => side === 1 ? row.high : row.low;
-  const roundOut = (price,side) => Math.round((side === 1 ?
-    Math.ceil(price/tick-1e-8) : Math.floor(price/tick+1e-8))*tick*1e8)/1e8;
-  const quoteFor = side => side === 1 ? market.ask : market.bid;
-  const add = (kind, side, ref, anchor, bar, step, trigger) => {
-    const known = bar.ts+step;
-    if (known > market.ts || market.ts-known >= 3*brainQuarter) return;
-    const low = Math.min(ref,anchor), high = Math.max(ref,anchor);
-    if (low === high) return;
-    const quote = quoteFor(side);
-    const structuralEntry = roundOut(ref+side*tick,side);
-    const breakout = ['BOS_IMPULSE_BREAKOUT','CONSOLIDATION_BREAKOUT_BASE'].includes(kind);
-    const rangePos = number(rangeLow) && rangeHigh > rangeLow ? (quote-rangeLow)/(rangeHigh-rangeLow) : null;
-    const insideRange = !trend && (rangePos === null || rangePos >= .30 && rangePos <= .70);
-    const edgeBroken = breakout && side*(quote-(side===1?rangeHigh:rangeLow))>tick;
-    const closeTouch = number(quote) && Math.abs(quote-structuralEntry) <= (config.market_touch_atr??.20)*atr+1e-8;
-    const impulse = breakout && number(quote) && market.ts-known<step &&
-      side*(quote-ref) >= tick/2-1e-8 && side*(quote-ref)<=config.market_band_atr*atr+1e-8;
-    const marketReady = (!insideRange || edgeBroken) && (closeTouch || trigger && impulse);
-    if (trend && trend !== side) return;
-    const entry = marketReady ? quote : structuralEntry;
-    if (rows.some(b => b.ts >= known && side*(wick(b,side)-anchor) < -tick)) return;
-    const riskFloor = config.risk_floor;
-    const stop = roundOut(structuralEntry-side*Math.max(riskFloor,side*(structuralEntry-anchor)+Math.max(2*tick,.12*atr)),-side);
-    const risk = side*(entry-stop);
-    if (risk < riskFloor-1e-8 || risk > config.risk_cap+1e-8) return;
-    const pivots = rows.slice(1,-1).filter((b,i) => b.ts < bar.ts &&
-      side*(far(b,side)-far(rows[i],side))>0 && side*(far(b,side)-far(rows[i+2],side))>0);
-    const levels = [...new Set(pivots.map(b=>far(b,side)))].filter(p=>side*(p-entry)>0)
-      .sort((a,b)=>side*(a-b));
-    const nearest = levels[0];
-    const rr1 = number(nearest) ? side*(nearest-entry)/risk : 0;
-    const gap = side*(market.price-entry);
-    const orderType = marketReady && rr1 >= (config.market_min_rr??1.35)-1e-8 ? 'MARKET' :
-      !marketReady && rr1 >= (config.limit_min_rr??1.40)-1e-8 &&
-      gap >= tick && gap < config.missed_target_r*risk ? 'LIMIT' : null;
-    if (!orderType) return;
-    // Local score reflects a closed structural trigger, intact stop, available room and direction.
-    const normalVolume=prior.reduce((total,b)=>total+b.volume,0)/prior.length;
-    const score = 25 + 20 + Math.min(25,Math.floor(12*rr1)) + (trend===side ? 15 : 0) +
-      (normalVolume>0 && bar.volume>=1.10*normalVolume ? 8 : 0);
-    const tp2 = levels.find(p => side*(p-entry)/risk >= Math.max(1.85,rr1+tick/risk)) ??
-      roundOut(entry+side*Math.max(1.90,rr1+tick/risk)*risk,side);
-    const id = ['paper',kind,side,known,ref.toFixed(4)].join(':');
-    result.set(id,{id,kind,setup:kind,side,entry,stop,risk,low,high,reference:ref,score,
-      tp1:nearest,tp2,rr1,known_ts:known,timeframe:step===brainQuarter?'15m':'5m',
-      order_type:orderType,actionable:!!orderType,market_now:orderType==='MARKET',local:true});
+  const result=new Map(), last=rows.at(-1), prior=rows.slice(-13,-1);
+  const {low:rangeLow,high:rangeHigh}=matrix.range??{};
+  const wick=(row,side)=>side===1?row.low:row.high;
+  const far=(row,side)=>side===1?row.high:row.low;
+  const roundOut=(price,side)=>Math.round((side===1?
+    Math.ceil(price/tick-1e-8):Math.floor(price/tick+1e-8))*tick*1e8)/1e8;
+  const m5step=5*brainMinute;
+  const closures=brainPivots(rows.slice(-96),2,brainQuarter);
+  const unbroken=closures.filter(point=>!rows.some(b=>b.ts>=point.known_ts &&
+    point.side*(b.close-point.price)<0));
+  const common={marketRadius:Math.min(.18,config.market_touch_atr??.18)*atr,
+    limitRadius:(config.limit_approach_atr??.85)*atr};
+  const add=(kind,side,ref,anchor,bar,step,{breakout=false,formation=bar.ts,
+      confirmLevel=ref,zoneLow=Math.min(ref,anchor),zoneHigh=Math.max(ref,anchor)}={})=>{
+    const known=bar.ts+step;
+    if (known>market.ts || market.ts-known>=3*brainQuarter || zoneHigh-zoneLow<tick-1e-8 ||
+        (trend && trend!==side)) return;
+    if (rows.some(b=>b.ts>=known && side*(wick(b,side)-anchor)<-tick)) return;
+    const structuralEntry=roundOut(ref,side);
+    const quote=side===1?market.ask:market.bid;
+    const quoted=number(market.bid)&&number(market.ask)&&market.bid>0&&market.ask>=market.bid&&
+      market.ask-market.bid<=Math.max(2*tick,.15*atr)+1e-8;
+    const rangePos=number(rangeLow)&&rangeHigh>rangeLow ? (quote-rangeLow)/(rangeHigh-rangeLow) : null;
+    const rangeMiddle=!trend && (rangePos===null || rangePos>=.30 && rangePos<=.70);
+    const edge=side===1?rangeHigh:rangeLow;
+    const edgeBroken=breakout && side*(bar.close-edge)>tick && side*(quote-edge)>tick;
+    const touch=quoted && Math.abs(quote-structuralEntry)<=common.marketRadius+1e-8;
+    const impulse=quoted && breakout && market.ts-known<step &&
+      side*(quote-confirmLevel)>=tick/2-1e-8 &&
+      Math.abs(quote-structuralEntry)<=(config.market_band_atr??.65)*atr+1e-8;
+    const wantsMarket=(!rangeMiddle||edgeBroken) && (touch||impulse);
+    const stop=roundOut(structuralEntry-side*Math.max(config.risk_floor,
+      side*(structuralEntry-anchor)+Math.max(2*tick,.12*atr)),-side);
+    const prices=unbroken.filter(p=>p.side===-side && p.known_ts<=known)
+      .map(p=>p.price).sort((a,b)=>side*(a-b));
+    const tp1=prices.find(level=>side*(level-structuralEntry)>0);
+    const chooseEntry=entry=>{
+      const risk=side*(entry-stop), rr1=side*(tp1-entry)/risk;
+      if (risk<config.risk_floor-1e-8 || risk>config.risk_cap+1e-8 || !number(rr1) ||
+          rr1<(config.market_min_rr??1.35)-1e-8) return null;
+      const tp2=prices.find(p=>side*(p-entry)/risk>=Math.max(1.85,rr1+tick/risk)) ??
+        roundOut(entry+side*Math.max(1.90,rr1+tick/risk)*risk,side);
+      return {entry,stop,risk,rr1,tp1,tp2};
+    };
+    const marketPlan=wantsMarket ? chooseEntry(quote) : null;
+    const plan=marketPlan??chooseEntry(structuralEntry);
+    if (!plan || side*(market.price-plan.stop)<=0 || side*(market.price-plan.tp1)>=-1e-8) return;
+    const gap=side*(quote-structuralEntry);
+    const limitReady=quoted && !wantsMarket && !breakout && !touch && gap>=tick-1e-8 &&
+      gap<=common.limitRadius+1e-8 && gap<config.missed_target_r*plan.risk &&
+      plan.rr1>=(config.limit_min_rr??1.35)-1e-8;
+    const normalVolume=prior.reduce((sum,b)=>sum+b.volume,0)/prior.length;
+    const score=25+20+Math.min(25,Math.floor(12*plan.rr1))+(trend===side?15:0)+
+      (normalVolume>0&&bar.volume>=1.10*normalVolume?8:0);
+    if (score<60) return;
+    const id=['paper',kind,side,known,ref.toFixed(4)].join(':');
+    result.set(id,{...plan,id,kind,setup:kind,side,low:zoneLow,high:zoneHigh,reference:structuralEntry,score,
+      known_ts:known,origin_ts:formation,timeframe:step===brainQuarter?'15m':'5m',
+      liquidity:brainLiquidity(unbroken,plan.entry),order_type:marketPlan?'MARKET':'LIMIT',
+      market_now:!!marketPlan,actionable:true,activation_ready:!!marketPlan||limitReady,
+      activation_kind:breakout?'BREAKOUT':'RETEST',activation_level:breakout?confirmLevel:structuralEntry,
+      market_radius:common.marketRadius,limit_radius:common.limitRadius,
+      range_blocked:rangeMiddle&&!edgeBroken, market_waiting_rr:wantsMarket&&!marketPlan,local:true});
   };
-  for (const side of [1,-1]) {
-    const edge = f => side*Math.max(...prior.map(b=>side*f(b,side)));
-    const breakout=edge(far), sweep=-side*Math.max(...prior.map(b=>-side*wick(b,side)));
-    const body=side*(last.close-last.open);
-    if ((!trend || side===trend) && side*(last.close-breakout)>tick && body>=.5*atr && last.high-last.low<=2.3*atr) {
-      const base=prior.slice(-5), span=Math.max(...base.map(b=>b.high))-Math.min(...base.map(b=>b.low));
-      add(span<=1.30*atr?'CONSOLIDATION_BREAKOUT_BASE':'BOS_IMPULSE_BREAKOUT',
-        side,breakout,wick(last,side),last,brainQuarter,true);
+  // Volume-backed BOS on a closed M15 or two contiguous M5 candles.
+  for (const [bars,step,count] of [[rows,brainQuarter,1],[m5,m5step,2]]) {
+    for (let end=bars.length-1;end>=Math.max(22+count-1,bars.length-3);end--) {
+      const leg=bars.slice(end+1-count,end+1), first=leg[0], close=leg.at(-1);
+      const before=bars.slice(Math.max(0,end+1-count-40),end+1-count);
+      const known=close.ts+step, oldAtr=brainAtr(before), spine=[...before,...leg];
+      if (!oldAtr || market.ts-known>=2*brainQuarter ||
+          spine.some((b,i)=>i&&b.ts-spine[i-1].ts!==step)) continue;
+      const side=close.close>first.open?1:-1, body=side*(close.close-first.open);
+      const high=Math.max(...leg.map(b=>b.high)),low=Math.min(...leg.map(b=>b.low));
+      const baseline=before.slice(-20).reduce((sum,b)=>sum+b.volume,0)/20;
+      const relative=leg.reduce((sum,b)=>sum+b.volume,0)/(count*baseline);
+      const asOfRows=rows.filter(b=>b.ts+brainQuarter<=known);
+      const asOf=brainIndicators(asOfRows,minutes,{ts:known,price:close.close});
+      if (!baseline || relative<1.10-1e-8 || body<Math.max(tick,.65*oldAtr) ||
+          leg.some(b=>side*(b.close-b.open)<=0) || !asOf || !number(asOf.referenceVwap) ||
+          side*(close.close-asOf.ema20)<=0 || side*(close.close-asOf.referenceVwap)<=0 ||
+          high<=low || (side===1?(close.close-low)/(high-low)<.65:(close.close-low)/(high-low)>.35)) continue;
+      const pivot=brainPivots(before,1,step).reverse().find(p=>p.side===-side && p.known_ts<=first.ts &&
+        side*(before.at(-1).close-p.price)<=tick/2 && side*(first.open-p.price)<=tick/2 &&
+        side*(close.close-p.price)>=tick-1e-8);
+      if (!pivot || bars.slice(end+1).some(b=>side*(b.close-pivot.price)<-tick/2)) continue;
+      const ref=roundOut(close.close-side*Math.min(.25*body,side*(close.close-pivot.price))+tick/2,-1);
+      const edge=ref-side*Math.max(tick,Math.min(.10,.10*oldAtr));
+      add('BOS_IMPULSE_BREAKOUT',side,ref,side===1?low:high,close,step,
+        {breakout:true,confirmLevel:pivot.price,formation:first.ts,zoneLow:Math.min(ref,edge),zoneHigh:Math.max(ref,edge)});
     }
-    if (side*(wick(last,side)-sweep)<-tick && side*(last.close-sweep)>tick && body>=.30*atr)
-      add('TURTLE_SOUP',side,sweep,wick(last,side),last,brainQuarter,true);
-    const [left,neck,right,confirm] = rows.slice(-4);
+  }
+  for (const side of [1,-1]) {
+    const extreme=far(last,side), oldEdge=side*Math.max(...prior.map(b=>side*far(b,side)));
+    const sweep=-side*Math.max(...prior.map(b=>-side*wick(b,side))), body=side*(last.close-last.open);
+    const base=prior.slice(-5);
+    const span=Math.max(...base.map(b=>b.high))-Math.min(...base.map(b=>b.low));
+    if (span<=1.30*atr && side*(last.close-oldEdge)>tick && body>=.65*atr &&
+        side*(extreme-last.close)<=.35*(last.high-last.low))
+      add('CONSOLIDATION_BREAKOUT_BASE',side,oldEdge,wick(last,side),last,brainQuarter,
+        {breakout:true,formation:base[0].ts});
+    const wickEdge=side===1?Math.min(last.open,last.close):Math.max(last.open,last.close);
+    const raid=side*(sweep-wick(last,side));
+    const wickRatio=side*(wickEdge-wick(last,side))/Math.max(tick,last.high-last.low);
+    if (raid>=tick-1e-8 && raid<=Math.max(.20,.8*atr) && side*(wickEdge-sweep)>=-tick/2 &&
+        side*(last.close-sweep)>=tick-1e-8 && wickRatio>=.45-1e-8)
+      add('TURTLE_SOUP',side,sweep,wick(last,side),last,brainQuarter);
+    const [left,neck,right,confirm]=rows.slice(-4);
     if (side*(wick(right,side)-wick(left,side))>=tick &&
         side*(far(neck,side)-wick(right,side))>=.45*atr &&
         side*(right.close-far(neck,side))<=0 && side*(confirm.close-far(neck,side))>tick &&
         side*(confirm.close-confirm.open)>=.30*atr)
-      add('V_REVERSAL_CHOCH',side,far(neck,side),wick(right,side),confirm,brainQuarter,true);
+      add('V_REVERSAL_CHOCH',side,far(neck,side),wick(right,side),confirm,brainQuarter,{formation:right.ts});
     for (let i=rows.length-3;i<rows.length;i++) {
-      const b=rows[i], old=rows[i-2];
-      if (side===trend && side*(wick(b,side)-far(old,side))>=.12*atr)
-        add(side===1?'FVG_BULL':'FVG_BEAR',side,wick(b,side),far(old,side),b,brainQuarter,false);
+      const bar=rows[i], mid=rows[i-1], old=rows[i-2];
+      if (side*(wick(bar,side)-far(old,side))>.25*atr &&
+          !rows.slice(i+1).some(b=>side*(wick(b,side)-far(old,side))<=0))
+        add(side===1?'FVG_BULL':'FVG_BEAR',side,wick(bar,side),far(old,side),bar,brainQuarter,{formation:mid.ts});
+      if (side*(bar.close-bar.open)>=1.10*atr && side*(mid.close-mid.open)<0)
+        add(side===1?'DEMAND_OB':'SUPPLY_OB',side,far(mid,side),wick(mid,side),bar,brainQuarter,{formation:mid.ts});
     }
-    const fresh=m5.at(-1), previous=m5.at(-2), impulse=m5.at(-3), m5step=5*brainMinute;
-    if (side===trend && fresh && previous?.ts===fresh.ts-m5step && impulse?.ts===previous.ts-m5step &&
-        side*(fresh.close-fresh.open)>tick) {
-      if (side*(matrix.ema20-matrix.ema50)>0 && Math.abs(wick(fresh,side)-matrix.ema9)<=.35*atr &&
-          side*(fresh.close-matrix.ema9)>tick && side*(impulse.close-impulse.open)>=.30*atr &&
-          Math.abs(previous.close-previous.open)<=.35*atr)
-        add('EMA9_MOMENTUM_SURF',side,matrix.ema9,wick(fresh,side),fresh,m5step,true);
-      const base = m5.slice(-9,-3);
-      if (base.length>=5 && base.every((b,i)=>!i||b.ts-base[i-1].ts===m5step)) {
-        const level=side*Math.max(...base.map(b=>side*far(b,side)));
-        if (side*(impulse.close-level)>tick && side*(previous.close-level)>=0 &&
-            Math.abs(wick(fresh,side)-level)<=.38*atr && side*(fresh.close-level)>tick)
-          add(side*(impulse.open-level)>=0 ? 'RECLAIM_BREAKER' : 'SR_FLIP_RECLAIM',
-            side,level,wick(fresh,side),fresh,m5step,true);
+    const fresh=m5.at(-1), previous=m5.at(-2), impulse=m5.at(-3);
+    if (side!==trend || !fresh || previous?.ts!==fresh.ts-m5step || impulse?.ts!==previous.ts-m5step ||
+        side*(fresh.close-fresh.open)<tick-1e-8) continue;
+    const atOpen=brainIndicators(rows.filter(b=>b.ts+brainQuarter<=fresh.ts),minutes,{ts:fresh.ts,price:fresh.open});
+    const atr5=brainAtr(m5.slice(0,-1));
+    if (atOpen?.side===side && market.ts-fresh.ts-m5step<m5step &&
+        side*(atOpen.ema20-atOpen.ema50)>0 && side*(atOpen.close-atOpen.ema9)>0 &&
+        side*(fresh.close-atOpen.ema9)>0 && Math.abs(wick(fresh,side)-atOpen.ema9)<=.35*atr) {
+      for (const count of [3,2,1]) {
+        const pause=m5.slice(-count-1,-1), start=m5.at(-count-2);
+        if (!start || [start,...pause,fresh].some((b,i,chain)=>i&&b.ts-chain[i-1].ts!==m5step) ||
+            side*(start.close-start.open)<.50*atr5 || pause.some(b=>
+              side*(b.close-atOpen.ema9)<-.35*atr || Math.abs(b.close-b.open)>.80*atr5)) continue;
+        const anchor=side*Math.min(...[...pause,fresh].map(b=>side*wick(b,side)));
+        const edge=atOpen.ema9-side*Math.max(tick,.10*atr);
+        add('EMA9_MOMENTUM_SURF',side,atOpen.ema9,anchor,fresh,m5step,
+          {formation:start.ts,zoneLow:Math.min(edge,atOpen.ema9),zoneHigh:Math.max(edge,atOpen.ema9)});
+        break;
       }
     }
+    const shelf=m5.slice(-9,-3);
+    if (shelf.length>=5 && shelf.every((b,i)=>!i||b.ts-shelf[i-1].ts===m5step)) {
+      const level=side*Math.max(...shelf.map(b=>side*far(b,side)));
+      if (side*(impulse.close-level)>tick && side*(previous.close-level)>=0 &&
+          Math.abs(wick(fresh,side)-level)<=.38*atr && side*(fresh.close-level)>tick)
+        add(side*(impulse.open-level)>=0?'RECLAIM_BREAKER':'SR_FLIP_RECLAIM',side,
+            level,wick(fresh,side),fresh,m5step,{formation:impulse.ts});
+    }
   }
-  return [...result.values()].sort((a,b)=>Number(b.actionable)-Number(a.actionable) ||
-    Math.abs(a.entry-market.price)-Math.abs(b.entry-market.price));
+  return [...result.values()].sort((a,b)=>Math.abs(a.entry-market.price)-Math.abs(b.entry-market.price)||b.score-a.score);
 }
 
 function brainStorageKey(instrument) {
-  return 'bzu-paper-v14.2:'+ (globalThis.location?.pathname ?? '/') + ':' + instrument;
+  return 'bzu_live_trade_state:'+ (globalThis.location?.pathname ?? '/') + ':' + instrument;
 }
 
 function loadBrain(instrument) {
   try {
-    const saved=JSON.parse(globalThis.localStorage?.getItem(brainStorageKey(instrument)) ?? 'null');
+    const key=brainStorageKey(instrument), legacy=key.replace('bzu_live_trade_state:','bzu-paper-v14.2:');
+    const saved=JSON.parse(globalThis.localStorage?.getItem(key) ??
+      globalThis.localStorage?.getItem(legacy) ?? 'null');
     if (!saved || saved.instrument!==instrument || !Array.isArray(saved.orders) ||
         !Array.isArray(saved.canonicalIds) || !Array.isArray(saved.used) ||
-        !saved.event || typeof saved.event.orderId!=='string' || !number(saved.event.ts) ||
-        saved.event.ts>Date.now()+5000 || !number(saved.event.candleTs) ||
-        saved.event.candleTs!==Math.floor(saved.event.ts/brainMinute)*brainMinute ||
+        (saved.event ? typeof saved.event.orderId!=='string' || !number(saved.event.ts) ||
+          saved.event.ts>Date.now()+5000 || !number(saved.event.candleTs) ||
+          saved.event.candleTs!==Math.floor(saved.event.ts/brainMinute)*brainMinute : saved.orders.length>0) ||
         saved.orders.some(o=>typeof o.id!=='string' || ![1,-1].includes(o.side) ||
           !['PENDING','OPEN','CANCELLING'].includes(o.status) || ![o.entry,o.stop,o.risk].every(number))) return null;
     return saved;
@@ -675,12 +765,13 @@ function loadBrain(instrument) {
 function saveBrain() {
   try {
     const key=brainStorageKey(state.instrument);
-    if (!brain.event) {
+    globalThis.localStorage?.removeItem(key.replace('bzu_live_trade_state:','bzu-paper-v14.2:'));
+    if (!brain.event && !brain.used.size) {
       globalThis.localStorage?.removeItem(key);
       return;
     }
     globalThis.localStorage?.setItem(key,JSON.stringify({instrument:state.instrument,
-      orders:brain.orders, event:brain.event, canonicalIds:brain.canonicalIds??[],
+      orders:brain.event?brain.orders:[], event:brain.event, canonicalIds:brain.canonicalIds??[],
       used:[...brain.used].slice(-128)}));
   } catch { /* The current tab retains its paper state if storage is disabled. */ }
 }
@@ -689,10 +780,10 @@ function syncBrain(snapshot, first) {
   if (!liveBrainEnabled()) return;
   const covered = snapshot.execution_audit?.closed_through_ts ??
     Math.floor((snapshot.ledger_ts ?? snapshot.snapshot_ts)/brainMinute)*brainMinute;
-  if (first || !brain.sourceTs) {
+  if (first || brain.instrument!==snapshot.instrument) {
     const saved=loadBrain(snapshot.instrument);
-    Object.assign(brain,{series:{},rows:[],used:new Set(saved?.used),computed:0,
-      lastTs:saved?.event.ts??covered,event:saved?.event??null,orders:saved?.orders??[],
+    Object.assign(brain,{instrument:snapshot.instrument,series:{},rows:[],liquidity:[],used:new Set(saved?.used),computed:0,
+      lastTs:saved?.event?.ts??covered,event:saved?.event??null,orders:saved?.orders??[],
       canonicalIds:saved?.canonicalIds??[]});
   }
   for (const event of snapshot.recent_events ?? []) {
@@ -701,15 +792,18 @@ function syncBrain(snapshot, first) {
   const canonical = snapshot.orders;
   const current = brain.orders;
   const previous = brain.canonicalIds ?? [];
-  const newLedgerOrder = canonical.some(o=>!previous.includes(o.id));
   const observed = brain.event;
+  const newLedgerOrder = canonical.some(o=>!previous.includes(o.id) &&
+    (!observed || o.status==='OPEN' || (o.placed_ts??0)>=observed.ts || covered>observed.ts));
+  const conflictingOrder=observed && covered>observed.ts && canonical.some(o=>
+    current.length && current.every(local=>local.id!==o.id) && (o.status==='OPEN'||o.status==='PENDING'));
   const coversProjection = observed && observed.ts < covered;
   const browserOnly = current.length && current.every(o=>o.browser_created);
   const ledgerProgress = canonical.some(o=>o.status==='OPEN' &&
     (observed?.kind==='ENTERED' || (observed?.kind==='TP1' && o.tp1_partial)));
   const ledgerFinished = observed && (snapshot.recent_events??[]).some(e=>e.order_id===observed.orderId &&
     ['CLOSED','CANCELLED','EXPIRED'].includes(e.kind) && e.ts >= observed.ts);
-  if (!observed || newLedgerOrder || ledgerProgress || ledgerFinished ||
+  if (!observed || newLedgerOrder || conflictingOrder || ledgerProgress || ledgerFinished ||
       (coversProjection && !browserOnly && !observed.browserCreated)) {
     brain.orders = canonical.map(o=>({...o}));
     brain.lastTs = Math.max(brain.lastTs,covered);
@@ -733,13 +827,13 @@ function brainEvent(order, kind, ts, message) {
 }
 
 function advanceBrain(market, matrix, rows) {
-  if (market.ts <= brain.lastTs || !number(market.bid) || !number(market.ask) ||
+  if (market.ts < brain.lastTs || market.ts === brain.lastTs && (brain.orders.length || brain.event?.ts===market.ts) || !number(market.bid) || !number(market.ask) ||
       market.bid <= 0 || market.ask < market.bid) return;
   const config = state.brain_config;
   brain.lastTs = market.ts;
   const order=brain.orders[0];
   const oppositeQuote = side => side === 1 ? market.bid : market.ask;
-  const eligible = rows.filter(z=>tacticalCandidate(z,market.price) && !brain.used.has(z.id));
+  const eligible = rows.filter(z=>z.activation_ready!==false && tacticalCandidate(z,market.price) && !brain.used.has(z.id));
   const choose = (side) => eligible.find(z=>(!side || side===z.side) && z.market_now) ??
     eligible.find(z=>!side || side===z.side);
   let next = choose();
@@ -803,7 +897,7 @@ function advanceBrain(market, matrix, rows) {
   if (!brain.orders.length && next && !config.uncertain && brainSessionAllowed(market.ts)) {
     const marketEntry=next.order_type==='MARKET';
     const order={...next, browser_created:true, status:marketEntry?'OPEN':'PENDING',
-      qualification_tp1:next.tp1,tp1:next.entry+next.side*next.risk,placed_ts:market.ts,
+      qualification_tp1:next.tp1,tp1:next.entry+next.side*next.risk,initial_stop:next.stop,placed_ts:market.ts,
       effective_ts:market.ts,expires_ts:Math.min(market.ts+config.ttl_ms,
         Math.floor(market.ts/86_400_000)*86_400_000+22*3_600_000),
       scale_policy:'SCALE_OUT_1R',tp1_fraction:.5,remaining:1,target_cancel_armed:true,
@@ -822,7 +916,9 @@ function recalculateBrain(market) {
   const m5=(brain.series['5m']??[]).filter(b=>b.ts+5*brainMinute<=market.ts);
   const matrix=brainIndicators(rows,minutes,market);
   brain.matrix=matrix;
-  brain.rows=matrix ? brainScan(rows,m5,market,matrix,state.brain_config,state.tick??.01) : [];
+  brain.liquidity=matrix ? brainPivots(rows.slice(-96),2,brainQuarter).filter(point=>!rows.some(b=>
+    b.ts>=point.known_ts && point.side*(b.close-point.price)<0)) : [];
+  brain.rows=matrix ? scanLiveCandlesInBrowser(rows,m5,market,matrix,state.brain_config,state.tick??.01,minutes) : [];
   brain.computed=matrix ? Date.now() : 0;
   advanceBrain(market,matrix,brain.rows);
 }
@@ -833,12 +929,13 @@ async function pollBrainCandles() {
   brainBusy=true;
   const instrument=state.instrument, now=Date.now();
   try {
-    const timeframes=[['1m',brainMinute,30],['5m',5*brainMinute,16],['15m',brainQuarter,120]];
+    const timeframes=[['1m',brainMinute,30],['5m',5*brainMinute,64],['15m',brainQuarter,192]];
     await Promise.allSettled(timeframes.map(async ([bar,step,limit])=>{
-      if (brain.series[bar]?.at(-1)?.ts+step === Math.floor(now/step)*step) return;
+      if (bar==='1m' && brain.series[bar]?.at(-1)?.ts+step === Math.floor(now/step)*step) return;
       const data=await json(OKX+'/candles?'+new URLSearchParams({instId:instrument,bar,limit}),2700);
-      if (state.instrument===instrument && data.code==='0' && Array.isArray(data.data))
-        brain.series[bar]=brainCandles(data.data,step,Date.now());
+      if (state.instrument!==instrument || data.code!=='0' || !Array.isArray(data.data)) return;
+      const fresh=brainCandles(data.data,step,Date.now());
+      if (fresh.length && fresh.at(-1).ts>=(brain.series[bar]?.at(-1)?.ts??0)) brain.series[bar]=fresh;
     }));
     recalculateBrain(quote);
     render();
@@ -885,20 +982,80 @@ function pendingInvalidation(order, price) {
 function pendingIsCurrent(order, price) {
   return !pendingInvalidation(order, price);
 }
-function chartOrders() {
-  const order=tacticalRadar().order;
-  return order && (order.status==='OPEN' || order.status==='PENDING'&&pendingIsCurrent(order,displayedPrice())) ? [order] : [];
+function positionBox(order, price=displayedPrice()) {
+  if (!order || !(order.status==='OPEN' || order.status==='PENDING'&&pendingIsCurrent(order,price)) ||
+      ![order.entry,order.stop,order.tp1,order.risk].every(number) || order.risk<=0) return null;
+  const zone=order.zone?.low ? order.zone : order;
+  const target=number(order.tp2)&&order.side*(order.tp2-order.tp1)>0 ? order.tp2 : order.tp1;
+  const origin=order.filled_ts || order.placed_ts || order.effective_ts;
+  const zoneStep=({'5m':5*brainMinute,'15m':brainQuarter,'1H':60*brainMinute,'4H':240*brainMinute})[zone.timeframe];
+  const zoneStart=zone.origin_ts??(number(zone.known_ts)&&zoneStep?zone.known_ts-zoneStep:null);
+  const drawZone=number(zone.low)&&number(zone.high)&&zone.high>zone.low&&number(zoneStart);
+  const riskR=order.side*(order.stop-order.entry)/order.risk;
+  const zoneLabel='POI '+(zone.timeframe??'')+' '+zoneName(zone.kind??order.setup);
+  return {
+    entry:order.entry, origin, pending:order.status==='PENDING', target, riskR,
+    stop:order.stop, tp1:order.tp1,
+    poi:drawZone?{low:zone.low,high:zone.high,start:zoneStart,
+      label:zoneLabel+' ['+format(zone.low)+'–'+format(zone.high)+']'}:null,
+    reward:order.side*(target-order.entry)/order.risk,
+    liquidity:{...brainLiquidity(brain.liquidity??[],order.entry),...order.liquidity},
+  };
 }
-function chartPlan() {
-  const view=tacticalRadar();
-  return view.order ? null : view.plan??null;
+
+function drawPositionBox(target, box) {
+  if (!box || !history.length) return;
+  const scale=chart.timeScale(), step=chartFrames[frame], latest=currentBar??history.at(-1);
+  const timeX=ts=>{
+    if (!number(ts)) return null;
+    const wanted=Math.floor(ts/(step*1000))*step;
+    if (wanted<=history[0].time) return scale.timeToCoordinate(history[0].time);
+    const bar=wanted>=latest.time ? latest : history.find(row=>row.time>=wanted);
+    return bar ? scale.timeToCoordinate(bar.time) : null;
+  };
+  const at=timeX(box.origin), current=scale.timeToCoordinate(latest.time);
+  if (at===null || current===null) return;
+  target.useMediaCoordinateSpace(({context,mediaSize})=>{
+    const {width,height}=mediaSize;
+    const right=Math.min(width,Math.max(at+38,current+8));
+    const drawRect=(left,end,priceA,priceB,color,label,labelColor)=>{
+      const y1=series.priceToCoordinate(priceA), y2=series.priceToCoordinate(priceB);
+      if (left===null || y1===null || y2===null) return;
+      const x=Math.max(0,left), w=Math.min(width,end)-x;
+      const top=Math.max(0,Math.min(y1,y2)), bottom=Math.min(height,Math.max(y1,y2));
+      if (w<=0 || bottom<=top) return;
+      context.fillStyle=color;
+      context.fillRect(x,top,w,bottom-top);
+      if (bottom-top>=13 && w>27) {
+        context.fillStyle=labelColor;
+        context.fillText(label,x+5,top+Math.min((bottom-top+8)/2,bottom-top-2),w-10);
+      }
+    };
+    context.save();
+    context.font='11px system-ui';
+    if (box.poi) drawRect(timeX(box.poi.start),Math.min(width,current+8),box.poi.low,box.poi.high,
+      'rgba(167,176,191,.24)',box.poi.label,'#e1e8f1');
+    if (box.riskR<0) drawRect(at,right,box.entry,box.stop,'rgba(244,102,125,.30)',
+      'SL '+signed(box.riskR)+'R','#ffd4de');
+    drawRect(at,right,box.entry,box.target,'rgba(47,202,179,.30)',
+      (box.target===box.tp1?'TP1 ':'TP2 ')+signed(box.reward)+'R','#c3fff0');
+    const y=series.priceToCoordinate(box.entry);
+    if (at>=0&&at<width&&y!==null&&y>=0&&y<height) {
+      context.beginPath();
+      context.arc(at,y,4,0,2*Math.PI);
+      if (box.pending) {
+        context.strokeStyle='#88ffe3';
+        context.lineWidth=2;
+        context.stroke();
+      } else {
+        context.fillStyle='#88ffe3';
+        context.fill();
+      }
+    }
+    context.restore();
+  });
 }
-function visibleZones() {
-  const {plan,order}=tacticalRadar();
-  if (order?.status==='CANCELLING'||order?.status==='PENDING'&&!pendingIsCurrent(order,displayedPrice())) return [];
-  const zone=order?.zone?.low ? order.zone : plan;
-  return zone ? [{...zone,id:plan.id,side:plan.side,timeframe:zone.timeframe??plan.timeframe}] : [];
-}
+
 function displayedPrice() {
   const now = Date.now();
   return quote && quote.ts <= now + 3000 && now - quote.ts <= QUOTE_MAX_AGE ? quote.price : state.price;
@@ -915,28 +1072,45 @@ function tacticalCandidate(row, price) {
 }
 
 function tacticalRadar(price=displayedPrice()) {
-  const side=liveBrainFresh() ? brain.matrix?.side : state.primary_bias;
+  const range=['RANGE','SIDEWAYS','RANGE_LIQUIDITY_ROTATION'].includes(state.market_regime);
+  const bias=liveBrainFresh()?brain.matrix?.side:range?0:state.primary_bias;
   const orders=displayOrders();
   const active=orders.find(o=>o.status==='OPEN');
   const pending=orders.find(o=>o.status==='PENDING'&&pendingIsCurrent(o,price));
-  const cancelling=orders.find(o=>o.status==='CANCELLING'||o.status==='PENDING');
-  const order=active??pending??cancelling;
-  const direction=order?.side??side;
-  const readyCandidates = [...(liveBrainFresh()?brain.rows:[]), ...(ready(Date.now())?poolRows():[])]
-    .filter(row=>tacticalCandidate(row,price) && (!direction || row.side===direction) &&
-      !orders.some(o=>row.order_id===o.id || row.side===o.side && Math.abs(row.entry-o.entry)<(state.tick??.01)))
-    .sort((a,b)=>Math.abs(a.entry-price)-Math.abs(b.entry-price)||b.score-a.score);
+  const order=active??pending??orders.find(o=>o.status==='CANCELLING'||o.status==='PENDING');
   const candidates=[];
-  for (const row of readyCandidates) {
-    if (!candidates.some(other=>other.id===row.id || other.side===row.side &&
+  const source=liveBrainFresh()?brain.rows:ready(Date.now())?poolRows():[];
+  const ranked=source.filter(row=>tacticalCandidate(row,price) && (!row.local||!brain.used.has(row.id)) &&
+    (!bias||row.side===bias) &&
+    !orders.some(o=>row.order_id===o.id || o.side===row.side&&Math.abs(o.entry-row.entry)<(state.tick??.01)))
+    .sort((a,b)=>Math.abs(a.entry-price)-Math.abs(b.entry-price)||b.score-a.score);
+  for (const row of ranked) {
+    if (!candidates.some(other=>other.id===row.id || other.side===row.side&&
         Math.abs(other.entry-row.entry)<(state.tick??.01)*2)) candidates.push(row);
   }
-  const range=liveBrainFresh() ? brain.matrix?.range : state.dealing_range;
-  const focus=direction ? (active?'В УГОДІ ':pending?'ЛІМІТ ':'ОЧІКУЄМО ')+sideLabel(direction) :
-    number(range?.low) && number(range?.high) && range.high>range.low ?
-      'ДІАПАЗОН · LONG ВІД '+format(range.low)+' | SHORT ВІД '+format(range.high) : 'ДІАПАЗОН · ШУКАЄМО РІВНІ';
-  return {order, plan:order??candidates[0], reserves:candidates.slice(order?0:1,order?3:4),
-    direction,focus};
+  const plan=candidates[0];
+  const direction=order?.side??plan?.side??0;
+  const level=plan?.activation_level??plan?.entry;
+  const focus=order?(active?'В УГОДІ ':pending?'ЛІМІТ ':'ЗВІРКА ')+sideLabel(direction)+' @ '+format(order.entry):
+    plan?'ФОКУС РАДАРА · ОЧІКУЄМО '+sideLabel(direction)+' ВІД '+format(level)+' $ (Δ '+signed(level-price,' $')+')':
+      'ФОКУС РАДАРА · ШУКАЄМО СЕТАП';
+  return {order,plan,queue:candidates.slice(0,order?3:4),direction,focus};
+}
+
+function activationText(plan,price) {
+  const level=plan.activation_level??plan.entry;
+  if (plan.activation_ready===true || plan.market_now) return 'Умова доступна · перевіряємо котирування';
+  if (plan.market_waiting_rr) return 'Ціна в зоні · чекаємо котирування з R:R від 1.35';
+  if (plan.range_blocked && Math.abs(level-price)<=(plan.market_radius??0))
+    return 'Ціна в середині діапазону · чекаємо виходу або підтвердженого пробою';
+  if (plan.activation_kind==='BREAKOUT')
+    return 'Чекаємо підтвердженого пробою '+format(level)+' $ і входу в робочий радіус';
+  if (Math.abs(level-price)<=(plan.market_radius??state.tick??.01))
+    return 'Ціна в зоні · чекаємо підтвердження за свічкою або придатного bid/ask';
+  const approach='Чекаємо підходу до '+format(level)+' $ (Δ '+signed(level-price,' $')+')';
+  if (!number(plan.limit_radius)) return approach;
+  const edge=level+plan.side*plan.limit_radius;
+  return approach+' · LIMIT від '+(plan.side===1?'ask ≤ ':'bid ≥ ')+format(edge)+' $';
 }
 
 function grossPnlR(plan, price) {
@@ -946,54 +1120,50 @@ function grossPnlR(plan, price) {
 }
 
 function renderTacticalRadar(price, view) {
-  const {plan,order,reserves,direction,focus}=view;
+  const {order,queue,direction,focus}=view;
   const header=$('tactical-focus');
   header.textContent=focus;
   header.dataset.side=direction===1?'long':direction===-1?'short':'range';
-  $('radar-source').textContent=liveBrainFresh()?'LIVE BRAIN · 3 С':'ЗА ЖУРНАЛОМ';
+  $('radar-source').textContent=liveBrainFresh()?'REAL-TIME · 3 С':'ЗА ЖУРНАЛОМ';
   const primary=$('radar-primary');
+  primary.hidden=!order;
   primary.replaceChildren();
-  if (plan) {
-    const kind=plan.setup??plan.kind;
+  if (order) {
+    const active=order.status==='OPEN';
+    const kind=order.setup??order.kind;
     const heading=element('div',null,'bar');
-    heading.append(element('h3',(plan.timeframe??plan.zone?.timeframe??'')+' '+zoneName(kind)+' · '+sideLabel(plan.side)),
-      element('span',order?.status==='OPEN'?'В УГОДІ':order?.status==='CANCELLING'?'ЗВІРКА':
-        order?'ЛІМІТНИЙ ОРДЕР':plan.market_now?'MARKET-ГОТОВНІСТЬ':'ПЛАН LIMIT','badge'));
+    heading.append(element('h3',(order.timeframe??order.zone?.timeframe??'')+' '+zoneName(kind)+' · '+sideLabel(order.side)),
+      element('span',active?'В УГОДІ · '+(order.order_type??order.type??'LIMIT'):
+        order.status==='CANCELLING'?'ЗВІРКА':'ЛІМІТНИЙ ОРДЕР','badge'));
     const metrics=element('dl',null,'tactical-metrics');
-    const risk=order?order.risk:plan.side*(plan.entry-plan.stop);
-    for (const [label,value] of [['Вхід',format(plan.entry)],['Стоп',format(plan.stop)],
-      ['Тейк 1',format(plan.tp1)+' · '+signed(plan.side*(plan.tp1-plan.entry)/risk)+'R'],
-      ['Тейк 2',format(plan.tp2)]]) {
+    for (const [label,value] of [['Вхід',format(order.entry)],['Стоп',format(order.stop)],
+      ['Тейк 1',format(order.tp1)+' · '+signed(order.side*(order.tp1-order.entry)/order.risk)+'R'],
+      ['Тейк 2',format(order.tp2)]]) {
       const metric=element('div');
       metric.append(element('dt',label),element('dd',value));
       metrics.append(metric);
     }
-    const detail=element('p',order?.status==='OPEN'?
-      'PnL '+signed(grossPnlR(plan,price))+'R · '+signed(grossPnlR(plan,price)*risk,' $/од.') :
-      'До входу '+format(Math.abs(price-plan.entry))+' $','tactical-distance');
-    primary.append(heading,metrics,detail,
-      element('small','Початковий ризик '+format(risk)+' $ · '+format(100*risk/plan.entry)+'%'+
-        (number(plan.score)?' · '+plan.score+'/100':'')+(plan.local?' · PAPER':''),'muted'));
-    if (order?.status!=='OPEN') {
-      const progress=element('progress');
-      progress.max=1;
-      progress.value=Math.max(0,1-Math.abs(price-plan.entry)/Math.max(risk,state.tick??.01));
-      progress.setAttribute('aria-label','Наближення ціни до входу');
-      primary.append(progress);
-    }
-    primary.append(copyButtons(plan));
-  } else {
-    primary.append(element('p','Чекаємо підтвердженого сетапу.','empty-state'));
+    const detail=active?'PnL '+signed(grossPnlR(order,price))+'R · '+signed(grossPnlR(order,price)*order.risk,' $/од.'):
+      'До входу '+format(Math.abs(price-order.entry))+' $';
+    const management=order.tp1_partial? 'Scale-Out виконано · '+(order.side*(order.stop-order.entry)>=0?
+       'Breakeven · SL '+format(order.stop):'чекаємо захисного стопа'):
+      order.scale_policy==='SCALE_OUT_1R'?'Scale-Out +1.0R · фіксація 50%':'Очікуємо TP1';
+    const exits=order.tp1_partial?'TP1 виконано · до TP2 '+format(Math.abs(price-order.tp2)):
+      'До TP1 '+format(Math.abs(price-order.tp1));
+    primary.append(heading,metrics,element('p',detail,'tactical-distance'),
+      element('p',exits+' $ · до SL '+format(Math.abs(price-order.stop))+' $','muted'),
+      element('p',management+(order.local?' · PAPER':''),'muted'),copyButtons(order));
   }
-  $('tactical-reserves').hidden=!reserves.length;
-  $('zones').replaceChildren(...reserves.map(plan=>{
+  $('queue-title').textContent=order?'Резервні сетапи':'Черга сетапів на радарі · Спостереження';
+  $('tactical-reserves').hidden=!queue.length;
+  $('zones').replaceChildren(...queue.map(plan=>{
     const row=element('tr');
-    const side=element('strong',sideLabel(plan.side),plan.side===1?'long':'short');
+    const side=element('strong',sideLabel(plan.side)+' · '+(plan.timeframe??''),plan.side===1?'long':'short');
     const name=td('');
     name.append(side,element('small',zoneName(plan.kind??plan.setup)));
     const risk=plan.side*(plan.entry-plan.stop);
-    row.append(name,td(format(plan.entry)),td(format(plan.stop)),td(format(plan.tp1)),
-      td((plan.side*(plan.tp1-plan.entry)/risk).toFixed(2)+'R'));
+    row.append(name,td(format(plan.entry)),td(format(plan.stop)),td(format(plan.tp1)+' · '+
+      (plan.side*(plan.tp1-plan.entry)/risk).toFixed(2)+'R'),td(activationText(plan,price)));
     return row;
   }));
 }
@@ -1038,11 +1208,11 @@ function setBannerMode(mode) {
   return banner;
 }
 function renderBanner(price, usable, view=tacticalRadar(price)) {
-  const {order,plan,direction}=view;
+  const {order,plan}=view;
   let mode='WAITING', pill='РАДАР', title='РАДАР · СКАНУЄМО РИНОК', detail='Чекаємо підтвердженого сетапу.';
   if (order?.status==='OPEN') {
     mode=order.tp1_partial?'MANAGING':'ENTERED';
-    pill=order.local?'PAPER · LIVE BRAIN':'В УГОДІ';
+    pill=(order.local?'PAPER · ':'В УГОДІ · ')+(order.order_type??order.type??'LIMIT');
     const pnl=grossPnlR(order,price);
     title='В УГОДІ '+sideLabel(order.side)+' @ '+format(order.entry);
     detail='PnL '+signed(pnl)+'R ('+signed(pnl*order.risk,' $/од.')+') · SL '+format(order.stop)+' | TP1 '+format(order.tp1);
@@ -1056,18 +1226,22 @@ function renderBanner(price, usable, view=tacticalRadar(price)) {
     title='ЛІМІТ ВИСТАВЛЕНО '+sideLabel(order.side)+' @ '+format(order.entry);
     detail='Δ '+format(Math.abs(price-order.entry))+' $ · SL '+format(order.stop)+' | TP1 '+format(order.tp1);
   } else if (plan) {
-    title='РАДАР ['+(direction?sideLabel(direction):'ДІАПАЗОН')+'] · '+sideLabel(plan.side)+' @ '+format(plan.entry);
-    detail='Δ '+format(Math.abs(price-plan.entry))+' $ · SL '+format(plan.stop)+' | TP1 '+format(plan.tp1);
+    const level=plan.activation_level??plan.entry;
+    title='РАДАР В ОЧІКУВАННІ · Найближчий сетап '+sideLabel(plan.side)+' ['+
+      zoneName(plan.kind??plan.setup)+'] @ '+format(level)+' $';
+    detail='До активації '+signed(level-price,' $')+' · '+activationText(plan,price);
   } else if (!usable && !liveBrainFresh()) {
     title='ЧЕКАЄМО ОНОВЛЕННЯ ДАНИХ';
-    detail='Зліпок журналу о '+stamp(state.snapshot_ts);
+    detail='Очікуємо котирування й закриті свічки OKX.';
   } else if (liveBrainEnabled() && ['SL','TP1','TP2'].includes(brain.event?.kind) &&
       Date.now()-brain.event.ts<15*brainMinute) {
     mode='CLOSED';
     title='УГОДУ ЗАКРИТО · PAPER';
     detail=brain.event.detail;
   }
-  setBannerMode(mode);
+  const banner=setBannerMode(mode);
+  banner.dataset.positionState=order?.status==='OPEN'?'ENTERED':mode==='PENDING'?'LIMIT_PLACED':
+    order?'RECONCILING':'FLAT';
   $('state-title').textContent=title+' · '+detail;
   $('state-detail').textContent=detail;
   $('state-pill').textContent=pill;
@@ -1081,7 +1255,7 @@ function render() {
   const market=usable && live && !document.hidden ? quote : null;
   $('price').textContent=format(price);
   $('quote-status').textContent=live ? 'Live · ' + stamp(quote.ts) : (feedError ? 'OKX недоступний' : 'Котирування застаріло') + ' · зліпок';
-  $('stamp').textContent=stamp(liveBrainFresh(now)?brain.computed:state.snapshot_ts); $('instrument').textContent=state.instrument;
+  $('stamp').textContent=liveBrainFresh(now)?stamp(brain.computed):'—'; $('instrument').textContent=state.instrument;
   $('regime').textContent=(usable ? state.scenario_plan?.market?.phase_text : null) ?? ({BULLISH_PULLBACK_OPPORTUNITY:'Висхідний · відкат',
     BEARISH_PULLBACK_OPPORTUNITY:'Низхідний · відкат'})[state.trend_phase] ?? ({BULLISH_ACTIVE:'Висхідний',BEARISH_ACTIVE:'Низхідний',RANGE:'Діапазон',PULLBACK_PHASE:'Відкат'})[state.market_regime] ?? 'Невідомий';
   if (liveBrainFresh(now) && brain.matrix) $('regime').textContent=
@@ -1102,9 +1276,9 @@ function render() {
     : structureSync?.proof === 'M15_BOS_75_ADR'
     ? 'Пробій M15 ' + format(structureSync.level) + ' · хвиля ' + Math.round(structureSync.wave_adr * 100) + '% ADR'
     : '';
-  $('state-status').textContent=usable ? 'Журнал актуальний' : state.status==='DATA_HOLD' ? 'Дані на перевірці' : 'Потрібен новий зліпок';
+  $('state-status').textContent='Очікуємо свіжі дані OKX';
   if (liveBrainFresh(now)) {
-    $('state-status').textContent='Live Brain · 3s Sync · журнал '+stamp(state.ledger_ts??state.snapshot_ts);
+    $('state-status').textContent='Real-Time 3s Active';
     $('regime').title='EMA9 '+format(brain.matrix.liveEma9??brain.matrix.ema9)+' · EMA20 '+format(brain.matrix.liveEma20??brain.matrix.ema20)+
       ' · EMA50 '+format(brain.matrix.liveEma50??brain.matrix.ema50)+' · VWAP '+format(brain.matrix.vwap)+' · ATR14 '+format(brain.matrix.atr);
   }
@@ -1146,10 +1320,10 @@ function initChart() {
     autoscaleInfoProvider: original => {
       const info=original();
       if (!info || !state) return info;
-      const values=chartOrders().flatMap(o=>[o.entry,o.stop,o.tp1,o.tp2]).filter(number);
-      const main=chartPlan();
-      if (main) values.push(main.entry,main.stop,main.tp1);
-      for (const zone of visibleZones()) values.push(zone.low, zone.high);
+      const box=positionBox(tacticalRadar().order);
+      if (!box) return info;
+      const values=[box.entry,box.stop,box.target,box.poi?.low,box.poi?.high,
+        ...Object.values(box.liquidity).map(level=>level.price)].filter(number);
       if (values.length) {
         info.priceRange.minValue=Math.min(info.priceRange.minValue,...values);
         info.priceRange.maxValue=Math.max(info.priceRange.maxValue,...values);
@@ -1157,46 +1331,9 @@ function initChart() {
       return info;
     }
   });
-  const paneView = { renderer: () => ({ draw: target => {
-    if (!state || !history.length) return;
-    target.useMediaCoordinateSpace(({ context, mediaSize }) => {
-      const scale = chart.timeScale();
-      const occupiedLabels=[];
-      const focusId = chartPlan()?.id;
-      for (const zone of visibleZones()) {
-        const y1 = series.priceToCoordinate(zone.high), y2 = series.priceToCoordinate(zone.low);
-        const floor = Math.floor((zone.known_ts ?? 0) / (chartFrames[frame] * 1000)) * chartFrames[frame];
-        if (floor > (currentBar?.time ?? history.at(-1).time)) continue;
-        const x = floor <= history[0].time ? scale.timeToCoordinate(history[0].time) : scale.timeToCoordinate(floor);
-        if (y1 === null || y2 === null) continue;
-        const left = Math.max(0, x ?? 0);
-        if (left >= mediaSize.width-30) continue;
-        context.fillStyle = zone.id === focusId ? 'rgba(92,163,255,.18)' :
-          zone.side === 1 ? 'rgba(56,195,159,.13)' : 'rgba(255,112,132,.13)';
-        const top=Math.min(y1,y2), bottom=Math.max(y1,y2);
-        context.fillRect(left, top, Math.max(0, mediaSize.width-left), Math.max(1,bottom-top));
-        if (zone.id===selectedZone) {
-          context.strokeStyle='#92dff0'; context.lineWidth=2;
-          context.strokeRect(left+1,top,Math.max(0,mediaSize.width-left-2),Math.max(1,bottom-top));
-        }
-        const focus = zone.id === focusId;
-        const label = (focus ? (zone.actionable ? 'ЦІЛЬ ' : 'ОРІЄНТИР ') + sideLabel(zone.side) + ' · ' : '') +
-          (zone.timeframe ?? '') + ' ' + zoneName(zone.kind) + ' [' + format(zone.low) + '–' + format(zone.high) + ']' +
-          (number(zone.score) ? ' · ' + scoreText(zone) : '');
-        let labelY=Math.max(16,Math.min(mediaSize.height-12,(top+bottom)/2));
-        // Separate nearby labels so two overlapping zones remain identifiable.
-        for (const y of occupiedLabels) if (Math.abs(labelY-y)<20) labelY=y+20;
-        if (labelY>mediaSize.height-8 || bottom<0 || top>mediaSize.height) continue;
-        occupiedLabels.push(labelY);
-        context.save(); context.beginPath(); context.rect(0,0,mediaSize.width,mediaSize.height); context.clip();
-        context.font='10px system-ui';
-        const width=Math.min(context.measureText(label).width+12,mediaSize.width-left-10);
-        context.fillStyle='#0e1a27e8'; context.fillRect(left+5,labelY-12,width,18);
-        context.fillStyle=zone.side===1?'#8ce2c2':'#ffb0b9';
-        context.fillText(label,left+11,labelY,Math.max(0,width-10)); context.restore();
-      }
-    });
-  } }), zOrder: () => 'bottom' };
+  const paneView={renderer:()=>({draw:target=>{
+    if (state) drawPositionBox(target,positionBox(tacticalRadar().order));
+  }}),zOrder:()=> 'bottom'};
   series.attachPrimitive({ attached: ({ requestUpdate }) => { chartRequest = requestUpdate; },
     paneViews: () => [paneView] });
 }
@@ -1211,31 +1348,23 @@ function drawLevels(view=tacticalRadar()) {
     if (number(price)) specs.push({price,title,color,lineWidth:1,lineStyle:dashed?style.Dashed:style.Solid});
   };
   const price=displayedPrice();
-  const booked=view.order;
-  for (const order of booked && (booked.status==='OPEN' ||
-      booked.status==='PENDING'&&pendingIsCurrent(booked,price)) ? [booked] : []) {
-    const prefix=(order.number ? '#'+order.number+' ' : '')+sideLabel(order.side)+' ';
-    add(order.entry,prefix+(order.status==='OPEN'?(order.order_type ?? order.type ?? 'В УГОДІ'):order.status==='CANCELLING'?'СКАСУВАННЯ':'LIMIT')+
-      ' @ '+format(order.entry)+(order.status==='PENDING'?' · Δ '+signed(order.entry-price,' $'):''),'#55d6ad');
-    const protectedRunner = order.scale_policy === 'SCALE_OUT_1R' && order.tp1_partial &&
-      order.side*(order.stop-order.entry) > 0;
-    add(order.stop,prefix+(protectedRunner ? 'ЗАХИЩЕНИЙ SL' : 'SL')+' @ '+format(order.stop)+
-      ' ('+signed(order.side*(order.stop-order.entry)/order.risk)+'R)',protectedRunner ? '#55d6ad' : '#ff8994',false);
-    add(order.tp1,prefix+'TP1 · '+Math.round(order.tp1_fraction*100)+'% ('+
-      signed(order.side*(order.tp1-order.entry)/order.risk)+'R)'+(order.tp1_partial ? ' · ВИКОНАНО' : ''),'#7db7ff');
-    if (order.tp2!==order.tp1) add(order.tp2,prefix+'TP2 · залишок ('+signed(order.side*(order.tp2-order.entry)/order.risk)+'R)','#7db7ff');
-  }
-  const candidate = view.order ? null : view.plan;
-  if (candidate) {
-    add(candidate.entry, (candidate.market_now ? 'СИГНАЛ MARKET ' : 'ОЧІКУЄМО ВХІД ') + sideLabel(candidate.side) + ' @ ' + format(candidate.entry) +
-      ' (Δ ' + signed(candidate.entry - price,' $') + ')', '#589aff');
-    add(candidate.stop, 'СТОП-ЛОС @ ' + format(candidate.stop) + ' (' + signed(-candidate.side * (candidate.entry - candidate.stop),' $') + ')', '#ff8994', false);
-    add(candidate.tp2, 'ТЕЙК-ПРОФІТ 2 @ ' + format(candidate.tp2), '#7db7ff');
-    add(candidate.tp1, 'ТЕЙК-ПРОФІТ 1 @ ' + format(candidate.tp1) + ' (' + signed((candidate.tp1 - candidate.entry) / (candidate.entry - candidate.stop),'R') + ')', '#7db7ff');
+  const order=view.order, box=positionBox(order,price);
+  $('chart-legend').hidden=!box;
+  if (box) {
+    const prefix=(order.number?'#'+order.number+' ':'')+sideLabel(order.side)+' ';
+    add(box.entry,prefix+(box.pending?'LIMIT':'ENTRY')+' @ '+format(box.entry),'#55d6ad',false);
+    add(box.stop,prefix+(box.riskR>=0?'ЗАХИЩЕНИЙ SL':'SL')+' @ '+format(box.stop)+
+      ' ('+signed(box.riskR)+'R)',box.riskR>=0?'#55d6ad':'#ff8994',false);
+    add(box.tp1,prefix+'TP1 · '+signed(order.side*(box.tp1-box.entry)/order.risk)+'R','#7db7ff');
+    if (box.target!==box.tp1) add(box.target,prefix+'TP2 · '+signed(box.reward)+'R','#79e4cd');
+    for (const [key,above] of [['bsl',true],['ssl',false]]) {
+      const level=box.liquidity[key]?.price;
+      if (number(level)&&(above?level>box.entry:level<box.entry))
+        add(level,key.toUpperCase()+' @ '+format(level),'#adbacd');
+    }
   }
   series.applyOptions({priceFormat:{type:'price',precision:Math.max(2,(String(state.tick).split('.')[1] ?? '').length),minMove:state.tick || .01}});
-  series.applyOptions({lastValueVisible:!candidate});
-  const labels=candidate?[]:[price,(currentBar??history.at(-1))?.close].filter(number).map(p=>series.priceToCoordinate(p)).filter(y=>y!==null);
+  const labels=[price,(currentBar??history.at(-1))?.close].filter(number).map(p=>series.priceToCoordinate(p)).filter(y=>y!==null);
   const legend=[];
   for (const spec of specs) {
     const y=series.priceToCoordinate(spec.price);
@@ -1363,6 +1492,21 @@ async function pollTicker() {
   }
 }
 
+function bootstrapLiveBrain() {
+  if (state) return;
+  state={schema:1,cockpit_schema:5,instrument:'BZ-USDT-SWAP',tick:.01,snapshot_ts:0,
+    orders:[],zones:[],candles:{},status:'LOCAL_ONLY',price:null,brain_config:{
+      schema:1,missed_target_r:.75,browser_replace_atr:1,market_band_atr:.65,
+      market_touch_atr:.18,limit_approach_atr:.85,market_min_rr:1.35,limit_min_rr:1.35,
+      risk_floor:.65,risk_cap:1.15,ttl_ms:90*brainMinute,uncertain:0}};
+  syncBrain(state,true);
+}
+
+async function refreshLiveBrain() {
+  if (document.hidden) return;
+  await Promise.allSettled([pollTicker(),liveBrainEnabled()?pollBrainCandles():pollM5()]);
+}
+
 async function pollState() {
   if (stateBusy || document.hidden) return;
   stateBusy = true;
@@ -1380,7 +1524,7 @@ async function pollState() {
     if (first) {
       quote = undefined; lastSampleTime = 0; history = []; currentBar = undefined;
       if (series) series.setData([]);
-      position.clear(); selectedZone=null; reactions.clear(); m5Proofs.clear(); invalidZones.clear(); exhaustedPlans.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
+      position.clear(); reactions.clear(); m5Proofs.clear(); invalidZones.clear(); exhaustedPlans.clear(); selectedPlanIds.clear(); m5Market=null; previousLiveSample=null;
       disconnectSocket();
     }
     const previousSnapshot = state?.snapshot_ts;
@@ -1399,23 +1543,23 @@ async function pollState() {
         }
       }
     }
-    const ids = new Set(next.orders.map(order => order.id));
+    const ids = new Set(displayOrders().map(order => order.id));
     for (const id of position.keys()) if (!ids.has(id)) position.delete(id);
     setHistory(next.candles?.[frame] ?? [], first);
     const keep=new Set(reactionRows().map(reactionKey));
     for (const [key,t] of reactions) if (!keep.has(key)&&!['INVALID','MISSED'].includes(t.stage)) reactions.delete(key);
     render();
     if (first) {
-      void pollTicker(); void pollM5(); void pollBrainCandles();
+      void refreshLiveBrain();
       await loadCandles(true);
     }
   } catch {
     stateError = true;
     $('state-status').textContent = 'Зліпок бота недоступний';
     if (!state) {
-      setBannerMode('WAITING'); $('state-title').textContent='СТАН БОТА НЕДОСТУПНИЙ';
-      $('state-detail').textContent='Не вдалося завантажити live_state.json. Повторна спроба через 30 с.';
-      $('state-pill').textContent='НЕМАЄ ЗЛІПКА';
+      bootstrapLiveBrain();
+      void refreshLiveBrain();
+      void loadCandles(true);
     }
     render();
   } finally { stateBusy = false; }
@@ -1459,14 +1603,12 @@ async function copyLevel(event) {
 $('radar-primary').addEventListener('click', copyLevel);
 initChart();
 void pollState();
-setInterval(pollTicker, 3000);
+setInterval(refreshLiveBrain,3000);
 setInterval(() => {
   if (state?.brain_config?.worker_interval_ms) void pollState();
 },3000);
 setInterval(pollState, 30_000);
-setInterval(pollM5,3000);
-setInterval(pollBrainCandles,3000);
 document.addEventListener('visibilitychange', () => {
   pauseReactions();
-  if (!document.hidden) { void pollState(); void pollTicker(); void pollM5(); void pollBrainCandles(); }
+  if (!document.hidden) { void pollState(); void refreshLiveBrain(); }
 });

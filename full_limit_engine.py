@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.2.0-intraday"
-REPORT_RELEASE = 'v14.2.0'
+VERSION = "full-ict-v14.3.0-intraday"
+REPORT_RELEASE = 'v14.3.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -1829,8 +1829,11 @@ def pending_scenario_error(plan, snapshot, cfg):
     gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,trend=trend)
     if gate:
         return gate
-    _, room_r = oil_risk.structural_room(side,entry,plan['risk'],scenario_planner.structure_levels(snapshot,engine),trend=trend)
-    return 'PENDING_ROOM_BELOW_1_15' if room_r is not None and room_r < scanner.LIMIT_CANCEL_MIN_RR-1e-8 else None
+    placed = plan.get('placed_ts') or plan.get('effective_ts') or 0
+    fresh = [level for level in scenario_planner.structure_levels(snapshot,engine)
+             if placed < (level.get('known_ts') or 0) <= snapshot.now]
+    _, room_r = oil_risk.structural_room(side,entry,plan['risk'],fresh)
+    return 'PENDING_ROOM_BELOW_1_05' if room_r is not None and room_r < scanner.LIMIT_CANCEL_MIN_RR-1e-8 else None
 
 
 def pending_entry_gate(plan, trades, as_of, cfg):
@@ -2904,6 +2907,7 @@ REASON_UA = {
     'BREAKDOWN_EXPIRED':'ведмежий пробій втратив чинність',
     'DISTANT_BREAKDOWN_RETEST':'ціна надто далеко від зони мікроретесту',
     'BLOCKED_NO_ROOM_TO_STRUCTURE':'замало простору до найближчої структурної перешкоди',
+    'PENDING_ROOM_BELOW_1_05':'нова підтверджена перешкода ближче ніж 1.05R від лімітки',
     'PENDING_ROOM_BELOW_1_15':'простір від зафіксованої ціни лімітки впав нижче 1.15R',
     'LIMIT_RR_BELOW_1_40':'для нової лімітки потрібно щонайменше 1.40R',
     'MARKET_BLOCKED_RANGE_MIDDLE':'MARKET у середині діапазону заблоковано',

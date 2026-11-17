@@ -52,6 +52,7 @@ def build(state, snapshot, result, cfg, engine):
         'STOP_GAP':'вихід за стопом із ціновим розривом'}
     plans = engine.open_plans(state)
     orders = []
+    liquidity = engine.scenario_planner.structure_levels(snapshot,engine) if plans else ()
     for plan in plans:
         active = plan.get('status') == 'OPEN'
         order_type = plan.get('order_type') or ('MARKET' if plan.get('action_type') == 'ACTIVE_ENTRY' else 'LIMIT')
@@ -59,6 +60,20 @@ def build(state, snapshot, result, cfg, engine):
         partial = bool(active and 0 < plan.get('remaining', 1.) < plan.get('filled_fraction', 1.)
                        and any(leg.get('target') == 'TP1' and leg.get('fraction', 0) > 0
                                for leg in plan.get('realized_legs', [])))
+        entry = plan['entry']
+        zone = plan.get('entry_zone') or {}
+        proof = zone.get('wave_proof') or {}
+        step = {'5m':300_000, **engine.TF}.get(zone.get('timeframe'))
+        known = zone.get('known_ts')
+        origin = (zone.get('origin_ts') or proof.get('ob_ts') or proof.get('shelf_start_ts')
+                  or proof.get('impulse_ts') or (known-step if known and step else None))
+        liquidity_lines = {}
+        for label, side in (('bsl',-1),('ssl',1)):
+            level = min((row for row in liquidity if row['side']==side and row.get('known_ts',0)<=snapshot.now
+                         and side*(entry-row['level'])>cfg.tick/2),
+                        key=lambda row:abs(entry-row['level']),default=None)
+            if level:
+                liquidity_lines[label] = {'price':level['level'],'known_ts':level.get('known_ts')}
         orders.append({
             'id': plan['id'], 'number': plan.get('order_number'),
             'status': 'OPEN' if active else 'CANCELLING' if plan.get('cancel_requested_ts') else 'PENDING',
@@ -93,7 +108,8 @@ def build(state, snapshot, result, cfg, engine):
             **({**position_monitor.metrics(plan, snapshot.now),
                 'position_guard': position_monitor.guard(
                     plan,snapshot.now,structural_only=engine.oil_risk.enabled(cfg))} if active else {}),
-            'zone': {k:(plan.get('entry_zone') or {}).get(k) for k in ('kind','low','high','timeframe','known_ts')},
+            'zone': {**{k:zone.get(k) for k in ('kind','low','high','timeframe','known_ts')}, 'origin_ts':origin},
+            'liquidity':liquidity_lines,
         })
 
     analysis = result.get('analysis', {})
@@ -449,7 +465,10 @@ def build(state, snapshot, result, cfg, engine):
                 'schema':1, 'missed_target_r':engine.bzu_policy.MISSED_TARGET_R,
                 'browser_replace_atr':1., 'market_band_atr':engine.scanner.MARKET_IMPULSE_BAND_ATR,
                 'market_min_rr':engine.scanner.MARKET_IMPULSE_MIN_RR,
-                'limit_min_rr':engine.scanner.LIMIT_NEW_MIN_RR, 'market_touch_atr':engine.scanner.MARKET_TOUCH_ATR, 'risk_floor':oil_risk.STOP_FLOOR,
+                'limit_min_rr':engine.scanner.LIMIT_NEW_MIN_RR,
+                'market_touch_atr':engine.scanner.BROWSER_MARKET_TOUCH_ATR,
+                'limit_approach_atr':engine.scanner.BROWSER_LIMIT_APPROACH_ATR,
+                'risk_floor':oil_risk.STOP_FLOOR,
                 'risk_cap':oil_risk.STOP_CAP, 'ttl_ms':engine.bzu_policy.PENDING_LIMIT_TTL_MS,
                 'worker_interval_ms':int(os.getenv('BZU_WORKER_INTERVAL_MS','0')),
                 'uncertain':sum(bool(view.get('reconciliation')) for _,view in engine.slot_views(state)),

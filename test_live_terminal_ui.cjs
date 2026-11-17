@@ -37,7 +37,7 @@ const series={setData(data){chartCalls.data=data;},update(){},applyOptions(){},p
   createPriceLine(options){priceLines.push(options);return options;},removePriceLine(line){priceLines.splice(priceLines.indexOf(line),1);},
   attachPrimitive(primitive){primitive.attached({requestUpdate(){}});chartCalls.primitive=primitive;}};
 ctx.window.LightweightCharts={CandlestickSeries:{},LineStyle:{Dashed:2,Solid:0},createChart(){return {addSeries:()=>series,
-  timeScale:()=>({fitContent(){},timeToCoordinate:()=>0}),priceScale:()=>({applyOptions(){}})};}};
+  timeScale:()=>({fitContent(){},timeToCoordinate:t=>200+(t-clock.value/1000)/30}),priceScale:()=>({applyOptions(){}})};}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('live_terminal.js','utf8'),ctx);
 const run=source=>vm.runInContext(source,ctx),text=id=>nodes.get(id).textContent;
 const now=clock.value;
@@ -47,7 +47,9 @@ const zone=(id,side,low,high,entry)=>({id,kind:side===1?'MOMENTUM_STAIRCASE_15M'
 const long=zone('long',1,99.60,99.71,99.66),short=zone('short',-1,100.50,100.80,100.55),far={...zone('far',-1,103,103.2,103.1),actionable:false};
 const order={id:'limit-1',number:7,status:'PENDING',side:1,type:'LIMIT',setup:'MOMENTUM_STAIRCASE_15M',entry:99.66,stop:99.25,
  tp1:100.24,tp2:100.75,risk:.41,score:74,grade:'A',be_trigger:100.24,be_stop:99.68,tp1_fraction:.5,remaining:1,
- effective_ts:now-60000,expires_ts:now+42*60000,filled_ts:null};
+ placed_ts:now-60000,effective_ts:now-60000,
+ zone:{kind:'DEMAND_OB',timeframe:'15m',low:99.52,high:99.7,origin_ts:now-45*60000},
+ liquidity:{bsl:{price:100.82},ssl:{price:99.16}},expires_ts:now+42*60000,filled_ts:null};
 const fixture={schema:1,cockpit_schema:4,primary_bias:0,min_structural_spread:.65,radar:{LONG:long,SHORT:short},instrument:'BZ-USDT-SWAP',tick:.01,snapshot_ts:now,status:'READY',price:99.84,orders:[],
  candidates:[long,short],zones:[long,short,far],recent_events:[{kind:'CANCELLED',side:1,entry:99.66,ts:now-60000,
  reason_text:'ціна відійшла без тесту'}],candles:{},daily:{entries:2,net_r:1.1},market_regime:'RANGE'};
@@ -57,7 +59,7 @@ ctx.fixtureBackup=cleanFixture;
 
 (async()=>{
  await new Promise(resolve=>setImmediate(resolve));
- run(`state={...fixtureBackup,primary_bias:-1,price:89.54,candidates:[
+ run(`state={...fixtureBackup,market_regime:'BEARISH_ACTIVE',primary_bias:-1,price:89.54,candidates:[
     {id:'bad-rr',kind:'TURTLE_SOUP',side:-1,entry:89.54,stop:90.19,tp1:89.48,tp2:88,
      score:95,actionable:true,timeframe:'15m'},
     {id:'bad-score',kind:'FVG_BEAR',side:-1,entry:89.64,stop:90.29,tp1:88.60,tp2:88.3,
@@ -68,14 +70,16 @@ ctx.fixtureBackup=cleanFixture;
      score:80,actionable:true,timeframe:'15m',low:89.7,high:89.8},
     {...fixtureBackup.candidates[0],entry:89.50,stop:88.85,tp1:90.5,tp2:91}
  ]};stateError=false;quote={price:89.54,ts:Date.now()};render();`);
- assert.match(text('state-title'),/SHORT @ 89.71/);
+ assert.match(text('state-title'),/SHORT .*@ 89.71/);
  assert.match(text('tactical-focus'),/ОЧІКУЄМО SHORT/);
- assert.match(text('radar-primary'),/89.71.*90.36.*88.73/);
+ assert.equal(nodes.get('radar-primary').hidden,true);
+ assert.match(text('zones'),/89.71.*90.36.*88.73.*Чекаємо підходу/);
  assert.doesNotMatch(text('state-title')+text('radar-primary')+text('zones'),/89\.48|89\.64|89\.67|0\.09R/);
- assert.deepEqual(priceLines.map(line=>line.price).sort((a,b)=>a-b),[88.3,88.73,89.71,90.36]);
- assert.equal(run('visibleZones()[0].id'),'valid');
+ assert.equal(priceLines.length,0);
+ assert.equal(run('positionBox(tacticalRadar().order)'),null);
+ assert.equal(nodes.get('chart-legend').hidden,true);
  run('quote={price:89.59,ts:Date.now()};render();');
- assert.match(text('state-title'),/SHORT @ 89.71.*0.12/);
+ assert.match(text('state-title'),/SHORT .*@ 89.71.*0.12/);
  assert.ok(!html.includes('Кандидати на вхід'));
  assert.ok(!html.includes('Зони сканера'));
 
@@ -97,10 +101,13 @@ ctx.fixtureBackup=cleanFixture;
    quote={price:99.77,bid:99.76,ask:99.78,ts:Date.now()+1000};advanceBrain(quote,null,[]);render();`);
  assert.equal(run('displayOrders()[0].status'),'OPEN');
  assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*\+0.27R/);
- assert.equal(priceLines.length,4);
+ assert.equal(priceLines.length,6);
+ assert.ok(priceLines.some(l=>l.title.startsWith('BSL')));
+ assert.ok(priceLines.some(l=>l.title.startsWith('SSL')));
+ assert.equal(nodes.get('chart-legend').hidden,false);
  run('state={...state,snapshot_ts:Date.now()+5000,orders:[{...state.orders[0],status:"OPEN",filled_ts:Date.now()+1000}]};syncBrain(state,false);render();');
  assert.equal(run('displayOrders()[0].local'),undefined);
- assert.equal(storage.has(key),false);
+ assert.equal(storage.has(key)?JSON.parse(storage.get(key)).event:null,null);
 
  clock.value+=7000;
  run(`state={...state,snapshot_ts:Date.now()+1000,orders:[],candidates:[],primary_bias:0};
@@ -135,5 +142,79 @@ ctx.fixtureBackup=cleanFixture;
  run(`state={...state,candidates:Array.from({length:4},(_,i)=>({...newLimit,id:'reserve-'+i,
    entry:89.28-i*.04,stop:88.63-i*.04,tp1:90.235-i*.04,tp2:90.8-i*.04}))};render();`);
  assert.equal(nodes.get('zones').children.length,3);
- console.log('PASS: tactical radar, structural entry, R:R, browser reload, MARKET entry and protected stop.');
+
+ // Check the canvas primitive, including draw order, both boxes and the pending marker.
+ run(`history=Array.from({length:9},(_,i)=>({time:Math.floor(Date.now()/900000)*900-(8-i)*900,
+    open:90,high:91,low:89,close:90}));currentBar=undefined;
+   const marked={...orderFixture,status:'PENDING',entry:90.,stop:90.65,tp1:89.35,tp2:88.8,
+     side:-1,risk:.65,placed_ts:Date.now()-15*60000,expires_ts:Date.now()+60000,
+     zone:{kind:'SUPPLY_OB',timeframe:'15m',low:90.12,high:90.48,origin_ts:Date.now()-45*60000}};
+   brain.orders=[marked];brain.sourceTs=state.snapshot_ts;render();`);
+ const boxes=[], marks=[];
+ const context={save(){},restore(){},beginPath(){},arc(...args){marks.push(args);},stroke(){},fill(){},
+   fillRect(...args){boxes.push([this.fillStyle,...args]);},fillText(){}};
+ const target={useMediaCoordinateSpace(cb){cb({context,mediaSize:{width:800,height:1800}});}};
+ chartCalls.primitive.paneViews()[0].renderer().draw(target);
+ assert.equal(boxes.length,3);
+ assert.match(boxes[0][0],/167,176,191/);
+ assert.match(boxes[1][0],/244,102,125/);
+ assert.match(boxes[2][0],/47,202,179/);
+ assert.ok(boxes[0][1]<boxes[1][1]);
+ assert.equal(marks.length,1);
+ run('brain.orders=[];render();');
+ boxes.length=0;marks.length=0;
+ chartCalls.primitive.paneViews()[0].renderer().draw(target);
+ assert.equal(boxes.length,0);
+ assert.equal(marks.length,0);
+ assert.equal(priceLines.length,0);
+
+ // Cold-start autonomous OB scan with the ledger unavailable.
+ clock.value=Date.parse('2026-11-17T08:06:00Z');
+ run(`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));state=undefined;quote=undefined;
+   bootstrapLiveBrain();render();`);
+ const quarter=900000, closedAt=Math.floor(clock.value/quarter)*quarter;
+ const m15=Array.from({length:120},(_,i)=>{
+   const ts=closedAt-(120-i)*quarter;
+   if(i===90) return [ts,89.84,91.45,89.70,89.83,100,0,0,'1'];
+   if(i===109||i===110) return [ts,89.82,90.32,89.69,89.82,100,0,0,'1'];
+   if(i===118) return [ts,89.88,89.95,89.64,89.71,100,0,0,'1'];
+   if(i===119) return [ts,89.71,90.29,89.65,90.22,160,0,0,'1'];
+   return [ts,89.82,90.00,89.69,89.82,100,0,0,'1'];
+ });
+ let last=90.30, ask=90.31, ts=clock.value;
+ const candleCalls=[];
+ ctx.fetch=async url=>{
+   if(url.includes('/ticker')) return {ok:true,json:async()=>({code:'0',data:[{
+     instId:'BZ-USDT-SWAP',last:String(last),askPx:String(ask),bidPx:String(ask-.02),ts:String(ts)
+   }]})};
+   if(url.includes('/candles?')) {
+     const bar=new URL(url).searchParams.get('bar');
+     candleCalls.push(bar);
+     return {ok:true,json:async()=>({code:'0',data:bar==='15m'?m15:[]})};
+   }
+   return {ok:false,status:503};
+ };
+ await run('refreshLiveBrain()');
+ assert.equal(run('state.snapshot_ts'),0);
+ assert.equal(run('brain.orders.length'),0);
+ assert.ok(run('brain.rows.some(row=>row.kind==="DEMAND_OB" && !row.activation_ready)'));
+ assert.match(text('zones'),/Зона попиту/);
+ assert.match(text('state-status'),/Real-Time 3s Active/);
+ assert.equal(priceLines.length,0);
+ clock.value+=3000;ts=clock.value;last=90.11;ask=90.12;
+ await run('refreshLiveBrain()');
+ assert.equal(run('brain.orders[0].status'),'PENDING');
+ assert.equal(run('brain.orders[0].entry'),89.95);
+ assert.equal(candleCalls.filter(b=>b==='5m').length,2);
+ assert.equal(candleCalls.filter(b=>b==='15m').length,2);
+ // The same structural OB goes immediately to MARKET when the ask is inside 0.18 ATR.
+ clock.value+=3000;ts=clock.value;last=89.97;ask=89.98;
+ run(`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));state=undefined;quote=undefined;
+   bootstrapLiveBrain();`);
+ await run('refreshLiveBrain()');
+ assert.equal(run('brain.orders[0].status'),'OPEN');
+ assert.equal(run('brain.orders[0].order_type'),'MARKET');
+ assert.equal(run('brain.orders[0].entry'),89.98);
+ assert.equal(nodes.get('state-banner').dataset.positionState,'ENTERED');
+ console.log('PASS: FLAT radar, PAPER storage, position boxes and autonomous MARKET/LIMIT without a ledger.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

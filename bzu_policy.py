@@ -146,7 +146,7 @@ def zone_for(anchor, snapshot, cfg, engine):
         if gap > max(.5*a, 3*cfg.tick):
             continue
         choices.append((gap, -known, {'low':zone.low, 'high':zone.high,
-            'known_ts':known, 'kind':zone.kind, 'timeframe':tf}))
+            'known_ts':known, 'origin_ts':zone.created_ts, 'kind':zone.kind, 'timeframe':tf}))
     if choices:
         return min(choices, key=lambda x:x[:2])[2]
     # A level-only setup remains scannable, but cannot earn the 40 OB/FVG points.
@@ -201,7 +201,7 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
     rr1 = side * (tp1 - entry) / risk
     if organic:
         if rr1 < min_room-1e-8:
-            return None, 'RR_BELOW_1_35' if active else 'LIMIT_RR_BELOW_1_40'
+            return None, 'RR_BELOW_1_35'
         if not oil_risk.target_range_valid(rr1,rr2):
             return None, 'ORGANIC_TARGET_RANGE'
         if rr1 <= (entry * entry_fee + tp1 * exit_fee) / risk:
@@ -515,8 +515,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if (oil and market_trigger and scanner.touch_only_market_zone(zone)
             and abs(quote-entry)>scanner.MARKET_TOUCH_ATR*a15+1e-8):
         market_trigger = None
-    if oil and not market_trigger and not reaction_only and anchor.setup_type != 'SESSION_MEAN_RECLAIM':
-        market_trigger = scanner.instant_touch_trigger(snapshot,side,zone,entry,risk,a15,cfg.tick)
+    touch = (scanner.instant_touch_trigger(snapshot,side,zone,entry,risk,a15,cfg.tick)
+             if oil and not reaction_only and anchor.setup_type != 'SESSION_MEAN_RECLAIM' else None)
+    if not market_trigger or touch and zone['kind']==scanner.wave.EMA9_SURF:
+        market_trigger = touch
     range_market_gate = (scenario_planner.market_range_error(snapshot,cfg,engine,side,quote,zone,regime)
                          if oil and market_trigger else None)
     if range_market_gate:
@@ -592,7 +594,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 context, snapshot, anchor, cfg, engine, quote, quote_stop, side, a15, active=True,
                 zone=zone, trend=target_trend, market_trigger=market_trigger, reference_geometry=reference)
         if geometry is None:
-            if not can_wait or impulse_market or instant_touch or scanner.touch_only_market_zone(zone):
+            if not can_wait or touch or impulse_market or instant_touch or scanner.touch_only_market_zone(zone):
                 return None, why
             market_trigger = None
         else:
