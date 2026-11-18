@@ -104,7 +104,8 @@ def full_exit_text(plan):
 
 def close_reason(trade):
     hits = [name for name in ('TP1', 'TP2', 'TP3') if trade.get(name.lower() + '_hit')]
-    reason = {'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
+    reason = {'LIQUIDITY_REJECTION_EXIT': 'захист після зняття ліквідності',
+              'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
               'TAKE_PROFIT': 'тейк-профіт',
               'CLOSED_ROUND_TRIP_BE': 'повернення до входу після піку',
               'CLOSED_REVERSAL_FLIP_PROFIT': 'зафіксовано прибуток перед переворотом',

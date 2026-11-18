@@ -337,3 +337,19 @@ def stop_and_reverse(events, trades):
         return None
     return {'decision':'STOP_AND_REVERSE_SCAN','side':-closed['side'],
             'closed_order_id':closed['id'],'closed_ts':closed['closed_ts']}
+
+
+def front_run_replacement(pending, candidates, snapshot, cfg, engine):
+    """Release a paper limit only after a complete no-fill audit and final admission."""
+    import strategy_direct_entries
+
+    for candidate in candidates:
+        old = next((plan for plan in pending if plan['id'] == candidate.get('replaces_order_id')), None)
+        if (old is None or old.get('cancel_requested_ts') or old.get('execution') != 'PAPER_SIGNAL'
+                or candidate.get('side') != old['side'] or not engine.scanner.market_plan(candidate)):
+            continue
+        proof = strategy_direct_entries.front_run_trigger(old, snapshot, cfg, engine)
+        if (proof and proof['known_ts'] == candidate['market_trigger'].get('known_ts')
+                and abs(proof['price'] - candidate['entry']) < cfg.tick / 2):
+            return {'decision': 'FRONT_RUN_MARKET', 'replaced_id': old['id'], 'candidate_id': candidate['id']}
+    return None

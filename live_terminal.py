@@ -95,6 +95,7 @@ def build(state, snapshot, result, cfg, engine):
             'min_score': engine.scanner.min_plan_score(plan.get('trend_rel'), plan.get('market_trigger')),
             'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
+            'liquidity_protection': plan.get('liquidity_protection'),
             'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
             'tp1_fraction': plan.get('partials', {}).get('TP1', 1.),
             'remaining': plan.get('remaining', 1.), 'tp1_hit': position_monitor.partial_taken(plan),
@@ -108,7 +109,7 @@ def build(state, snapshot, result, cfg, engine):
             **({**position_monitor.metrics(plan, snapshot.now),
                 'position_guard': position_monitor.guard(
                     plan,snapshot.now,structural_only=engine.oil_risk.enabled(cfg))} if active else {}),
-            'zone': {**{k:zone.get(k) for k in ('kind','low','high','timeframe','known_ts')}, 'origin_ts':origin},
+            'zone': {**{k:zone.get(k) for k in ('kind','low','high','timeframe','known_ts','liquidity_anchor')}, 'origin_ts':origin},
             'liquidity':liquidity_lines,
         })
 

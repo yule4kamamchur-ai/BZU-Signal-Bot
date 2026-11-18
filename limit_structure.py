@@ -289,3 +289,28 @@ def choose_target(targets,entry,risk,buffer,side,cfg):
     intermediate=[t for t in targets if t['distance']-buffer<desired-1e-9]
     barrier=next((t for t in intermediate if t.get('hard_barrier',True)),None)
     return chosen,intermediate,barrier
+
+
+def local_liquidity(snapshot, engine, tick):
+    """Return local pivots still untouched by later observed wicks."""
+    from setup_scanner import closed_five_minutes
+
+    levels = []
+    for rows, step, timeframe in (
+        (closed_five_minutes(snapshot)[-96:], 300_000, '5m'),
+        (closed(snapshot, '15m')[-96:], 900_000, '15m'),
+    ):
+        for point in engine.pivots(rows, strength=2):
+            known = point['known_ts'] + step
+            if known > snapshot.now:
+                continue
+            side = 1 if point['kind'] == 'LOW' else -1
+            later = [bar for bar in rows if bar.ts >= known]
+            minute = [bar for bar in snapshot.candles.get('1m', ())
+                      if bar.confirmed and known <= bar.ts and bar.ts + 60_000 <= snapshot.now]
+            if any(side * ((bar.low if side == 1 else bar.high) - point['level']) <= -tick
+                   for bar in [*later, *minute]):
+                continue
+            levels.append({'side': side, 'level': point['level'], 'known_ts': known,
+                           'timeframe': timeframe, 'kind': 'SSL' if side == 1 else 'BSL'})
+    return levels

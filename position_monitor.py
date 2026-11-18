@@ -351,3 +351,51 @@ def confirmed_m5_structure(snapshot, after, as_of, side, stop, tick):
                         for bar in rows[i + 3:])):
             return right.ts + step
     return None
+
+
+LIQUIDITY_STOP_POLICY = 'LIQUIDITY_SWEEP_REJECTION_070R'
+
+
+def liquidity_protection(position, snapshot, ts, price, cfg, engine):
+    """Arm only after a post-fill liquidity raid and a later closed M5 rejection."""
+    if snapshot is None or partial_taken(position) or position.get('liquidity_protection'):
+        return None
+    from limit_structure import local_liquidity
+    from setup_scanner import closed_five_minutes
+
+    entered = position.get('filled_ts')
+    if entered is None or entered >= ts or position.get('risk', 0) <= 0:
+        return None
+    side, entry, risk = position['side'], position['entry'], position['risk']
+    as_of = replace(snapshot, now=ts)
+    pools = local_liquidity(replace(snapshot, now=entered), engine, cfg.tick)
+    pools = [pool for pool in pools if pool['side'] == -side
+             and 0 < side * (pool['level'] - entry) < risk]
+    bars = [bar for bar in closed_five_minutes(as_of) if bar.ts >= entered]
+    if len(bars) < 2:
+        return None
+    reversal = bars[-1]
+    if ts - reversal.ts - 300_000 >= 300_000:
+        return None
+    prior = bars[:-1]
+    if reversal.ts != prior[-1].ts + 300_000:
+        return None
+    peak = max(side * ((bar.high if side == 1 else bar.low) - entry) / risk for bar in prior)
+    if peak < .70 - EPS or side * (reversal.close - reversal.open) >= -cfg.tick:
+        return None
+    for pool in sorted(pools, key=lambda row: side * (row['level'] - entry), reverse=True):
+        swept = next((bar for bar in prior if
+                      side * ((bar.high if side == 1 else bar.low) - pool['level']) >= cfg.tick), None)
+        if swept is None or side * (reversal.close - pool['level']) >= -cfg.tick:
+            continue
+        costs = engine.execution_config(position, cfg)
+        cost_stop = engine.bzu_policy.breakeven_price(position, costs, engine)
+        stop = engine.round_tick(round(entry + side * .05 * risk, 10), cfg.tick, up=side == 1)
+        stop = max(stop, cost_stop) if side == 1 else min(stop, cost_stop)
+        if side * (stop - position['stop']) <= EPS:
+            return None
+        return {'policy': LIQUIDITY_STOP_POLICY, 'price': stop, 'effective_ts': ts,
+                'known_ts': reversal.ts + 300_000, 'pool': pool,
+                'sweep_ts': swept.ts + 300_000, 'peak_r': peak,
+                'exit_now': side * (price - stop) <= cfg.tick}
+    return None

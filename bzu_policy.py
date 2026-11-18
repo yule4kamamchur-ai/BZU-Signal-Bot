@@ -413,6 +413,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             # Keep the original structural invalidation and carry the witnessed
             # execution band through router and dashboard geometry validation.
             zone = {**zone,'execution_low':min(low,entry),'execution_high':max(high,entry)}
+        original_risk = max(oil[0]['floor'], side * (entry - structural))
+        liquidity_entry = strategy_direct_entries.liquidity_anchor(
+            snapshot, zone, side, entry, original_risk, a15, cfg.tick, engine)
+        if liquidity_entry:
+            entry, entry_basis = liquidity_entry['entry'], 'LIQUIDITY_ANCHORED_LIMIT'
+            structural = min(structural, entry) if side == 1 else max(structural, entry)
+            zone = {**zone, 'execution_low': min(low, entry), 'execution_high': max(high, entry),
+                    'liquidity_anchor': liquidity_entry}
         stop, risk, organic_risk = oil_risk.stop_geometry(
             entry, structural, side, *oil, cfg.tick, engine)
         inside = low <= snapshot.price <= high
@@ -519,6 +527,13 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
              if oil and not reaction_only and anchor.setup_type != 'SESSION_MEAN_RECLAIM' else None)
     if not market_trigger or touch and zone['kind']==scanner.wave.EMA9_SURF:
         market_trigger = touch
+    decay = engine.quality.consolidation_decay(zone, snapshot, side, cfg.tick, engine)
+    diag['zone_decay'] = decay
+    if zone.get('liquidity_anchor'):
+        market_trigger = touch = None
+    if decay['requires_confirmation'] and (not market_trigger or
+            market_trigger['pattern'] == 'INSTANT_TOUCH_MARKET_FILL'):
+        return None, 'ZONE_CONSOLIDATION_DECAY'
     range_market_gate = (scenario_planner.market_range_error(snapshot,cfg,engine,side,quote,zone,regime)
                          if oil and market_trigger else None)
     if range_market_gate:
@@ -816,6 +831,16 @@ def protective_amendment(position):
     amendment = position.get('pending_stop')
     if not amendment:
         return None
+    if amendment.get('policy') == 'LIQUIDITY_SWEEP_REJECTION_070R':
+        proof = position.get('liquidity_protection') or {}
+        known, swept = proof.get('known_ts', 0), proof.get('sweep_ts', 0)
+        price, effective = amendment.get('price'), amendment.get('effective_ts', 0)
+        valid = (proof.get('policy') == amendment['policy'] and proof.get('peak_r', 0) >= .70 - 1e-8
+                 and (position.get('filled_ts') or 0) < swept < known <= effective
+                 and isinstance(price, (float, int)) and math.isfinite(price)
+                 and abs(price - proof.get('price', 0)) < 1e-8
+                 and position['side'] * (price - position['entry']) >= .05 * position['risk'] - 1e-8)
+        return amendment if valid else None
     partial_ts = partial_tp1_time(position)
     if amendment.get('policy') == SCALE_STOP_POLICY and position.get('scale_policy') == SCALE_POLICY:
         effective, price = amendment.get('effective_ts'), amendment.get('price')

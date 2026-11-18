@@ -337,14 +337,19 @@ def confluence(plan, snapshot, proof, cfg, engine):
                                             + 10 * int(relative_volume >= 1.25)
                                             + 5 * int(7 <= hour < 21))}
         trigger = trigger and valid_risk
-    score = min(100, sum(parts.values()))
+    decay = consolidation_decay(zone, snapshot, plan['side'], cfg.tick, engine)
+    parts['consolidation_decay'] = -decay['penalty']
+    if decay['requires_confirmation'] and (not scanner.market_plan(plan) or
+            (plan.get('market_trigger') or {}).get('pattern') == 'INSTANT_TOUCH_MARKET_FILL'):
+        trigger = False
+    score = max(0, min(100, sum(parts.values())))
     threshold = (scanner.min_plan_score(relation, plan.get('market_trigger'),structural=True)
                  if scanner.oil_risk.is_organic(plan) else
                  scanner.min_plan_score(relation, plan.get('market_trigger')) if relation else max(60, cfg.min_score))
     active = plan.get('market_regime', {}).get('active_structure', {}).get('side')
     countertrend = active != plan['side'] and any(
         plan.get(key) == -plan['side'] for key in ('htf_1h', 'htf_4h'))
-    return {'score': score, 'components': parts, 'route': route,
+    return {'score': score, 'zone_decay': decay, 'components': parts, 'route': route,
             'route_scores': {name: sum(points.values()) for name, points, _ in routes},
             'volume_footprint': volume, 'session_vwap': vwap, 'accepted': trigger and score >= threshold,
             'rating': 'A+' if score >= 82 else 'A' if relation == scanner.REVERSAL_RELATION and score >= 75 else 'B',
@@ -560,3 +565,34 @@ def validation_status(trades: list[dict], independent_trades: list[dict]|None=No
             'target_confirmed_on_this_period':confidence_support,'entry_gate_enabled':False,
             'status':'OBSERVED_GOAL_MET_NOT_A_GUARANTEE' if observed_goal_met else 'GOAL_NOT_YET_MET',
             'future_performance_guaranteed':False}
+
+
+def consolidation_decay(zone, snapshot, side, tick, engine):
+    """Count contiguous closed M5 tests and require a fresh departure/retest."""
+    from setup_scanner import closed_five_minutes
+
+    low, high = zone.get('source_low', zone.get('low')), zone.get('source_high', zone.get('high'))
+    if low is None or high is None:
+        return {'penalty': 0, 'requires_confirmation': False, 'bars': 0}
+    bars = [bar for bar in closed_five_minutes(snapshot)
+            if bar.ts >= (zone.get('known_ts') or snapshot.now)]
+    band = max(2 * tick, .10 * engine.atr(closed_rows(snapshot, '15m')))
+    run = longest = 0
+    previous = None
+    for bar in bars:
+        near = bar.low <= high + band and bar.high >= low - band
+        run = (run + 1 if previous is not None and bar.ts == previous + 300_000 else 1) if near else 0
+        longest = max(longest, run)
+        previous = bar.ts
+    confirmed = False
+    if longest >= 12 and len(bars) >= 2:
+        first, last = bars[-2:]
+        edge = high if side == 1 else low
+        confirmed = (last.ts == first.ts + 300_000 and snapshot.now - last.ts - 300_000 < 300_000
+                     and side * (first.close - edge) > band
+                     and last.low <= high + band and last.high >= low - band
+                     and side * (last.close - edge) > tick
+                     and side * (last.close - last.open) > tick)
+    return {'penalty': 15 if longest >= 15 else 10 if longest >= 12 else 0,
+            'requires_confirmation': longest >= 12 and not confirmed,
+            'confirmed': confirmed, 'bars': longest}

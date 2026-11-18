@@ -158,3 +158,105 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     else:
         entry, basis = (high if side==1 else low) + side*.04, 'ZONE_EDGE_BUFFER'
     return engine.round_tick(round(entry + tick/2, 10), tick), basis
+
+
+def liquidity_anchor(snapshot, zone, side, entry, risk, atr, tick, engine):
+    """Move an unplaced passive entry beyond a nearby adverse liquidity pool."""
+    from limit_structure import local_liquidity
+
+    if atr <= 0 or risk <= 0:
+        return None
+    pools = [pool for pool in local_liquidity(snapshot, engine, tick)
+             if pool['side'] == side and tick < side * (entry - pool['level']) < min(.45 * atr, .50 * risk)]
+    pool = min(pools, key=lambda row: abs(entry - row['level']), default=None)
+    if not pool:
+        return None
+    price = engine.round_tick(round(pool['level'] - side * max(.03, tick), 10), tick, up=side == -1)
+    return {'entry': price, 'original_entry': entry, 'pool': pool, 'known_ts': snapshot.now,
+            'policy': 'LIQUIDITY_ANCHORED_LIMIT'}
+
+
+def front_run_trigger(plan, snapshot, cfg, engine):
+    """Closed M5 displacement after an observed near miss, with no fill interval."""
+    from setup_scanner import closed_five_minutes
+
+    side, entry, risk = plan['side'], plan['entry'], plan['risk']
+    placed = plan.get('effective_ts', plan['placed_ts'])
+    if (risk <= 0 or plan.get('cancel_requested_ts') or not snapshot.trusted
+            or not 0 <= snapshot.now - snapshot.ticker_ts <= 15_000
+            or not 0 < snapshot.bid <= snapshot.ask):
+        return None
+    rows = [bar for bar in closed_five_minutes(snapshot) if bar.ts >= placed]
+    if len(rows) < 2 or snapshot.now - rows[-1].ts - 300_000 >= 300_000:
+        return None
+    first, last = rows[-2:]
+    if last.ts != first.ts + 300_000:
+        return None
+    extreme = lambda bar: bar.low if side == 1 else bar.high
+    if not 0 < side * (extreme(first) - entry) <= .25 * risk:
+        return None
+    body = side * (last.close - last.open)
+    span = max(last.high - last.low, cfg.tick)
+    boundary = first.high if side == 1 else first.low
+    if body < max(3 * cfg.tick, .60 * engine.atr(rows[:-1])) or body < .60 * span:
+        return None
+    if side * (last.close - boundary) < cfg.tick:
+        return None
+    # Audit every minute since placement, including the partial live minute.
+    minute = {bar.ts: bar for bar in snapshot.candles.get('1m', ())
+              if bar.confirmed and bar.ts >= placed // 60_000 * 60_000 and bar.ts + 60_000 <= snapshot.now}
+    start = placed // 60_000 * 60_000
+    end = snapshot.now // 60_000 * 60_000
+    if any(ts not in minute for ts in range(start, end, 60_000)):
+        return None
+    extremes = [extreme(bar) for bar in minute.values()]
+    if snapshot.now > end:
+        current = snapshot.metadata.get('current_candle_1m') or {}
+        if current.get('ts') != end or current.get('low' if side == 1 else 'high') is None:
+            return None
+        extremes.append(current['low' if side == 1 else 'high'])
+    if not extremes or any(side * (price - entry) <= 0 for price in extremes):
+        return None
+    quote = snapshot.ask if side == 1 else snapshot.bid
+    new_risk = side * (quote - plan['stop'])
+    if (side * (quote - entry) <= 0 or quote <= 0 or new_risk <= 0
+            or side * (plan['tp1'] - quote) / new_risk < 1.35 - 1e-8
+            or abs(quote - last.close) > .65 * max(cfg.tick, engine.atr(rows))):
+        return None
+    return {'pattern': 'MARKET_FRONT_RUN_CATCH', 'known_ts': last.ts + 300_000,
+            'limit_entry': entry, 'initial_risk': risk, 'price': quote, 'near_ts': first.ts + 300_000}
+
+
+def front_run_candidate(plan, snapshot, cfg, engine):
+    """Reprice the incumbent's full plan before competing for the execution slot."""
+    import copy
+    trigger = front_run_trigger(plan, snapshot, cfg, engine)
+    if trigger is None:
+        return None
+    quote = trigger['price']
+    risk = plan['side'] * (quote - plan['stop'])
+    profile = plan.get('organic_risk') or {}
+    if not profile.get('floor', 0) <= risk <= profile.get('cap', float('inf')):
+        return None
+    trigger['max_distance'] = abs(quote - plan['entry'])
+    candidate = copy.deepcopy(plan)
+    candidate.update(
+        id=engine.ident('FRONT_RUN', plan['id'], trigger['known_ts']),
+        event_key=engine.ident('FRONT_RUN_EVENT', plan['id'], trigger['known_ts']),
+        parent_keys=[], replaces_order_id=plan['id'], entry=quote, risk=risk,
+        order_type='MARKET', action_type='ACTIVE_ENTRY', execution_source='ACTIVE_ENTRY',
+        market_trigger=trigger, entry_basis='EXECUTABLE_QUOTE', status='PENDING',
+        effective_ts=snapshot.now, placed_ts=snapshot.now, last_bar=-1,
+        entry_fee_rate=engine.fee_rate(cfg, 'taker'),
+        entry_legs=[{'name': 'ACTIVE', 'price': quote, 'fraction': 1., 'status': 'PENDING'}],
+        rr1=plan['side']*(plan['tp1']-quote)/risk,
+        rr2=plan['side']*(plan['tp2']-quote)/risk,
+    )
+    for key in ('order_number', 'display_id', 'zone_quality', 'confluence', 'direct_entry'):
+        candidate.pop(key, None)
+    candidate['organic_risk'] = {**profile, 'entry': quote}
+    candidate['gross_rr'] = candidate['rr3'] = candidate['rr2']
+    candidate['costs_r'] = engine.fees_r(quote, candidate['tp2'], risk, cfg)
+    candidate['net_rr'] = candidate['gross_rr'] - candidate['costs_r']
+    candidate['breakeven_price'] = engine.bzu_policy.breakeven_price(candidate, cfg, engine)
+    return candidate

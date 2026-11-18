@@ -231,6 +231,34 @@ ctx.fixtureBackup=cleanFixture;
  assert.deepEqual(flashes,[['rgba(16,185,129,.25)',300],['rgba(239,68,68,.25)',300]]);
  assert.equal(cancelled,1);
 
+ // The autonomous browser applies the same sequential liquidity guard and front-run proof.
+ run(`const at=Math.floor(Date.now()/300000)*300000, step5=300000;
+   for (const side of [1,-1]) {
+     const b=(ts,o,h,l,c)=>({ts,open:side===1?o:200-o,high:side===1?h:200-l,
+       low:side===1?l:200-h,close:side===1?c:200-c,volume:100});
+     const before=[.1,.15,.4,.2,.1].map((h,i)=>b(at-(5-i)*step5,100.,100.+h,99.95,100.05));
+     const after=[b(at,100.,100.8,99.95,100.7),b(at+step5,100.7,100.72,99.98,100.2)];
+     brain.series={'15m':[],'1m':[],'5m':[...before,...after]};
+     const position={...orderFixture,status:'OPEN',entry:100.,side,risk:1.,
+       stop:100.-side,filled_ts:at,tp1_hit:false};
+     brainProtectLiquidity(position,{ts:at+2*step5},100.+side*.2);
+     if (Math.abs(position.stop-(100.+side*.05))>1e-8) throw new Error('Liquidity stop missing');
+     const bare={...position,stop:100.-side,liquidity_protection:null};
+     brain.series['5m']=after;
+     brainProtectLiquidity(bare,{ts:at+2*step5},100.+side*.2);
+     if (bare.stop!==100.-side) throw new Error('Numeric profit alone armed stop');
+     const first=b(at,100.25,100.30,100.10,100.15);
+     const last=b(at+step5,100.15,100.65,100.14,100.62);
+     const pending={...orderFixture,side,entry:100.,risk:1.,stop:100.-side,placed_ts:at,
+       tp1:100.+side*3.,tp2:100.+side*4.,qualification_tp1:100.+side*3.};
+     brain.series={'5m':[first,last],'1m':Array.from({length:10},(_,i)=>
+       b(at+i*60000,100.25,100.30,100.10,100.25))};
+     state.brain_config={...state.brain_config,risk_floor:.65,risk_cap:2.};
+     const live={ts:at+2*step5,ask:side===1?100.64:99.38,bid:side===1?100.62:99.36};
+     if (!brainFrontRun(pending,live,{atr:.5})) throw new Error('Front-run proof missing');
+     brain.series['1m'][0]=b(at,100.25,100.30,99.99,100.25);
+     if (brainFrontRun(pending,live,{atr:.5})) throw new Error('Filled limit replaced');
+   }`);
  // Cold-start autonomous OB scan with the ledger unavailable.
  clock.value=Date.parse('2026-11-17T08:06:00Z');
  run(`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));state=undefined;quote=undefined;

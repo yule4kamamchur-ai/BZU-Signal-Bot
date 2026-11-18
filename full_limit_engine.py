@@ -1433,6 +1433,18 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
 
 def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
     engine = sys.modules[__name__]
+    protection = position_monitor.liquidity_protection(position, snapshot, ts, price, cfg, engine)
+    if protection:
+        position['liquidity_protection'] = protection
+        if protection['exit_now']:
+            close_at_observed_price(state, position, price, ts, 'LIQUIDITY_REJECTION_EXIT', cfg)
+            return
+        existing = bzu_policy.protective_amendment(position)
+        if not existing or position['side'] * (protection['price'] - existing['price']) > 0:
+            position.update(pending_stop={key: protection[key] for key in ('price', 'effective_ts', 'policy')},
+                            breakeven_price=protection['price'], breakeven_armed=True, be_confirmed_ts=ts)
+            emit(state, 'BREAKEVEN_ARMED', ts, order_id=position['id'], stop=protection['price'],
+                 reason=position_monitor.LIQUIDITY_STOP_POLICY)
     position_monitor.observe_structure(position, snapshot, ts, cfg, engine)
     decision = position_monitor.evaluate_active_trade_lifecycle(position, ts, price, cfg, engine)
     if decision['should_exit']:
@@ -1477,6 +1489,11 @@ def check_quote_exits(state, snapshot, cfg):
         if ts < max(closed_through, position.get('filled_ts') or 0):
             continue
         price = snapshot.bid if position['side'] == 1 else snapshot.ask
+        bzu_policy.apply_protective_stop(position, ts)
+        if position.get('liquidity_protection') and position['side'] * (price - position['stop']) <= 0:
+            close_at_observed_price(view, position, price, ts, 'LIQUIDITY_REJECTION_EXIT', cfg)
+            store_slot(state, number, view)
+            continue
         assessment = position_monitor.review(position, as_of)
         position.update(position_regime=regime.get('state', 'UNKNOWN'),
                         position_regime_side=policy.regime_side(regime),
@@ -1811,6 +1828,9 @@ def hold_pending_approach(plan, snapshot, cfg):
 
 
 def pending_scenario_error(plan, snapshot, cfg):
+    decay = quality.consolidation_decay(plan.get('entry_zone') or {}, snapshot, plan['side'], cfg.tick, sys.modules[__name__])
+    if decay['requires_confirmation'] and not (plan.get('entry_zone') or {}).get('liquidity_anchor'):
+        return 'ZONE_CONSOLIDATION_DECAY'
     zone = plan.get('entry_zone')
     if not oil_risk.enabled(cfg) or not zone:
         return None
@@ -2254,6 +2274,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     # Direction is a portfolio decision, NOT 24 unrelated entry permissions.
     # Existing live positions lock direction until they close. Existing pending
     # orders are canceled causally before any opposite entry can be submitted.
+    if single_limit and not manual_block and not analysis['health'] and not active_plans(state):
+        import strategy_direct_entries
+        front_runs = [candidate for plan in pending_plans(state)
+                      if (candidate := strategy_direct_entries.front_run_candidate(plan, s, cfg, sys.modules[__name__]))]
+        analysis.setdefault('plans', []).extend(front_runs)
     valid=sorted((p for p in analysis.get('plans',[])
                   if p.get('readiness_pct',100.)>=100.),
                  key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
@@ -2322,7 +2347,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
                 proof_quote = quote
-                if scanner.structural_pullback(zone) and trigger.get('pattern') not in ('TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL'):
+                if scanner.structural_pullback(zone) and trigger.get('pattern') not in ('TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH'):
                     level = trigger.get('limit_entry')
                     distal = zone.get('low' if side==1 else 'high')
                     a15 = atr(policy.closed(s,'15m'))
@@ -2335,7 +2360,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     continue
                 if scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
                     continue
-                if trigger.get('pattern')=='INSTANT_TOUCH_MARKET_FILL':
+                if trigger.get('pattern')=='MARKET_FRONT_RUN_CATCH':
+                    incumbent = next((p for p in pending_plans(state) if p['id'] == candidate.get('replaces_order_id')), None)
+                    proof = strategy_direct_entries.front_run_trigger(incumbent,s,cfg,sys.modules[__name__]) if incumbent else None
+                elif trigger.get('pattern')=='INSTANT_TOUCH_MARKET_FILL':
                     proof = scanner.instant_touch_trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
                                                          atr(policy.closed(s,'15m')),cfg.tick)
                 elif trigger.get('pattern')=='TREND_CONTINUATION_MARKET':
@@ -2366,7 +2394,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
                 candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN or
-                trigger.get('pattern') in ('M15_TREND_ZONE','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL') else
+                trigger.get('pattern') in ('M15_TREND_ZONE','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH') else
                 trigger.get('limit_entry',candidate['entry']),zone,
                 trend=candidate.get('trend_rel')=='WITH_TREND' or scanner.continuation_setup(
                     candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')),regime=market)
@@ -2441,6 +2469,19 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             valid = [p for p in unused if p['id'] == replacement['candidate_id']]
             active = []
             action = 'WATCH'
+    front_decision = (arbitration.front_run_replacement(pending,valid,s,cfg,sys.modules[__name__])
+                      if can_place and not active and not unresolved else None)
+    if front_decision:
+        front_run = next(p for p in valid if p['id'] == front_decision['candidate_id'])
+        incumbent = next((p for p in pending if p['id'] == front_decision['replaced_id']), None)
+        if incumbent and not incumbent.get('cancel_requested_ts'):
+            # front_run_trigger audited every closed and live minute since placement.
+            park_pending(state, [p for p in pending if p['id'] != incumbent['id']])
+            book = {**state, 'pending': incumbent, 'active': None, 'reconciliation': None}
+            end_order(book,incumbent,'CANCELLED','MARKET_FRONT_RUN_CATCH',s.now)
+            pending = pending_plans(state)
+            valid = [front_run]
+            arbitration_audit = front_decision
     rotation=state.get('portfolio_rotation_intent')
     if rotation and (s.now>rotation.get('expires_ts',0) or active):
         state.pop('portfolio_rotation_intent',None)
@@ -2897,6 +2938,9 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
 
 REASON_UA = {
     MISSED_TARGET_REASON:'рух від входу досяг 0.75R або першої цілі без виконання лімітки',
+    'LIQUIDITY_REJECTION_EXIT':'повернення під знятий пул ліквідності',
+    'ZONE_CONSOLIDATION_DECAY':'тривала консолідація в зоні; чекаємо підтвердження',
+    'MARKET_FRONT_RUN_CATCH':'MARKET після недоходу до ліміту і підтвердженого M5 пробою',
     'CANCELLED_REPLACED_BY_LIVE_SETUP':'новий підтверджений сетап ближче до поточної ціни',
     'DYNAMIC_TREND_TRAILING_REPLACE':'з’явився ближчий підтверджений сетап за трендом',
     'LIMIT_TTL':'вичерпано строк очікування лімітки',

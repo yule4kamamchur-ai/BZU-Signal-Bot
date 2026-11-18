@@ -99,7 +99,7 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
             if (side*(entry-distal)<-1e-8 or
                     side*(entry-trigger['limit_entry'])>trigger['max_distance']+1e-8):
                 return 'MARKET_CHASE_LIMIT'
-        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL'):
+        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH'):
             if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
@@ -110,7 +110,7 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
                 return 'ENTRY_OUTSIDE_ZONE'
         elif not 0 <= side * (entry - proximal) <= MARKET_CHASE_R * risk + 1e-8:
             return 'MARKET_CHASE_LIMIT'
-    elif row.get('entry_basis')=='SHALLOW_M15_RETEST' and row.get('execution_low',low)<=entry<=row.get('execution_high',high):
+    elif row.get('entry_basis') in ('SHALLOW_M15_RETEST','LIQUIDITY_ANCHORED_LIMIT') and row.get('execution_low',low)<=entry<=row.get('execution_high',high):
         pass
     elif not low-1e-8 <= entry <= high+1e-8:
         # Planner front-running of a narrow zone is explicit, bounded and causal.
@@ -275,7 +275,7 @@ def impulse_market_entry(side, quote, reference, atr15, tick):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -588,6 +588,13 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.stop_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     entry, stop, risk, basis, wide, inside = zone_entry_geometry(
         low, high, snapshot.price, structural, side, a, cfg, engine, oil=oil)
+    if oil and not geometry:
+        from strategy_direct_entries import liquidity_anchor
+        anchored = liquidity_anchor(snapshot, zone, side, entry, risk, a, tick, engine)
+        if anchored:
+            entry, basis = anchored['entry'], 'LIQUIDITY_ANCHORED_LIMIT'
+            structural = min(structural, entry) if side == 1 else max(structural, entry)
+            stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)
     profile = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)[2] if oil else None
     floor, cap = (profile['floor'], profile['cap']) if profile else zone_risk_bounds(a, cfg)
     safe = (profile['gate'] is None if profile else floor - 1e-8 <= risk <= cap + 1e-8)
@@ -696,6 +703,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         breakdown = (geometry.get('confluence') or {}).get('components',{})
         if breakdown:
             criteria = [(name,value,True) for name,value in breakdown.items()]
+    import signal_quality
+    decay = signal_quality.consolidation_decay(zone, snapshot, side, tick, engine)
+    if not frozen:
+        score = max(0, score - decay['penalty'])
     import entry_adverse_selection as adverse
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
@@ -703,7 +714,9 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     window = None if market else entry_window(side, snapshot.price, entry, a, cfg,
                           minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only,
                           trend=runner)
-    gate=('EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, trigger['known_ts'] if trigger else known) else
+    gate=('ZONE_CONSOLIDATION_DECAY' if decay['requires_confirmation'] and
+          (not market or (trigger or {}).get('pattern') == 'INSTANT_TOUCH_MARKET_FILL') else
+          'EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, trigger['known_ts'] if trigger else known) else
           'STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
           profile['gate'] if profile and profile['gate'] else
           'RISK_BELOW_FLOOR' if risk < floor - 1e-8 else
@@ -728,7 +741,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         'score_cap':100, 'formation_volume':volume,
         'score_breakdown':[{'criterion':key,'maximum':weight,'earned':weight if passed else 0,'met':bool(passed)}
                            for key,weight,passed in criteria],
-        'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':geometry.get('entry_basis','ENGINE_PLAN') if frozen else basis, 'in_zone':inside,
+        'zone_decay':decay,'freshness':freshness,'atr15':a,'wide_zone':wide,'entry_basis':geometry.get('entry_basis','ENGINE_PLAN') if frozen else basis, 'in_zone':inside,
         'entry_condition':condition, 'm5_breaker':breaker,
         'risk_floor':floor, 'risk_cap':cap, 'target_barrier':barrier, 'organic_risk':profile,
         'target_projection':projection or None, 'reversal_override':reversal,
