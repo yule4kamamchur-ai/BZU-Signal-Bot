@@ -259,6 +259,22 @@ ctx.fixtureBackup=cleanFixture;
      brain.series['1m'][0]=b(at,100.25,100.30,99.99,100.25);
      if (brainFrontRun(pending,live,{atr:.5})) throw new Error('Filled limit replaced');
    }`);
+ // Two closed M15 breaches permit a structural exit only after six quarters.
+ run(`const known=Math.floor(Date.now()/brainQuarter)*brainQuarter;
+   for(const side of [1,-1]) {
+     const term=(x)=>100+side*x;
+     const history=Array.from({length:120},(_,i)=>{
+       const down=i===118?-.40:i===119?-.50:0;
+       const wick=i===114?-.20:down-.05;
+       return {ts:known-(120-i)*brainQuarter,open:term(down),close:term(down),
+         high:side===1?term(down+.05):term(wick),low:side===1?term(wick):term(down+.05),volume:100};
+     });
+     brain.series={'15m':history,'1m':[]};
+     const held={side,filled_ts:known-6*brainQuarter,tp1_hit:false};
+     if (!brainAdverseClosePair(held,{ts:known},term(-.51))) throw new Error('Closed M15 pair missed');
+     if (brainAdverseClosePair(held,{ts:known-1},term(-.51))) throw new Error('Exit before six quarters');
+     if (brainAdverseClosePair(held,{ts:known},term(-.10))) throw new Error('Recovered structure still closed');
+   }`);
  // Cold-start autonomous OB scan with the ledger unavailable.
  clock.value=Date.parse('2026-11-17T08:06:00Z');
  run(`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));state=undefined;quote=undefined;
@@ -272,7 +288,7 @@ ctx.fixtureBackup=cleanFixture;
    if(i===119) return [ts,89.71,90.29,89.65,90.22,160,0,0,'1'];
    return [ts,89.82,90.00,89.69,89.82,100,0,0,'1'];
  });
- let last=90.30, ask=90.31, ts=clock.value;
+ let last=90.30, ask=90.31, ts=clock.value, m1=[];
  const candleCalls=[];
  ctx.fetch=async url=>{
    if(url.includes('/ticker')) return {ok:true,json:async()=>({code:'0',data:[{
@@ -281,7 +297,7 @@ ctx.fixtureBackup=cleanFixture;
    if(url.includes('/candles?')) {
      const bar=new URL(url).searchParams.get('bar');
      candleCalls.push(bar);
-     return {ok:true,json:async()=>({code:'0',data:bar==='15m'?m15:[]})};
+     return {ok:true,json:async()=>({code:'0',data:bar==='15m'?m15:bar==='1m'?m1:[]})};
    }
    return {ok:false,status:503};
  };
@@ -298,10 +314,19 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('brain.orders[0].entry'),89.95);
  assert.equal(candleCalls.filter(b=>b==='5m').length,2);
  assert.equal(candleCalls.filter(b=>b==='15m').length,2);
- // The same structural OB goes immediately to MARKET when the ask is inside 0.18 ATR.
+ // Inside the touch band, a passive order still rests without a closed rejection.
  clock.value+=3000;ts=clock.value;last=89.97;ask=89.98;
- run(`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));state=undefined;quote=undefined;
-   bootstrapLiveBrain();`);
+ const clearPaper=`globalThis.localStorage.removeItem(brainStorageKey(state.instrument));
+   state=undefined;quote=undefined;bootstrapLiveBrain();`;
+ run(clearPaper);
+ await run('refreshLiveBrain()');
+ assert.equal(run('brain.orders[0].status'),'PENDING');
+ assert.equal(run('brain.orders[0].entry'),89.95);
+ // Supply a new completed M1 wick and direction-aligned close.
+ const m1Close=Math.floor(clock.value/60000)*60000+60000;
+ clock.value=m1Close;ts=clock.value;
+ m1=[[m1Close-60000,89.95,90.00,89.91,89.98,100,0,0,'1']];
+ run(clearPaper);
  await run('refreshLiveBrain()');
  assert.equal(run('brain.orders[0].status'),'OPEN');
  assert.equal(run('brain.orders[0].order_type'),'MARKET');

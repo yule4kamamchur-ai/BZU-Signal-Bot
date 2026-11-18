@@ -252,19 +252,49 @@ def touch_only_market_zone(zone):
         token in kind for token in ('FVG','_OB','ORDER_BLOCK'))
 
 
-def instant_touch_trigger(snapshot, side, zone, entry, risk, a15, tick):
+def touch_quote_eligible(snapshot, side, zone, entry, a15, tick):
     quote = snapshot.ask if side == 1 else snapshot.bid
     width = MARKET_TOUCH_ATR * a15
     known = zone.get('known_ts')
-    if (side not in (-1, 1) or not snapshot.trusted or not 0 < snapshot.bid <= snapshot.ask
-            or known is None or not known <= snapshot.ticker_ts <= snapshot.now
-            or snapshot.now-snapshot.ticker_ts > 120_000
-            or width <= 0 or abs(quote-entry) > width+1e-8
-            or risk <= 0 or (snapshot.ask-snapshot.bid) > max(2*tick,.15*a15)+1e-8):
-        return None
-    return {'pattern':'INSTANT_TOUCH_MARKET_FILL', 'known_ts':snapshot.ticker_ts,
-            'limit_entry':entry, 'initial_risk':risk, 'max_distance':width}
+    return (side in (-1, 1) and snapshot.trusted and 0 < snapshot.bid <= snapshot.ask
+            and known is not None and known <= snapshot.ticker_ts <= snapshot.now
+            and snapshot.now - snapshot.ticker_ts <= 120_000
+            and width > 0 and abs(quote - entry) <= width + 1e-8
+            and snapshot.ask - snapshot.bid <= max(2 * tick, .15 * a15) + 1e-8)
 
+
+def instant_touch_trigger(snapshot, side, zone, entry, risk, a15, tick):
+    if risk <= 0 or not touch_quote_eligible(snapshot, side, zone, entry, a15, tick):
+        return None
+    quote = snapshot.ask if side == 1 else snapshot.bid
+    as_of = snapshot.ticker_ts
+    width = MARKET_TOUCH_ATR * a15
+    # A live OHLC range can describe an approach, but the trigger requires a close.
+    lower = min(zone.get('low', entry), entry) - tick
+    upper = max(zone.get('high', entry), entry) + tick
+    if side * (quote - entry) < -tick / 2 - 1e-8:
+        return None
+    observations = (
+        ('1m', 60_000, snapshot.candles.get('1m', ())),
+        ('5m', 300_000, closed_five_minutes(replace(snapshot, now=as_of))),
+    )
+    for timeframe, step, rows in observations:
+        bar = max((b for b in rows if b.confirmed and b.ts + step <= as_of),
+                  key=lambda b: b.ts, default=None)
+        if bar is None or bar.ts < zone['known_ts'] or as_of - bar.ts - step >= step:
+            continue
+        extreme = bar.low if side == 1 else bar.high
+        wick = min(bar.open, bar.close) - bar.low if side == 1 else bar.high - max(bar.open, bar.close)
+        if (bar.low > upper or bar.high < lower or side * (extreme - entry) > width + 1e-8
+                or side * (bar.close - bar.open) < tick - 1e-8
+                or side * (bar.close - entry) < tick / 2 - 1e-8
+                or wick < max(tick, .20 * (bar.high - bar.low)) - 1e-8
+                or side * (quote - (bar.open + bar.close) / 2) < -tick / 2 - 1e-8):
+            continue
+        return {'pattern': 'INSTANT_TOUCH_MARKET_FILL', 'known_ts': bar.ts + step,
+                'confirmation_timeframe': timeframe, 'limit_entry': entry,
+                'initial_risk': risk, 'max_distance': width}
+    return None
 
 
 def impulse_market_entry(side, quote, reference, atr15, tick):
@@ -711,9 +741,11 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     tracking_only = inside or (geometry or {}).get('reaction_only')
+    passive_touch = bool(oil and not market and touch_quote_eligible(snapshot, side, zone, entry, a, tick)
+                         and passive_gate(entry, side, snapshot.bid, snapshot.ask, tick)['passive'])
     window = None if market else entry_window(side, snapshot.price, entry, a, cfg,
-                          minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY' and not tracking_only,
-                          trend=runner)
+                          minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY'
+                          and not (tracking_only or passive_touch), trend=runner)
     gate=('ZONE_CONSOLIDATION_DECAY' if decay['requires_confirmation'] and
           (not market or (trigger or {}).get('pattern') == 'INSTANT_TOUCH_MARKET_FILL') else
           'EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, trigger['known_ts'] if trigger else known) else

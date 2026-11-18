@@ -1202,7 +1202,7 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int =
     for plan in ranked:
         if len(eligible)>=capacity:
             break
-        if bzu_policy.is_precision(plan):
+        if bzu_policy.is_precision(plan) and not resting_organic_limit(plan,cfg):
             if not bzu_policy.session_gate(now)['allowed']:
                 continue
             if not entry_loss_cooldown(plan, state['trades'], as_of, cfg)['allowed']:
@@ -1215,7 +1215,8 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int =
         if (plan.get('queue_execution_policy')=='PASSIVE_ARM_V2'
                 and now>=plan.get('queue_policy_effective_ts',effective)):
             continuous=plan.get('entry_armed_bar')==now-step
-            if not continuous and not execution_atlas.passive_at_open(plan,price,cfg.tick):
+            if (not resting_organic_limit(plan,cfg) and not continuous
+                    and not execution_atlas.passive_at_open(plan,price,cfg.tick)):
                 continue
         if locked_side and plan['side']!=locked_side:
             continue
@@ -1755,7 +1756,7 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
         if c.ts >= p["expires_ts"]:
             end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
             continue
-        if not entry_gates_checked and bzu_policy.is_precision(p):
+        if not entry_gates_checked and (bzu_policy.is_precision(p) or resting_organic_limit(p,cfg)):
             gate = pending_entry_gate(p, state['trades'], replace(s, now=c.ts, price=c.open), cfg)
             if gate:
                 end_order(state, p, 'CANCELLED', gate, c.ts)
@@ -1815,8 +1816,24 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             end_order(state, p, "EXPIRED", p.get('expiry_reason','LIMIT_TTL'), p["expires_ts"])
 
 
+def resting_organic_limit(plan, cfg):
+    return (oil_risk.enabled(cfg) and oil_risk.is_organic(plan)
+            and plan.get('policy') == bzu_policy.POLICY
+            and plan.get('order_type') == 'LIMIT' and plan.get('status') == 'PENDING')
+
+
+def resting_limit_invalidated(plan, price):
+    return any(plan['side'] * (price - level) <= 1e-8
+               for level in (plan.get('invalidation'), plan.get('stop'))
+               if isinstance(level, (int, float)) and level > 0)
+
+
 def hold_pending_approach(plan, snapshot, cfg):
     zone = plan.get('entry_zone')
+    if resting_organic_limit(plan,cfg):
+        plan['entry_hold'] = None
+        plan.pop('approach_shock_ts', None)
+        return False
     if not oil_risk.enabled(cfg) or not zone:
         return False
     result = entry_adverse_selection.approach_velocity(
@@ -1828,6 +1845,8 @@ def hold_pending_approach(plan, snapshot, cfg):
 
 
 def pending_scenario_error(plan, snapshot, cfg):
+    if resting_organic_limit(plan,cfg):
+        return 'STRUCTURE_INVALIDATED_NOW' if resting_limit_invalidated(plan,snapshot.price) else None
     decay = quality.consolidation_decay(plan.get('entry_zone') or {}, snapshot, plan['side'], cfg.tick, sys.modules[__name__])
     if decay['requires_confirmation'] and not (plan.get('entry_zone') or {}).get('liquidity_anchor'):
         return 'ZONE_CONSOLIDATION_DECAY'
@@ -1857,6 +1876,8 @@ def pending_scenario_error(plan, snapshot, cfg):
 
 
 def pending_entry_gate(plan, trades, as_of, cfg):
+    if resting_organic_limit(plan,cfg):
+        return pending_scenario_error(plan,as_of,cfg)
     session = bzu_policy.session_gate(as_of.now)
     if not session['allowed']:
         return session['reason']
@@ -1930,7 +1951,7 @@ def advance_lifecycle(state: dict, s: Snapshot, cfg: Config) -> None:
             if c.ts<=plan.get('last_bar',-1):
                 remaining.append(plan)
                 continue
-            if (bzu_policy.is_precision(plan)
+            if ((bzu_policy.is_precision(plan) or resting_organic_limit(plan,cfg))
                     and plan.get('effective_ts', plan['placed_ts']) <= c.ts < plan['expires_ts']):
                 gate = pending_entry_gate(plan, state['trades'], at_open, cfg)
                 if gate:
@@ -2062,6 +2083,12 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
         elif pending.get('target_cancel_armed', True):
             request_cancel(state, pending, MISSED_TARGET_REASON, snapshot.now)
             return
+    if resting_organic_limit(pending,cfg):
+        if (snapshot.trusted and pending['placed_ts'] <= snapshot.ticker_ts <= snapshot.now
+                and snapshot.now - snapshot.ticker_ts <= 120_000
+                and resting_limit_invalidated(pending,snapshot.price)):
+            request_cancel(state,pending,'STRUCTURE_INVALIDATED_NOW',snapshot.now)
+        return
     zone = pending.get('entry_zone') or {}
     timeframe = zone.get('timeframe') or pending.get('formation_timeframe')
     if zone.get('kind') == 'MICRO_BOS_FVG' or (timeframe and timeframe not in scanner.PRIMARY):
@@ -2576,7 +2603,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             challenger=next((p for p in valid if p['side']==proposed_side),None)
             improvement=(policy.ranking(challenger,s.price,cfg.tick)[0]
                          -policy.ranking(incumbent,s.price,cfg.tick)[0]) if challenger else 0.
-            if (can_place and proposed_side in (-1,1) and proposed_side!=current and
+            if (can_place and not resting_organic_limit(incumbent,cfg)
+                and proposed_side in (-1,1) and proposed_side!=current and
                 arbitration.directional_lock(pending,active,proposed_side,s,cfg,sys.modules[__name__]).get('cancel_old_first')):
                 # Switch to a materially stronger thesis ONLY after the
                 # old limit cancellation has become effective on a 3m boundary.

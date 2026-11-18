@@ -9,23 +9,40 @@ import scenario_planner
 import setup_scanner as scanner
 import strategy_direct_entries
 from test_full_limit_engine import NOW, snapshot
-from test_pending_limit_lifecycle import waiting
+from test_pending_limit_lifecycle import waiting, MINUTE
 
 
 class OrganicExecution(TestCase):
-    def test_touch_uses_executable_quote_and_atr_band_both_sides(self):
-        zone = {'known_ts':NOW-60_000}
+    def test_touch_requires_a_recent_closed_wick_and_reclaim_both_sides(self):
+        zone = {'known_ts':NOW-5*MINUTE,'low':89.48,'high':89.52}
+        def candle(side, start=NOW-MINUTE, confirmed=True, adverse=False):
+            o,h,l,c = (89.55,89.56,89.48,89.51) if adverse else (89.51,89.56,89.46,89.54)
+            if side == -1:
+                o,h,l,c = 179.-o,179.-l,179.-h,179.-c
+            return engine.Candle(start,o,h,l,c,confirmed=confirmed)
+
         for side in (1,-1):
             with self.subTest(side=side):
-                price = 89.50+side*.08
+                price = 89.50+side*.06
                 s = replace(snapshot(NOW,price=price), bid=price-.01, ask=price+.01)
                 self.assertIsNone(scanner.instant_touch_trigger(s,side,zone,89.50,1.,.40,.01))
-                price = 89.50+side*.06
-                s = replace(s,price=price,bid=price-.01,ask=price+.01)
+                for bar in (candle(side,confirmed=False),candle(side,adverse=True),
+                            candle(side,start=NOW-2*MINUTE),candle(side,start=NOW)):
+                    s.candles['1m']=[bar]
+                    self.assertIsNone(scanner.instant_touch_trigger(s,side,zone,89.50,1.,.40,.01))
+                s.candles['1m']=[candle(side)]
                 trigger = scanner.instant_touch_trigger(s,side,zone,89.50,1.,.40,.01)
                 self.assertEqual(trigger['pattern'],'INSTANT_TOUCH_MARKET_FILL')
-                self.assertEqual(trigger['limit_entry'],89.50)
+                self.assertEqual(trigger['known_ts'],NOW)
+                self.assertEqual(trigger['confirmation_timeframe'],'1m')
                 self.assertIsNone(scanner.instant_touch_trigger(replace(s,trusted=False),side,zone,89.50,1.,.40,.01))
+                far=89.50+side*.08
+                self.assertIsNone(scanner.instant_touch_trigger(replace(s,bid=far-.01,ask=far+.01),
+                                                               side,zone,89.50,1.,.40,.01))
+                s.candles.pop('1m')
+                s.candles['5m']=[candle(side,start=NOW-5*MINUTE)]
+                self.assertEqual(scanner.instant_touch_trigger(s,side,zone,89.50,1.,.40,.01)
+                                 ['confirmation_timeframe'],'5m')
 
     def test_limit_keeps_ema9_and_turtle_soup_reference_as_quote_moves(self):
         cfg = engine.Config(tick=.01)
@@ -36,39 +53,49 @@ class OrganicExecution(TestCase):
                           for price in (89.57,89.72,90.)]
                 self.assertEqual(len(set(levels)),1)
 
-    def test_pending_hysteresis_is_measured_from_fixed_entry(self):
+    def test_pending_organic_limit_ignores_entry_requalification(self):
         cfg = engine.Config(tick=.01)
-        order = waiting(side=1)
-        order['entry_zone'] = {'kind':'FVG_BULL','side':1}
-        s = snapshot(NOW, price=order['entry']+.13)
-        for room,expected in ((1.39,None),(1.16,None),(1.05,None),(1.049,'PENDING_ROOM_BELOW_1_05')):
-            with self.subTest(room=room), patch.object(engine.policy,'trend_entry_error',return_value=None), \
-                 patch.object(scenario_planner,'entry_error',return_value=None), \
-                 patch.object(scenario_planner,'structure_levels',return_value=[]), \
-                 patch.object(engine.oil_risk,'structural_room',return_value=(None,room)) as measure:
-                self.assertEqual(engine.pending_scenario_error(order,s,cfg),expected)
-                self.assertEqual(measure.call_args.args[:3],(1,order['entry'],order['risk']))
+        for side in (1,-1):
+            with self.subTest(side=side):
+                plan=waiting(side,NOW-2*MINUTE)
+                plan.update(entry_zone={'kind':'FVG_BULL' if side==1 else 'FVG_BEAR','side':side},
+                            invalidation=plan['entry']-side*.50)
+                s=snapshot(NOW,price=plan['entry']+side*.13)
+                state=engine.new_state(cfg)
+                engine.park_pending(state,[plan])
+                with patch.object(engine.policy,'trend_entry_error',return_value='AGAINST_VWAP_EMA20') as ema, \
+                     patch.object(scenario_planner,'entry_error',return_value='BLOCKED_OUTSIDE_HTF_POI') as poi, \
+                     patch.object(engine.oil_risk,'structural_room',return_value=(90.,.90)) as room, \
+                     patch.object(engine.entry_adverse_selection,'approach_velocity',return_value={'blocked':True}) as velocity:
+                    engine.review_waiting_conditions(state,plan,s,cfg)
+                    self.assertEqual(engine.pending_plans(state),[plan])
+                    self.assertIsNone(engine.pending_entry_gate(plan,[],s,cfg))
+                    self.assertFalse(engine.hold_pending_approach(plan,s,cfg))
+                    for check in (ema,poi,room,velocity):
+                        check.assert_not_called()
+                breached=replace(s,price=plan['invalidation']-side*.01)
+                engine.review_waiting_conditions(state,plan,breached,cfg)
+                self.assertEqual(engine.pending_plans(state),[])
+                self.assertEqual(state['orders'][-1]['reason'],'STRUCTURE_INVALIDATED_NOW')
 
-    def test_only_new_confirmed_obstacle_cancels_at_105(self):
-        cfg=engine.Config(tick=.01)
-        pending=waiting(1,NOW-2*60_000)
-        pending['entry_zone']={'kind':'FVG_BULL','side':1}
-        near=pending['entry']+1.04*pending['risk']
-        farther=pending['entry']+1.05*pending['risk']
-        live=snapshot(NOW,price=pending['entry']+.25)
-        for level,known,expected in (
-            (near,pending['placed_ts'],None),
-            (near,NOW+60_000,None),
-            (farther,NOW,None),
-            (near,NOW,'PENDING_ROOM_BELOW_1_05'),
-        ):
-            with self.subTest(level=level,known=known), \
-                 patch.object(engine.policy,'trend_entry_error',return_value=None), \
-                 patch.object(scenario_planner,'entry_error',return_value=None), \
-                 patch.object(scenario_planner,'structure_levels',return_value=[
-                     {'level':level,'known_ts':known,'side':-1,'kind':'15m_SWING_HIGH'},
-                 ]):
-                self.assertEqual(engine.pending_scenario_error(pending,live,cfg),expected)
+    def test_pending_limit_fills_when_price_approaches_then_touches_in_replay(self):
+        cfg = engine.Config(tick=.01)
+        for side in (1,-1):
+            with self.subTest(side=side):
+                plan=waiting(side,NOW)
+                price=plan['entry']
+                plan.update(invalidation=price-side*.6,queue_execution_policy='PASSIVE_ARM_V2',
+                            entry_zone={'kind':'DEMAND_OB' if side==1 else 'SUPPLY_OB','side':side})
+                opening, close=price-side*.03,price-side*.02
+                bar=engine.Candle(NOW, opening, price+.06,price-.06,close)
+                s=engine.Snapshot(NOW+MINUTE,close,{'1m':[bar]})
+                state=engine.new_state(cfg)
+                engine.park_pending(state,[plan])
+                with patch.object(scenario_planner,'entry_error',return_value='BLOCKED_OUTSIDE_HTF_POI'), \
+                     patch.object(engine.policy,'trend_entry_error',return_value='AGAINST_VWAP_EMA20'):
+                    engine.advance_lifecycle(state,s,cfg)
+                self.assertEqual(state['orders'][-1]['status'],'FILLED')
+                self.assertEqual(engine.active_plans(state)[0]['entry'],price)
 
     def test_new_limit_and_touch_market_both_need_135(self):
         cfg = engine.Config(tick=.01)
@@ -114,6 +141,8 @@ class OrganicExecution(TestCase):
                           for c in s.candles['15m']]
         ask=s.ask
         reference=92.04
+        s.candles['1m']=[engine.Candle(NOW-MINUTE,92.02,92.09,91.99,92.06)]
+        candidate['entry_zone']['known_ts']=NOW-2*MINUTE
         proof=scanner.instant_touch_trigger(s,1,candidate['entry_zone'],reference,1.,
                                              engine.atr(s.candles['15m']),cfg.tick)
         self.assertIsNotNone(proof)

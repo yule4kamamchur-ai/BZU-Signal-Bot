@@ -81,7 +81,7 @@ def build(state, snapshot, result, cfg, engine):
             'type': order_type, 'order_type': order_type,
             'market_trigger': plan.get('market_trigger'), 'admission_status': plan.get('admission_status'),
             'setup': plan.get('source_strategy') or plan.get('setup'),
-            'entry': plan['entry'], 'stop': plan['stop'], 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
+            'entry': plan['entry'], 'stop': plan['stop'], 'invalidation': plan.get('invalidation'), 'initial_stop': plan.get('initial_stop', plan['entry']-plan['side']*plan['risk']),
             'tp1': engine.bzu_policy.partial_target(plan),
             'missed_target_level': None if active else engine.bzu_policy.missed_target_level(plan),
             'target_cancel_armed': not active and plan.get('target_cancel_armed', True),

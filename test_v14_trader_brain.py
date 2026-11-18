@@ -140,10 +140,10 @@ class TraderBrain(TestCase):
         self.assertFalse(blocked(trending,2.29))
         self.assertFalse(blocked(flat,2.31))
 
-    def test_first_two_hours_keep_initial_stop_and_post_partial_can_only_hit_stop_or_tp2(self):
+    def test_first_six_bars_keep_initial_stop_and_post_partial_can_only_hit_stop_or_tp2(self):
         fixture = position_fixtures.PositionGuard()
         position,_,cfg = fixture.make_position()
-        for bars,partial,expected in ((7,False,False),(8,False,True),(8,True,False),(30,True,False)):
+        for bars,partial,expected in ((5,False,False),(6,False,True),(6,True,False),(30,True,False)):
             ts = NOW+bars*STEP
             test = {**position,'max_favorable_r':.55,'adverse_impulse_ts':ts,'partial_tp1_hit':partial,
                     'adverse_close_pair':{'known_ts':ts,'level':98.15,'ema20':98.18,'session_vwap':98.20}}

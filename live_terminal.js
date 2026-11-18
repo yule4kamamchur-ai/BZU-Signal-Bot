@@ -626,6 +626,20 @@ function brainIndicators(rows, minutes, market) {
     liveEma9:liveEma(ema9,9),liveEma20:liveEma(ema20,20),liveEma50:liveEma(ema50,50)};
 }
 
+function brainTouchRejection(market, minutes, m5, zone, side, entry, quote, width, tick) {
+  if (side*(quote-entry)<-tick/2-1e-8) return false;
+  return [[minutes,brainMinute],[m5,5*brainMinute]].some(([bars,step])=>{
+    const bar=bars.filter(b=>b.ts+step<=market.ts).at(-1);
+    if (!bar || bar.ts<zone.known_ts || market.ts-bar.ts-step>=step) return false;
+    const extreme=side===1?bar.low:bar.high;
+    const wick=side===1?Math.min(bar.open,bar.close)-bar.low:bar.high-Math.max(bar.open,bar.close);
+    return bar.low<=Math.max(zone.high,entry)+tick && bar.high>=Math.min(zone.low,entry)-tick &&
+      side*(extreme-entry)<=width+1e-8 && side*(bar.close-bar.open)>=tick-1e-8 &&
+      side*(bar.close-entry)>=tick/2-1e-8 && wick>=Math.max(tick,.20*(bar.high-bar.low))-1e-8 &&
+      side*(quote-(bar.open+bar.close)/2)>=-tick/2-1e-8;
+  });
+}
+
 function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minutes=[]) {
   if (matrix.atr <= 0) return [];
   const {atr,side:trend} = matrix;
@@ -662,7 +676,9 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
     const rangeMiddle=!trend && (rangePos===null || rangePos>=.30 && rangePos<=.70);
     const edge=side===1?rangeHigh:rangeLow;
     const edgeBroken=breakout && side*(bar.close-edge)>tick && side*(quote-edge)>tick;
-    const touch=quoted && !pool && Math.abs(quote-structuralEntry)<=common.marketRadius+1e-8;
+    const touch=quoted && !pool && Math.abs(quote-structuralEntry)<=common.marketRadius+1e-8 &&
+      brainTouchRejection(market,minutes,m5,{known_ts:known,low:zoneLow,high:zoneHigh},
+        side,structuralEntry,quote,common.marketRadius,tick);
     const impulse=quoted && breakout && market.ts-known<step &&
       side*(quote-confirmLevel)>=tick/2-1e-8 &&
       Math.abs(quote-structuralEntry)<=(config.market_band_atr??.65)*atr+1e-8;
@@ -684,7 +700,7 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
     const plan=marketPlan??chooseEntry(structuralEntry);
     if (!plan || side*(market.price-plan.stop)<=0 || side*(market.price-plan.tp1)>=-1e-8) return;
     const gap=side*(quote-structuralEntry);
-    const limitReady=quoted && !decay.requires_confirmation && !wantsMarket && !breakout && !touch && gap>=tick-1e-8 &&
+    const limitReady=quoted && !decay.requires_confirmation && !marketPlan && !breakout && gap>1e-8 &&
       gap<=common.limitRadius+1e-8 && gap<config.missed_target_r*plan.risk &&
       plan.rr1>=(config.limit_min_rr??1.35)-1e-8;
     const normalVolume=prior.reduce((sum,b)=>sum+b.volume,0)/prior.length;
@@ -693,7 +709,7 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
     if (score<60) return;
     const id=['paper',kind,side,known,ref.toFixed(4)].join(':');
     result.set(id,{...plan,id,kind,setup:kind,side,low:zoneLow,high:zoneHigh,reference:structuralEntry,score,
-      liquidity_anchor:pool?{pool,entry:structuralEntry}:null,zone_decay:decay,
+      invalidation:anchor,liquidity_anchor:pool?{pool,entry:structuralEntry}:null,zone_decay:decay,
       known_ts:known,origin_ts:formation,timeframe:step===brainQuarter?'15m':'5m',
       liquidity:brainLiquidity(unbroken,plan.entry),order_type:marketPlan?'MARKET':'LIMIT',
       market_now:!!marketPlan,actionable:true,activation_ready:!!marketPlan||limitReady,
@@ -923,6 +939,24 @@ function brainProtectLiquidity(order,market,price) {
   brainEvent(order,'BREAKEVEN_ARMED',market.ts,'Захист після зняття ліквідності · SL '+format(stop));
 }
 
+function brainAdverseClosePair(order,market,price) {
+  if (order.tp1_hit || !number(order.filled_ts) || market.ts-order.filled_ts<6*brainQuarter) return false;
+  const rows=(brain.series['15m']??[]).filter(b=>b.ts+brainQuarter<=market.ts);
+  const first=rows.at(-2),last=rows.at(-1),side=order.side,tick=state.tick??.01;
+  if (rows.length<24 || first.ts<order.filled_ts || last.ts!==first.ts+brainQuarter ||
+      market.ts-last.ts-brainQuarter>=brainQuarter ||
+      rows.slice(-24).some((bar,i,tail)=>i>0&&bar.ts!==tail[i-1].ts+brainQuarter)) return false;
+  const pivot=brainPivots(rows.slice(-24,-2),2,brainQuarter).reverse()
+    .find(p=>p.side===side&&p.known_ts<=first.ts);
+  if (!pivot || [first,last].some(bar=>side*(bar.close-pivot.price)>-tick+1e-8)) return false;
+  const m1=brain.series['1m']??[];
+  const earlier=brainIndicators(rows.slice(0,-1),m1,{ts:first.ts+brainQuarter,price:first.close});
+  const current=brainIndicators(rows,m1,{ts:last.ts+brainQuarter,price:last.close});
+  return [[first.close,earlier],[last.close,current],[price,current]].every(([value,reference])=>
+    reference && [reference.ema20,reference.referenceVwap].every(level=>number(level)&&side*(value-level)<0)) &&
+    side*(price-pivot.price)<0;
+}
+
 function advanceBrain(market, matrix, rows) {
   if (market.ts < brain.lastTs || market.ts === brain.lastTs && (brain.orders.length || brain.event?.ts===market.ts) || !number(market.bid) || !number(market.ask) ||
       market.bid <= 0 || market.ask < market.bid) return;
@@ -946,17 +980,20 @@ function advanceBrain(market, matrix, rows) {
       number(order.tp1) ? side*(order.tp1-order.entry) : Infinity);
     const closer = eligible.filter(z=>z.side===side && z.known_ts>(order.placed_ts ?? order.effective_ts ?? 0) &&
       Math.abs((z.market_now ? z.reference : z.entry)-market.price)<move && z.id!==order.id);
-    const zone=order.zone??order;
-    const aged=number(zone.low)&&number(zone.high)&&brainZoneDecay(
-      brain.series['5m']??[],zone.low,zone.high,zone.known_ts??order.placed_ts,side,matrix?.atr??0,state.tick??.01,market.ts);
     const front=brainFrontRun(order,market,matrix);
     const replacement = matrix?.side===side && matrix.atr>0 && move>config.browser_replace_atr*matrix.atr &&
       (closer.find(z=>z.market_now) ?? closer[0]);
     if (market.ts >= order.expires_ts) remove('EXPIRED','Строк ліміту минув');
-    else if (market.ts >= (order.effective_ts ?? 0) &&
+    else if (side*(market.price-order.stop)<=0) {
+      remove('CANCELLED','Пробито рівень інвалідації');
+      next=null;
+    } else if (market.ts >= (order.effective_ts ?? 0) &&
         side*((side===1?market.ask:market.bid)-order.entry)<=1e-8) {
       Object.assign(order,{status:'OPEN',filled_ts:market.ts});
       brainEvent(order,'ENTERED',market.ts,'Вхід виконано '+format(order.entry));
+    } else if (number(order.invalidation) && side*(market.price-order.invalidation)<0) {
+      remove('CANCELLED','Пробито рівень інвалідації');
+      next=null;
     } else if (move>=target-1e-8 && order.target_cancel_armed!==false) {
       remove('CANCELLED','Рух досяг 0.75R або TP1 без входу');
       next = choose(side);
@@ -966,9 +1003,6 @@ function advanceBrain(market, matrix, rows) {
     } else if (replacement) {
       remove('CANCELLED','Ближчий підтверджений сетап');
       next = replacement;
-    } else if (aged?.requires_confirmation&&!order.liquidity_anchor&&!zone.liquidity_anchor) {
-      remove('CANCELLED','Тривала консолідація в зоні · чекаємо підтвердження');
-      next=null;
     } else if (move<target-1e-8) order.target_cancel_armed=true;
   }
   if (order?.status === 'OPEN' && brain.orders[0] === order) {
@@ -1000,6 +1034,8 @@ function advanceBrain(market, matrix, rows) {
     }
     if (order.tp1_hit && number(order.tp2) && side*(usedQuote-order.tp2)>=-1e-8)
       remove('TP2','Вихід залишку на TP2');
+    else if (brainAdverseClosePair(order,market,usedQuote))
+      remove('CLOSED','Підтверджений злам структури M15');
     return;
   }
   if (!brain.orders.length && next && !config.uncertain && brainSessionAllowed(market.ts)) {
@@ -1473,7 +1509,7 @@ function renderBanner(price, usable, view, pnl, tone) {
   } else if (!usable && !liveBrainFresh()) {
     title='ЧЕКАЄМО ОНОВЛЕННЯ ДАНИХ';
     detail='Очікуємо котирування й закриті свічки OKX.';
-  } else if (liveBrainEnabled() && ['SL','TP1','TP2'].includes(brain.event?.kind) &&
+  } else if (liveBrainEnabled() && ['SL','TP1','TP2','CLOSED'].includes(brain.event?.kind) &&
       Date.now()-brain.event.ts<15*brainMinute) {
     mode='CLOSED';
     title='УГОДУ ЗАКРИТО · PAPER';

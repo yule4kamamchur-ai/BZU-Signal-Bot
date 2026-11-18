@@ -62,7 +62,7 @@ class Intraday(unittest.TestCase):
 
     def test_structural_exit_requires_two_hours_and_price_beyond_all_references(self):
         _, cfg = base_fixture()
-        close_ts = NOW + 8*STEP
+        close_ts = NOW + 6*STEP
         for side in (1, -1):
             with self.subTest(side=side):
                 position = order(side, placed=NOW)

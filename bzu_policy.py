@@ -609,7 +609,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 context, snapshot, anchor, cfg, engine, quote, quote_stop, side, a15, active=True,
                 zone=zone, trend=target_trend, market_trigger=market_trigger, reference_geometry=reference)
         if geometry is None:
-            if not can_wait or touch or impulse_market or instant_touch or scanner.touch_only_market_zone(zone):
+            if (not can_wait or impulse_market
+                    or (scanner.touch_only_market_zone(zone) and not instant_touch)):
                 return None, why
             market_trigger = None
         else:
@@ -657,7 +658,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if geometry is None:
             mark('TARGET_RR', False)
             return None, why
-        distance_gate = scanner.entry_window(side, snapshot.price, entry, a15, cfg, trend=trend or multibar)
+        passive_touch = bool(oil and passive and scanner.touch_quote_eligible(
+            snapshot, side, zone, entry, a15, cfg.tick))
+        distance_gate = scanner.entry_window(side, snapshot.price, entry, a15, cfg,
+                                             minimum=not passive_touch, trend=trend or multibar)
         if (not oil and zone.get('wave_proof') and zone['kind'] in ('BULLISH_BREAKER', 'BEARISH_BREAKER')
                 and distance < .20 - 1e-8 and not reaction_only):
             distance_gate = distance_gate or 'ENTRY_TOO_CLOSE'
