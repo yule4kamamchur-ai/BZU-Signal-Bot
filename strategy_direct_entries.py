@@ -160,22 +160,6 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     return engine.round_tick(round(entry + tick/2, 10), tick), basis
 
 
-def liquidity_anchor(snapshot, zone, side, entry, risk, atr, tick, engine):
-    """Move an unplaced passive entry beyond a nearby adverse liquidity pool."""
-    from limit_structure import local_liquidity
-
-    if atr <= 0 or risk <= 0:
-        return None
-    pools = [pool for pool in local_liquidity(snapshot, engine, tick)
-             if pool['side'] == side and tick < side * (entry - pool['level']) < min(.45 * atr, .50 * risk)]
-    pool = min(pools, key=lambda row: abs(entry - row['level']), default=None)
-    if not pool:
-        return None
-    price = engine.round_tick(round(pool['level'] - side * max(.03, tick), 10), tick, up=side == -1)
-    return {'entry': price, 'original_entry': entry, 'pool': pool, 'known_ts': snapshot.now,
-            'policy': 'LIQUIDITY_ANCHORED_LIMIT'}
-
-
 def front_run_trigger(plan, snapshot, cfg, engine):
     """Closed M5 displacement after an observed near miss, with no fill interval."""
     from setup_scanner import closed_five_minutes

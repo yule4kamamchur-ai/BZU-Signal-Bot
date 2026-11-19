@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import oil_risk
 
-TF={'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
+TF={'1m':60_000,'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 MICRO={'15m':'3m','1H':'15m','4H':'1H'}
 SESSION_SETUPS={'OPENING_RANGE_BREAKOUT','FAILED_OPENING_RANGE_BREAKOUT',
                 'OR_FAILURE_2_SHORT','TIME_OF_DAY_ADAPTIVE','DAILY_WEEKLY_OPEN_RECLAIM'}
@@ -291,6 +291,27 @@ def choose_target(targets,entry,risk,buffer,side,cfg):
     return chosen,intermediate,barrier
 
 
+def unswept_minute_pools(snapshot, pools, tick):
+    """Keep pools without a one-tick breach in observed post-formation minutes."""
+    minute = closed(snapshot, '1m')
+    live = snapshot.metadata.get('current_candle_1m') or {}
+    live_ts = live.get('ts')
+    live_observed = snapshot.metadata.get('now', snapshot.now)
+    live_current = (isinstance(live_ts, int) and live_ts <= live_observed <= snapshot.now < live_ts + 60_000)
+    fresh = []
+    for pool in pools:
+        side, level, known = pool['side'], pool['level'], pool['known_ts']
+        observed = (bar.low if side == 1 else bar.high for bar in minute if bar.ts >= known)
+        if any(side * (level - price) >= tick - 1e-8 for price in observed):
+            continue
+        live_extreme = live.get('low' if side == 1 else 'high')
+        if (live_current and known <= live_ts and isinstance(live_extreme, (int, float))
+                and live_extreme > 0 and side * (level - live_extreme) >= tick - 1e-8):
+            continue
+        fresh.append(pool)
+    return fresh
+
+
 def local_liquidity(snapshot, engine, tick):
     """Return local pivots still untouched by later observed wicks."""
     from setup_scanner import closed_five_minutes
@@ -305,12 +326,9 @@ def local_liquidity(snapshot, engine, tick):
             if known > snapshot.now:
                 continue
             side = 1 if point['kind'] == 'LOW' else -1
-            later = [bar for bar in rows if bar.ts >= known]
-            minute = [bar for bar in snapshot.candles.get('1m', ())
-                      if bar.confirmed and known <= bar.ts and bar.ts + 60_000 <= snapshot.now]
-            if any(side * ((bar.low if side == 1 else bar.high) - point['level']) <= -tick
-                   for bar in [*later, *minute]):
+            if any(side * (point['level'] - (bar.low if side == 1 else bar.high)) >= tick - 1e-8
+                   for bar in rows if bar.ts >= known):
                 continue
             levels.append({'side': side, 'level': point['level'], 'known_ts': known,
                            'timeframe': timeframe, 'kind': 'SSL' if side == 1 else 'BSL'})
-    return levels
+    return unswept_minute_pools(snapshot, levels, tick)

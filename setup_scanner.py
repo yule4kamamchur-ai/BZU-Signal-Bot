@@ -618,13 +618,6 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.stop_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     entry, stop, risk, basis, wide, inside = zone_entry_geometry(
         low, high, snapshot.price, structural, side, a, cfg, engine, oil=oil)
-    if oil and not geometry:
-        from strategy_direct_entries import liquidity_anchor
-        anchored = liquidity_anchor(snapshot, zone, side, entry, risk, a, tick, engine)
-        if anchored:
-            entry, basis = anchored['entry'], 'LIQUIDITY_ANCHORED_LIMIT'
-            structural = min(structural, entry) if side == 1 else max(structural, entry)
-            stop, risk, _ = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)
     profile = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)[2] if oil else None
     floor, cap = (profile['floor'], profile['cap']) if profile else zone_risk_bounds(a, cfg)
     safe = (profile['gate'] is None if profile else floor - 1e-8 <= risk <= cap + 1e-8)

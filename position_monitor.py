@@ -90,8 +90,8 @@ def duration(position, ts):
 
 def metrics(position, ts):
     elapsed, bars = duration(position, ts)
-    return {'max_favorable_r': position.get('max_favorable_r', position.get('mfe_r', 0.)),
-            'max_adverse_r': position.get('max_adverse_r', position.get('mae_r', 0.)),
+    return {'max_favorable_r': max(position.get('max_favorable_r') or 0., position.get('mfe_r') or 0.),
+            'max_adverse_r': max(position.get('max_adverse_r') or 0., position.get('mae_r') or 0.),
             'bars_in_trade': bars, 'time_in_trade_ms': elapsed}
 
 
@@ -116,10 +116,12 @@ def update_trade_excursions(position, candles_15m, as_of):
     if entered is None or position['risk'] <= 0:
         return
     step = STEPS['15m']
+    fill_interval = {'WITHIN_1M_BAR': STEPS['1m'], 'WITHIN_3M_BAR': STEPS['3m']}
+    first_complete = entered + fill_interval.get(position.get('fill_time_status'), 0)
     through = position.get('m15_excursion_through', entered)
     rows = []
     for bar in reversed(candles_15m):
-        if bar.ts < entered or bar.ts + step <= through:
+        if bar.ts < first_complete or bar.ts + step <= through:
             break
         if bar.confirmed and bar.ts + step <= as_of:
             rows.append(bar)
@@ -318,6 +320,34 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
             and reversal_engulfing(rows[-2],rows[-1],-side,tick,step)):
         return rows[-1].ts+step
     return None
+
+
+MFE_STOP_POLICY = 'MFE_PROTECTION'
+MFE_LOCK_STEPS = ((1.25, .35),)
+
+
+def mfe_protection(position, ts, price, cfg, engine):
+    """Calculate an improving lock from already observed excursions."""
+    if not oil_risk.enabled(cfg) or position['risk'] <= 0 or ts <= (position.get('filled_ts') or 0):
+        return None
+    peak = metrics(position, ts)['max_favorable_r']
+    locked_r = next((lock for trigger, lock in reversed(MFE_LOCK_STEPS) if peak >= trigger - EPS), None)
+    if locked_r is None:
+        return None
+    side, entry = position['side'], position['entry']
+    raw_stop = entry + side * locked_r * position['risk']
+    rounded = engine.round_tick(round(raw_stop, 10), cfg.tick, up=side == 1)
+    cost_stop = engine.bzu_policy.breakeven_price(position, engine.execution_config(position, cfg), engine)
+    stop = max(rounded, cost_stop) if side == 1 else min(rounded, cost_stop)
+    existing = engine.bzu_policy.protective_amendment(position)
+    if side * (stop - position['stop']) <= EPS or (existing and side * (stop - existing['price']) <= EPS):
+        return None
+    return {'policy': MFE_STOP_POLICY, 'price': stop, 'effective_ts': ts, 'peak_r': peak,
+            'exit_now': side * (price - stop) <= EPS}
+
+
+def is_mfe_stop(position):
+    return (position.get('mfe_protection') or {}).get('price') == position['stop']
 
 
 def is_bounce_stop(position):

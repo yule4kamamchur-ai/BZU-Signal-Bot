@@ -52,11 +52,13 @@ def build(state, snapshot, result, cfg, engine):
         'STOP_GAP':'вихід за стопом із ціновим розривом'}
     plans = engine.open_plans(state)
     orders = []
-    liquidity = engine.scenario_planner.structure_levels(snapshot,engine) if plans else ()
+    liquidity = (engine.limit_structure.unswept_minute_pools(
+        snapshot, engine.scenario_planner.structure_levels(snapshot, engine), cfg.tick) if plans else ())
     for plan in plans:
         active = plan.get('status') == 'OPEN'
         order_type = plan.get('order_type') or ('MARKET' if plan.get('action_type') == 'ACTIVE_ENTRY' else 'LIMIT')
         stop_amendment = engine.bzu_policy.protective_amendment(plan) or {}
+        execution = engine.execution_config(plan, cfg)
         partial = bool(active and 0 < plan.get('remaining', 1.) < plan.get('filled_fraction', 1.)
                        and any(leg.get('target') == 'TP1' and leg.get('fraction', 0) > 0
                                for leg in plan.get('realized_legs', [])))
@@ -95,10 +97,23 @@ def build(state, snapshot, result, cfg, engine):
             'min_score': engine.scanner.min_plan_score(plan.get('trend_rel'), plan.get('market_trigger')),
             'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
-            'liquidity_protection': plan.get('liquidity_protection'),
+            'liquidity_protection': plan.get('liquidity_protection'), 'mfe_protection': plan.get('mfe_protection'),
+            'entry_fee_rate': (plan.get('entry_fee_rate', engine.fee_rate(
+                execution, 'maker' if order_type == 'LIMIT' else 'taker')) if execution.include_commission else 0.),
+            'exit_fee_rate': engine.fee_rate(execution, 'taker'),
+            'slippage_bps': execution.slippage_bps,
+            'exit_deadline': plan.get('exit_deadline'),
+            'time_exit_enabled': bool(active and (
+                plan.get('time_exit_enabled') and not (partial or plan.get('scale_policy')==engine.bzu_policy.SCALE_POLICY)
+                if engine.bzu_policy.is_new(plan) else not plan.get('tp1_decision_gate'))),
+            'paper_touch_tolerance': oil_risk.PAPER_TOUCH_TOLERANCE if oil_risk.is_organic(plan) else 0.,
+            'reconciled_through_ts': (plan['last_bar']+plan.get('last_execution_step_ms', 180_000)
+                                      if plan.get('last_bar', -1)>=0 else None),
+            'expiry_reason': plan.get('expiry_reason'),
             'breakeven_armed': bool(plan.get('be_confirmed_ts') and plan.get('breakeven_armed')),
             'tp1_fraction': plan.get('partials', {}).get('TP1', 1.),
             'remaining': plan.get('remaining', 1.), 'tp1_hit': position_monitor.partial_taken(plan),
+            'paper_realized_r': plan.get('realized_gross_r'),
             'tp1_partial': partial,
             'be_waits_for_structure': not plan.get('scale_policy') and engine.bzu_policy.partial_tp1_time(plan) is not None,
             'placed_ts': plan.get('placed_ts'),
@@ -388,7 +403,7 @@ def build(state, snapshot, result, cfg, engine):
     records = {row['id']:row for row in [*state.get('orders', []), *state.get('trades', [])]}
     recent = []
     kinds = {'PLACED', 'FILLED', 'CANCEL_REQUESTED', 'CANCELLED', 'EXPIRED', 'CLOSED',
-             'TP1', 'TP1_PARTIAL', 'TP1_REACHED', 'TP2', 'PAPER_STOP_AMENDED', 'UNRESOLVED'}
+             'TP1', 'TP1_PARTIAL', 'TP1_REACHED', 'TP2', 'PAPER_STOP_AMENDED', 'BREAKEVEN_ARMED', 'UNRESOLVED'}
     for event in state.get('events', []):
         if event.get('kind') not in kinds or event.get('ts', 0) > snapshot.now:
             continue
@@ -451,6 +466,13 @@ def build(state, snapshot, result, cfg, engine):
     entry_scenarios = (engine.scenario_planner.entry_scenarios(
         snapshot,cfg,engine,scanner_top,primary_side or (primary or {}).get('side'))
         if healthy and profile else {})
+    reentry_history = {}
+    if oil_risk.enabled(cfg):
+        for side in (1, -1):
+            previous = engine.bzu_policy.latest_same_side_exit(side, state.get('trades', []), snapshot.now)
+            if previous:
+                reentry_history[str(side)] = {'id': previous.get('id'), 'ts': previous['closed_ts'],
+                                              'net_r': previous.get('net_r')}
     return {'schema':1, 'cockpit_schema':5, 'version':engine.REPORT_RELEASE,
             'instrument':cfg.instrument,'tick':cfg.tick,
             'snapshot_ts':snapshot.now,'ledger_ts':state.get('last_run_ts'),
@@ -464,7 +486,11 @@ def build(state, snapshot, result, cfg, engine):
             'dealing_range':engine.scenario_planner.build(snapshot,cfg,engine)['range'] if healthy and profile else None,
             'brain_config':{
                 'schema':1, 'missed_target_r':engine.bzu_policy.MISSED_TARGET_R,
-                'browser_replace_atr':1., 'market_band_atr':engine.scanner.MARKET_IMPULSE_BAND_ATR,
+                'market_band_atr':engine.scanner.MARKET_IMPULSE_BAND_ATR,
+                'mfe_lock_steps':position_monitor.MFE_LOCK_STEPS,
+                'adverse_lock_ms':engine.bzu_policy.ADVERSE_LOCK_BARS * oil_risk.M15,
+                'maker_fee':engine.fee_rate(cfg,'maker'), 'taker_fee':engine.fee_rate(cfg,'taker'),
+                'slippage_bps':cfg.slippage_bps, 'reentry_history':reentry_history,
                 'market_min_rr':engine.scanner.MARKET_IMPULSE_MIN_RR,
                 'limit_min_rr':engine.scanner.LIMIT_NEW_MIN_RR,
                 'market_touch_atr':engine.scanner.BROWSER_MARKET_TOUCH_ATR,

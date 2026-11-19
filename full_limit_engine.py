@@ -1432,6 +1432,38 @@ def _legacy_partial_exit(state: dict, p: dict, name: str, level: float, ts: int,
     emit(state,name,ts,order_id=p["id"],price=exit_price,fraction=size)
 
 
+def arm_mfe_protection(state, position, ts, price, cfg):
+    guard = position_monitor.mfe_protection(position, ts, price, cfg, sys.modules[__name__])
+    if not guard:
+        return False
+    position['mfe_protection'] = guard
+    if guard['exit_now']:
+        close_at_observed_price(state, position, price, ts, 'MFE_PROTECTIVE_EXIT', cfg)
+        return True
+    for leg in position.get('entry_legs', ()):
+        if leg['status'] == 'PENDING':
+            leg['status'] = 'CANCELLED_AFTER_MFE_LOCK'
+    position.update(pending_stop={key: guard[key] for key in ('price', 'effective_ts', 'policy')},
+                    breakeven_price=guard['price'], breakeven_armed=True, be_confirmed_ts=ts)
+    emit(state, 'BREAKEVEN_ARMED', ts, order_id=position['id'], stop=guard['price'],
+         peak_r=guard['peak_r'], reason=guard['policy'])
+    return False
+
+
+def observe_position_mfe(state, position, bar, ts, cfg):
+    favorable, adverse = (bar.high, bar.low) if position['side'] == 1 else (bar.low, bar.high)
+    position_monitor.track(position, ts, favorable, adverse)
+    # A prior quote may have armed a stop inside this candle. Its close is
+    # observable afterward, but its earlier wick cannot execute that stop.
+    amendment = bzu_policy.protective_amendment(position)
+    if (amendment and amendment['policy'] == position_monitor.MFE_STOP_POLICY
+            and bar.ts < amendment['effective_ts'] <= ts
+            and position['side'] * (bar.close - amendment['price']) <= 1e-8):
+        close_at_observed_price(state, position, bar.close, ts, 'MFE_PROTECTIVE_EXIT', cfg)
+        return True
+    return arm_mfe_protection(state, position, ts, bar.close, cfg)
+
+
 def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
     engine = sys.modules[__name__]
     protection = position_monitor.liquidity_protection(position, snapshot, ts, price, cfg, engine)
@@ -1490,7 +1522,18 @@ def check_quote_exits(state, snapshot, cfg):
         if ts < max(closed_through, position.get('filled_ts') or 0):
             continue
         price = snapshot.bid if position['side'] == 1 else snapshot.ask
-        bzu_policy.apply_protective_stop(position, ts)
+        amendment = bzu_policy.protective_amendment(position)
+        if amendment and amendment['policy'] == position_monitor.MFE_STOP_POLICY:
+            if ts >= amendment['effective_ts'] and position['side'] * (price - amendment['price']) <= 1e-8:
+                close_at_observed_price(view, position, price, ts, 'MFE_PROTECTIVE_EXIT', cfg)
+                store_slot(state, number, view)
+                continue
+        else:
+            bzu_policy.apply_protective_stop(position, ts)
+        if position_monitor.is_mfe_stop(position) and position['side'] * (price - position['stop']) <= 1e-8:
+            close_at_observed_price(view, position, price, ts, 'MFE_PROTECTIVE_EXIT', cfg)
+            store_slot(state, number, view)
+            continue
         if position.get('liquidity_protection') and position['side'] * (price - position['stop']) <= 0:
             close_at_observed_price(view, position, price, ts, 'LIQUIDITY_REJECTION_EXIT', cfg)
             store_slot(state, number, view)
@@ -1507,7 +1550,7 @@ def check_quote_exits(state, snapshot, cfg):
                 close_at_observed_price(view, position, price, ts, 'CLOSED_STALE_TIME_STOP', cfg)
             elif position_monitor.is_bounce_stop(position):
                 close_at_observed_price(view, position, price, ts, 'CLOSED_BOUNCE_BREAKEVEN', cfg)
-        else:
+        elif not arm_mfe_protection(view, position, ts, price, cfg):
             apply_lifecycle_guard(view, position, as_of, ts, price, cfg)
         store_slot(state, number, view)
 
@@ -1517,7 +1560,7 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step
     if not position or c.ts <= position.get('last_bar', -1):
         return
     ts = c.ts + step
-    side, risk = position['side'], position['risk']
+    risk = position['risk']
     old_size = position.get('filled_fraction')
     position.update(position_monitor.metrics(position, ts))
     _manage_standard_bar(state, c, cfg, fill_bar=fill_bar, step=step, snapshot=snapshot)
@@ -1525,8 +1568,6 @@ def manage_bar(state: dict, c: Candle, cfg: Config, fill_bar: bool = False, step
         return
     if snapshot is not None:
         position_monitor.update_trade_excursions(position, snapshot.candles.get('15m', ()), ts)
-    favorable, adverse = (c.high, c.low) if side == 1 else (c.low, c.high)
-    position_monitor.track(position, ts, favorable, adverse)
     apply_lifecycle_guard(state, position, snapshot, ts, c.close, cfg)
 
 
@@ -1554,16 +1595,11 @@ def _manage_standard_bar(state, c, cfg, fill_bar=False, step=180_000, snapshot=N
         if not p.get(name.lower()+'_hit') and p.get('partials',{'TP1':1.}).get(name,0)>0]
     tp_hit = any(c.high >= level if side == 1 else c.low <= level for _,level in targets)
     open_stop = side*(c.open-p["stop"]) <= 0
-    # Whole-bar excursions cannot establish post-fill MFE in the entry bar.
-    if not fill_bar:
-        favorable = c.high if side == 1 else c.low
-        adverse = c.low if side == 1 else c.high
-        p["mfe_r"] = max(p.get("mfe_r", 0), side*(favorable-entry)/risk)
-        p["mae_r"] = max(p.get("mae_r", 0), side*(entry-adverse)/risk)
     if stop_hit:
         raw_exit = c.open if open_stop else p["stop"]
         exit_price = raw_exit*(1-side*cfg.slippage_bps/10_000)
-        close_trade(state, p, exit_price, ts, ("CLOSED_STALE_TIME_STOP" if position_monitor.is_stale_stop(p)
+        close_trade(state, p, exit_price, ts, ("MFE_PROTECTIVE_EXIT" if position_monitor.is_mfe_stop(p)
+                    else "CLOSED_STALE_TIME_STOP" if position_monitor.is_stale_stop(p)
                     else "CLOSED_BOUNCE_BREAKEVEN" if position_monitor.is_bounce_stop(p)
                     else "STOP_GAP" if open_stop else "STOP"), cfg,
                     ambiguous=tp_hit or fill_bar)
@@ -1599,6 +1635,8 @@ def _manage_standard_bar(state, c, cfg, fill_bar=False, step=180_000, snapshot=N
         if (c.high>=p["tp0"] if side==1 else c.low<=p["tp0"]) and (not fill_bar or side*(c.close-p["tp0"])>=0):
             p["tp0_hit"] = True
             emit(state,"TP0_MARKER",ts,order_id=p["id"],price=p["tp0"])
+    if not fill_bar and observe_position_mfe(state, p, c, ts, cfg):
+        return
     if ts >= p["exit_deadline"] and not p.get("tp1_decision_gate"):
         close_trade(state, p, c.close*(1-side*cfg.slippage_bps/10_000), ts, "INTRADAY_TIME_EXIT", cfg)
         return
@@ -1818,8 +1856,9 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
 
 def resting_organic_limit(plan, cfg):
     return (oil_risk.enabled(cfg) and oil_risk.is_organic(plan)
-            and plan.get('policy') == bzu_policy.POLICY
-            and plan.get('order_type') == 'LIMIT' and plan.get('status') == 'PENDING')
+            and bzu_policy.is_new(plan)
+            and plan.get('order_type', 'LIMIT') == 'LIMIT' and plan.get('action_type') != 'ACTIVE_ENTRY'
+            and plan.get('status') == 'PENDING')
 
 
 def resting_limit_invalidated(plan, price):
@@ -2077,7 +2116,8 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     if pending.get('cancel_requested_ts'):
         return
     target = bzu_policy.missed_target_level(pending)
-    if target is not None and snapshot.ticker_ts >= pending['placed_ts']:
+    if (target is not None and snapshot.trusted and pending['placed_ts'] <= snapshot.ticker_ts <= snapshot.now
+            and snapshot.now - snapshot.ticker_ts <= 120_000):
         if pending['side'] * (snapshot.price - target) < -1e-8:
             pending['target_cancel_armed'] = True
         elif pending.get('target_cancel_armed', True):
@@ -2496,8 +2536,11 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             valid = [p for p in unused if p['id'] == replacement['candidate_id']]
             active = []
             action = 'WATCH'
-    front_decision = (arbitration.front_run_replacement(pending,valid,s,cfg,sys.modules[__name__])
-                      if can_place and not active and not unresolved else None)
+    front_decision = None
+    if can_place and not active and not unresolved and not any(p.get('cancel_requested_ts') for p in pending):
+        replacements = [p for p in valid if p.get('replaces_order_id') and p['expires_ts'] > s.now
+                        and not {p['event_key'], *p.get('parent_keys', [])}.intersection(state['used_events'])]
+        front_decision = arbitration.front_run_replacement(pending, replacements, s, cfg, sys.modules[__name__])
     if front_decision:
         front_run = next(p for p in valid if p['id'] == front_decision['candidate_id'])
         incumbent = next((p for p in pending if p['id'] == front_decision['replaced_id']), None)
@@ -2509,10 +2552,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             pending = pending_plans(state)
             valid = [front_run]
             arbitration_audit = front_decision
+    resting = any(resting_organic_limit(plan, cfg) for plan in pending)
     rotation=state.get('portfolio_rotation_intent')
-    if rotation and (s.now>rotation.get('expires_ts',0) or active):
+    if rotation and (resting or s.now>rotation.get('expires_ts',0) or active):
         state.pop('portfolio_rotation_intent',None)
-    if pending and not active and not manual_block and not analysis['health'] and can_place \
+    if resting and not front_decision:
+        arbitration_audit={'decision':'KEEP','reason':'RESTING_LIMIT_LIFECYCLE'}
+    if pending and not resting and not active and not manual_block and not analysis['health'] and can_place \
             and not any(p.get('cancel_requested_ts') for p in pending):
         reserved_events = set(state['used_events'])
         for incumbent in pending:
@@ -2931,6 +2977,7 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         reason = event.get('reason')
         text = {'STOP':'стоп','STOP_GAP':'стоп із розривом ціни',
                 'TAKE_PROFIT':'тейк-профіт','ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов','INTRADAY_TIME_EXIT':'кінець часу угоди',
+                'MFE_PROTECTIVE_EXIT':'захист після сприятливого руху',
                 'POST_DEADLINE_THESIS_INVALIDATED':'вихід після втрати торгового сценарію'}.get(reason,'завершення')
         value = event['net_r']
         outcome = 'прибуток' if value>0 else 'збиток' if value<0 else 'беззбитково'
@@ -2972,6 +3019,8 @@ REASON_UA = {
     'CANCELLED_REPLACED_BY_LIVE_SETUP':'новий підтверджений сетап ближче до поточної ціни',
     'DYNAMIC_TREND_TRAILING_REPLACE':'з’явився ближчий підтверджений сетап за трендом',
     'LIMIT_TTL':'вичерпано строк очікування лімітки',
+    'MFE_PROTECTION':'підтягнуто стоп після сприятливого руху',
+    'MFE_PROTECTIVE_EXIT':'вихід за захистом пройденого руху',
     'POST_TP_EXHAUSTION_COOLDOWN':'після тейка великої хвилі потрібен відкат від 38.2% або пауза 2 год',
     'CONTINUATION_RETRACE_REQUIRED':'для MARKET потрібен відкат 35–50% від імпульсу',
     'BLOCKED_DEALING_RANGE_30_70':'вхід у крайніх 30% торгового діапазону',

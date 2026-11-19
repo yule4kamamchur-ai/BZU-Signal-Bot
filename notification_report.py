@@ -105,6 +105,7 @@ def full_exit_text(plan):
 def close_reason(trade):
     hits = [name for name in ('TP1', 'TP2', 'TP3') if trade.get(name.lower() + '_hit')]
     reason = {'LIQUIDITY_REJECTION_EXIT': 'захист після зняття ліквідності',
+              'MFE_PROTECTIVE_EXIT': 'захист після сприятливого руху',
               'STOP': 'стоп', 'STOP_GAP': 'стоп із розривом ціни',
               'TAKE_PROFIT': 'тейк-профіт',
               'CLOSED_ROUND_TRIP_BE': 'повернення до входу після піку',
@@ -136,17 +137,27 @@ def position_diagnostics(position, now, cfg, engine, *, frozen=False):
     mode = view['mode']
     time = duration_text(view['time_in_trade_ms'])
     lines = [f"⏱ {time} • MFE {view['max_favorable_r']:+.2f}R ({view['peak_price']:.8g}) • MAE {(-view['max_adverse_r']):.2f}R"]
+    amendment = engine.bzu_policy.protective_amendment(position) or {}
+    mfe_armed = amendment.get('policy') == position_monitor.MFE_STOP_POLICY
+    mfe_active = position_monitor.is_mfe_stop(position)
+    if mfe_armed:
+        lines.append(f"Захист MFE • SL {amendment['price']:.8g} з наступної свічки.")
+    elif mfe_active:
+        lines.append(f"Захист MFE • діє SL {position['stop']:.8g}.")
     if mode == 'POST_TP1':
         if position.get('scale_policy') == 'SCALE_OUT_1R':
             effective = position.get('pending_stop') or {}
             stop = effective.get('price', position['stop'])
             timing = ' з наступної свічки' if effective else ''
             return [*lines, f'50% зафіксовано на +1R. SL залишку {stop:.8g}{timing}.']
+        if mfe_armed or mfe_active:
+            return [*lines, 'TP1 зафіксовано. Залишок ведемо до TP2.']
         return [*lines, 'TP1 зафіксовано. Залишок ведемо за штатним стопом до TP2.']
     if view['structural_only']:
         if mode == 'STRUCTURAL_HOLD':
-            until = engine.report_deadline(view['structural_hold_until'],now,cfg)
-            lines.append(f'Початковий структурний SL до {until}.')
+            if not (mfe_armed or mfe_active):
+                until = engine.report_deadline(view['structural_hold_until'],now,cfg)
+                lines.append(f'Початковий структурний SL до {until}.')
         else:
             lines.append('Структурний вихід після двох закриттів M15 за свінгом, EMA20 та VWAP.')
         return lines

@@ -215,15 +215,19 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
 ADVERSE_LOCK_BARS = 16
 
 
+def latest_same_side_exit(side, trades, now):
+    return max((trade for trade in trades if trade.get('side') == side
+                and 0 < (trade.get('closed_ts') or 0) <= now),
+               key=lambda trade: trade['closed_ts'], default=None)
+
+
 def adverse_reentry_reason(side, trades, snapshot, cfg, engine, *, plan=None):
     """Reconstruct the same-side cooldown from observed journal exits and closed M15."""
     if not oil_risk.enabled(cfg):
         return None
     duration = ADVERSE_LOCK_BARS * oil_risk.M15
-    previous = max((t for t in trades if t.get('side') == side
-                    and 0 < (t.get('closed_ts') or 0) <= snapshot.now),
-                   key=lambda t: t['closed_ts'], default=None)
-    if (previous is None or (previous.get('net_r') or 0) > -.50+1e-8 or not previous.get('entry')
+    previous = latest_same_side_exit(side, trades, snapshot.now)
+    if (previous is None or not previous.get('entry') or (previous.get('net_r') or 0) > -.50+1e-8
             or snapshot.now >= previous['closed_ts'] + duration):
         return None
     since = previous['closed_ts']
@@ -413,14 +417,6 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             # Keep the original structural invalidation and carry the witnessed
             # execution band through router and dashboard geometry validation.
             zone = {**zone,'execution_low':min(low,entry),'execution_high':max(high,entry)}
-        original_risk = max(oil[0]['floor'], side * (entry - structural))
-        liquidity_entry = strategy_direct_entries.liquidity_anchor(
-            snapshot, zone, side, entry, original_risk, a15, cfg.tick, engine)
-        if liquidity_entry:
-            entry, entry_basis = liquidity_entry['entry'], 'LIQUIDITY_ANCHORED_LIMIT'
-            structural = min(structural, entry) if side == 1 else max(structural, entry)
-            zone = {**zone, 'execution_low': min(low, entry), 'execution_high': max(high, entry),
-                    'liquidity_anchor': liquidity_entry}
         stop, risk, organic_risk = oil_risk.stop_geometry(
             entry, structural, side, *oil, cfg.tick, engine)
         inside = low <= snapshot.price <= high
@@ -529,8 +525,6 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         market_trigger = touch
     decay = engine.quality.consolidation_decay(zone, snapshot, side, cfg.tick, engine)
     diag['zone_decay'] = decay
-    if zone.get('liquidity_anchor'):
-        market_trigger = touch = None
     if decay['requires_confirmation'] and (not market_trigger or
             market_trigger['pattern'] == 'INSTANT_TOUCH_MARKET_FILL'):
         return None, 'ZONE_CONSOLIDATION_DECAY'
@@ -845,6 +839,16 @@ def protective_amendment(position):
                  and abs(price - proof.get('price', 0)) < 1e-8
                  and position['side'] * (price - position['entry']) >= .05 * position['risk'] - 1e-8)
         return amendment if valid else None
+    if amendment.get('policy') == 'MFE_PROTECTION':
+        proof = position.get('mfe_protection') or {}
+        if (amendment.get('price') == proof.get('price')
+                and amendment.get('effective_ts') == proof.get('effective_ts')
+                and isinstance(proof.get('price'), (int, float)) and math.isfinite(proof['price'])
+                and 0 < proof['price'] and isinstance(proof.get('effective_ts'), int)
+                and (position.get('filled_ts') or 0) < proof['effective_ts']
+                and position['side'] * (proof['price'] - position['entry']) > 0):
+            return amendment
+        return None
     partial_ts = partial_tp1_time(position)
     if amendment.get('policy') == SCALE_STOP_POLICY and position.get('scale_policy') == SCALE_POLICY:
         effective, price = amendment.get('effective_ts'), amendment.get('price')
@@ -972,10 +976,11 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     first_target = partial_target(p)
     target_hit = c.high >= first_target if side==1 else c.low <= first_target
     if stop_hit:
-        from position_monitor import is_bounce_stop, is_stale_stop
+        from position_monitor import is_bounce_stop, is_mfe_stop, is_stale_stop
 
         raw = c.open if side*(c.open-p['stop'])<=0 else p['stop']
-        reason = ('CLOSED_STALE_TIME_STOP' if is_stale_stop(p) else
+        reason = ('MFE_PROTECTIVE_EXIT' if is_mfe_stop(p) else
+                  'CLOSED_STALE_TIME_STOP' if is_stale_stop(p) else
                   'CLOSED_BOUNCE_BREAKEVEN' if is_bounce_stop(p) else 'STOP_GAP' if raw==c.open else 'STOP')
         close(state,p,raw*(1-side*cfg.slippage_bps/10_000),ts,reason,cfg,engine,
               ambiguous=target_hit or fill_bar or added)
@@ -983,9 +988,6 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     # Favorable extremes in a fill bar can precede either fill. A close through
     # the target proves the favorable traversal after both entries.
     proved = lambda level: (not (fill_bar or added)) or side*(c.close-level)>=0
-    if not fill_bar and not added:
-        favorable = c.high if side == 1 else c.low
-        p['mfe_r'] = max(p['mfe_r'], side*(favorable-p['entry'])/p['risk'])
     if not p.get('tp1_hit') and target_hit and proved(first_target):
         fraction=p.get('partials',{}).get('TP1',.6)
         if fraction == 1.:
@@ -1009,6 +1011,8 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     second = c.high >= p['tp2'] if side==1 else c.low <= p['tp2']
     if p.get('tp1_hit') and second and proved(p['tp2']):
         close(state,p,p['tp2']*(1-side*cfg.slippage_bps/10_000),ts,'TAKE_PROFIT',cfg,engine)
+        return
+    if not (fill_bar or added) and engine.observe_position_mfe(state, p, c, ts, cfg):
         return
     if (p.get('time_exit_enabled') and ts >= p['exit_deadline']
             and not (oil_risk.enabled(cfg) and (p.get('partial_tp1_hit') or p.get('scale_policy')==SCALE_POLICY))):

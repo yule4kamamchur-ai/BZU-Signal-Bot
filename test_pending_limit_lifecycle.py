@@ -202,7 +202,7 @@ class TrendReplacement(TestCase):
                                           engine=engine, regime={'trend_anchor_side':-1})
         self.assertEqual(result['candidate_id'], new['id'])
 
-    def test_rotation_through_the_router_releases_the_slot_before_placing(self):
+    def test_router_keeps_resting_limit_when_a_closer_setup_appears(self):
         old = waiting(-1, NOW-15*MINUTE)
         new = self.candidates(old, -1)
         book = engine.new_state(self.cfg)
@@ -223,8 +223,7 @@ class TrendReplacement(TestCase):
              patch.object(engine.scanner, 'calculate_zone_trade_plan', return_value={'tactic':'LIMIT','entry_condition':'RETEST'}), \
              patch.object(engine.scenario_planner, 'focus', return_value={'developing_setup':None}):
             result = engine.run_cycle(book, s, self.cfg)
-        self.assertEqual(result['analysis']['portfolio_arbitration']['decision'], 'FAST_ROTATE_SAME_CYCLE')
-        self.assertEqual([p['id'] for p in engine.pending_plans(book)], ['near'])
-        self.assertEqual(book['orders'][-1]['reason'], 'CANCELLED_REPLACED_BY_LIVE_SETUP')
-        self.assertEqual([e['kind'] for e in book['events'] if e['kind'] in ('CANCELLED', 'PLACED')],
-                         ['CANCELLED', 'PLACED'])
+        self.assertEqual(result['analysis']['portfolio_arbitration']['reason'], 'RESTING_LIMIT_LIFECYCLE')
+        self.assertEqual([p['id'] for p in engine.pending_plans(book)], [old['id']])
+        self.assertFalse(book['orders'])
+        self.assertFalse(any(e['kind'] in ('CANCELLED', 'PLACED') for e in book['events']))

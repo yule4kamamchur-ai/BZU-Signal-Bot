@@ -500,7 +500,8 @@ async function pollM5() {
 
 const brainMinute = 60_000;
 const brainQuarter = 15 * brainMinute;
-const brain = {series: {}, rows: [], orders: [], used: new Set(), sourceTs: 0, lastTs: 0, computed: 0};
+const brainMfeSteps = [[1.25,.35]];
+const brain = {series: {}, rows: [], orders: [], endings: [], closed: [], used: new Set(), sourceTs: 0, lastTs: 0, computed: 0};
 const liveBrainEnabled = () => state?.brain_config?.schema === 1;
 const liveBrainFresh = (now = Date.now()) => liveBrainEnabled() && now - brain.computed < QUOTE_MAX_AGE;
 const displayOrders = () => liveBrainEnabled() && brain.sourceTs === state.snapshot_ts ? brain.orders : state.orders;
@@ -548,14 +549,17 @@ function brainPivots(rows, strength, step) {
   return points;
 }
 
-function brainUnswept(rows,m5,minutes,tick,asOf) {
+function brainUnswept(rows,m5,minutes,tick,asOf,current=null) {
+  const fine=minutes.filter(b=>b.ts+brainMinute<=asOf);
+  if (current && current.observed_ts<=asOf && current.ts<=asOf && asOf<current.ts+brainMinute)
+    fine.push(current);
   const frames=[[rows,brainQuarter],[m5,5*brainMinute]];
   const points=[];
   for (const [source,step] of frames) {
     const bars=source.filter(b=>b.ts+step<=asOf);
     for (const point of brainPivots(bars.slice(-96),2,step)) {
-      const later=[...bars,...minutes.filter(b=>b.ts+brainMinute<=asOf)].filter(b=>b.ts>=point.known_ts);
-      if (!later.some(b=>point.side*((point.side===1?b.low:b.high)-point.price)<=-tick))
+      const later=[...bars,...fine].filter(b=>b.ts>=point.known_ts);
+      if (!later.some(b=>point.side*(point.price-(point.side===1?b.low:b.high))>=tick-1e-8))
         points.push(point);
     }
   }
@@ -640,7 +644,7 @@ function brainTouchRejection(market, minutes, m5, zone, side, entry, quote, widt
   });
 }
 
-function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minutes=[]) {
+function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minutes=[], current=null) {
   if (matrix.atr <= 0) return [];
   const {atr,side:trend} = matrix;
   const result=new Map(), last=rows.at(-1), prior=rows.slice(-13,-1);
@@ -650,7 +654,8 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
   const roundOut=(price,side)=>Math.round((side===1?
     Math.ceil(price/tick-1e-8):Math.floor(price/tick+1e-8))*tick*1e8)/1e8;
   const m5step=5*brainMinute;
-  const unbroken=brainUnswept(rows,m5,minutes,tick,market.ts);
+  const structuralTargets=brainUnswept(rows,m5,[],tick,market.ts);
+  const unbroken=brainUnswept(rows,m5,minutes,tick,market.ts,current);
   const common={marketRadius:Math.min(.18,config.market_touch_atr??.18)*atr,
     limitRadius:(config.limit_approach_atr??.85)*atr};
   const add=(kind,side,ref,anchor,bar,step,{breakout=false,formation=bar.ts,
@@ -659,15 +664,7 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
     if (known>market.ts || market.ts-known>=3*brainQuarter || zoneHigh-zoneLow<tick-1e-8 ||
         (trend && trend!==side)) return;
     if (rows.some(b=>b.ts>=known && side*(wick(b,side)-anchor)<-tick)) return;
-    let structuralEntry=roundOut(ref,side);
-    const initialRisk=Math.max(config.risk_floor,side*(structuralEntry-anchor));
-    const pool=!breakout&&unbroken.filter(p=>p.side===side && tick<side*(structuralEntry-p.price) &&
-      side*(structuralEntry-p.price)<Math.min(.45*atr,.50*initialRisk))
-      .sort((a,b)=>Math.abs(a.price-structuralEntry)-Math.abs(b.price-structuralEntry))[0];
-    if (pool) {
-      structuralEntry=roundOut(pool.price-side*Math.max(.03,tick),-side);
-      anchor=side===1?Math.min(anchor,structuralEntry):Math.max(anchor,structuralEntry);
-    }
+    const structuralEntry=roundOut(ref,side);
     const decay=brainZoneDecay(m5,zoneLow,zoneHigh,known,side,atr,tick,market.ts);
     const quote=side===1?market.ask:market.bid;
     const quoted=number(market.bid)&&number(market.ask)&&market.bid>0&&market.ask>=market.bid&&
@@ -676,16 +673,16 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
     const rangeMiddle=!trend && (rangePos===null || rangePos>=.30 && rangePos<=.70);
     const edge=side===1?rangeHigh:rangeLow;
     const edgeBroken=breakout && side*(bar.close-edge)>tick && side*(quote-edge)>tick;
-    const touch=quoted && !pool && Math.abs(quote-structuralEntry)<=common.marketRadius+1e-8 &&
+    const touch=quoted && Math.abs(quote-structuralEntry)<=common.marketRadius+1e-8 &&
       brainTouchRejection(market,minutes,m5,{known_ts:known,low:zoneLow,high:zoneHigh},
         side,structuralEntry,quote,common.marketRadius,tick);
     const impulse=quoted && breakout && market.ts-known<step &&
       side*(quote-confirmLevel)>=tick/2-1e-8 &&
       Math.abs(quote-structuralEntry)<=(config.market_band_atr??.65)*atr+1e-8;
-    const wantsMarket=!pool&&!decay.requires_confirmation&&(!rangeMiddle||edgeBroken) && (touch||impulse);
+    const wantsMarket=(!rangeMiddle||edgeBroken) && (impulse || touch && !decay.requires_confirmation);
     const stop=roundOut(structuralEntry-side*Math.max(config.risk_floor,
       side*(structuralEntry-anchor)+Math.max(2*tick,.12*atr)),-side);
-    const prices=unbroken.filter(p=>p.side===-side && p.known_ts<=known)
+    const prices=structuralTargets.filter(p=>p.side===-side && p.known_ts<=known)
       .map(p=>p.price).sort((a,b)=>side*(a-b));
     const tp1=prices.find(level=>side*(level-structuralEntry)>0);
     const chooseEntry=entry=>{
@@ -709,7 +706,7 @@ function scanLiveCandlesInBrowser(rows, m5, market, matrix, config, tick, minute
     if (score<60) return;
     const id=['paper',kind,side,known,ref.toFixed(4)].join(':');
     result.set(id,{...plan,id,kind,setup:kind,side,low:zoneLow,high:zoneHigh,reference:structuralEntry,score,
-      invalidation:anchor,liquidity_anchor:pool?{pool,entry:structuralEntry}:null,zone_decay:decay,
+      invalidation:anchor,zone_decay:decay,
       known_ts:known,origin_ts:formation,timeframe:step===brainQuarter?'15m':'5m',
       liquidity:brainLiquidity(unbroken,plan.entry),order_type:marketPlan?'MARKET':'LIMIT',
       market_now:!!marketPlan,actionable:true,activation_ready:!!marketPlan||limitReady,
@@ -817,6 +814,8 @@ function loadBrain(instrument) {
       globalThis.localStorage?.getItem(legacy) ?? 'null');
     if (!saved || saved.instrument!==instrument || !Array.isArray(saved.orders) ||
         !Array.isArray(saved.canonicalIds) || !Array.isArray(saved.used) ||
+        (saved.endings!=null && !Array.isArray(saved.endings)) ||
+        (saved.closed!=null && !Array.isArray(saved.closed)) ||
         (saved.event ? typeof saved.event.orderId!=='string' || !number(saved.event.ts) ||
           saved.event.ts>Date.now()+5000 || !number(saved.event.candleTs) ||
           saved.event.candleTs!==Math.floor(saved.event.ts/brainMinute)*brainMinute : saved.orders.length>0) ||
@@ -830,13 +829,13 @@ function saveBrain() {
   try {
     const key=brainStorageKey(state.instrument);
     globalThis.localStorage?.removeItem(key.replace('bzu_live_trade_state:','bzu-paper-v14.2:'));
-    if (!brain.event && !brain.used.size) {
+    if (!brain.event && !brain.used.size && !brain.closed.length) {
       globalThis.localStorage?.removeItem(key);
       return;
     }
     globalThis.localStorage?.setItem(key,JSON.stringify({instrument:state.instrument,
       orders:brain.event?brain.orders:[], event:brain.event, canonicalIds:brain.canonicalIds??[],
-      used:[...brain.used].slice(-128)}));
+      endings:brain.endings.slice(-20), closed:brain.closed.slice(-8), used:[...brain.used].slice(-128)}));
   } catch { /* The current tab retains its paper state if storage is disabled. */ }
 }
 
@@ -848,11 +847,17 @@ function syncBrain(snapshot, first) {
     const saved=loadBrain(snapshot.instrument);
     Object.assign(brain,{instrument:snapshot.instrument,series:{},rows:[],liquidity:[],used:new Set(saved?.used),computed:0,
       lastTs:saved?.event?.ts??covered,event:saved?.event??null,orders:saved?.orders??[],
-      canonicalIds:saved?.canonicalIds??[]});
+      canonicalIds:saved?.canonicalIds??[], endings:saved?.endings??[], closed:saved?.closed??[],
+      currentMinute:null});
   }
   for (const event of snapshot.recent_events ?? []) {
     if (['CANCELLED','EXPIRED','CLOSED'].includes(event.kind)) brain.used.add(event.order_id);
   }
+  const resolved = new Set((snapshot.recent_events ?? [])
+    .filter(e=>['CANCELLED','EXPIRED','CLOSED','FILLED'].includes(e.kind)).map(e=>e.order_id));
+  brain.endings=brain.endings.filter(e=>!resolved.has(e.order_id));
+  brain.closed=brain.closed.filter(e=>!(snapshot.recent_events ?? []).some(
+    canonical=>canonical.kind==='CLOSED' && canonical.order_id===e.id));
   const canonical = snapshot.orders;
   const current = brain.orders;
   const previous = brain.canonicalIds ?? [];
@@ -890,15 +895,57 @@ function brainEvent(order, kind, ts, message) {
   notify(order,orderTracker(order),'BROWSER_'+kind,message+' · PAPER');
 }
 
+function brainBodyBreak(rows,index,points,side,tick) {
+  const bar=rows[index], previous=rows[index-1];
+  if (!previous || bar.ts-previous.ts!==brainQuarter) return false;
+  const pivot=points.find(p=>p.side===-side && p.known_ts<=bar.ts);
+  return pivot && side*(previous.close-pivot.price)<=0 && side*(bar.open-pivot.price)<=tick/2 &&
+    side*(bar.close-pivot.price)>tick && side*(bar.close-bar.open)>tick;
+}
+
+function brainReentryAllowed(plan,market) {
+  const side=plan.side, config=state.brain_config, tick=state.tick??.01;
+  const server=config.reentry_history?.[side];
+  const history=[...brain.closed.filter(row=>row.side===side && row.id!==server?.id), ...(server?[server]:[])]
+    .filter(row=>row.ts<=market.ts).sort((a,b)=>b.ts-a.ts);
+  const last=history[0];
+  if (!last) return true;
+  const cooldown=last.net_r<=-.50+1e-8 && market.ts-last.ts<(config.adverse_lock_ms??16*brainQuarter);
+  if (!cooldown) return true;
+  if ((plan.score??0)<68) return false;
+
+  const rows=(brain.series['15m']??[]).filter(b=>b.ts+brainQuarter<=market.ts).slice(-96);
+  const points=brainPivots(rows,1,brainQuarter).reverse();
+  const since=last.ts;
+  if (rows.some((b,i)=>(b.ts>=since || i>=Math.max(7,rows.length-3) && b.ts+brainQuarter>since)
+      && brainBodyBreak(rows,i,points,side,tick))) return true;
+  for (const [source,step] of [[rows,brainQuarter],[brain.series['5m']??[],5*brainMinute]]) {
+    const valid=source.some((bar,i)=>{
+      const prior=source[i-1], base=source.slice(Math.max(0,i-20),i);
+      if (!prior || base.length<20 || base.some((b,n)=>b.ts!==bar.ts-(20-n)*step) ||
+          bar.ts<since || bar.ts+step>market.ts || side*(bar.close-bar.open)<tick-1e-8 ||
+          side*(prior.close-prior.open)>-tick+1e-8) return false;
+      const span=base.reduce((sum,b)=>sum+b.volume,0);
+      const extreme=side===1?prior.high:prior.low;
+      return span>0 && 20*bar.volume/span>=1.25-1e-8 &&
+        (side*(bar.close-extreme)>=tick-1e-8 ||
+          side*(bar.open-prior.close)<=tick/2 && side*(bar.close-prior.open)>=tick-1e-8);
+    });
+    if (valid) return true;
+  }
+  return false;
+}
+
 function brainFrontRun(order,market,matrix) {
   const side=order.side,tick=state.tick??.01,step=5*brainMinute;
-  const m5=(brain.series['5m']??[]).filter(b=>b.ts>=order.placed_ts&&b.ts+step<=market.ts);
+  const placed=order.effective_ts??order.placed_ts;
+  const m5=(brain.series['5m']??[]).filter(b=>b.ts>=placed&&b.ts+step<=market.ts);
   const first=m5.at(-2),last=m5.at(-1),extreme=b=>side===1?b.low:b.high;
   if (!matrix||!first||!last||last.ts!==first.ts+step||market.ts-last.ts-step>=step ||
       !(0<side*(extreme(first)-order.entry)&&side*(extreme(first)-order.entry)<=.25*order.risk)) return null;
   const body=side*(last.close-last.open),edge=side===1?first.high:first.low;
   if (body<Math.max(3*tick,.60*brainAtr(m5.slice(0,-1)))||body<.60*(last.high-last.low)||side*(last.close-edge)<tick) return null;
-  const minuteStart=Math.floor(order.placed_ts/brainMinute)*brainMinute;
+  const minuteStart=Math.floor(placed/brainMinute)*brainMinute;
   const end=Math.floor(market.ts/brainMinute)*brainMinute;
   const minutes=new Map((brain.series['1m']??[]).filter(b=>b.ts>=minuteStart&&b.ts+brainMinute<=market.ts).map(b=>[b.ts,b]));
   for (let ts=minuteStart;ts<end;ts+=brainMinute) {
@@ -909,10 +956,35 @@ function brainFrontRun(order,market,matrix) {
       side*(extreme(brain.currentMinute)-order.entry)<=0)) return null;
   const entry=side===1?market.ask:market.bid,risk=side*(entry-order.stop);
   const target=order.qualification_tp1??order.tp1,rr1=side*(target-entry)/risk;
-  if (risk<state.brain_config.risk_floor||risk>state.brain_config.risk_cap||rr1<1.35 ||
-      Math.abs(entry-last.close)>.65*matrix.atr) return null;
+  if (side*(entry-order.entry)<=0 || risk<state.brain_config.risk_floor ||
+      risk>state.brain_config.risk_cap || rr1<1.35-1e-8 || Math.abs(entry-last.close)>.65*matrix.atr) return null;
   return {...order,id:order.id+':front:'+last.ts,order_type:'MARKET',market_now:true,entry,risk,rr1,tp1:target,
     known_ts:last.ts+step,replaces_order_id:order.id,activation_ready:true};
+}
+
+function brainProtectMfe(order,market,price) {
+  const side=order.side, config=state.brain_config, tick=state.tick??.01;
+  if (order.risk<=0 || market.ts<=(order.filled_ts??market.ts)) return false;
+  const peak=Math.max(order.max_favorable_r??0, side*(price-order.entry)/order.risk);
+  order.max_favorable_r=peak;
+  // A dashboard snapshot from the previous release can still advertise the old tier.
+  const step=(config.mfe_lock_steps??brainMfeSteps).findLast(([trigger])=>
+    trigger>=brainMfeSteps[0][0]-1e-8 && peak>=trigger-1e-8);
+  if (!step) return false;
+  const entryFee=order.entry_fee_rate??(order.order_type==='MARKET'?config.taker_fee:config.maker_fee)??0;
+  const exitFee=order.exit_fee_rate??config.taker_fee??0;
+  const slippage=(order.slippage_bps??config.slippage_bps??2)/10_000;
+  const costStop=order.entry*(1+side*entryFee)/(1-side*exitFee)/(1-side*slippage);
+  const desired=order.entry+side*step[1]*order.risk;
+  const raw=(side===1?Math.max(costStop,desired):Math.min(costStop,desired))/tick;
+  const stop=(side===1?Math.ceil(raw-1e-8):Math.floor(raw+1e-8))*tick;
+  if (side*(stop-order.stop)<=1e-8 ||
+      number(order.pending_stop) && side*(stop-order.pending_stop)<=1e-8) return false;
+  order.mfe_protection={policy:'MFE_PROTECTION',peak_r:peak,price:stop,effective_ts:market.ts};
+  if (side*(price-stop)<=1e-8) return true;
+  Object.assign(order,{stop,be_stop:stop,be_confirmed_ts:market.ts,pending_stop:null});
+  brainEvent(order,'BREAKEVEN_ARMED',market.ts,'Захист після сприятливого руху · SL '+format(stop));
+  return false;
 }
 
 function brainProtectLiquidity(order,market,price) {
@@ -957,6 +1029,27 @@ function brainAdverseClosePair(order,market,price) {
     side*(price-pivot.price)<0;
 }
 
+function brainMissedTarget(order,market,target) {
+  const effective=order.effective_ts??order.placed_ts;
+  if (!number(effective)) return null;
+  const start=Math.max(Math.ceil(effective/brainMinute)*brainMinute,order.reconciled_through_ts??0);
+  const minutes=(brain.series['1m']??[]).filter(b=>b.ts>=start && b.ts+brainMinute<=market.ts);
+  const side=order.side;
+  let next=start, armed=order.target_cancel_armed!==false;
+  for (const bar of minutes) {
+    if (bar.ts!==next || bar.ts+brainMinute>order.expires_ts) break;
+    const opened=side*(bar.open-target)>=-1e-8;
+    armed=armed || !opened;
+    const touched=side*((side===1?bar.low:bar.high)-order.entry)<=(order.paper_touch_tolerance??0)+1e-8;
+    if (armed && (opened || !touched) && side*((side===1?bar.high:bar.low)-target)>=-1e-8)
+      return {ts:bar.ts+brainMinute};
+    if (touched) return {touched:true};
+    armed=armed || side*(bar.close-target)<-1e-8;
+    next+=brainMinute;
+  }
+  return null;
+}
+
 function advanceBrain(market, matrix, rows) {
   if (market.ts < brain.lastTs || market.ts === brain.lastTs && (brain.orders.length || brain.event?.ts===market.ts) || !number(market.bid) || !number(market.ask) ||
       market.bid <= 0 || market.ask < market.bid) return;
@@ -965,52 +1058,67 @@ function advanceBrain(market, matrix, rows) {
   const order=brain.orders[0];
   const oppositeQuote = side => side === 1 ? market.bid : market.ask;
   const eligible = rows.filter(z=>z.activation_ready!==false && tacticalCandidate(z,market.price) && !brain.used.has(z.id));
-  const choose = (side) => eligible.find(z=>(!side || side===z.side) && z.market_now) ??
-    eligible.find(z=>!side || side===z.side);
+  const allowed = plan=>brainReentryAllowed(plan,market);
+  const choose = (side) => eligible.find(z=>(!side || side===z.side) && z.market_now && allowed(z)) ??
+    eligible.find(z=>(!side || side===z.side) && allowed(z));
   let next = choose();
-  const remove = (kind,message) => {
+  const remove = (kind,message,reason,netR,ts=market.ts) => {
     brain.used.add(order.id);
+    if (kind==='CANCELLED' || kind==='EXPIRED') {
+      brain.endings.push({kind,ts,order_id:order.id,side:order.side,entry:order.entry,
+        reason,reason_text:message});
+      brain.endings=brain.endings.slice(-20);
+    } else {
+      brain.closed.push({id:order.id,side:order.side,ts,reason,net_r:netR});
+      brain.closed=brain.closed.slice(-8);
+    }
     brain.orders=[];
-    brainEvent(order,kind,market.ts,message);
+    brainEvent(order,kind,ts,message);
   };
   if (order?.status === 'CANCELLING' || brain.orders.length>1) return;
   if (order?.status === 'PENDING') {
-    const side = order.side, move = side*(market.price-order.entry);
-    const target = Math.min(config.missed_target_r*order.risk,
-      number(order.tp1) ? side*(order.tp1-order.entry) : Infinity);
-    const closer = eligible.filter(z=>z.side===side && z.known_ts>(order.placed_ts ?? order.effective_ts ?? 0) &&
-      Math.abs((z.market_now ? z.reference : z.entry)-market.price)<move && z.id!==order.id);
-    const front=brainFrontRun(order,market,matrix);
-    const replacement = matrix?.side===side && matrix.atr>0 && move>config.browser_replace_atr*matrix.atr &&
-      (closer.find(z=>z.market_now) ?? closer[0]);
-    if (market.ts >= order.expires_ts) remove('EXPIRED','Строк ліміту минув');
-    else if (side*(market.price-order.stop)<=0) {
-      remove('CANCELLED','Пробито рівень інвалідації');
+    const side=order.side, move=side*(market.price-order.entry);
+    const threshold=order.missed_target_level??order.entry+side*Math.min(config.missed_target_r*order.risk,
+      number(order.tp1)?side*(order.tp1-order.entry):Infinity);
+    const expired=market.ts>=order.expires_ts;
+    const missed=brainMissedTarget(order,market,threshold);
+    const pastTarget=side*(market.price-threshold)>=-1e-8;
+    const front=!expired && brainSessionAllowed(market.ts) && !config.uncertain && !missed ? brainFrontRun(order,market,matrix) : null;
+    if (missed?.ts) {
+      remove('CANCELLED','Рух досяг 0.75R або TP1 без входу','CANCEL_TARGET_REACHED_WITHOUT_FILL',undefined,missed.ts);
+      next=choose(side);
+    } else if (expired) {
+      const session=order.expiry_reason==='SESSION_ENDED';
+      remove('EXPIRED',session?'Торгове вікно завершено':'Строк ліміту минув',
+        session?'SESSION_ENDED':'LIMIT_TTL',undefined,order.expires_ts);
+    } else if ([order.invalidation,order.stop].some(level=>number(level)&&side*(market.price-level)<=1e-8)) {
+      remove('CANCELLED','Пробито рівень інвалідації','STRUCTURE_INVALIDATED_NOW');
       next=null;
     } else if (market.ts >= (order.effective_ts ?? 0) &&
         side*((side===1?market.ask:market.bid)-order.entry)<=1e-8) {
       Object.assign(order,{status:'OPEN',filled_ts:market.ts});
       brainEvent(order,'ENTERED',market.ts,'Вхід виконано '+format(order.entry));
-    } else if (number(order.invalidation) && side*(market.price-order.invalidation)<0) {
-      remove('CANCELLED','Пробито рівень інвалідації');
-      next=null;
-    } else if (move>=target-1e-8 && order.target_cancel_armed!==false) {
-      remove('CANCELLED','Рух досяг 0.75R або TP1 без входу');
-      next = choose(side);
-    } else if (front) {
-      remove('CANCELLED','MARKET після недоходу і підтвердженого M5 пробою');
+    } else if (pastTarget && order.target_cancel_armed!==false && !missed?.touched) {
+      remove('CANCELLED','Рух досяг 0.75R або TP1 без входу','CANCEL_TARGET_REACHED_WITHOUT_FILL');
+      next=choose(side);
+    } else if (front && allowed(front)) {
+      remove('CANCELLED','MARKET після недоходу і підтвердженого M5 пробою','MARKET_FRONT_RUN_CATCH');
       next=front;
-    } else if (replacement) {
-      remove('CANCELLED','Ближчий підтверджений сетап');
-      next = replacement;
-    } else if (move<target-1e-8) order.target_cancel_armed=true;
+    } else if (!pastTarget) order.target_cancel_armed=true;
   }
   if (order?.status === 'OPEN' && brain.orders[0] === order) {
     const side=order.side, usedQuote=oppositeQuote(side);
+    const realized=(order.remaining??1)*side*(usedQuote-order.entry)/order.risk+(order.paper_realized_r??0);
+    if (number(order.pending_stop_effective_ts) && market.ts>=order.pending_stop_effective_ts &&
+        number(order.pending_stop) && side*(order.pending_stop-order.stop)>1e-8) {
+      order.stop=order.pending_stop;
+      order.pending_stop=null;
+    }
     brainProtectLiquidity(order,market,usedQuote);
     if (side*(usedQuote-order.stop)<=1e-8) {
-      const realized=(order.remaining??1)*side*(usedQuote-order.entry)/order.risk+(order.paper_realized_r??0);
-      remove('SL','Захисний стоп · '+signed(realized)+'R');
+      const reason=order.mfe_protection?.price===order.stop?'MFE_PROTECTIVE_EXIT':
+        order.liquidity_protection?'LIQUIDITY_REJECTION_EXIT':'STOP';
+      remove('SL','Захисний стоп · '+signed(realized)+'R',reason,realized);
       return;
     }
     const scale = order.scale_policy==='SCALE_OUT_1R';
@@ -1019,32 +1127,42 @@ function advanceBrain(market, matrix, rows) {
       const fraction=scale ? .5 : order.tp1_fraction ?? 1;
       order.paper_realized_r=fraction*side*(first-order.entry)/order.risk;
       if (fraction===1) {
-        remove('TP1','Вихід на першій цілі');
+        remove('TP1','Вихід на першій цілі','TAKE_PROFIT',realized);
         return;
       }
       Object.assign(order,{tp1: first,tp1_hit:true,tp1_partial:true,remaining:1-fraction});
       if (scale) {
         const tick=state.tick??.01;
         const raw=(order.entry+side*.15*order.risk)/tick;
-        order.stop=(side===1?Math.ceil(raw-1e-8):Math.floor(raw+1e-8))*tick;
+        const scaled=(side===1?Math.ceil(raw-1e-8):Math.floor(raw+1e-8))*tick;
+        if (side*(scaled-order.stop)>1e-8) order.stop=scaled;
         order.be_stop=order.stop;
         order.be_confirmed_ts=market.ts;
       }
       brainEvent(order,'TP1',market.ts,'Зафіксовано '+Math.round(fraction*100)+'% на '+format(first));
     }
-    if (order.tp1_hit && number(order.tp2) && side*(usedQuote-order.tp2)>=-1e-8)
-      remove('TP2','Вихід залишку на TP2');
-    else if (brainAdverseClosePair(order,market,usedQuote))
-      remove('CLOSED','Підтверджений злам структури M15');
+    if (order.tp1_hit && number(order.tp2) && side*(usedQuote-order.tp2)>=-1e-8) {
+      const total=(order.paper_realized_r??0)+(order.remaining??1)*side*(usedQuote-order.entry)/order.risk;
+      remove('TP2','Вихід залишку на TP2','TAKE_PROFIT',total);
+    } else if (brainProtectMfe(order,market,usedQuote)) {
+      remove('SL','Вихід за захистом пройденого руху · '+signed(realized)+'R','MFE_PROTECTIVE_EXIT',realized);
+    } else if (order.time_exit_enabled && number(order.exit_deadline) && market.ts>=order.exit_deadline) {
+      remove('CLOSED','Кінець часу угоди','INTRADAY_TIME_EXIT',realized);
+    } else if (brainAdverseClosePair(order,market,usedQuote)) {
+      remove('CLOSED','Підтверджений злам структури M15','CLOSED_ADVERSE_STRUCTURE_SHIFT',realized);
+    } else if (order.local && brain.event) saveBrain();
     return;
   }
   if (!brain.orders.length && next && !config.uncertain && brainSessionAllowed(market.ts)) {
     const marketEntry=next.order_type==='MARKET';
+    const cutoff=Math.floor(market.ts/86_400_000)*86_400_000+22*3_600_000;
+    const expires=Math.min(market.ts+config.ttl_ms,cutoff);
     const order={...next, browser_created:true, status:marketEntry?'OPEN':'PENDING',
       qualification_tp1:next.tp1,tp1:next.entry+next.side*next.risk,initial_stop:next.stop,placed_ts:market.ts,
-      effective_ts:market.ts,expires_ts:Math.min(market.ts+config.ttl_ms,
-        Math.floor(market.ts/86_400_000)*86_400_000+22*3_600_000),
+      effective_ts:market.ts,expires_ts:expires,expiry_reason:expires===cutoff?'SESSION_ENDED':'LIMIT_TTL',
       scale_policy:'SCALE_OUT_1R',tp1_fraction:.5,remaining:1,target_cancel_armed:true,
+      entry_fee_rate:(marketEntry?config.taker_fee:config.maker_fee)??0,
+      missed_target_level:next.entry+next.side*config.missed_target_r*next.risk,
       filled_ts:marketEntry?market.ts:null};
     brain.used.add(order.id);
     brain.orders=[order];
@@ -1060,8 +1178,10 @@ function recalculateBrain(market) {
   const m5=(brain.series['5m']??[]).filter(b=>b.ts+5*brainMinute<=market.ts);
   const matrix=brainIndicators(rows,minutes,market);
   brain.matrix=matrix;
-  brain.liquidity=matrix ? brainUnswept(rows,m5,minutes,state.tick??.01,market.ts) : [];
-  brain.rows=matrix ? scanLiveCandlesInBrowser(rows,m5,market,matrix,state.brain_config,state.tick??.01,minutes) : [];
+  brain.liquidity=matrix ? brainUnswept(rows,m5,minutes,state.tick??.01,market.ts,brain.currentMinute) : [];
+  brain.rows=matrix ? scanLiveCandlesInBrowser(rows,m5,market,matrix,state.brain_config,state.tick??.01,
+    minutes,brain.currentMinute).map(row=>brainReentryAllowed(row,market)?row:
+      {...row,reentry_blocked:true,activation_ready:false}) : [];
   brain.computed=matrix ? Date.now() : 0;
   advanceBrain(market,matrix,brain.rows);
 }
@@ -1072,13 +1192,13 @@ async function pollBrainCandles() {
   brainBusy=true;
   const instrument=state.instrument, now=Date.now();
   try {
-    const timeframes=[['1m',brainMinute,30],['5m',5*brainMinute,64],['15m',brainQuarter,192]];
+    const timeframes=[['1m',brainMinute,100],['5m',5*brainMinute,64],['15m',brainQuarter,192]];
     await Promise.allSettled(timeframes.map(async ([bar,step,limit])=>{
       const data=await json(OKX+'/candles?'+new URLSearchParams({instId:instrument,bar,limit}),2700);
       if (state.instrument!==instrument || data.code!=='0' || !Array.isArray(data.data)) return;
       if (bar==='1m') {
         const raw=data.data.find(row=>String(row[8])!=='1'&&Number(row[0])===Math.floor(Date.now()/brainMinute)*brainMinute);
-        brain.currentMinute=raw?{ts:Number(raw[0]),low:Number(raw[3]),high:Number(raw[2])}:null;
+        brain.currentMinute=raw?{ts:Number(raw[0]),low:Number(raw[3]),high:Number(raw[2]),observed_ts:Date.now()}:null;
       }
       const fresh=brainCandles(data.data,step,Date.now());
       if (fresh.length && fresh.at(-1).ts>=(brain.series[bar]?.at(-1)?.ts??0)) brain.series[bar]=fresh;
@@ -1301,6 +1421,7 @@ function tacticalRadar(price=displayedPrice()) {
 }
 
 function activationText(plan,price) {
+  if (plan.reentry_blocked) return 'Повторний вхід чекає свіжого підтвердження структури';
   const level=plan.activation_level??plan.entry;
   if (plan.activation_ready===true || plan.market_now) return 'Умова доступна · перевіряємо котирування';
   if (plan.market_waiting_rr) return 'Ціна в зоні · чекаємо котирування з R:R від 1.35';
@@ -1368,7 +1489,9 @@ function renderScaleOut(order) {
   const protectedStop=order.side*(order.stop-order.entry)>=0;
   const fraction=order.tp1_fraction??.5;
   const share=new Intl.NumberFormat('uk-UA',{style:'percent',maximumFractionDigits:2}).format(fraction);
-  const text=order.liquidity_protection
+  const text=order.mfe_protection
+    ? 'Захист після сприятливого руху · SL '+format(order.pending_stop??order.stop)
+    : order.liquidity_protection
     ? 'Захист після зняття ліквідності · SL '+format(order.stop)
     : completed
     ? 'Зафіксовано '+share+(protectedStop?' · Б/У '+format(order.stop):' · чекаємо захисного стопа')
@@ -1459,14 +1582,16 @@ function eventText(event) {
   const label = ({ PLACED:'Ліміт виставлено', FILLED:'Вхід за журналом', CANCEL_REQUESTED:'Запит скасування',
     CANCELLED:'Ліміт скасовано', EXPIRED:'Строк ліміту минув', CLOSED:'Угоду закрито',
     TP1:'TP1', TP1_PARTIAL:'Часткова фіксація TP1', TP1_REACHED:'Досягнуто TP1', TP2:'Досягнуто TP2',
-    PAPER_STOP_AMENDED:'Стоп оновлено', UNRESOLVED:'Виконання потребує перевірки' })[event.kind] ?? event.kind;
+    PAPER_STOP_AMENDED:'Стоп оновлено', BREAKEVEN_ARMED:'Захисний стоп підготовлено',
+    UNRESOLVED:'Виконання потребує перевірки' })[event.kind] ?? event.kind;
   return label + (event.side===1 || event.side===-1 ? ' · ' + sideLabel(event.side) : '') +
     (event.kind === 'CLOSED' && number(event.price) ? ' @ ' + format(event.price) :
       number(event.entry) ? ' ' + format(event.entry) : '') + (number(event.net_r) ? ' · ' + signed(event.net_r) + 'R' : '') +
     (event.reason_text ? ' · ' + event.reason_text : '');
 }
 function renderActivity() {
-  const events=(state.recent_events ?? []).slice(-5).reverse();
+  const events=[...(state.recent_events??[]), ...(liveBrainEnabled()?brain.endings:[])]
+    .sort((a,b)=>a.ts-b.ts).slice(-5).reverse();
   $('last-event').textContent = events.length ? 'Останнє рішення (' + eventTime(events[0].ts) + '): ' + eventText(events[0]) : 'У журналі ще немає подій.';
   $('events').replaceChildren(...events.map(e => {
     const item=element('li');
@@ -1791,7 +1916,7 @@ function bootstrapLiveBrain() {
   if (state) return;
   state={schema:1,cockpit_schema:5,instrument:'BZ-USDT-SWAP',tick:.01,snapshot_ts:0,
     orders:[],zones:[],candles:{},status:'LOCAL_ONLY',price:null,brain_config:{
-      schema:1,missed_target_r:.75,browser_replace_atr:1,market_band_atr:.65,
+      schema:1,missed_target_r:.75,market_band_atr:.65,
       market_touch_atr:.18,limit_approach_atr:.85,market_min_rr:1.35,limit_min_rr:1.35,
       risk_floor:.65,risk_cap:1.15,ttl_ms:90*brainMinute,uncertain:0}};
   syncBrain(state,true);

@@ -38,15 +38,20 @@ class LiquidityExecution(TestCase):
                     organic_risk={'model':'ORGANIC_OIL_V32','floor':.65,'cap':2.})
         return plan, snap
 
-    def test_liquidity_anchor_is_symmetric_and_requires_near_unswept_pool(self):
-        for side in (1,-1):
+    def test_exact_tick_minute_sweeps_consumed_for_both_sides(self):
+        for side in (1, -1):
             with self.subTest(side=side):
-                pool={'level':100.-side*.10,'side':side,'known_ts':NOW-600_000}
-                with patch.object(limit_structure,'local_liquidity',return_value=[pool]):
-                    anchor=direct.liquidity_anchor(snapshot(),{},side,100.,.8,.5,.01,engine)
-                self.assertAlmostEqual(anchor['entry'],100.-side*.13)
-                with patch.object(limit_structure,'local_liquidity',return_value=[{**pool,'level':100.-side*.30}]):
-                    self.assertIsNone(direct.liquidity_anchor(snapshot(),{},side,100.,.8,.5,.01,engine))
+                pool = {'level':100., 'side':side, 'known_ts':NOW}
+                minute = self.bar(NOW,100.02,100.10,99.99,100.02,side)
+                before = engine.Snapshot(NOW+30_000, minute.close, {'1m':[minute]})
+                self.assertEqual(limit_structure.unswept_minute_pools(before,[pool],.01),[pool])
+                live = replace(before, metadata={'now':before.now, 'current_candle_1m':{
+                    'ts':NOW,'low':minute.low,'high':minute.high}})
+                self.assertEqual(limit_structure.unswept_minute_pools(live,[pool],.01),[])
+                historical = replace(live, now=NOW+20_000)
+                self.assertEqual(limit_structure.unswept_minute_pools(historical,[pool],.01),[pool])
+                closed = replace(before, now=NOW+60_000)
+                self.assertEqual(limit_structure.unswept_minute_pools(closed,[pool],.01),[])
 
     def test_wick_consumes_liquidity_even_if_candle_closes_back_above(self):
         bars=[self.bar(NOW+i*300_000,100.5,101.,low,100.5)
@@ -66,6 +71,16 @@ class LiquidityExecution(TestCase):
                      self.bar(snap.now+300_000,100.12,100.4,100.08,100.35)])
         snap.now+=600_000
         self.assertFalse(signal_quality.consolidation_decay(zone,snap,1,.01,engine)['requires_confirmation'])
+
+    def test_decay_penalty_restarts_contiguous_count_after_gap(self):
+        zone = {'low':100., 'high':100.1, 'known_ts':NOW}
+        bars = [self.bar(NOW+i*300_000,100.05,100.15,99.98,100.04) for i in range(16) if i != 11]
+        snap = replace(snapshot(NOW+16*300_000), candles={'5m':bars})
+        decay = signal_quality.consolidation_decay(zone, snap, 1, .01, engine)
+        self.assertEqual((decay['bars'], decay['penalty'], decay['requires_confirmation']),(11,0,False))
+        bars[:] = [self.bar(NOW+i*300_000,100.05,100.15,99.98,100.04) for i in range(12)]
+        decay = signal_quality.consolidation_decay(zone, snap, 1, .01, engine)
+        self.assertEqual((decay['bars'], decay['penalty'], decay['requires_confirmation']),(12,10,True))
 
     def test_front_run_requires_impulse_no_touch_full_minute_history_and_room(self):
         for side in (1,-1):
@@ -141,6 +156,93 @@ class LiquidityExecution(TestCase):
                                   self.cfg,step=60_000,snapshot=replace(snap,now=snap.now+60_000))
                 self.assertIsNone(book['active'])
                 self.assertGreater(book['trades'][-1]['net_r'],0)
+
+    def test_early_pullback_survives_and_later_mfe_lock_preserves_targets(self):
+        for side in (1,-1):
+            with self.subTest(side=side):
+                plan, _, _ = self.protect_fixture(side)
+                plan.update(filled_ts=NOW-60_000, last_bar=NOW-60_000,
+                            time_exit_enabled=False, initial_stop=100.-side)
+                book=engine.new_state(self.cfg)
+                book['active']=plan
+                geometry=tuple(plan[k] for k in ('entry','initial_stop','tp1','tp2','risk'))
+                progress=self.bar(NOW,100.,100.88,99.85,100.70,side)
+                engine.manage_bar(book,progress,self.cfg,step=60_000)
+                self.assertIsNone(bzu_policy.protective_amendment(plan))
+                pullback=self.bar(NOW+60_000,100.70,100.71,100.05,100.17,side)
+                engine.manage_bar(book,pullback,self.cfg,step=60_000)
+                self.assertIs(book['active'],plan)
+                self.assertEqual(plan['stop'],100.-side)
+                book['active']=plan=deepcopy(plan)
+                partial=self.bar(NOW+120_000,100.17,101.60,100.12,101.30,side)
+                engine.manage_bar(book,partial,self.cfg,step=60_000)
+                self.assertAlmostEqual(plan['remaining'],.5)
+                self.assertAlmostEqual(plan['max_favorable_r'],1.60)
+                self.assertAlmostEqual(bzu_policy.protective_amendment(plan)['price'],100.+side*.35)
+                self.assertEqual(tuple(plan[k] for k in ('entry','initial_stop','tp1','tp2','risk')),geometry)
+                exit_bar=self.bar(NOW+180_000,100.70,100.72,99.50,99.80,side)
+                engine.manage_bar(book,exit_bar,self.cfg,step=60_000)
+                closed,=book['trades']
+                self.assertEqual(closed['close_reason'],'MFE_PROTECTIVE_EXIT')
+                self.assertAlmostEqual(closed['net_r'],.675)
+
+    def test_mfe_close_below_lock_uses_observed_close_before_time_exit(self):
+        plan, _, _ = self.protect_fixture()
+        plan.pop('scale_policy')
+        plan.update(filled_ts=NOW-60_000, last_bar=NOW-60_000,
+                    time_exit_enabled=True, exit_deadline=NOW+60_000)
+        book=engine.new_state(self.cfg)
+        book['active']=plan
+        engine.manage_bar(book,self.bar(NOW,100.,101.30,99.85,100.03),self.cfg,step=60_000)
+        closed,=book['trades']
+        self.assertEqual((closed['close_reason'],closed['exit']),('MFE_PROTECTIVE_EXIT',100.03))
+
+    def test_quote_armed_stop_does_not_use_earlier_wick_of_same_minute(self):
+        plan, _, _ = self.protect_fixture()
+        plan['filled_ts'] = NOW-60_000
+        plan.pop('scale_policy')
+        book=engine.new_state(self.cfg)
+        book['active']=plan
+        before=engine.Snapshot(NOW+20_000,101.30,{},bid=101.30,ask=101.32,ticker_ts=NOW+20_000)
+        engine.check_quote_exits(book,before,self.cfg)
+        after=replace(before,now=NOW+30_000,ticker_ts=NOW+30_000,price=100.40,bid=100.40,ask=100.42)
+        engine.check_quote_exits(book,after,self.cfg)
+        self.assertEqual(plan['stop'],99.)
+        self.assertEqual(plan['pending_stop']['price'],100.35)
+        engine.manage_bar(book,self.bar(NOW,100.,101.32,99.95,100.4),self.cfg,step=60_000)
+        self.assertIsNotNone(book['active'])
+        engine.manage_bar(book,self.bar(NOW+60_000,100.4,100.5,100.02,100.2),self.cfg,step=60_000)
+        closed,=book['trades']
+        self.assertEqual((closed['close_reason'],closed['exit']),('MFE_PROTECTIVE_EXIT',100.35))
+
+    def test_mfe_protection_does_not_count_the_fill_candle(self):
+        plan, _, _ = self.protect_fixture()
+        plan.pop('scale_policy')
+        plan.update(fill_time_status='WITHIN_1M_BAR', filled_ts=NOW, last_bar=NOW-60_000,
+                    time_exit_enabled=False)
+        book=engine.new_state(self.cfg)
+        book['active']=plan
+        engine.manage_bar(book,self.bar(NOW,100.,101.30,99.90,100.14),self.cfg,fill_bar=True,step=60_000)
+        position_monitor.update_trade_excursions(plan,[self.bar(NOW,100.,101.40,99.90,100.14)],
+                                                 NOW+900_000)
+        self.assertEqual(plan['mfe_r'],0.)
+        self.assertNotIn('pending_stop',plan)
+
+    def test_repeated_stops_do_not_extend_the_existing_four_hour_cooldown(self):
+        plan = {'score':80, 'quality':{'accepted':True}}
+        prior = [{'side':side,'entry':100.,'net_r':-1.,'closed_ts':NOW-i*60_000,'close_reason':'STOP'}
+                 for i in (1,2) for side in (-1,1)]
+        deadline=NOW-60_000+bzu_policy.ADVERSE_LOCK_BARS*engine.TF['15m']
+        for side in (1,-1):
+            with self.subTest(side=side), patch.object(engine.policy,'local_structure',return_value={'side':-side}), \
+                 patch.object(engine.policy,'structural_flip',return_value={'confirmed':False}), \
+                 patch.object(bzu_policy,'fresh_reentry_confirmation',return_value=False) as proof:
+                gate=lambda now: bzu_policy.adverse_reentry_reason(
+                    side,prior,snapshot(now),self.cfg,engine,plan=plan)
+                self.assertEqual(gate(deadline-1),'ADVERSE_STRUCTURE_LOCKOUT')
+                proof.reset_mock()
+                self.assertIsNone(gate(deadline))
+                proof.assert_not_called()
 
     def test_router_front_run_cancels_before_filling_at_current_quote(self):
         old,snap=self.front_snapshot()

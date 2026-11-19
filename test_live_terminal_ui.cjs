@@ -259,6 +259,75 @@ ctx.fixtureBackup=cleanFixture;
      brain.series['1m'][0]=b(at,100.25,100.30,99.99,100.25);
      if (brainFrontRun(pending,live,{atr:.5})) throw new Error('Filled limit replaced');
    }`);
+ // Pool freshness follows a one-tick M1 wick and MFE does not need a sweep.
+ run(`{const at=Math.floor(Date.now()/brainMinute)*brainMinute;
+   for (const side of [1,-1]) {
+     const term=x=>100.+side*x;
+     const m5=[.15,.12,0,.08,.12].map((low,i)=>({ts:at-(5-i)*5*brainMinute,
+       low:side===1?term(low):term(.4),high:side===1?term(.4):term(low)}));
+     const wick={ts:at,low:side===1?99.99:99.6,high:side===1?100.4:100.01,observed_ts:at+1000};
+     if (!brainUnswept([],m5,[],.01,at).some(p=>p.side===side&&p.price===100)) throw new Error('Pool missing');
+     if (brainUnswept([],m5,[],.01,at+1000,wick).some(p=>p.side===side&&p.price===100)) throw new Error('Pool survives one-tick sweep');
+     const open={...orderFixture,status:'OPEN',side,entry:100,stop:term(-1),initial_stop:term(-1),
+       tp1:term(1),tp2:term(2),risk:1,filled_ts:at,slippage_bps:0};
+     const config=state.brain_config;
+     state.brain_config={...config,mfe_lock_steps:[[.85,.10],[1.25,.35]]};
+     brainProtectMfe(open,{ts:at+1000},term(.88));
+     if (open.stop!==term(-1)||open.mfe_protection) throw new Error('Retired MFE tier was armed');
+     state.brain_config=config;
+     open.tp1_hit=true;
+     brainProtectMfe(open,{ts:at+2000},term(1.6));
+     if (Math.abs(open.stop-term(.35))>1e-8) throw new Error('Runner floor not applied');
+     brainProtectMfe(open,{ts:at+3000},term(.5));
+     if (Math.abs(open.stop-term(.35))>1e-8 || open.tp1!==term(1)||open.tp2!==term(2))
+       throw new Error('MFE rewrote targets or loosened the stop');
+     const pending={...orderFixture,status:'PENDING',side,entry:100,risk:1,placed_ts:at,effective_ts:at,
+       expires_ts:at+10*brainMinute,target_cancel_armed:true};
+     const bar={ts:at,open:term(.5),close:term(.6),low:side===1?99.99:99.2,high:side===1?100.8:100.01};
+     brain.series['1m']=[bar];
+     if (!brainMissedTarget(pending,{ts:at+brainMinute},term(.75)).touched)
+       throw new Error('Same-bar target erased a possible fill');
+     brain.series['1m']=[{...bar,low:side===1?100.2:99.2,high:side===1?100.8:99.8}];
+     if (brainMissedTarget(pending,{ts:at+brainMinute},term(.75))?.ts!==at+brainMinute)
+       throw new Error('Closed minute missed target not recorded');
+   }}`);
+ run(`{
+   const now=Date.UTC(2026,10,19,12,10), start=now-10*brainMinute;
+   const old={...orderFixture,id:'front-run-limit',side:1,status:'PENDING',entry:100,stop:99,
+     invalidation:99,tp1:101,qualification_tp1:103,tp2:104,risk:1,placed_ts:start,effective_ts:start,
+     expires_ts:now+brainMinute,target_cancel_armed:true};
+   brain.series={'5m':[
+     {ts:start,open:100.25,high:100.30,low:100.10,close:100.15},
+     {ts:start+5*brainMinute,open:100.15,high:100.65,low:100.14,close:100.62}],
+     '1m':Array.from({length:10},(_,i)=>({ts:start+i*brainMinute,low:100.1,high:100.65,open:100.25,close:100.3}))};
+   const oldConfig=state.brain_config;
+   state.brain_config={...oldConfig,risk_cap:2,uncertain:0,reentry_history:{}};
+   Object.assign(brain,{orders:[old],closed:[],endings:[],lastTs:start});
+   advanceBrain({ts:now,price:100.63,bid:100.62,ask:100.64},{atr:.5},[]);
+   if (brain.endings[0]?.reason!=='MARKET_FRONT_RUN_CATCH' ||
+       brain.endings[0].order_id!==old.id || brain.orders[0]?.status!=='OPEN' ||
+       brain.orders[0].entry!==100.64) throw new Error('Front-run did not record cancellation before replacement');
+   const saved=JSON.parse(globalThis.localStorage.getItem(brainStorageKey(state.instrument)));
+   if (saved.endings[0]?.order_id!==old.id || saved.orders.length!==1)
+     throw new Error('Cancellation was overwritten by new order');
+   state.brain_config={...state.brain_config,reentry_history:{
+     1:{id:'last',ts:now-15*brainMinute,net_r:-1,reason:'STOP'}}};
+   if (brainReentryAllowed({side:1,score:87},{ts:now}) ||
+       !brainReentryAllowed({side:-1,score:87},{ts:now})) throw new Error('Same-side stop guard not enforced');
+   const aged=now-5*3600000;
+   state.brain_config={...state.brain_config,reentry_history:{
+     1:{id:'last',ts:aged,net_r:-1,reason:'STOP',repeated_stops:true}}};
+   brain.closed=[{id:'previous',side:1,ts:aged-brainQuarter,reason:'STOP',net_r:-1}];
+   const down=Array.from({length:65},(_,i)=>{
+     const low=110-.04*i-(i%5===2?.30:0);
+     return {ts:now-(65-i)*brainQuarter,open:low+.21,high:low+.30,low,close:low+.10,volume:100};
+   });
+   brain.series['15m']=down;
+   if (!brainReentryAllowed({side:1,score:60},{ts:now}))
+     throw new Error('Repeated stops still block reentry after the ordinary cooldown');
+   brain.closed=[];
+   state.brain_config=oldConfig;
+ }`);
  // Two closed M15 breaches permit a structural exit only after six quarters.
  run(`const known=Math.floor(Date.now()/brainQuarter)*brainQuarter;
    for(const side of [1,-1]) {
