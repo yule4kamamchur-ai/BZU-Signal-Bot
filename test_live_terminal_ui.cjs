@@ -62,6 +62,12 @@ ctx.fixtureBackup=cleanFixture;
 
 (async()=>{
  await new Promise(resolve=>setImmediate(resolve));
+ run('state={...fixtureBackup};');
+ assert.equal(run(`validCandidate({...fixtureBackup.candidates[0],exit_policy:'FULL_POSITION_V144',
+   tp1:100.34,tp2:100.34})`),true);
+ assert.equal(run(`validCandidate({...fixtureBackup.candidates[0],exit_policy:'FULL_POSITION_V144',
+   tp1:100.34,tp2:100.34,order_type:'MARKET',
+   market_trigger:{pattern:'NY_POST_SWEEP',reference_close:99.70,limit_entry:99.25,max_distance:.10}})`),true);
  run(`state={...fixtureBackup,market_regime:'BEARISH_ACTIVE',primary_bias:-1,price:89.54,candidates:[
     {id:'bad-rr',kind:'TURTLE_SOUP',side:-1,entry:89.54,stop:90.19,tp1:89.48,tp2:88,
      score:95,actionable:true,timeframe:'15m'},

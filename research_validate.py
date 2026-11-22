@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import math
+from random import Random
 import sys
 import time
 import urllib.error
@@ -268,6 +269,41 @@ def baseline_config(module,cfg):
     return module.Config(**{k:v for k,v in vars(cfg).items() if k in fields and k not in preserved},core=core)
 
 
+def paired_block_bootstrap(baseline, candidate, periods, *, draws=2_000, seed=144):
+    """Resample matched UTC-day blocks across held-out folds, including flat days."""
+    trades = (baseline, candidate)
+    daily = [{}, {}]
+    for book, rows in zip(daily, trades):
+        for trade in rows:
+            day = trade['closed_ts']//DAY
+            result = book.setdefault(day,[0.,0,0])
+            result[0] += trade['net_r']
+            result[1] += int(trade['net_r']>0)
+            result[2] += 1
+    days = sorted({day for start,end in periods for day in range(start//DAY,end//DAY+1)})
+    if len(days)<4 or min(map(len,trades))<5:
+        return {'status':'INSUFFICIENT_EVIDENCE','days':len(days)}
+    blocks = [days[i:i+2] for i in range(len(days)-1) if days[i+1]==days[i]+1]
+    if not blocks:
+        return {'status':'NO_CONTIGUOUS_DAY_BLOCKS','days':len(days)}
+    random = Random(seed)
+    differences, win_rates = [], []
+    for _ in range(draws):
+        selected = [day for _ in range((len(days)+1)//2) for day in random.choice(blocks)][:len(days)]
+        totals = [[sum(book.get(day,(0.,0,0))[i] for day in selected) for i in range(3)] for book in daily]
+        old, new = totals
+        differences.append(new[0]-old[0])
+        if old[2] and new[2]:
+            win_rates.append(new[1]/new[2]-old[1]/old[2])
+    def interval(rows):
+        rows=sorted(rows)
+        return [rows[int((len(rows)-1)*p)] for p in (.025,.975)] if rows else None
+    return {'status':'EXPLORATORY_BLOCK_BOOTSTRAP','days':len(days),'block_days':2,
+            'samples':draws,'seed':seed,'net_r_delta_interval':interval(differences),
+            'win_rate_delta_interval':interval(win_rates)}
+
+
+
 def validate(data: dict, folds: int=3) -> dict:
     if folds!=3:
         raise ValueError('This predeclared research uses three folds; no parameter sweep')
@@ -282,7 +318,7 @@ def validate(data: dict, folds: int=3) -> dict:
     embargo=(cfg.ttl_minutes+cfg.max_hold_minutes)*16*60_000+engine.TF['4H']
     middle=start+(end-start)//2
     cuts=[middle+(end-middle)*i//folds for i in range(folds+1)]
-    reports=[];last_observations=[];last_training_end=0
+    reports=[];periods=[];last_observations=[];last_training_end=0
     for index in range(folds):
         test_start,test_end=cuts[index],cuts[index+1]
         if index:
@@ -292,6 +328,7 @@ def validate(data: dict, folds: int=3) -> dict:
         rows=[r for r in training.get('quality',{}).get('observations',[]) if r['closed_ts']<train_end]
         improved,_=evaluate(engine,cfg,samples,test_start,test_end,rows,freeze=True)
         old,_=evaluate(baseline,base_cfg,samples,test_start,test_end)
+        periods.append((test_start,test_end))
         reports.append({'fold':index+1,'training_end':engine.iso(train_end),'embargo_ms':embargo,
                         'training_observations':len(rows),'baseline':old,'improved':improved})
         last_observations,last_training_end=rows,train_end
@@ -310,6 +347,8 @@ def validate(data: dict, folds: int=3) -> dict:
             'baseline_daily_policy':'FROZEN_BASELINE_DEFAULTS_CURRENT_DAILY_LIMITS_DISABLED',
             'data_quality':data_quality,'folds':reports,'aggregate_baseline':engine.statistics(old_trades),
             'aggregate_improved':engine.statistics(new_trades),'target_evidence':evidence,'model':artifact,
+            'goal_win_rate':26/32,
+            'bootstrap':paired_block_bootstrap(old_trades,new_trades,periods),
             'limitations':data.get('limitations',[])+['PAPER candle-based execution, not exchange fills',
                 'One fixed research policy, no parameter grid was optimized',
                 'Model frozen in each held-out fold; training labels before the embargo only',

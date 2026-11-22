@@ -88,6 +88,10 @@ def build(state, snapshot, result, cfg, engine):
             'missed_target_level': None if active else engine.bzu_policy.missed_target_level(plan),
             'target_cancel_armed': not active and plan.get('target_cancel_armed', True),
             'qualification_tp1': plan.get('tp1'), 'scale_policy': plan.get('scale_policy'),
+            'exit_policy':plan.get('exit_policy'), 'tp':plan.get('tp'),
+            'entry_retest_reason':plan.get('entry_retest_reason'),
+            'opening_sweep_confirmed':plan.get('opening_sweep_confirmed'),
+            'protection_structure_level':plan.get('protection_structure_level'),
             'institutional_family': plan.get('institutional_family'), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),
             'organic_risk': plan.get('organic_risk'), 'tp1_source': plan.get('tp1_source'),
@@ -106,7 +110,8 @@ def build(state, snapshot, result, cfg, engine):
             'time_exit_enabled': bool(active and (
                 plan.get('time_exit_enabled') and not (partial or plan.get('scale_policy')==engine.bzu_policy.SCALE_POLICY)
                 if engine.bzu_policy.is_new(plan) else not plan.get('tp1_decision_gate'))),
-            'paper_touch_tolerance': oil_risk.PAPER_TOUCH_TOLERANCE if oil_risk.is_organic(plan) else 0.,
+            'paper_touch_tolerance': oil_risk.PAPER_TOUCH_TOLERANCE if (
+                oil_risk.is_organic(plan) and not engine.bzu_policy.full_position(plan)) else 0.,
             'reconciled_through_ts': (plan['last_bar']+plan.get('last_execution_step_ms', 180_000)
                                       if plan.get('last_bar', -1)>=0 else None),
             'expiry_reason': plan.get('expiry_reason'),
@@ -142,7 +147,7 @@ def build(state, snapshot, result, cfg, engine):
     atr15 = atr15 if numeric(atr15) and atr15 > 0 else 0
     primary_side = engine.policy.regime_side(regime)
     profile = oil_risk.snapshot_profile(snapshot) if oil_risk.enabled(cfg) else None
-    minimum_spread = (max(1., .8 * profile['cap']) if profile else
+    minimum_spread = (max(1., .8 * profile['floor']) if profile else
                       max(.65, 1.2 * atr15))
     entry_mode = analysis.get('entry_mode', state.get('entry_mode', 'PASSIVE_LIMIT'))
     admitted = analysis.get('admitted_plans', [])
@@ -301,14 +306,16 @@ def build(state, snapshot, result, cfg, engine):
         z['valid_until']=original.get('valid_until',snapshot.now+27*60_000)
         z['reversal_override'] = bool(calc['reversal_override'] and geometry and
                                       ((geometry.get('zone_origin') or {}).get('wave_confirmed')
-                                       or geometry.get('reversal_exhaustion_bonus')))
+                                       or geometry.get('reversal_exhaustion_bonus')
+                                       or geometry.get('opening_sweep_confirmed')))
         z['priority'] = ('REVERSAL' if z['reversal_override'] else
                          'PRIMARY' if not primary_side or z['side'] == primary_side else 'COUNTER_TREND')
         z['execution_admitted']=bool(original.get('engine_accepted'))
         gate = calc['risk_gate']
         if original.get('reason') == 'EXHAUSTED_MOVE':
             z['risk_gate'] = gate = 'EXHAUSTED_MOVE'
-        if z.get('setup') == 'SESSION_MEAN_RECLAIM':
+        if (z.get('setup') == 'SESSION_MEAN_RECLAIM' and not engine.scanner.market_plan(z)
+                and not z.get('entry_retest_reason')):
             gate = 'SESSION_MEAN_LIMIT_DISABLED'
         if gate == 'EXHAUSTED_MOVE':
             pass
@@ -482,6 +489,7 @@ def build(state, snapshot, result, cfg, engine):
             'trend_phase':regime.get('trend_phase'), 'wave_phase':regime.get('wave_phase'), 'structure_sync':regime.get('structure_sync') or None, 'trend_matrix':regime.get('trend_matrix') or None,
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
             'execution':'SIGNAL_LEDGER','execution_audit':state.get('execution_audit'),
+            'exchange_status':state.get('exchange_status'),
             'daily':engine.day_stats(state,snapshot.now,cfg),
             'dealing_range':engine.scenario_planner.build(snapshot,cfg,engine)['range'] if healthy and profile else None,
             'brain_config':{
@@ -495,8 +503,8 @@ def build(state, snapshot, result, cfg, engine):
                 'limit_min_rr':engine.scanner.LIMIT_NEW_MIN_RR,
                 'market_touch_atr':engine.scanner.BROWSER_MARKET_TOUCH_ATR,
                 'limit_approach_atr':engine.scanner.BROWSER_LIMIT_APPROACH_ATR,
-                'risk_floor':oil_risk.STOP_FLOOR,
-                'risk_cap':oil_risk.STOP_CAP, 'ttl_ms':engine.bzu_policy.PENDING_LIMIT_TTL_MS,
+                'risk_floor':profile['floor'], 'entry_policy':'SERVER_FULL_POSITION',
+                'ttl_ms':engine.bzu_policy.PENDING_LIMIT_TTL_MS,
                 'worker_interval_ms':int(os.getenv('BZU_WORKER_INTERVAL_MS','0')),
                 'uncertain':sum(bool(view.get('reconciliation')) for _,view in engine.slot_views(state)),
             } if oil_risk.enabled(cfg) else None,

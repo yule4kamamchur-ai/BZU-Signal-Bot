@@ -105,7 +105,7 @@ class BreakdownCapture(unittest.TestCase):
 
     def test_breakdown_does_not_bypass_structural_room(self):
         snap,cfg=breakdown_fixture()
-        nearby=[{'side':1,'kind':'1H_SWING_LOW','level':91.4,'known_ts':NOW-STEP,'hard_barrier':True}]
+        nearby=[{'side':1,'kind':'1H_SWING_LOW','level':91.89,'known_ts':NOW-STEP,'hard_barrier':True}]
         with patch.object(scenarios,'structure_levels',return_value=nearby), \
              patch.object(engine,'full_targets',side_effect=targets), patch.dict(os.environ,ENV):
             book=engine.new_state(cfg)

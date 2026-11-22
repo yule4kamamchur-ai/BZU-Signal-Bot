@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'bzu-m15-displacement-structure-v14'
+STRATEGY = 'bzu-full-position-v14.4'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -397,13 +397,13 @@ PLAN_FIELDS=('institutional_family','scale_policy','organic_confluence','origin_
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
              'zone_created_ts','last_bar','execution','status','target_cancel_armed','version',
              'setup_timeframe','micro_timeframe','formation_timeframe','formation_micro_timeframe','entry_route','queue_execution_policy','pattern_proof','entry_policy','detector_confirmed',
-             'max_hold_minutes','intraday','include_commission','entry_fee_rate','exit_fee_rate','slippage_bps','exit_policy','full_exit_target','full_exit_candidates','exit_selection','target_management','exit_path_barriers','tp1_decision_gate')
+             'max_hold_minutes','intraday','time_exit_enabled','post_only','entry_retest_reason','include_commission','entry_fee_rate','exit_fee_rate','slippage_bps','exit_policy','full_exit_target','full_exit_candidates','exit_selection','target_management','exit_path_barriers','tp1_decision_gate')
 
 
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-m15-organic-momentum-v13','bzu-master-rvol-vwap-round-5m-v12','bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-m15-displacement-structure-v14','bzu-m15-organic-momentum-v13','bzu-master-rvol-vwap-round-5m-v12','bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))

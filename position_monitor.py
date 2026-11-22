@@ -268,9 +268,33 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
     bars, peak, rr = info['bars_in_trade'], info['max_favorable_r'], current_r(position, price)
     if oil_risk.enabled(cfg):
         proof = position.get('adverse_close_pair')
-        if (bars>=ADVERSE_HOLD_BARS and proof and 0<=ts-proof['known_ts']<STEPS['15m']
-                and all(side*(price-proof[key])<0 for key in ('level','ema20','session_vwap'))):
-            decision.update(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT')
+        if not engine.bzu_policy.full_position(position):
+            if (bars >= ADVERSE_HOLD_BARS and proof and 0 <= ts-proof['known_ts'] < STEPS['15m']
+                    and all(side*(price-proof[key]) < 0 for key in ('level','ema20','session_vwap'))):
+                decision.update(should_exit=True,exit_reason='CLOSED_ADVERSE_STRUCTURE_SHIFT')
+            return decision
+        if (bars >= ADVERSE_HOLD_BARS and proof and 0 <= ts-proof['known_ts'] < STEPS['15m']
+                and all(side*(price-proof[key]) < 0 for key in ('level','ema20','session_vwap'))):
+            swing = position.get('protection_structure_level')
+            if swing is None:
+                swing = proof['level']
+            if rr <= -.40 + EPS and side*(price-swing) <= -cfg.tick + EPS:
+                return {**decision, 'should_exit': True, 'exit_reason': 'CLOSED_ADVERSE_STRUCTURE_SHIFT'}
+            stop = engine.round_tick(round(entry-side*.55*risk,10), cfg.tick, up=side == -1)
+            previous = engine.bzu_policy.protective_amendment(position)
+            strongest = previous['price'] if previous and side*(previous['price']-position['stop']) > 0 else position['stop']
+            if side*(stop-strongest) > EPS and side*(price-stop) >= cfg.tick-EPS:
+                decision.update(stop=stop, stop_policy='ADVERSE_STRUCTURE_TIGHTEN')
+        if (decision['stop'] is None and engine.bzu_policy.full_position(plan=position)
+                and bars >= STALE_BARS and peak < STALE_MFE-EPS):
+            stop = engine.round_tick(round(entry-side*STALE_STOP_R*risk,10), cfg.tick, up=side == -1)
+            previous = engine.bzu_policy.protective_amendment(position)
+            if (side*(stop-position['stop']) > EPS
+                    and (not previous or side*(stop-previous['price']) > EPS)):
+                if side*(price-stop) <= EPS:
+                    decision.update(should_exit=True, exit_reason='CLOSED_STALE_TIME_STOP', exit_trigger_level=stop)
+                else:
+                    decision.update(stop=stop, stop_policy='STALE_TIME_STOP')
         return decision
     swing = position.get('protection_structure_level')
     beyond_swing = swing is None or side*(price-swing)<=EPS
@@ -323,7 +347,8 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 
 
 MFE_STOP_POLICY = 'MFE_PROTECTION'
-MFE_LOCK_STEPS = ((1.25, .35),)
+MFE_LOCK_STEPS = ((.85, .08), (1.25, .55), (1.65, 1.10))
+LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
 
 
 def mfe_protection(position, ts, price, cfg, engine):
@@ -331,7 +356,8 @@ def mfe_protection(position, ts, price, cfg, engine):
     if not oil_risk.enabled(cfg) or position['risk'] <= 0 or ts <= (position.get('filled_ts') or 0):
         return None
     peak = metrics(position, ts)['max_favorable_r']
-    locked_r = next((lock for trigger, lock in reversed(MFE_LOCK_STEPS) if peak >= trigger - EPS), None)
+    steps = MFE_LOCK_STEPS if engine.bzu_policy.full_position(position) else LEGACY_MFE_LOCK_STEPS
+    locked_r = next((lock for trigger, lock in reversed(steps) if peak >= trigger - EPS), None)
     if locked_r is None:
         return None
     side, entry = position['side'], position['entry']
@@ -388,7 +414,8 @@ LIQUIDITY_STOP_POLICY = 'LIQUIDITY_SWEEP_REJECTION_070R'
 
 def liquidity_protection(position, snapshot, ts, price, cfg, engine):
     """Arm only after a post-fill liquidity raid and a later closed M5 rejection."""
-    if snapshot is None or partial_taken(position) or position.get('liquidity_protection'):
+    if (snapshot is None or partial_taken(position) or position.get('liquidity_protection')
+            or engine.bzu_policy.full_position(position)):
         return None
     from limit_structure import local_liquidity
     from setup_scanner import closed_five_minutes

@@ -87,7 +87,9 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         return gate
     if oil_risk.is_organic(row):
         rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
-        if not oil_risk.target_range_valid(rr1,rr2):
+        valid_targets = (1.60-1e-8 <= rr1 <= 1.88+1e-8 and abs(rr1-rr2) <= 1e-8
+                         if row.get('exit_policy') == 'FULL_POSITION_V144' else oil_risk.target_range_valid(rr1,rr2))
+        if not valid_targets:
             return 'ORGANIC_TARGET_RANGE'
     if side*(tp1-entry)/risk < min_rr-1e-8:
         return 'RR_BELOW_1_35'
@@ -99,8 +101,9 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
             if (side*(entry-distal)<-1e-8 or
                     side*(entry-trigger['limit_entry'])>trigger['max_distance']+1e-8):
                 return 'MARKET_CHASE_LIMIT'
-        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH'):
-            if abs(entry-trigger['limit_entry']) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
+        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH','NY_POST_SWEEP','M15_CONFIRMED_LEVEL_REJECTION'):
+            reference = trigger['reference_close'] if trigger['pattern']=='NY_POST_SWEEP' else trigger['limit_entry']
+            if abs(entry-reference) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
         elif trigger['pattern'] == 'CONFIRMED_REVERSAL':
             if not low-1e-8 <= entry <= high+1e-8:
@@ -110,7 +113,7 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
                 return 'ENTRY_OUTSIDE_ZONE'
         elif not 0 <= side * (entry - proximal) <= MARKET_CHASE_R * risk + 1e-8:
             return 'MARKET_CHASE_LIMIT'
-    elif row.get('entry_basis') in ('SHALLOW_M15_RETEST','LIQUIDITY_ANCHORED_LIMIT') and row.get('execution_low',low)<=entry<=row.get('execution_high',high):
+    elif row.get('entry_basis') in ('SHALLOW_M15_RETEST','LIQUIDITY_ANCHORED_LIMIT','HTF_EXTENDED_RETEST','GAP_RETEST') and row.get('execution_low',low)<=entry<=row.get('execution_high',high):
         pass
     elif not low-1e-8 <= entry <= high+1e-8:
         # Planner front-running of a narrow zone is explicit, bounded and causal.
@@ -305,7 +308,7 @@ def impulse_market_entry(side, quote, reference, atr15, tick):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH','NY_POST_SWEEP','M15_CONFIRMED_LEVEL_REJECTION') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -618,7 +621,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.stop_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
     entry, stop, risk, basis, wide, inside = zone_entry_geometry(
         low, high, snapshot.price, structural, side, a, cfg, engine, oil=oil)
-    profile = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine)[2] if oil else None
+    profile = None
+    if oil:
+        stop, risk, profile = oil_risk.stop_geometry(entry, structural, side, *oil, tick, engine,
+                                                   timeframe=zone.get('timeframe'))
     floor, cap = (profile['floor'], profile['cap']) if profile else zone_risk_bounds(a, cfg)
     safe = (profile['gate'] is None if profile else floor - 1e-8 <= risk <= cap + 1e-8)
     frozen = False
@@ -638,13 +644,22 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
             frozen = True
     if risk <= 0 or stop <= 0:
         return None
-    target_context = {**(context or {}), 'organic_oil_targets': bool(oil)}
-    available = (engine.full_targets(target_context, snapshot, 'LONG' if side == 1 else 'SHORT', entry, cfg)
-                 if targets is None else targets)
-    destination = (organic_targets(entry, risk, side, available, snapshot, tick, engine, trend=projected_runner,
-                                   fixed_tp1=geometry['tp1'] if frozen else None) if oil else
-                   planned_targets(entry, risk, side, available, snapshot, cfg, engine, zone, a,
-                                   quote=snapshot.price if not frozen else None))
+    full_exit = bool(oil and (not frozen or engine.bzu_policy.full_position(geometry)))
+    if full_exit:
+        from bzu_execution_rules import available_pools, full_target
+        levels = available_pools(snapshot,engine.scenario_planner.structure_levels(snapshot,engine),tick)
+        target, source, _ = full_target(levels,entry,risk,side,a,tick,engine)
+        destination = {'tp1':target,'tp2':target,'tp1_source':source,'tp2_source':source,
+                       'structural_tp1':True,'structural_tp2':True,
+                       'barrier_price':None,'path_clear':True}
+    else:
+        target_context = {**(context or {}), 'organic_oil_targets': bool(oil)}
+        available = (engine.full_targets(target_context,snapshot,'LONG' if side==1 else 'SHORT',entry,cfg)
+                     if targets is None else targets)
+        destination = (organic_targets(entry, risk, side, available, snapshot, tick, engine, trend=projected_runner,
+                                       fixed_tp1=geometry['tp1'] if frozen else None) if oil else
+                       planned_targets(entry, risk, side, available, snapshot, cfg, engine, zone, a,
+                                       quote=snapshot.price if not frozen else None))
     if frozen:
         tp1, tp2 = geometry['tp1'], geometry['tp2']
         tp1_source = geometry.get('tp1_source') or 'ENGINE_PLAN'
@@ -671,11 +686,11 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                   or (zone.get('wave_proof') and zone['kind'] in wave.CONTINUATIONS) or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
     barrier = destination['barrier_price']
-    target_range = oil_risk.target_range_valid(rr1,rr2) if oil else (
+    target_range = (1.60-1e-8 <= rr1 <= 1.88+1e-8) if full_exit else oil_risk.target_range_valid(rr1,rr2) if oil else (
                     rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8)
     room = target_range and (destination['path_clear'] if projected_runner else
                              barrier is None or side * (tp2 - barrier) <= 1e-8)
-    if frozen:
+    if frozen and not full_exit:
         structural_tp1 = structural_target_price(
             geometry.get('tp1_alignment'), snapshot.now, side, tick, engine) == round(tp1, 10)
         structural_tp2 = structural_target_price(
@@ -684,7 +699,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         structural_tp1 = destination['structural_tp1']
         structural_tp2 = destination['structural_tp2']
     projection = (geometry if frozen else destination).get('target_projection') or {}
-    if oil:
+    if oil and not full_exit:
         origin_entry, origin_risk = entry, risk
         if frozen and trigger and trigger.get('frozen_geometry'):
             origin_entry, origin_risk = trigger['limit_entry'], trigger['initial_risk']
@@ -739,7 +754,9 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     window = None if market else entry_window(side, snapshot.price, entry, a, cfg,
                           minimum=(geometry or {}).get('action_type') != 'ACTIVE_ENTRY'
                           and not (tracking_only or passive_touch), trend=runner)
+    confirmed_opening = bool(trigger and trigger['pattern']=='NY_POST_SWEEP')
     gate=('ZONE_CONSOLIDATION_DECAY' if decay['requires_confirmation'] and
+          not (geometry or {}).get('entry_retest_reason') and
           (not market or (trigger or {}).get('pattern') == 'INSTANT_TOUCH_MARKET_FILL') else
           'EXHAUSTED_MOVE' if target_crossed(side, snapshot, tp1, trigger['known_ts'] if trigger else known) else
           'STOP_ALREADY_BREACHED' if stop_breached or side * (snapshot.price - stop) <= 0 else
@@ -760,6 +777,8 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         'trend_rel': relation, 'trend_phase': (geometry or {}).get('trend_phase'),
         'min_score': score_floor, 'entry_max_distance': TREND_LIMIT_MAX if runner else max_zone_distance(a, cfg),
         'order_type': 'MARKET' if market else 'LIMIT', 'market_trigger': trigger,
+        'exit_policy': engine.bzu_policy.FULL_POSITION_EXIT if full_exit else (geometry or {}).get('exit_policy'),
+        'entry_retest_reason':(geometry or {}).get('entry_retest_reason'),
         'entry_status': 'MARKET_NOW' if market else 'LIMIT_READY',
         'checkpoints': (geometry or {}).get('checkpoints', destination.get('checkpoints', [])),
         'score_source':'ZONE_HEURISTIC','score_model':'ZONE_ORGANIC_OIL_V32' if oil else 'ZONE_WAVE_V31',
@@ -772,7 +791,8 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         'target_projection':projection or None, 'reversal_override':reversal,
         'tp1_source':tp1_source,'tp2_source':tp2_source,'plan_basis':'ENGINE_GEOMETRY' if frozen else 'STRUCTURAL_PREPLAN',
         'risk_gate':gate,'impulse_blocked':bool(brake['blocked']),
-        'tactic':('OBSERVE' if gate or brake['blocked'] or score < score_floor else
+        'tactic':('OBSERVE' if gate or (brake['blocked'] and not confirmed_opening
+                                        and not (geometry or {}).get('entry_retest_reason')) or score < score_floor else
                   'MARKET' if market else
                   'REACTION_M5' if reaction_only or (relation is None and score < 65) else 'LIMIT'),
         'calculated_ts':snapshot.now}
@@ -977,8 +997,6 @@ def consolidation_base(rows, side, tick, engine, *, prospective=False, require_b
 
 RETIRED_BRENT_SETUPS = frozenset({
     'OTE_RETRACEMENT', 'IMPULSE_OTE_15M', 'FIB_OTE_ZONE',
-    'RANGE_COMPRESSION_BREAKOUT', 'COMPRESSION_EXPANSION',
-    'MOMENTUM_NO_PULLBACK_CONTINUATION', 'WAVE_CONTINUATION',
 })
 RETIRED_SETUP_REASON = 'LEGACY_BRENT_SETUP_RETIRED'
 

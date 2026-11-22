@@ -122,6 +122,14 @@ def adaptive_limit(snapshot, zone, origin, side, tick, engine):
     if zone['kind'] in ('VWAP_TREND_CONTINUATION','SR_FLIP_RECLAIM','RECLAIM_BREAKER'):
         entry = engine.round_tick(round(zone['reference']+side*.03,10),tick)
         return entry, 'STRUCTURAL_REFERENCE_BUFFER'
+    if 'FVG' in zone['kind']:
+        quarters = closed(snapshot, '15m')
+        if len(quarters) >= 15:
+            impulse = quarters[-1]
+            prior_atr = engine.atr(quarters[:-1])
+            if prior_atr > 0 and side*(impulse.close-impulse.open) >= 1.2*prior_atr:
+                proximal = high if side == 1 else low
+                return engine.round_tick(round(proximal-side*.25*(high-low),10),tick,up=side==-1), 'FVG_PROXIMAL_QUARTER'
     if zone['kind'] == 'FVG_PULLBACK' and (zone.get('wave_proof') or {}).get('first_retest'):
         return zone['reference'], 'STRUCTURAL_REFERENCE'
     if zone['kind'] in ('BOS_IMPULSE_BREAKOUT','EMA9_MOMENTUM_SURF','V_REVERSAL_CHOCH','TURTLE_SOUP','FAILED_BREAKOUT_TRAP'):
@@ -218,12 +226,31 @@ def front_run_candidate(plan, snapshot, cfg, engine):
     if trigger is None:
         return None
     quote = trigger['price']
-    risk = plan['side'] * (quote - plan['stop'])
+    side, stop = plan['side'], plan['stop']
+    risk = side * (quote - stop)
     profile = plan.get('organic_risk') or {}
-    if not profile.get('floor', 0) <= risk <= profile.get('cap', float('inf')):
+    tp1, tp2 = plan['tp1'], plan['tp2']
+    candidate = copy.deepcopy(plan)
+    if engine.bzu_policy.full_position(plan):
+        import bzu_execution_rules as rules
+        import oil_risk
+        atr = engine.atr(engine.policy.closed(snapshot,'15m'))
+        regime = engine.policy.execution_regime(snapshot,cfg,engine)
+        if rules.early_ny(snapshot.now) or rules.retest_reason(snapshot,side,quote,trigger,regime,atr,cfg.tick):
+            return None
+        stop, risk, profile = oil_risk.stop_geometry(
+            quote, profile['boundary'],side,oil_risk.snapshot_profile(snapshot),
+            oil_risk.stop_anchors(snapshot,cfg,engine,side),cfg.tick,engine,timeframe=profile.get('timeframe'))
+        if profile['gate']:
+            return None
+        levels = rules.available_pools(snapshot,engine.scenario_planner.structure_levels(snapshot,engine),cfg.tick)
+        tp1, source, pool = rules.full_target(levels,quote,risk,side,atr,cfg.tick,engine)
+        tp2=tp1
+        candidate.update(tp=tp1,tp3=tp1,tp1_source=source,tp2_source=source,liquidity_pool=pool,
+                         stop=stop,initial_stop=stop,post_only=False)
+    elif not profile.get('floor', 0) <= risk <= profile.get('cap', float('inf')):
         return None
     trigger['max_distance'] = abs(quote - plan['entry'])
-    candidate = copy.deepcopy(plan)
     candidate.update(
         id=engine.ident('FRONT_RUN', plan['id'], trigger['known_ts']),
         event_key=engine.ident('FRONT_RUN_EVENT', plan['id'], trigger['known_ts']),
@@ -233,14 +260,13 @@ def front_run_candidate(plan, snapshot, cfg, engine):
         effective_ts=snapshot.now, placed_ts=snapshot.now, last_bar=-1,
         entry_fee_rate=engine.fee_rate(cfg, 'taker'),
         entry_legs=[{'name': 'ACTIVE', 'price': quote, 'fraction': 1., 'status': 'PENDING'}],
-        rr1=plan['side']*(plan['tp1']-quote)/risk,
-        rr2=plan['side']*(plan['tp2']-quote)/risk,
+        tp1=tp1,tp2=tp2,rr1=side*(tp1-quote)/risk,rr2=side*(tp2-quote)/risk,
     )
     for key in ('order_number', 'display_id', 'zone_quality', 'confluence', 'direct_entry'):
         candidate.pop(key, None)
     candidate['organic_risk'] = {**profile, 'entry': quote}
     candidate['gross_rr'] = candidate['rr3'] = candidate['rr2']
-    candidate['costs_r'] = engine.fees_r(quote, candidate['tp2'], risk, cfg)
+    candidate['costs_r'] = (quote*engine.fee_rate(cfg,'taker') + tp2*engine.fee_rate(cfg,'taker'))/risk
     candidate['net_rr'] = candidate['gross_rr'] - candidate['costs_r']
     candidate['breakeven_price'] = engine.bzu_policy.breakeven_price(candidate, cfg, engine)
     return candidate

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.3.0-intraday"
-REPORT_RELEASE = 'v14.3.0'
+VERSION = "full-ict-v14.4.0-intraday"
+REPORT_RELEASE = 'v14.4.0'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -56,6 +56,7 @@ import trade_meta_model as meta
 import portfolio_arbitration as arbitration
 import position_monitor
 import bzu_policy
+import bzu_execution_rules as execution_rules
 import ict_methodology
 SCHEMA = "full_ict_limit_state_v12"
 TF = {"3m": 180_000, "15m": 900_000, "1H": 3_600_000, "4H": 14_400_000}
@@ -1308,6 +1309,8 @@ def emit(state: dict, kind: str, ts: int, **fields: Any) -> None:
 
 
 def execution_series(s):
+    if s.metadata.get('lifecycle_fallback_5m'):
+        return '5m', 300_000
     if s.candles.get('1m'):
         return '1m', 60_000
     if s.candles.get('5m') and not s.candles.get('3m'):
@@ -1318,13 +1321,14 @@ def execution_series(s):
 def execution_health(s: Snapshot, state: dict) -> list[str]:
     tf,step=execution_series(s)
     rows=s.candles.get(tf,[])
-    if s.metadata.get('require_1m') and tf!='1m':
+    fallback=s.metadata.get('lifecycle_fallback_5m')
+    if s.metadata.get('require_1m') and tf!='1m' and not fallback:
         return ['MISSING_1M_FOR_LIFECYCLE']
     if not rows:
         return ['NO_3M_FOR_LIFECYCLE']
     checkpoint=state.get('last_run_ts',0)
     if checkpoint:
-        first=(checkpoint//step)*step
+        first=fallback if fallback else (checkpoint//step)*step
         needed=[c for c in rows if c.confirmed and first<=c.ts and c.ts+step<=s.now]
         if first+step<=s.now and (not needed or needed[0].ts!=first):
             return ['LIFECYCLE_HISTORY_GAP']
@@ -1493,8 +1497,13 @@ def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
              reason='BOUNCE_BREAKEVEN_LOCK')
     elif decision['stop'] is not None:
         stop = decision['stop']
-        position.update(stop=stop, stale_stop=stop, stale_stop_ts=ts)
-        emit(state, 'PAPER_STOP_AMENDED', ts, order_id=position['id'], stop=stop, reason='STALE_TIME_STOP')
+        reason = decision.get('stop_policy', 'STALE_TIME_STOP')
+        position['stop'] = stop  # This decision follows the completed execution candle.
+        if reason == 'STALE_TIME_STOP':
+            position.update(stale_stop=stop, stale_stop_ts=ts)
+        else:
+            position['adverse_structure_stop'] = {'price': stop, 'effective_ts': ts}
+        emit(state, 'PAPER_STOP_AMENDED', ts, order_id=position['id'], stop=stop, reason=reason)
 
 
 def close_at_observed_price(state, position, price, ts, reason, cfg):
@@ -1743,6 +1752,9 @@ def amend_at_report(state: dict, s: Snapshot, cfg: Config) -> None:
 
 def paper_limit_touch(plan, candle, cfg):
     """Paper-only approximation. A tolerated touch is logged separately."""
+    if bzu_policy.full_position(plan) and plan.get('post_only'):
+        extreme = candle.low if plan['side']==1 else candle.high
+        return plan['side']*(extreme-plan['entry']) <= -cfg.tick + 1e-8
     tolerance = (oil_risk.PAPER_TOUCH_TOLERANCE if oil_risk.enabled(cfg)
                  and oil_risk.is_organic(plan) else 0.)
     extreme = candle.low if plan['side']==1 else candle.high
@@ -1763,8 +1775,9 @@ def missed_target_on_bar(plan, candle, cfg, target):
 def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: bool = True, *, entry_gates_checked=False, execution=None) -> None:
     """Chronological replay before applying CURRENT context. No retroactive cancel."""
     tf, step = execution or execution_series(s)
+    first = s.metadata.get('lifecycle_fallback_5m', 0) if tf=='5m' else 0
     for c in s.candles.get(tf, []):
-        if not c.confirmed or c.ts+step>s.now:
+        if c.ts<first or not c.confirmed or c.ts+step>s.now:
             continue
         if state["active"]:
             manage_bar(state, c, cfg, step=step, snapshot=s)
@@ -1824,7 +1837,8 @@ def _advance_slot_lifecycle(state: dict, s: Snapshot, cfg: Config, allow_fill: b
             fill_reason = 'PAPER_ONE_TICK_PENETRATION'
             if oil_risk.enabled(cfg) and oil_risk.is_organic(p):
                 extreme = c.low if p['side']==1 else c.high
-                fill_reason = 'PAPER_TOUCH_TOLERANCE' if p['side']*(extreme-p['entry'])>1e-8 else 'PAPER_LIMIT_TOUCH'
+                if not bzu_policy.full_position(p):
+                    fill_reason = 'PAPER_TOUCH_TOLERANCE' if p['side']*(extreme-p['entry'])>1e-8 else 'PAPER_LIMIT_TOUCH'
             end_order(state,p,'FILLED',fill_reason,end)
             if bzu_policy.is_new(p):
                 p=bzu_policy.first_fill(p,c,sys.modules[__name__],cfg,step)
@@ -1915,6 +1929,8 @@ def pending_scenario_error(plan, snapshot, cfg):
 
 
 def pending_entry_gate(plan, trades, as_of, cfg):
+    if bzu_policy.full_position(plan) and execution_rules.early_ny(as_of.now) and not plan.get('opening_sweep_confirmed'):
+        return 'WAIT_NY_POST_SWEEP'
     if resting_organic_limit(plan,cfg):
         return pending_scenario_error(plan,as_of,cfg)
     session = bzu_policy.session_gate(as_of.now)
@@ -1935,7 +1951,8 @@ def prepare_pending_limits(state, snapshot, cfg):
         if target is None:
             continue
         # A previously committed interval still belongs to the old expiry.
-        deadline = max(plan['placed_ts'] + bzu_policy.PENDING_LIMIT_TTL_MS, state.get('last_run_ts', 0))
+        ttl = bzu_policy.PENDING_LIMIT_TTL_MS if bzu_policy.full_position(plan) else 90*60_000
+        deadline = max(plan.get('effective_ts',plan['placed_ts']) + ttl, state.get('last_run_ts', 0))
         if deadline < plan['expires_ts']:
             plan.update(expires_ts=deadline, expiry_reason='LIMIT_TTL')
         if plan.get('missed_target_r') == bzu_policy.MISSED_TARGET_R or plan.get('cancel_requested_ts'):
@@ -2107,7 +2124,8 @@ def migrate_organic_pending(state, snapshot, cfg):
     for order in pending_plans(state):
         if not oil_risk.is_organic(order):
             request_cancel(state, order, 'LEGACY_MICRO_RISK', snapshot.now)
-        elif not oil_risk.STOP_FLOOR-1e-8 <= order['risk'] <= oil_risk.STOP_CAP+1e-8:
+        elif (not bzu_policy.full_position(order) and
+              not oil_risk.STOP_FLOOR-1e-8 <= order['risk'] <= oil_risk.STOP_CAP+1e-8):
             request_cancel(state, order, 'LEGACY_STOP_BUDGET', snapshot.now)
 
 
@@ -2124,6 +2142,9 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
             request_cancel(state, pending, MISSED_TARGET_REASON, snapshot.now)
             return
     if resting_organic_limit(pending,cfg):
+        if bzu_policy.full_position(pending) and execution_rules.early_ny(snapshot.now) and not pending.get('opening_sweep_confirmed'):
+            request_cancel(state,pending,'WAIT_NY_POST_SWEEP',snapshot.now)
+            return
         if (snapshot.trusted and pending['placed_ts'] <= snapshot.ticker_ts <= snapshot.now
                 and snapshot.now - snapshot.ticker_ts <= 120_000
                 and resting_limit_invalidated(pending,snapshot.price)):
@@ -2251,8 +2272,20 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     start = len(state["events"])
     faults = health(s, cfg)
     lifecycle_faults = execution_health(s, state) if open_plans(state) else []
+    if (lifecycle_faults and s.now-state.get('last_run_ts',s.now)>600_000
+            and s.metadata.get('exchange_5m')):
+        through = (state.get('execution_audit') or {}).get('closed_through_ts',0)
+        if through and through%300_000==0:
+            recovered = [Candle.parse(row) for row in s.metadata['exchange_5m']]
+            candidate = replace(s, candles={**s.candles,'5m':recovered},
+                                metadata={**s.metadata,'lifecycle_fallback_5m':through})
+            if not execution_health(candidate,state):
+                s = candidate
+                lifecycle_faults = []
     if lifecycle_faults or any(x in faults for x in ("UNTRUSTED_PRICE", "WRONG_INSTRUMENT", "STALE_TICKER", "STALE_3m")):
         return {"action": "DATA_HOLD", "events": [], "analysis": {"health": faults+lifecycle_faults}}
+    previous_scan = state.get('last_scan_observed_ts') or state.get('last_run_ts')
+    s.metadata['scan_gap_ms'] = s.now-previous_scan if previous_scan else 0
     execution_tf, execution_step = execution_series(s)
     state['execution_audit'] = {
         'timeframe':execution_tf, 'minute_precision':execution_tf=='1m', 'as_of_ts':s.now,
@@ -2409,12 +2442,16 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if single_limit:
             trigger = candidate.get('market_trigger') or {}
             side = candidate['side']
-            if policy.trend_entry_error(s,side,s.price,zone,cfg.tick):
+            opening_proof = trigger.get('pattern')==execution_rules.EARLY_NY
+            if not opening_proof and not candidate.get('opening_sweep_confirmed') and policy.trend_entry_error(
+                    s,side,s.price,zone,cfg.tick):
                 continue
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
                 proof_quote = quote
-                if scanner.structural_pullback(zone) and trigger.get('pattern') not in ('TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH'):
+                if scanner.structural_pullback(zone) and trigger.get('pattern') not in (
+                        'TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH',
+                        execution_rules.EARLY_NY,'M15_CONFIRMED_LEVEL_REJECTION'):
                     level = trigger.get('limit_entry')
                     distal = zone.get('low' if side==1 else 'high')
                     a15 = atr(policy.closed(s,'15m'))
@@ -2423,11 +2460,17 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         continue
                     if side*(quote-level)<0:
                         proof_quote = level
-                if policy.trend_entry_error(s,side,quote,zone,cfg.tick):
+                if not opening_proof and policy.trend_entry_error(s,side,quote,zone,cfg.tick):
                     continue
-                if scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
+                if not opening_proof and scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
                     continue
-                if trigger.get('pattern')=='MARKET_FRONT_RUN_CATCH':
+                if trigger.get('pattern') == execution_rules.EARLY_NY:
+                    proof = execution_rules.opening_trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
+                                                            cfg,sys.modules[__name__])
+                elif trigger.get('pattern') == 'M15_CONFIRMED_LEVEL_REJECTION':
+                    proof = execution_rules.level_rejection(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
+                                                            cfg,sys.modules[__name__])
+                elif trigger.get('pattern')=='MARKET_FRONT_RUN_CATCH':
                     incumbent = next((p for p in pending_plans(state) if p['id'] == candidate.get('replaces_order_id')), None)
                     proof = strategy_direct_entries.front_run_trigger(incumbent,s,cfg,sys.modules[__name__]) if incumbent else None
                 elif trigger.get('pattern')=='INSTANT_TOUCH_MARKET_FILL':
@@ -2459,6 +2502,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     proof = None
                 if not proof or proof['known_ts'] != trigger.get('known_ts') or abs(quote-candidate['entry']) > 1e-8:
                     continue
+                if bzu_policy.full_position(candidate) and session['post_sweep_only'] and proof['pattern'] != execution_rules.EARLY_NY:
+                    continue
+                if bzu_policy.full_position(candidate) and execution_rules.retest_reason(
+                        s,side,quote,proof,market,atr(policy.closed(s,'15m')),cfg.tick):
+                    continue
+            elif (bzu_policy.full_position(candidate) and session['post_sweep_only']
+                  and not candidate.get('opening_sweep_confirmed')):
+                continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
                 candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN or
                 trigger.get('pattern') in ('M15_TREND_ZONE','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH') else
@@ -2469,7 +2520,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 scenario_planner.structure_levels(s,sys.modules[__name__]),
                 trend=candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
             min_room = scanner.MARKET_IMPULSE_MIN_RR if scanner.market_plan(candidate) else scanner.LIMIT_NEW_MIN_RR
-            if gate or (room_r is not None and room_r < min_room-1e-8):
+            if not opening_proof and (gate or (room_r is not None and room_r < min_room-1e-8)):
                 continue
         if (dominant and candidate['side'] != dominant
                 and not candidate.get('local_reversal_override')
@@ -2482,7 +2533,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         if (single_limit and dominant == -candidate['side'] and not candidate.get('local_reversal_override') and
                 (relation != 'COUNTER_TREND' or not candidate.get('counter_confirmation'))):
             continue
-        if candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY':
+        if (candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY'
+                and not candidate.get('entry_retest_reason')):
             continue
         if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
                                         min_score=max(60,scanner.min_plan_score(relation, candidate.get('market_trigger'),
@@ -2517,7 +2569,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place=False
         pending=pending_plans(state)
     arbitration_audit=sar or {'decision':'SKIPPED','reason':'NO_PENDING_OR_UNSAFE_BOOK'}
-    if can_place and len(active) == 1 and not pending and not unresolved:
+    if can_place and len(active) == 1 and not bzu_policy.full_position(active[0]) and not pending and not unresolved:
         unused = [p for p in valid if not {p['event_key'], *p.get('parent_keys', [])}.intersection(state['used_events'])
                   and p['expires_ts'] > s.now]
         replacement = (arbitration.should_reverse_on_exhaustion_peak(active[0], unused, s, cfg, sys.modules[__name__])
@@ -3020,6 +3072,11 @@ REASON_UA = {
     'DYNAMIC_TREND_TRAILING_REPLACE':'з’явився ближчий підтверджений сетап за трендом',
     'LIMIT_TTL':'вичерпано строк очікування лімітки',
     'MFE_PROTECTION':'підтягнуто стоп після сприятливого руху',
+    'WAIT_NY_POST_SWEEP':'потрібен свіп ліквідності та підтверджене закриття M15',
+    'NY_POST_SWEEP':'MARKET після свіпу та імпульсного закриття M15 у NY',
+    'HTF_EXTENDED_RETEST':'LIMIT на ретест після віддалення від EMA20 M15',
+    'GAP_RETEST':'LIMIT на ретест після затримки циклу',
+    'ADVERSE_STRUCTURE_TIGHTEN':'підтягнуто SL після першого структурного сигналу',
     'MFE_PROTECTIVE_EXIT':'вихід за захистом пройденого руху',
     'POST_TP_EXHAUSTION_COOLDOWN':'після тейка великої хвилі потрібен відкат від 38.2% або пауза 2 год',
     'CONTINUATION_RETRACE_REQUIRED':'для MARKET потрібен відкат 35–50% від імпульсу',
@@ -3658,6 +3715,27 @@ def collect_snapshot(cfg: Config, checkpoint: int = 0, market_cache=None) -> Sna
         data['current_candle_1m']=asdict(max(current,key=lambda c:c.ts))
     data['require_1m']=True
     data['now'] = int(time.time()*1000)
+    if checkpoint and data['now']-checkpoint>600_000:
+        minute_end = data['now']//60_000*60_000
+        minutes = {c.ts for c in data['candles']['1m'] if c.confirmed}
+        minute_start = checkpoint//60_000*60_000
+        if any(ts not in minutes for ts in range(minute_start,minute_end,60_000)):
+            coarse = {}
+            cursor = minute_end+300_000
+            for _ in range(24):
+                query=urllib.parse.urlencode({'instId':cfg.instrument,'bar':'5m','after':cursor,'limit':300})
+                response=core.http_get(f"{core.OKX_BASE_URL}/history-candles?"+query)
+                body=response.json() if response else {}
+                rows=[Candle.parse(row) for row in body.get('data',[])] if body.get('code')=='0' else []
+                older=min((bar.ts for bar in rows),default=cursor)
+                if older>=cursor:
+                    break
+                coarse.update((bar.ts,bar) for bar in rows if bar.confirmed and bar.ts+300_000<=data['now'])
+                cursor=older
+                if cursor<=minute_start-300_000:
+                    break
+            if coarse:
+                data['exchange_5m']=[asdict(coarse[ts]) for ts in sorted(coarse)]
     data['trusted'] = data.get('execution_price_trusted',False)
     data['candles'] = {tf:[asdict(c) for c in rows] for tf,rows in data.get('candles',{}).items()}
     data['smt_candles_15m'] = [asdict(c) for c in data.get('smt_candles_15m',[])]
@@ -3763,6 +3841,13 @@ def run_live(core, snapshot_path: Optional[Path] = None, notify: bool = False,
         # a Telegram report; on an always-on host this is every third 3m bar.
         event_watermark = min(state.get('last_notified_event_count',old_events),old_events)
         result = run_cycle(state,snap,cfg)
+        if snapshot_path is None:
+            import okx_order_execution
+            state['exchange_status'] = okx_order_execution.run(
+                state,result,snap,cfg,sys.modules[__name__],lambda: atomic_write(state_path,state))
+            info = state['exchange_status']
+            if info['mode'] != 'PAPER':
+                print(f"[OKX {info['mode']}] {info['status']}",flush=True)
         stage('strategy_and_lifecycle')
         if notify:
             result['events'] = sorted(state['events'][event_watermark:],key=lambda e:e['ts'])
@@ -3925,12 +4010,21 @@ def main(core) -> int:
                     'test_projection_and_telegram_have_same_guard',
                     'test_bounce_sets_entry_stop_before_90_minutes',
                     'test_market_early_impulse_failure_closes_through_execution',
+                    # v14.4 uses a single TP, volatility-derived SL and an HTF retest.
+                    'test_complete_days_and_hourly_true_range_have_causal_boundaries',
+                    'test_structural_stop_is_symmetric_and_cannot_clip_through_invalidation',
+                    'test_m15_stop_precedes_hourly_and_preserves_cap',
+                    'test_preview_and_engine_targets_ignore_soft_local_swing',
+                    'test_base_reaches_the_normal_paper_execution_route',
+                    'test_brent_skips_retired_detectors_and_does_not_reactivate_saved_anchors',
+                    'test_market_keeps_original_stop_and_targets_for_rr_validation',
+                    'test_market_rr_uses_unchanged_targets',
                 }
-                retained = [case for module in historical for group in module for case in group
-                            if case.id().rsplit('.',1)[-1] not in superseded]
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain'))
-                organic = runner.run(unittest.TestSuite([*retained, current]))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain','test_v144_full_execution'))
+                retained = [case for module in (*historical,*current) for group in module for case in group
+                            if case.id().rsplit('.',1)[-1] not in superseded]
+                organic = runner.run(unittest.TestSuite(retained))
                 return 0 if compatibility.wasSuccessful() and organic.wasSuccessful() else 1
             finally:
                 if previous_entry_mode is not None:

@@ -559,8 +559,8 @@ def breakdown_market_trigger(snapshot, zone, entry, risk, quote, tick):
     rows = closed(snapshot,'15m')
     if not rows or rows[-1].ts+M15 != known:
         return None
-    distance = min(.20*risk, max(.10,min(.15,.30*zone['wave_proof']['breakdown_atr'])))
+    distance = max(.10,min(.15,.30*zone['wave_proof']['breakdown_atr']))
     if not tick/2 <= entry-quote <= distance+1e-8 or entry-rows[-1].close > distance+1e-8:
         return None
     return {'pattern':'M15_BREAKDOWN_MOMENTUM','known_ts':known,'limit_entry':entry,
-            'initial_risk':risk,'deviation_r':(entry-quote)/risk}
+            'initial_risk':risk,'max_distance':distance,'deviation_r':(entry-quote)/risk}

@@ -71,7 +71,13 @@ def contiguous_ranges(bars, step):
 
 
 STOP_FLOOR, STOP_CAP = .65, 1.15
-PAPER_TOUCH_TOLERANCE = .05
+PAPER_TOUCH_TOLERANCE = .05  # Historical paper contracts only.
+NY_STOP_MULTIPLIER = 1.45
+
+
+def ny_volatility(ts):
+    return ts is not None and 13 * H1 <= ts % DAY < 19 * H1
+
 
 
 def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
@@ -89,14 +95,16 @@ def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
     atr1h = hourly if hourly else 2.15 * atr15 if atr15 else None
     days = list(daily_ranges(m15, h1, h4).values())[-14:]
     adr = mean(high - low for high, low, _ in days) if days else None
-    turbulent = bool(hourly and len(ranges) >= 28 and mean(ranges[-28:-14]) > 0
-                     and hourly >= 1.35 * mean(ranges[-28:-14]))
-    multiplier = 1.35 if turbulent else 1.20 if active_session else 1.
+    multiplier = NY_STOP_MULTIPLIER if ny_volatility(as_of) else 1.
+    volatility_distance = multiplier * max(1.5 * (atr1h or 0), .42 * (adr or 0))
+    h4_ranges = contiguous_ranges([(c.ts, (c.high, c.low, c.close)) for c in h4], H4)
+    atr4h = mean(h4_ranges[-14:]) if len(h4_ranges) >= 14 else None
     return {'model': MODEL, 'as_of_ts': as_of, 'reference_price': price,
             'atr_15m': atr15,
             'atr_1h': atr1h, 'atr_source': '1H_TRUE_RANGE' if hourly else '15M_X_2_15' if atr1h else 'UNAVAILABLE',
             'adr_d1': adr, 'adr_days': len(days), 'session_multiplier': multiplier,
-            'floor': STOP_FLOOR, 'cap': STOP_CAP, 'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
+            'atr_4h': atr4h, 'volatility_distance': volatility_distance,
+            'floor': volatility_distance, 'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
 
 
 def enabled(cfg):
@@ -161,32 +169,30 @@ def stop_anchors(snapshot, cfg, engine, side):
     return cache[key]
 
 
-def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine):
-    """Buffer a witnessed swing or the zone boundary using M15 volatility."""
-    floor, cap = STOP_FLOOR, STOP_CAP
-    atr = profile.get('atr_15m')
-    buffer = max(tick, min(.18, max(.12, .20 * (atr or 0.))))
-    local_distance = side*(entry-local_boundary)
-    anchor = min((a for a in anchors if a['timeframe'] in ('15m','1H')
-                  and max(.60,local_distance)-1e-8 <= side*(entry-a['level']) <= min(1.35,cap-buffer)+1e-8),
-                 key=lambda a: (a['timeframe']!='15m',
-                     not (.90*(atr or 0) <= side*(entry-a['level']) <= 1.50*(atr or 0)),
-                     side*(entry-a['level'])),default=None)
+def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine, *, timeframe=None):
+    """Use the larger of the observed structural distance and the volatility budget."""
+    volatility = profile.get('volatility_distance')
+    if volatility is None:
+        volatility = profile.get('session_multiplier', 1.) * max(
+            1.5 * (profile.get('atr_1h') or 0), .42 * (profile.get('adr_d1') or 0))
+    atr = profile.get('atr_15m') or 0.
+    floor = round(max(volatility, 1.2 * (profile.get('atr_4h') or 0) if timeframe == '4H' else 0.),10)
+    buffer = max(tick, .20 * atr)
+    local_distance = side * (entry - local_boundary)
+    anchor = min((point for point in anchors if point['timeframe'] in ('15m','1H','4H')
+                  and local_distance <= side*(entry-point['level']) <= max(local_distance, floor)),
+                 key=lambda point: side*(entry-point['level']), default=None)
     boundary = anchor['level'] if anchor else local_boundary
-    structural_distance = max(0.,side*(entry-boundary)) + buffer
-    raw = max(floor,structural_distance)
-    stop = engine.round_tick(round(entry - side * raw, 10), tick, up=side == -1)
-    risk = round(side * (entry - stop),10)
-    if raw <= cap + 1e-8 and risk > cap + 1e-8:
-        stop = engine.round_tick(round(entry - side * cap, 10), tick, up=side == 1)
-        risk = round(side * (entry - stop),10)
-    reason = ('OIL_VOLATILITY_UNAVAILABLE' if not atr else
+    structural_distance = max(0., side*(entry-boundary)) + buffer
+    raw = max(floor, structural_distance)
+    stop = engine.round_tick(round(entry-side*raw, 10), tick, up=side == -1)
+    risk = round(side*(entry-stop), 10)
+    reason = ('OIL_VOLATILITY_UNAVAILABLE' if floor <= 0 or (timeframe == '4H' and not profile.get('atr_4h')) else
               'INVALID_STRUCTURAL_FALSIFIER' if local_distance < 0 else
-              'STRUCTURAL_STOP_TOO_WIDE' if stop <= 0 or raw > cap + 1e-8 or risk > cap + 1e-8 or
-              risk < max(floor, structural_distance) - 1e-8 else None)
-    return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': cap, 'target':raw,
-                        'macro_anchor':anchor, 'anchor_source':anchor['timeframe'] if anchor else 'CONFIRMED_ZONE',
-                        'anchor_valid':reason is None,
+              'INVALID_STOP_PRICE' if stop <= 0 else None)
+    return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': risk, 'target': raw,
+                        'macro_anchor': anchor, 'anchor_source': anchor['timeframe'] if anchor else 'CONFIRMED_ZONE',
+                        'anchor_valid': reason is None, 'timeframe': timeframe,
                         'boundary': boundary, 'buffer': buffer,
                         'structural_distance': structural_distance, 'gate': reason}
 
