@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import bzu_policy
+import bzu_execution_rules as rules
 import continuous_worker as worker
 import entry_adverse_selection as adverse
 import full_limit_engine as engine
@@ -71,14 +72,15 @@ class RealTimeRelease(TestCase):
     def test_market_requires_rr_135_from_final_quote(self):
         snap,cfg = base_fixture()
         anchor = type('Anchor',(),{'side':'LONG'})()
-        for reward,expected in ((1.34,'BLOCKED_LOW_RR_135'),(1.35,'ACCEPTED')):
-            with self.subTest(reward=reward), patch.object(engine.oil_risk,'structural_room',return_value=(None,None)), \
+        for room, expected in ((1.34, 'BLOCKED_NO_ROOM_TO_STRUCTURE'), (1.35, 'ACCEPTED')):
+            with self.subTest(room=room), patch.object(engine.oil_risk,'structural_room',return_value=(100.+room,room)) as final_room, \
                  patch.object(scanner,'target_crossed',return_value=False):
-                geometry = dict(tp1=100.+reward,tp2=102.,path_clear=True,structural_tp1=True,structural_tp2=True)
-                _,reason = bzu_policy.protected_targets({},snap,anchor,cfg,engine,100.,99.,1,.6,
-                    active=True,market_trigger={'known_ts':NOW,'pattern':'TREND_CONTINUATION_MARKET'},
-                    reference_geometry=geometry)
+                geometry, reason = bzu_policy.protected_targets({},snap,anchor,cfg,engine,100.,99.,1,.6,
+                    active=True,market_trigger={'known_ts':NOW,'pattern':'TREND_CONTINUATION_MARKET'})
                 self.assertEqual(reason,expected)
+                self.assertEqual(final_room.call_args.args[1:3], (100., 1.))
+                if geometry:
+                    self.assertGreaterEqual(geometry['rr2'], 1.35 - 1e-8)
 
     def test_m5_replay_checks_lows_when_no_finer_history_exists(self):
         cfg=engine.Config(tick=.01)
@@ -101,6 +103,29 @@ class RealTimeRelease(TestCase):
         self.assertEqual(engine.prepare_pending_limits(book,s,engine.Config()),{plan['id']})
 
     def test_router_cancels_incumbent_before_committing_market_fill(self):
+        for same_event in (False, True):
+            with self.subTest(same_event=same_event):
+                result, book, snap, old = self.run_market_replacement(same_event=same_event)
+                self.assertEqual(result['action'], 'ACTIVE_ENTRY')
+                self.assertEqual([row['status'] for row in book['orders']], ['CANCELLED', 'FILLED'])
+                self.assertEqual(book['orders'][0]['reason'], 'CANCELLED_REPLACED_BY_LIVE_SETUP')
+                filled, = engine.active_plans(book)
+                self.assertEqual(filled['entry'], snap.bid)
+                self.assertNotEqual(filled['event_key'], old['event_key'])
+                self.assertEqual(engine.pending_plans(book), [])
+
+    def test_router_waits_with_an_unobserved_partial_minute_or_exchange_order(self):
+        result, book, _, _ = self.run_market_replacement(offset=3000)
+        self.assertEqual(result['action'], 'CANCEL_LIMIT')
+        self.assertEqual([e['kind'] for e in result['events']], ['CANCEL_REQUESTED'])
+        self.assertEqual(len(engine.pending_plans(book)), 1)
+        self.assertEqual(engine.active_plans(book), [])
+        result, book, _, _ = self.run_market_replacement(tracked=True)
+        self.assertEqual(result['action'], 'CANCEL_LIMIT')
+        self.assertEqual([row['status'] for row in book['orders']], ['CANCELLED'])
+        self.assertEqual(engine.active_plans(book), [])
+
+    def run_market_replacement(self, *, same_event=False, offset=0, tracked=False):
         from test_full_limit_engine import analysis, snapshot
         from test_pending_limit_lifecycle import TrendReplacement
 
@@ -114,9 +139,13 @@ class RealTimeRelease(TestCase):
         new.update(action_type='ACTIVE_ENTRY', order_type='MARKET', entry=bid,
                    market_trigger=proof, stop=91.86, tp1=89.35, tp=89., tp2=89.,
                    entry_legs=[{'name':'ACTIVE','price':bid,'fraction':1.,'status':'PENDING'}])
+        if same_event:
+            new['event_key'] = old['event_key']
         book = engine.new_state(cfg)
         engine.park_pending(book,[old])
-        s = snapshot(NOW,price=90.89)
+        if tracked:
+            book['okx_execution'] = {'order': {'plan': old}}
+        s = snapshot(NOW + offset, price=90.89)
         s.candles['15m'] = [replace(c,open=90.89,high=91.14,low=90.64,close=90.89)
                             for c in s.candles['15m']]
         s.candles['1m'] = [engine.Candle(NOW-MINUTE,90.90,90.93,90.86,90.89)]
@@ -132,8 +161,65 @@ class RealTimeRelease(TestCase):
              patch.object(scanner,'calculate_zone_trade_plan',return_value={'tactic':'MARKET','entry_condition':'RETEST'}), \
              patch.object(engine.scenario_planner,'focus',return_value={'developing_setup':None}):
             result=engine.run_cycle(book,s,cfg)
-        self.assertEqual(result['action'],'ACTIVE_ENTRY')
-        self.assertEqual([row['status'] for row in book['orders']],['CANCELLED','FILLED'])
-        self.assertEqual(book['orders'][0]['reason'],'CANCELLED_REPLACED_BY_LIVE_SETUP')
-        self.assertEqual(engine.active_plans(book)[0]['entry'],s.bid)
-        self.assertEqual(engine.pending_plans(book),[])
+        return result, book, s, old
+
+    def test_fresh_fvg_accepts_calm_approach_and_waits_for_closed_rejection_after_shock(self):
+        step = engine.TF['15m']
+        for side in (1, -1):
+            for ratio in (.79, .95, 1., 1.01):
+                with self.subTest(side=side, ratio=ratio):
+                    zone = {'kind': 'FVG_PULLBACK', 'known_ts': NOW-step, 'reference': 100.,
+                            'low': 99.95, 'high': 100.05}
+                    rows = [engine.Candle(NOW-i*step, 100.2, 100.7, 99.7, 100.2, 10.)
+                            for i in range(20, 1, -1)]
+                    close = 100. + side*.1
+                    open_price = close + side*ratio
+                    rows.append(engine.Candle(NOW-step, open_price, max(open_price,close)+.02,
+                                              min(open_price,close)-.02, close, 1000.))
+                    rows.append(engine.Candle(NOW, 100., 100.55, 99.45, 100.+side*.5))
+                    snap = engine.Snapshot(NOW, close, {'15m': rows})
+                    label = 'WAIT_PULLBACK_REJECTION' if ratio > 1. else None
+                    self.assertEqual(rules.setup_confirmation('PULLBACK_CONTINUATION', zone, snap,
+                                                               side, .01, engine, False), label)
+                    self.assertIsNone(rules.setup_confirmation('FVG_PULLBACK', zone,
+                        replace(snap, now=NOW+step), side, .01, engine, False))
+
+    def test_trend_limit_uses_full_target_and_keeps_longer_ttl(self):
+        cfg = engine.Config(tick=.01)
+        step = MINUTE
+        placed = NOW + 180*step
+        for trend, frame4h, minutes in ((False, -1, 60), (True, 0, 90), (True, -1, 120)):
+            with self.subTest(minutes=minutes):
+                ttl = bzu_policy.retest_ttl(-1, {'side_1h':-1, 'side_4h':frame4h}, trend=trend)
+                self.assertEqual(ttl, minutes*step)
+                plan = waiting(-1, placed)
+                plan.update(exit_policy=bzu_policy.FULL_POSITION_EXIT, limit_ttl_ms=ttl, expires_ts=placed+ttl)
+                price = plan['entry'] - .8*plan['risk']
+                book = engine.new_state(cfg)
+                engine.park_pending(book, [plan])
+                probe = engine.Snapshot(placed+75*step, price, {}, ticker_ts=placed+75*step)
+                engine.prepare_pending_limits(book, probe, cfg)
+                self.assertEqual(plan['expires_ts'], placed+ttl)
+                engine.review_waiting_conditions(book, plan, probe, cfg)
+                if trend:
+                    self.assertEqual(engine.pending_plans(book), [plan])
+                    engine.review_waiting_conditions(book, plan, replace(probe, price=plan['tp']), cfg)
+                self.assertEqual(book['orders'][-1]['reason'], engine.MISSED_TARGET_REASON)
+
+    def test_bos_proof_survives_for_limit_but_expires_for_market_and_after_invalidation(self):
+        from test_v13_2_trend import TrendBreakout
+
+        step = engine.TF['15m']
+        with patch.object(engine.policy, 'trend_references', return_value=(100., 100.)):
+            snap, cfg = TrendBreakout().breakout_fixture(1, '15m')
+            zone, = market_wave.bos_impulse_zones(snap, cfg.tick, engine)
+            bars = snap.candles['15m'] + [engine.Candle(snap.now+i*step, 100.58, 100.62, 100.47, 100.54)
+                                        for i in range(5)]
+            later = replace(snap, now=snap.now+5*step, ticker_ts=snap.now+5*step, candles={'15m':bars})
+            regime = {'state':'BULLISH_ACTIVE', 'trend_anchor_side':1, 'side_1h':1, 'side_4h':1}
+            self.assertFalse(market_wave.bos_impulse_zones(later, cfg.tick, engine))
+            self.assertTrue(scanner.zone_origin(zone, later, 1, cfg.tick, engine, cfg, regime)['confirmed'])
+            self.assertIsNone(adverse.trend_execution_trigger(later, 1, zone, zone['reference'], .5,
+                                                              later.ask, cfg.tick, engine))
+            broken = replace(later, candles={'15m':bars[:-1] + [replace(bars[-1], low=100.10, close=100.20)]})
+            self.assertFalse(scanner.zone_origin(zone, broken, 1, cfg.tick, engine, cfg, regime)['confirmed'])

@@ -284,6 +284,8 @@ def approach_velocity(snapshot, side, zone, entry, tick, engine, *, shock_ts=0):
     from market_wave import BASE
 
     rows = closed(snapshot, '15m')[-32:]
+    fvg = zone.get('kind') == 'FVG_PULLBACK'
+    confirmed_ts = None
     if (zone.get('kind') in (BASE,'RECLAIM_BREAKER','SR_FLIP_RECLAIM')
             and zone.get('wave_proof') and 0 < shock_ts <= zone.get('known_ts',0) <= snapshot.now):
         shock_ts = 0
@@ -300,6 +302,19 @@ def approach_velocity(snapshot, side, zone, entry, tick, engine, *, shock_ts=0):
         body = -side*(bar.close-bar.open)
         two = (-side*(bar.close-prev.open) if bar.ts-prev.ts==M15 and
                side*(prev.close-prev.open)<0 else 0)
+        if fvg:
+            near = (bar.low <= zone['high'] and bar.high >= zone['low'] or
+                    abs(bar.close-entry) <= atr)
+            if not near:
+                continue
+            if body > atr + 1e-8:
+                shock_ts = known
+            elif (bar.low <= entry + tick and bar.high >= entry - tick
+                    and side * (bar.close - entry) >= tick - 1e-8
+                    and (side * (bar.close - bar.open) >= tick - 1e-8 or wick >= .65)):
+                shock_ts = 0
+                confirmed_ts = known
+            continue
         near = abs(bar.close-entry)<=.65*atr or bar.low<=entry<=bar.high
         if near and max(body,two)>1.3*atr and body>=.65*width and wick<.20:
             shock_ts = known
@@ -307,6 +322,7 @@ def approach_velocity(snapshot, side, zone, entry, tick, engine, *, shock_ts=0):
                 side*(bar.close-bar.open)>tick or wick>=.30):
             shock_ts = 0
     return {'blocked': bool(shock_ts), 'shock_known_ts': shock_ts or None,
+            'confirmation_known_ts': confirmed_ts if not shock_ts else None,
             'action': 'CONFIRMATION_REQUIRED' if shock_ts else 'PRECISION_ENTRY',
             'brake_model': 'M15_APPROACH_VELOCITY'}
 

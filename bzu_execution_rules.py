@@ -10,6 +10,8 @@ EPS = 1e-8
 FULL_TARGET_MIN_R = oil_risk.ENTRY_TP1_MIN
 FULL_TARGET_MAX_R = 1.88
 RETEST_TTL_MS = 60 * 60_000
+TREND_RETEST_TTL_MS = 90 * 60_000
+ALIGNED_RETEST_TTL_MS = 120 * 60_000
 EARLY_NY = 'NY_POST_SWEEP'
 
 
@@ -148,15 +150,21 @@ def _adx(rows, period=14):
     return adx
 
 
-def setup_confirmation(name, zone, snapshot, side, tick, engine, settle):
+def setup_confirmation(name, zone, snapshot, side, tick, engine, settle, *, approach=None):
     """Recheck the weak setup families without disabling any detector."""
     kind = zone.get('kind','')
     rows = direction.closed(snapshot, '15m')[-70:]
     if not rows:
         return 'WAIT_CLOSED_M15'
+    if kind == 'FVG_PULLBACK':
+        from entry_adverse_selection import approach_velocity
+
+        level = zone.get('reference', (zone['low'] + zone['high']) / 2)
+        brake = approach if approach is not None else approach_velocity(snapshot, side, zone, level, tick, engine)
+        return 'WAIT_PULLBACK_REJECTION' if brake['blocked'] else None
     if name not in {'OPENING_RANGE_BREAKOUT', 'FAILED_OPENING_RANGE_BREAKOUT', 'OR_FAILURE_2_SHORT',
                     'SESSION_MEAN_RECLAIM', 'DIRECTION_FLIP_15M', 'SWEEP_RECLAIM', 'PULLBACK_CONTINUATION',
-                    'MOMENTUM_NO_PULLBACK_CONTINUATION', 'ACCELERATION_PULLBACK_REENTRY'} and kind != 'FVG_PULLBACK':
+                    'MOMENTUM_NO_PULLBACK_CONTINUATION', 'ACCELERATION_PULLBACK_REENTRY'}:
         return None
     last = rows[-1]
     atr = engine.atr(rows[:-1])

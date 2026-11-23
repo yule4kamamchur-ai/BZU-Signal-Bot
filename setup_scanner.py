@@ -750,7 +750,10 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
     if not frozen:
         score = max(0, score - decay['penalty'])
     import entry_adverse_selection as adverse
-    brake=adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
+    if oil and zone['kind'] == 'FVG_PULLBACK':
+        brake = adverse.approach_velocity(snapshot, side, zone, entry, tick, engine)
+    else:
+        brake = adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     tracking_only = inside or (geometry or {}).get('reaction_only')
     passive_touch = bool(oil and not market and touch_quote_eligible(snapshot, side, zone, entry, a, tick)
@@ -1529,6 +1532,7 @@ SETUP_NAMES = (
 
 def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_map):
     """Watch the same price structures consumed by sweep and zone detectors."""
+    from bzu_execution_rules import setup_confirmation
     from directional_policy import closed
 
     rows = closed(snapshot, '15m')
@@ -1595,8 +1599,13 @@ def developing_watches(snapshot, cfg, engine, regime, market, levels, admission_
         cross = 'вище' if side==1 else 'нижче'
         away = 'нижче' if side==1 else 'вище'
         boundary = low if side==1 else high
+        trigger = f'Ретест {low:.2f}–{high:.2f} і закриття M15 {cross} {entry:.2f} після відбою.'
+        if kind == 'FVG_PULLBACK':
+            gate = setup_confirmation(kind, zone, snapshot, side, tick, engine, False)
+            if gate is None:
+                trigger = f'Перший ретест {low:.2f}–{high:.2f}. За спокійного підходу можливий завчасний LIMIT.'
         add(side,kind,kinds[kind],entry,low,high,entry,zone['known_ts'],
-            f'Ретест {low:.2f}–{high:.2f} і закриття M15 {cross} {entry:.2f} після відбою.',
+            trigger,
             f"{zone['timeframe']} {kind}",f'Закриття M15 {away} {boundary:.2f} скасовує цей орієнтир.')
 
     for side, key in ((1,'LONG'),(-1,'SHORT')):

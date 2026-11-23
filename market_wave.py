@@ -19,6 +19,7 @@ SNIPER_REVERSAL = "M5_SNIPER_REVERSAL"
 BASE = "CONSOLIDATION_BREAKOUT_BASE"
 VWAP_CONTINUATION = "VWAP_TREND_CONTINUATION"
 BREAKDOWN_MAX_AGE = 2 * M15
+BOS_FRESH_AGE = 2 * M15
 TREND_ZONE_AGE = 6 * 60 * 60_000
 TREND_ZONES = frozenset({'BREAKER_BLOCK', 'FVG_PULLBACK', 'FIB_OTE_ZONE', 'SWEEP_CONTINUATION', 'BOS_CONTINUATION', VWAP_CONTINUATION, BOS_IMPULSE, EMA9_SURF})
 REVERSALS = frozenset({'SWEEP_REVERSAL', 'M15_CHOCH', 'BREAKER_CHOCH', 'MULTIBAR_SWEEP', 'RECLAIM_BREAKER', 'SR_FLIP_RECLAIM', BREAKDOWN, SNIPER_REVERSAL, V_REVERSAL, FAILED_TRAP})
@@ -169,27 +170,28 @@ def displacement_override(snapshot, tick, engine):
     return {}
 
 
-def bos_impulse_zones(snapshot, tick, engine):
+def bos_impulse_zones(snapshot, tick, engine, *, retest_age=None):
     """A fresh volume-backed structural break on M15 or two contiguous M5s."""
     import setup_scanner as scanner
     import directional_policy as direction
 
     cache = vars(snapshot).setdefault('_bos_impulse_zones', {})
-    key = (snapshot.now,tick)
+    key = (snapshot.now, tick, retest_age)
     if key in cache:
         return cache[key]
     zones = []
     for tf, step, count, rows in (
             ('15m', M15, 1, direction.closed(snapshot,'15m')),
             ('5m', M5, 2, scanner.closed_five_minutes(snapshot))):
-        rows = rows[-44:]
+        lookback = 3 if retest_age is None else (retest_age + step - 1) // step
+        rows = rows[-(41 + lookback):]
         if len(rows)<22+count:
             continue
-        for end in range(len(rows)-1,max(count+20,len(rows)-3)-1,-1):
+        for end in range(len(rows)-1,max(count+20,len(rows)-lookback)-1,-1):
             bars = rows[end+1-count:end+1]
             start, last = bars[0],bars[-1]
             known = last.ts+step
-            if not 0<=snapshot.now-known<2*M15:
+            if not 0 <= snapshot.now - known < (retest_age or BOS_FRESH_AGE):
                 continue
             prior = rows[max(0,end+1-count-40):end+1-count]
             window = [*prior,*bars]
@@ -223,6 +225,8 @@ def bos_impulse_zones(snapshot, tick, engine):
                 continue
             level = point['level']
             if any(side*(b.close-level)<-tick/2 for b in rows[end+1:]):
+                continue
+            if retest_age is not None and any(b.ts - a.ts != step for a, b in zip(rows[end:], rows[end + 1:])):
                 continue
             retracement = min(.25*body,side*(last.close-level))
             reference = engine.round_tick(round(last.close-side*retracement+tick/2,10),tick)
@@ -932,7 +936,12 @@ def zones(snapshot, cfg, engine, regime):
         surf = ema9_momentum_surf(m5,snapshot,trend,atr,tick,engine)
         if surf:
             results.append(surf)
-        results.extend(z for z in bos_impulse_zones(snapshot,tick,engine) if z['side']==trend)
+        if trend:
+            from bzu_policy import retest_ttl
+
+            age = retest_ttl(trend, regime, trend=True)
+            results.extend(z for z in bos_impulse_zones(snapshot, tick, engine, retest_age=age)
+                           if z['side'] == trend)
         fast = fast_trend_retest(snapshot,m15,m5,trend,atr,tick,engine)
         if fast:
             results.append(fast)

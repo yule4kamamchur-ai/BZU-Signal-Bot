@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.1-intraday"
-REPORT_RELEASE = 'v14.4.1'
+VERSION = "full-ict-v14.4.2-intraday"
+REPORT_RELEASE = 'v14.4.2'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -807,7 +807,10 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             key = anchor_key(a,cfg)
             level_key = ident(a.side,round(a.level/cfg.tick))
             diagnostics={}
-            if key in state.get("used_events",{}) or state.get("level_cooldown",{}).get(level_key,0)>s.now:
+            rotation = state.get('market_replacement_intent') or {}
+            retry_market = (key == rotation.get('event_key') and s.now < rotation['expires_ts'])
+            used = key in state.get('used_events', {})
+            if (used and not retry_market) or state.get('level_cooldown',{}).get(level_key,0)>s.now:
                 p, reason = None, "LEVEL_OR_EVENT_COOLDOWN"
             elif (oil_risk.enabled(cfg) and scanner.continuation_setup(
                     a.evidence.get('source_strategy'), (a.evidence.get('entry_zone') or {}).get('kind'), a.setup_type)
@@ -821,6 +824,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 if a.setup_type=='CAPITULATION_RECOVERY':
                     a.evidence['recovery_proof']=setup_paths.capitulation_recovery(native,core)
                 p, reason = full_plan(a,native,s,cfg,stats,diagnostics)
+                if p and used and not scanner.market_plan(p):
+                    p, reason = None, 'LEVEL_OR_EVENT_COOLDOWN'
                 if p:
                     lockout = bzu_policy.adverse_reentry_reason(
                         p['side'], state['trades'], s, cfg, sys.modules[__name__], plan=p)
@@ -1970,16 +1975,18 @@ def prepare_pending_limits(state, snapshot, cfg):
         if target is None:
             continue
         # A previously committed interval still belongs to the old expiry.
-        ttl = bzu_policy.PENDING_LIMIT_TTL_MS if bzu_policy.full_position(plan) else 90*60_000
+        ttl = ((plan.get('limit_ttl_ms') or bzu_policy.PENDING_LIMIT_TTL_MS)
+               if bzu_policy.full_position(plan) else 90*60_000)
         deadline = max(plan.get('effective_ts',plan['placed_ts']) + ttl, state.get('last_run_ts', 0))
         if deadline < plan['expires_ts']:
             plan.update(expires_ts=deadline, expiry_reason='LIMIT_TTL')
-        if plan.get('missed_target_r') == bzu_policy.MISSED_TARGET_R or plan.get('cancel_requested_ts'):
+        target_r = bzu_policy.missed_target_multiple(plan, target)
+        if plan.get('missed_target_r') == target_r or plan.get('cancel_requested_ts'):
             continue
         placement_price = plan.get('placement_price')
         if placement_price is not None:
             plan['target_cancel_armed'] = plan['side'] * (placement_price - target) < -1e-8
-        plan['missed_target_r'] = bzu_policy.MISSED_TARGET_R
+        plan['missed_target_r'] = target_r
         replayed_through = plan.get('last_bar', -1) + plan.get('last_execution_step_ms', step)
         effective = plan.get('effective_ts', plan['placed_ts'])
         for bar in snapshot.candles.get(tf, []):
@@ -2113,13 +2120,13 @@ def day_stats(state: dict, now: int, cfg: Config) -> dict:
     return {"net_r": sum(t["net_r"] for t in trades), "losses_r": -losses, "entries": len(entries)}
 
 
-def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
+def request_cancel(state: dict, p: dict, reason: str, now: int, *, confirmed_unfilled=False) -> None:
     step=state.get('execution_step_ms',180_000)
     if p.get("cancel_requested_ts"):
         return
     before_effective = (reason == 'LEGACY_MICRO_RISK' and p.get('action_type') != 'ACTIVE_ENTRY'
                         and p.get('effective_ts', 0) >= now)
-    if now % step == 0 or before_effective:
+    if now % step == 0 or before_effective or confirmed_unfilled:
         if 'pending_orders' in state:
             waiting=[other for other in pending_plans(state) if other['id']!=p['id']]
             book={**state,'pending':p,'active':None,'reconciliation':None}
@@ -2134,6 +2141,26 @@ def request_cancel(state: dict, p: dict, reason: str, now: int) -> None:
         if 'effective_ts' in p:
             p['cancel_effective_ts'] = ((now+step-1)//step)*step
         emit(state, "CANCEL_REQUESTED", now, order_id=p["id"], reason=reason)
+
+
+def market_replacement_unfilled(plan, snapshot, cfg):
+    """Require a replayed closed interval and a live minute clear of the limit."""
+    tf, step = execution_series(snapshot)
+    boundary = snapshot.now // step * step
+    if (plan.get('last_bar', -1) < boundary - step or not any(
+            c.confirmed and c.ts + step == boundary for c in snapshot.candles.get(tf, []))):
+        return False
+    if snapshot.now == boundary:
+        return True
+    if tf != '1m':
+        return False
+    current = snapshot.metadata.get('current_candle_1m') or {}
+    side = plan['side']
+    extreme = current.get('low' if side == 1 else 'high')
+    quote = snapshot.ask if side == 1 else snapshot.bid
+    return (current.get('ts') == boundary and extreme is not None
+            and side * (extreme - plan['entry']) >= cfg.tick - 1e-8
+            and side * (quote - plan['entry']) >= cfg.tick - 1e-8)
 
 
 def migrate_organic_pending(state, snapshot, cfg):
@@ -2623,11 +2650,49 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             pending = pending_plans(state)
             valid = [front_run]
             arbitration_audit = front_decision
+    market_rotation = state.get('market_replacement_intent') or {}
+    if market_rotation and (active or s.now >= market_rotation['expires_ts']):
+        state.pop('market_replacement_intent', None)
+        market_rotation = {}
+    if (single_limit and can_place and not front_decision and not active and not unresolved
+            and len(pending) == 1 and not pending[0].get('cancel_requested_ts')
+            and 0 <= s.now - s.ticker_ts <= 20_000):
+        incumbent = pending[0]
+        markets = [p for p in valid if scanner.market_plan(p) and p.get('action_type') == 'ACTIVE_ENTRY'
+                   and p['expires_ts'] > s.now and not {p['event_key'], *p.get('parent_keys', [])}.intersection(state['used_events'])
+                   and (p['side'] == incumbent['side'] or arbitration.directional_lock(
+                       pending, active, p['side'], s, cfg, sys.modules[__name__]).get('cancel_old_first'))]
+        _, ranked_markets, _ = policy.choose(markets, s.price, cfg.tick, cfg.conflict_margin)
+        if ranked_markets:
+            challenger = ranked_markets[0]
+            unfilled = market_replacement_unfilled(incumbent, s, cfg)
+            # At a closed boundary, request_cancel would immediately vacate the slot.
+            if unfilled or s.now % execution_step:
+                market_rotation = {'event_key': challenger['event_key'], 'replaced_id': incumbent['id'],
+                                   'expires_ts': min(challenger['expires_ts'], s.now + TF['15m'])}
+                state['market_replacement_intent'] = market_rotation
+                request_cancel(state, incumbent, 'CANCELLED_REPLACED_BY_LIVE_SETUP', s.now,
+                               confirmed_unfilled=unfilled)
+                pending = pending_plans(state)
+                valid = [challenger]
+                arbitration_audit = {'decision': 'MARKET_REPLACES_LIMIT', 'candidate_id': challenger['id'],
+                                     'replaced_id': incumbent['id']}
+                action = 'CANCEL_LIMIT'
+    replaced = None
+    if market_rotation and not pending and not active:
+        replaced = next((o for o in reversed(state['orders']) if o['id'] == market_rotation['replaced_id']
+                         and o.get('status') == 'CANCELLED'
+                         and o.get('reason') == 'CANCELLED_REPLACED_BY_LIVE_SETUP'), None)
+        if replaced:
+            confirmed_market = [p for p in valid if p['event_key'] == market_rotation['event_key']
+                                and scanner.market_plan(p) and p.get('action_type') == 'ACTIVE_ENTRY']
+            if confirmed_market:
+                valid = confirmed_market
     resting = any(resting_organic_limit(plan, cfg) for plan in pending)
     rotation=state.get('portfolio_rotation_intent')
     if rotation and (resting or s.now>rotation.get('expires_ts',0) or active):
         state.pop('portfolio_rotation_intent',None)
-    if resting and not front_decision:
+    if resting and not front_decision and not market_rotation:
         arbitration_audit={'decision':'KEEP','reason':'RESTING_LIMIT_LIFECYCLE'}
     if pending and not resting and not active and not manual_block and not analysis['health'] and can_place \
             and not any(p.get('cancel_requested_ts') for p in pending):
@@ -2673,6 +2738,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 action='CANCEL_LIMIT'
                 arbitration_audit['decision']='WAIT_CANCEL_RECONCILIATION'
     analysis['portfolio_arbitration']=arbitration_audit
+    # An exchange-tracked predecessor keeps the slot until its order and any
+    # residual exposure are reconciled. The next cycle must obtain a fresh setup.
+    exchange_order = (state.get('okx_execution') or {}).get('order')
+    if not pending and not active and exchange_order:
+        can_place = False
+        watch_allowed = False
+        if market_rotation or exchange_order.get('status') == 'CANCELLATION_REQUESTED':
+            action = 'CANCEL_LIMIT'
     active_sides={p['side'] for p in active}
     pending_sides={p['side'] for p in pending if not p.get('cancel_requested_ts')}
     selected_side=0
@@ -2779,7 +2852,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             keys={top['event_key'],*top.get('parent_keys',[])}
             live_keys={key for p in busy for key in (p['event_key'],*p.get('parent_keys',[]))}
             tolerance=max(3*cfg.tick,.15*atr(s.candles.get('3m',[])))
-            if keys.intersection(state['used_events']) or keys.intersection(live_keys):
+            replacing = bool(replaced and top['event_key'] == market_rotation['event_key']
+                             and scanner.market_plan(top))
+            used_keys = keys.intersection(state['used_events'])
+            if replacing:
+                old_keys = {replaced['event_key'], *replaced.get('parent_keys', [])}
+                used_keys.difference_update(k for k in old_keys if state['used_events'].get(k) == replaced['resolved_ts'])
+            if used_keys or keys.intersection(live_keys):
                 continue
             if any(p['side']!=top['side'] for p in busy):
                 break
@@ -2795,6 +2874,12 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     policy.ranking(existing[0],s.price,cfg.tick)[0]-cfg.conflict_margin:
                 continue
             plan=copy.deepcopy(top)
+            if replacing:
+                plan['replaces_order_id'] = replaced['id']
+                if top['event_key'] == replaced['event_key']:
+                    plan['event_key'] = ident('MARKET_REPLACES_LIMIT', replaced['id'], top['event_key'])
+                    plan['parent_keys'] = list(dict.fromkeys([top['event_key'], *top.get('parent_keys', [])]))
+                state.pop('market_replacement_intent', None)
             plan['execution'] = 'PAPER_SIGNAL'
             plan.setdefault('queue_execution_policy','PASSIVE_ARM_V2')
             if plan.get('outcome_forecast'):
@@ -2808,7 +2893,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             target = bzu_policy.missed_target_level(plan)
             if target is not None:
                 plan.update(target_cancel_armed=plan['side']*(s.price-target) < -1e-8,
-                            missed_target_r=bzu_policy.MISSED_TARGET_R)
+                            missed_target_r=bzu_policy.missed_target_multiple(plan, target))
             else:
                 plan.setdefault('target_cancel_armed',plan['side']*(s.price-plan['tp'])<0)
             park_pending(state,pending_plans(state)+[plan])
@@ -4042,7 +4127,7 @@ def main(core) -> int:
                     'test_market_rr_uses_unchanged_targets',
                 }
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain','test_v144_full_execution'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain','test_v141_realtime','test_v144_full_execution'))
                 retained = [case for module in (*historical,*current) for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 organic = runner.run(unittest.TestSuite(retained))

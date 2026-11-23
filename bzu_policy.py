@@ -40,6 +40,14 @@ PENDING_LIMIT_TTL_MS = execution_rules.RETEST_TTL_MS
 MISSED_TARGET_R = .75
 
 
+def retest_ttl(side, regime, *, trend):
+    if not trend:
+        return PENDING_LIMIT_TTL_MS
+    if regime.get('side_1h') == regime.get('side_4h') == side:
+        return execution_rules.ALIGNED_RETEST_TTL_MS
+    return execution_rules.TREND_RETEST_TTL_MS
+
+
 def is_new(plan):
     return plan.get('policy') in (POLICY,MOMENTUM_POLICY,MASTER_POLICY,PRECISION_POLICY,LEGACY_POLICY)
 
@@ -56,8 +64,16 @@ def missed_target_level(plan):
     distance = MISSED_TARGET_R * risk
     target = partial_target(plan)
     if target is not None and side * (target - entry) > 0:
+        if plan.get('limit_ttl_ms', 0) > PENDING_LIMIT_TTL_MS and full_position(plan):
+            return target
         distance = min(distance, side * (target - entry))
     return round(entry + side * distance, 10)
+
+
+def missed_target_multiple(plan, target):
+    if plan.get('limit_ttl_ms', 0) > PENDING_LIMIT_TTL_MS and full_position(plan):
+        return abs(target - plan['entry']) / plan['risk']
+    return MISSED_TARGET_R
 
 
 def round_target(entry, target, side, tick):
@@ -454,7 +470,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
     if approach.get('blocked') and not sniper_reversal and not (oil and session['post_sweep_only']):
         diag['status']='WATCHING'
-        return None, 'CONFIRMATION_REQUIRED' if oil else 'TREND_M5_SPIKE' if trend else 'IMPULSE_CONFIRMATION_REQUIRED'
+        if oil:
+            return None, 'WAIT_PULLBACK_REJECTION' if zone['kind'] == 'FVG_PULLBACK' else 'CONFIRMATION_REQUIRED'
+        return None, 'TREND_M5_SPIKE' if trend else 'IMPULSE_CONFIRMATION_REQUIRED'
     # Intrabar High/Low, including an unfinished current minute, can invalidate
     # a stop. Open bars never establish a positive setup confirmation or fill.
     minute = scanner.audit_rows(snapshot, after=zone['known_ts'])
@@ -551,8 +569,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 market_trigger = None
                 distance = abs(snapshot.price-entry)
         error = execution_rules.setup_confirmation(anchor.setup_type,zone,snapshot,side,cfg.tick,engine,
-                                                   bool(market_trigger))
-        if error and (market_trigger or not retest_route):
+                                                   bool(market_trigger), approach=approach)
+        if error and (market_trigger or not retest_route or zone['kind'] == 'FVG_PULLBACK'):
             return None, error
     decay = engine.quality.consolidation_decay(zone, snapshot, side, cfg.tick, engine)
     diag['zone_decay'] = decay
@@ -697,8 +715,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     # Remaining models are evidence only. Their individual return values do
     # not veto the setup. All 24 named ICT confirmations are still validated.
     effective = snapshot.now if action == 'ACTIVE_ENTRY' else ((snapshot.now+MINUTE-1)//MINUTE)*MINUTE
+    limit_ttl = retest_ttl(side, regime, trend=bool(oil and trend))
     horizon = anchor.expires_ts if trend or multibar else effective + cfg.ttl_minutes * 60_000
-    expires = min(horizon, effective+PENDING_LIMIT_TTL_MS) if action != 'ACTIVE_ENTRY' else horizon
+    expires = min(horizon, effective+limit_ttl) if action != 'ACTIVE_ENTRY' else horizon
     if expires <= effective:
         return None, 'SESSION_CLOSED'
     event = engine.anchor_key(anchor,cfg)
@@ -756,6 +775,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'include_commission':cfg.include_commission,
          'entry_fee_rate':geometry['entry_fee'], 'exit_fee_rate':geometry['exit_fee'], 'slippage_bps':cfg.slippage_bps,
          'placed_ts':snapshot.now, 'effective_ts':effective, 'expires_ts':expires,
+         'limit_ttl_ms':limit_ttl if oil and action != 'ACTIVE_ENTRY' else 0,
          'expiry_reason':'LIMIT_TTL',
          'max_hold_minutes':cfg.max_hold_minutes, 'intraday':True,
          'time_exit_enabled':False,

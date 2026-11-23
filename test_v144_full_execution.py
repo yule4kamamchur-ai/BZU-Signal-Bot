@@ -229,6 +229,37 @@ class FakeOKX:
 
 
 class ExchangeTest(unittest.TestCase):
+    def test_market_waits_for_exchange_cancel_and_fresh_selection(self):
+        old = FullPositionTest().position()
+        old.update(order_type='LIMIT', event_key='old')
+        new = FullPositionTest().position()
+        new.update(event_key='fresh')
+        cfg = engine.Config(tick=.01)
+        state = engine.new_state(cfg)
+        snap = engine.Snapshot(NOW,100.,{},99.99,100.01,True,NOW,'BZ-USDT-SWAP')
+        api = FakeOKX()
+        api.parent = {'state':'live', 'accFillSz':'0'}
+        book = {'order':{'plan':old, 'client_id':'old', 'algo_client_id':'p',
+                         'fallback_algo_id':'f', 'margin':'cross'}}
+        persisted = []
+        persist = lambda: persisted.append(book['order']['status'])
+        request = {'selected_plans':[new], 'events':[{'kind':'CANCELLED','order_id':old['id']}]}
+        okx.synchronize(api,state,book,request,snap,cfg,engine,persist)
+        self.assertEqual(book['order']['status'], 'CANCELLATION_REQUESTED')
+        self.assertEqual(persisted, ['CANCELLATION_REQUESTED'])
+        self.assertEqual([call[0] for call in api.posts], ['/api/v5/trade/cancel-order'])
+        api.parent = {'state':'canceled', 'accFillSz':'0'}
+        okx.synchronize(api,state,book,request,snap,cfg,engine,persist)
+        self.assertNotIn('order', book)
+        self.assertEqual(len(api.posts), 1)
+        api.parent = None
+        with patch.dict('os.environ',{'OKX_RISK_USDT':'','OKX_ORDER_NOTIONAL_USDT':'500'}):
+            later = replace(snap, now=NOW+3000, ticker_ts=NOW+3000)
+            okx.synchronize(api,state,book,{'selected_plans':[new]},later,cfg,engine,persist)
+        self.assertEqual(api.posts[-1][0], '/api/v5/trade/order')
+        self.assertEqual(api.posts[-1][1]['ordType'], 'market')
+        self.assertIn('attachAlgoOrds', api.posts[-1][1])
+
     def test_order_contains_full_bracket_and_repeated_scan_does_not_duplicate(self):
         plan=FullPositionTest().position()
         plan.update(event_key='stable',expires_ts=NOW+M15)

@@ -237,10 +237,12 @@ def synchronize(api, state, book, result, snap, cfg, engine, persist):
     if tracked is not None:
         parent = _lookup(api, inst, tracked['client_id'])
         live = _positions(api,inst)
+        rotation = state.get('market_replacement_intent') or {}
+        is_predecessor = rotation.get('replaced_id') == tracked['plan']['id']
         if parent is None:
-            if not live and snap.now>=tracked['plan']['expires_ts']:
+            if not is_predecessor and not live and snap.now>=tracked['plan']['expires_ts']:
                 book.pop('order')
-            else:
+            elif tracked.get('status') != 'CANCELLATION_REQUESTED':
                 tracked['status'] = 'ENTRY_RECONCILING'
             return
         if parent['state'] in ('live','partially_filled'):
@@ -249,24 +251,32 @@ def synchronize(api, state, book, result, snap, cfg, engine, persist):
                             if p['id']==plan['id']),None)
             cancellation = any(e.get('order_id')==plan['id'] and e['kind'] in ('CANCELLED','EXPIRED','CANCEL_REQUESTED')
                                for e in result.get('events',[]))
-            if (live or snap.now>=plan['expires_ts'] or cancellation or (waiting and waiting.get('cancel_requested_ts'))
+            if (live or is_predecessor or snap.now>=plan['expires_ts'] or cancellation or (waiting and waiting.get('cancel_requested_ts'))
+                    or tracked.get('status') == 'CANCELLATION_REQUESTED'
                     or (rules.early_ny(snap.now) and not plan.get('opening_sweep_confirmed'))):
+                if tracked.get('status') != 'CANCELLATION_REQUESTED':
+                    tracked['status'] = 'CANCELLATION_REQUESTED'
+                    persist()
                 api.post('/api/v5/trade/cancel-order',{'instId':inst,'clOrdId':tracked['client_id']})
-                tracked['status'] = 'CANCELLATION_REQUESTED'
                 parent = _lookup(api,inst,tracked['client_id']) or parent
                 if parent['state'] in ('live','partially_filled'):
+                    if is_predecessor and (live or parent['state'] == 'partially_filled'):
+                        state.pop('market_replacement_intent', None)
                     return
                 live = _positions(api,inst)
             else:
                 tracked['status'] = 'PENDING'
                 return
+        had_fill = parent['state'] == 'filled' or decimal(parent.get('accFillSz') or '0') > 0
+        if is_predecessor and (live or had_fill):
+            state.pop('market_replacement_intent', None)
         if live:
             if len(live)!=1 or decimal(parent.get('accFillSz') or '0') < abs(decimal(live[0]['pos'])):
                 raise ExecutionError('OKX_UNRELATED_POSITION')
             _guard(api,inst,tracked,live[0],parent,snap,cfg,engine)
             return
         terminal_update = int(parent.get('uTime') or parent.get('fillTime') or 0)
-        if parent['state']=='filled' and terminal_update and snap.now-terminal_update<15_000:
+        if had_fill and terminal_update and snap.now-terminal_update<15_000:
             tracked['status']='FILLED_POSITION_RECONCILING'
             return
         own_algos=[row for row in _algos(api,inst) if row.get('algoClOrdId') in
