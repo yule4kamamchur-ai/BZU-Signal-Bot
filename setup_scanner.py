@@ -87,7 +87,9 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
         return gate
     if oil_risk.is_organic(row):
         rr1, rr2 = side * (tp1 - entry) / risk, side * (tp2 - entry) / risk
-        valid_targets = (1.60-1e-8 <= rr1 <= 1.88+1e-8 and abs(rr1-rr2) <= 1e-8
+        from bzu_execution_rules import full_target_ratios_valid
+
+        valid_targets = (full_target_ratios_valid(rr1,rr2)
                          if row.get('exit_policy') == 'FULL_POSITION_V144' else oil_risk.target_range_valid(rr1,rr2))
         if not valid_targets:
             return 'ORGANIC_TARGET_RANGE'
@@ -638,15 +640,17 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
             floor, cap = (profile['floor'], profile['cap']) if profile else zone_risk_bounds(a, cfg)
             boundary = profile['boundary'] if profile else geometry.get('invalidation', distal)
             buffer = profile['buffer'] if profile else max(tick, .25 * a)
-            safe = (floor - 1e-8 <= risk <= cap + 1e-8 and valid(boundary) and
-                    min(side * (distal - stop), side * (boundary - stop)) >= buffer - 1e-8 and
+            behind_structure = (valid(boundary) and
+                                 min(side*(distal-stop),side*(boundary-stop)) >= buffer-1e-8)
+            capped = bool(profile and profile.get('structural_clipped') and engine.bzu_policy.full_position(geometry))
+            safe = (floor-1e-8 <= risk <= cap+1e-8 and (behind_structure or capped) and
                     (not profile or profile['gate'] is None))
             frozen = True
     if risk <= 0 or stop <= 0:
         return None
     full_exit = bool(oil and (not frozen or engine.bzu_policy.full_position(geometry)))
     if full_exit:
-        from bzu_execution_rules import available_pools, full_target
+        from bzu_execution_rules import available_pools, full_target, full_target_ratios_valid
         levels = available_pools(snapshot,engine.scenario_planner.structure_levels(snapshot,engine),tick)
         target, source, _ = full_target(levels,entry,risk,side,a,tick,engine)
         destination = {'tp1':target,'tp2':target,'tp1_source':source,'tp2_source':source,
@@ -686,7 +690,7 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
                   or (zone.get('wave_proof') and zone['kind'] in wave.CONTINUATIONS) or any(side*(c.close-c.open)>=.6*a and
                   side*(c.close-(high if side==1 else low))>0 for c in departure))
     barrier = destination['barrier_price']
-    target_range = (1.60-1e-8 <= rr1 <= 1.88+1e-8) if full_exit else oil_risk.target_range_valid(rr1,rr2) if oil else (
+    target_range = full_target_ratios_valid(rr1,rr2) if full_exit else oil_risk.target_range_valid(rr1,rr2) if oil else (
                     rr1 >= 1.4 - 1e-8 and rr2 >= 2.2 - 1e-8)
     room = target_range and (destination['path_clear'] if projected_runner else
                              barrier is None or side * (tp2 - barrier) <= 1e-8)

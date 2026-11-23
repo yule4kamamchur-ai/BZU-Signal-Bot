@@ -205,7 +205,8 @@ def _guard(api, inst, tracked, position, parent, snap, cfg, engine):
         _close(api,inst,tracked,snap,size,'INVALID_EXCHANGE_FILL_GEOMETRY')
         return
     active = {**plan, **tracked.get('monitor',{}), 'entry':fill,'stop':stop,
-              'risk':risk,'filled_ts':filled_ts}
+              'risk':risk,'filled_ts':filled_ts,'breakeven_armed':False,
+              'exit_deadline':filled_ts+plan.get('max_hold_minutes',cfg.max_hold_minutes)*60_000}
     for bar in snap.candles.get('1m',[]):
         if bar.confirmed and filled_ts <= bar.ts and bar.ts+60_000 <= snap.ticker_ts:
             peak, adverse = (bar.high,bar.low) if plan['side']==1 else (bar.low,bar.high)
@@ -214,10 +215,10 @@ def _guard(api, inst, tracked, position, parent, snap, cfg, engine):
     position_monitor.observe_structure(active,snap,snap.ticker_ts,cfg,engine)
     tracked['monitor'] = {k:active[k] for k in active if k.startswith((
         'max_favorable','max_adverse','protection_structure','adverse_close_pair'))}
-    guard = position_monitor.evaluate_active_trade_lifecycle(active,snap.ticker_ts,quote,cfg,engine)
+    guard = position_monitor.evaluate_active_trade_lifecycle(active,snap.ticker_ts,quote,cfg,engine,snapshot=snap)
     mfe = position_monitor.mfe_protection(active,snap.ticker_ts,quote,cfg,engine)
-    if guard['should_exit'] or (mfe and mfe['exit_now']) or snap.now >= filled_ts+cfg.max_hold_minutes*60_000:
-        reason = guard['exit_reason'] or ('MFE_PROTECTIVE_EXIT' if mfe and mfe['exit_now'] else 'INTRADAY_TIME_EXIT')
+    if guard['should_exit'] or (mfe and mfe['exit_now']):
+        reason = guard['exit_reason'] or 'MFE_PROTECTIVE_EXIT'
         _close(api,inst,tracked,snap,size,reason)
         return
     choices = [price for price in (guard['stop'],(mfe or {}).get('price')) if price is not None

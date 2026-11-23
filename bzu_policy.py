@@ -758,7 +758,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'placed_ts':snapshot.now, 'effective_ts':effective, 'expires_ts':expires,
          'expiry_reason':'LIMIT_TTL',
          'max_hold_minutes':cfg.max_hold_minutes, 'intraday':True,
-         'time_exit_enabled':bool(oil),
+         'time_exit_enabled':False,
          'placement_price':snapshot.price, 'target_cancel_armed':side*(snapshot.price-tp1)<0,
          'action_type':action, 'execution_source':action, 'entry_stage':'CORE',
          'preposition_window':'.08..2.20' if trend else '.10..min(.65,1.2*ATR15)', 'preposition_distance':distance,
@@ -867,15 +867,20 @@ def protective_amendment(position):
                  and abs(price - proof.get('price', 0)) < 1e-8
                  and position['side'] * (price - position['entry']) >= .05 * position['risk'] - 1e-8)
         return amendment if valid else None
-    if amendment.get('policy') == 'MFE_PROTECTION':
-        proof = position.get('mfe_protection') or {}
-        if (amendment.get('price') == proof.get('price')
-                and amendment.get('effective_ts') == proof.get('effective_ts')
-                and isinstance(proof.get('price'), (int, float)) and math.isfinite(proof['price'])
-                and 0 < proof['price'] and isinstance(proof.get('effective_ts'), int)
-                and (position.get('filled_ts') or 0) < proof['effective_ts']
-                and position['side'] * (proof['price'] - position['entry']) > 0):
-            return amendment
+    if amendment.get('policy') in ('MFE_PROTECTION','TIME_DECAY_TRAIL'):
+        timer = amendment['policy']=='TIME_DECAY_TRAIL'
+        proof = position.get('time_decay_protection' if timer else 'mfe_protection') or {}
+        price, effective = proof.get('price'), proof.get('effective_ts')
+        if (amendment.get('price') == price and amendment.get('effective_ts') == effective
+                and isinstance(price,(int,float)) and math.isfinite(price) and price>0
+                and isinstance(effective,int) and (position.get('filled_ts') or 0)<effective):
+            side = position['side']
+            if timer or proof.get('lock_r') == -.35:
+                initial = position.get('initial_stop',position['entry']-side*position['risk'])
+                if full_position(position) and side*(price-initial)>0:
+                    return amendment
+            elif side*(price-position['entry'])>0:
+                return amendment
         return None
     partial_ts = partial_tp1_time(position)
     if amendment.get('policy') == SCALE_STOP_POLICY and position.get('scale_policy') == SCALE_POLICY:
@@ -1004,10 +1009,11 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
     first_target = partial_target(p)
     target_hit = c.high >= first_target if side==1 else c.low <= first_target
     if stop_hit:
-        from position_monitor import is_bounce_stop, is_mfe_stop, is_stale_stop
+        from position_monitor import is_bounce_stop, is_mfe_stop, is_stale_stop, is_time_decay_stop
 
         raw = c.open if side*(c.open-p['stop'])<=0 else p['stop']
         reason = ('MFE_PROTECTIVE_EXIT' if is_mfe_stop(p) else
+                  'TIME_DECAY_STOP' if is_time_decay_stop(p) else
                   'CLOSED_STALE_TIME_STOP' if is_stale_stop(p) else
                   'CLOSED_BOUNCE_BREAKEVEN' if is_bounce_stop(p) else 'STOP_GAP' if raw==c.open else 'STOP')
         close(state,p,raw*(1-side*cfg.slippage_bps/10_000),ts,reason,cfg,engine,
@@ -1042,7 +1048,7 @@ def manage(state, c, cfg, engine, step, fill_bar=False, snapshot=None):
         return
     if not (fill_bar or added) and engine.observe_position_mfe(state, p, c, ts, cfg):
         return
-    if (p.get('time_exit_enabled') and ts >= p['exit_deadline']
+    if (not full_position(p) and p.get('time_exit_enabled') and ts >= p['exit_deadline']
             and not (oil_risk.enabled(cfg) and (p.get('partial_tp1_hit') or p.get('scale_policy')==SCALE_POLICY))):
         close(state,p,c.close*(1-side*cfg.slippage_bps/10_000),ts,'INTRADAY_TIME_EXIT',cfg,engine)
         return

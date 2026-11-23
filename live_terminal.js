@@ -147,7 +147,8 @@ function organicPlan(row) {
 }
 function targetRatiosValid(row, rr1, rr2) {
   if (row.exit_policy==='FULL_POSITION_V144')
-    return rr1>=1.60-1e-8 && rr1<=1.88+1e-8 && Math.abs(rr1-rr2)<=1e-8;
+    return rr1>=(state.brain_config?.full_target_min_r??1.35)-1e-8 &&
+      rr1<=(state.brain_config?.full_target_max_r??1.88)+1e-8 && Math.abs(rr1-rr2)<=1e-8;
   return organicPlan(row) ?
     rr1 >= (state.candidate_rules?.min_rr ?? 1.40) - 1e-8 &&
     rr1 <= (state.candidate_rules?.max_rr1 ?? 1.45) + 1e-8 && rr2 >= 1.8 - 1e-8 && rr2 <= 2.25 + 1e-8 :
@@ -453,7 +454,7 @@ function m5QuotePlan(row, price) {
   const cap = organicPlan(row) ? row.organic_risk.cap ?? Math.max(2.10, Math.round(price*2.2)/100) : row.risk_cap ?? .65;
   const near = trendMarket ? Math.abs(price-marketReference(row.market_trigger)) <= row.market_trigger.max_distance+1e-8 :
     strictPullback ? pullbackQuoteAllowed(row, price) : move >= 0 && move <= maxChase;
-  const minTrendR = trendMarket ? 1.40 : 0;
+  const minTrendR = trendMarket ? (fullPosition(row)?state.brain_config?.full_target_min_r??1.35:1.40) : 0;
   if (rr < minTrendR - 1e-8 || !near || risk < floor - 1e-8 || risk > cap + 1e-8 ||
       !targetRatiosValid(row, rr, rr2) ||
       (organicPlan(row) ? rr <= (price + tp1) * (settings.taker_fee ?? 0) / risk :
@@ -506,7 +507,8 @@ async function pollM5() {
 const brainMinute = 60_000;
 const brainQuarter = 15 * brainMinute;
 const brainMfeSteps = [[1.25,.35]];
-const fullExitMfeSteps = [[.85,.08],[1.25,.55],[1.65,1.10]];
+const fullExitMfeSteps = [[.60,-.35],[.85,.08],[1.25,.55],[1.65,1.10]];
+const defaultTimeDecay={wait_ms:6*60*60_000,step_ms:2*60*60_000,start_r:-.35,increment_r:.25};
 const fullPosition = order => order.exit_policy==='FULL_POSITION_V144';
 const serverEntryPolicy = () => state?.brain_config?.entry_policy==='SERVER_FULL_POSITION';
 const openingNY = ts => ts%86_400_000>=13*3_600_000 && ts%86_400_000<(13*60+105)*60_000;
@@ -552,8 +554,8 @@ function brainPivots(rows, strength, step) {
   const points=[];
   for (let i=strength;i<rows.length-strength;i++) {
     const bar=rows[i], others=[...rows.slice(i-strength,i),...rows.slice(i+1,i+strength+1)];
-    if (others.every(b=>bar.high>b.high)) points.push({side:-1,price:bar.high,known_ts:rows[i+strength].ts+step});
-    if (others.every(b=>bar.low<b.low)) points.push({side:1,price:bar.low,known_ts:rows[i+strength].ts+step});
+    if (others.every(b=>bar.high>b.high)) points.push({side:-1,price:bar.high,ts:bar.ts,known_ts:rows[i+strength].ts+step});
+    if (others.every(b=>bar.low<b.low)) points.push({side:1,price:bar.low,ts:bar.ts,known_ts:rows[i+strength].ts+step});
   }
   return points;
 }
@@ -971,28 +973,62 @@ function brainFrontRun(order,market,matrix) {
     known_ts:last.ts+step,replaces_order_id:order.id,activation_ready:true};
 }
 
-function brainProtectMfe(order,market,price) {
-  const side=order.side, config=state.brain_config, tick=state.tick??.01;
-  if (order.risk<=0 || market.ts<=(order.filled_ts??market.ts)) return false;
-  const peak=Math.max(order.max_favorable_r??0, side*(price-order.entry)/order.risk);
-  order.max_favorable_r=peak;
-  const tiers=fullPosition(order)?(config.mfe_lock_steps??fullExitMfeSteps):brainMfeSteps;
-  const step=tiers.findLast(([trigger])=>peak>=trigger-1e-8);
-  if (!step) return false;
+function protectionTick(price,side,tick) {
+  const raw=price/tick;
+  return Math.round((side===1?Math.ceil(raw-1e-8):Math.floor(raw+1e-8))*tick*1e8)/1e8;
+}
+
+function brainCostStop(order) {
+  const {side}=order, config=state.brain_config, tick=state.tick??.01;
   const entryFee=order.entry_fee_rate??(order.order_type==='MARKET'?config.taker_fee:config.maker_fee)??0;
   const exitFee=order.exit_fee_rate??config.taker_fee??0;
   const slippage=(order.slippage_bps??config.slippage_bps??2)/10_000;
-  const costStop=order.entry*(1+side*entryFee)/(1-side*exitFee)/(1-side*slippage);
-  const desired=order.entry+side*step[1]*order.risk;
-  const raw=(side===1?Math.max(costStop,desired):Math.min(costStop,desired))/tick;
-  const stop=(side===1?Math.ceil(raw-1e-8):Math.floor(raw+1e-8))*tick;
-  if (side*(stop-order.stop)<=1e-8 ||
-      number(order.pending_stop) && side*(stop-order.pending_stop)<=1e-8) return false;
-  order.mfe_protection={policy:'MFE_PROTECTION',peak_r:peak,price:stop,effective_ts:market.ts};
+  return protectionTick(order.entry*(1+side*entryFee)/(1-side*exitFee)/(1-side*slippage),side,tick);
+}
+
+function brainSetProtection(order,market,stop,message) {
+  order.stop=stop;
+  order.pending_stop=null;
+  const breakeven=order.side*(stop-brainCostStop(order))>=-1e-8;
+  if (breakeven) Object.assign(order,{breakeven_armed:true,be_stop:stop,be_confirmed_ts:market.ts});
+  brainEvent(order,breakeven?'BREAKEVEN_ARMED':'PAPER_STOP_AMENDED',market.ts,message+' · SL '+format(stop));
+}
+
+function brainProtectMfe(order,market,price) {
+  const {side}=order, config=state.brain_config, tick=state.tick??.01;
+  if (order.risk<=0 || market.ts<=(order.filled_ts??market.ts)) return false;
+  const peak=Math.max(order.max_favorable_r??0, side*(price-order.entry)/order.risk);
+  order.max_favorable_r=peak;
+  const tiers=fullPosition(order)?(config.time_decay?config.mfe_lock_steps??fullExitMfeSteps:fullExitMfeSteps):brainMfeSteps;
+  const step=tiers.findLast(([trigger])=>peak>=trigger-1e-8);
+  if (!step) return false;
+  const lock=step[1], desired=order.entry+side*lock*order.risk;
+  const cost=lock>=0?brainCostStop(order):desired;
+  const stop=protectionTick(side===1?Math.max(cost,desired):Math.min(cost,desired),side,tick);
+  if (stop<=0 || side*(stop-order.stop)<=1e-8 ||
+      (number(order.pending_stop) && side*(stop-order.pending_stop)<=1e-8) ||
+      (lock<0 && side*(price-stop)<tick-1e-8)) return false;
+  order.mfe_protection={policy:'MFE_PROTECTION',peak_r:peak,lock_r:lock,price:stop,effective_ts:market.ts};
   if (side*(price-stop)<=1e-8) return true;
-  Object.assign(order,{stop,be_stop:stop,be_confirmed_ts:market.ts,pending_stop:null});
-  brainEvent(order,'BREAKEVEN_ARMED',market.ts,'Захист після сприятливого руху · SL '+format(stop));
+  brainSetProtection(order,market,stop,'Захист після сприятливого руху');
   return false;
+}
+
+function brainTimeDecay(order,market,price) {
+  if (!fullPosition(order) || !number(order.filled_ts) || order.risk<=0 || order.breakeven_armed) return;
+  const {side}=order, tick=state.tick??.01, config=state.brain_config.time_decay??defaultTimeDecay;
+  const deadline=order.exit_deadline??order.filled_ts+config.wait_ms;
+  if (market.ts<deadline || side*(order.stop-brainCostStop(order))>=-1e-8) return;
+  const lock=config.start_r+config.increment_r*Math.floor((market.ts-deadline)/config.step_ms);
+  const levels=[protectionTick(order.entry+side*lock*order.risk,side,tick)];
+  const bars=(brain.series['15m']??[]).filter(bar=>bar.ts+brainQuarter<=market.ts).slice(-96);
+  const swing=brainPivots(bars,2,brainQuarter).findLast(p=>p.side===side && p.ts>=order.filled_ts);
+  if (swing) levels.push(protectionTick(swing.price-side*tick,-side,tick));
+  const next=levels.filter(stop=>stop>0 && side*(stop-order.stop)>1e-8 && side*(price-stop)>=tick-1e-8 &&
+    (!number(order.pending_stop) || side*(stop-order.pending_stop)>1e-8)).sort((a,b)=>side*(b-a))[0];
+  if (next===undefined) return;
+  order.time_decay_protection={policy:'TIME_DECAY_TRAIL',price:next,effective_ts:market.ts};
+  brainSetProtection(order,market,next,'Часовий супровід позиції');
 }
 
 function brainProtectLiquidity(order,market,price) {
@@ -1138,6 +1174,7 @@ function advanceBrain(market, matrix, rows) {
     if (!fullPosition(order)) brainProtectLiquidity(order,market,usedQuote);
     if (side*(usedQuote-order.stop)<=1e-8) {
       const reason=order.mfe_protection?.price===order.stop?'MFE_PROTECTIVE_EXIT':
+        order.time_decay_protection?.price===order.stop?'TIME_DECAY_STOP':
         order.liquidity_protection?'LIQUIDITY_REJECTION_EXIT':'STOP';
       remove('SL','Захисний стоп · '+signed(realized)+'R',reason,realized);
       return;
@@ -1167,11 +1204,14 @@ function advanceBrain(market, matrix, rows) {
       remove('TP2','Вихід залишку на TP2','TAKE_PROFIT',total);
     } else if (brainProtectMfe(order,market,usedQuote)) {
       remove('SL','Вихід за захистом пройденого руху · '+signed(realized)+'R','MFE_PROTECTIVE_EXIT',realized);
-    } else if (order.time_exit_enabled && number(order.exit_deadline) && market.ts>=order.exit_deadline) {
+    } else if (!fullPosition(order) && order.time_exit_enabled && number(order.exit_deadline) && market.ts>=order.exit_deadline) {
       remove('CLOSED','Кінець часу угоди','INTRADAY_TIME_EXIT',realized);
     } else if (brainAdverseClosePair(order,market,usedQuote)) {
       remove('CLOSED','Підтверджений злам структури M15','CLOSED_ADVERSE_STRUCTURE_SHIFT',realized);
-    } else if (order.local && brain.event) saveBrain();
+    } else {
+      brainTimeDecay(order,market,usedQuote);
+      if (order.local && brain.event) saveBrain();
+    }
     return;
   }
   if (!brain.orders.length && next && !config.uncertain && brainSessionAllowed(market.ts)) {

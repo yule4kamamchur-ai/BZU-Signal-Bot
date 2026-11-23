@@ -7,6 +7,8 @@ import oil_risk
 import setup_scanner as scanner
 
 EPS = 1e-8
+FULL_TARGET_MIN_R = oil_risk.ENTRY_TP1_MIN
+FULL_TARGET_MAX_R = 1.88
 RETEST_TTL_MS = 60 * 60_000
 EARLY_NY = 'NY_POST_SWEEP'
 
@@ -103,17 +105,24 @@ def available_pools(snapshot, levels, tick):
 
 
 
+def full_target_ratios_valid(rr1, rr2):
+    return FULL_TARGET_MIN_R-EPS <= rr1 <= FULL_TARGET_MAX_R+EPS and abs(rr1-rr2) <= EPS
+
+
 def full_target(levels, entry, risk, side, atr, tick, engine):
     """Choose the nearest reachable buffered pool in the full-exit band."""
-    low = engine.round_tick(round(entry+side*1.60*risk,10), tick, up=side == 1)
-    high = engine.round_tick(round(entry+side*1.88*risk,10), tick, up=side == -1)
+    low = engine.round_tick(round(entry+side*FULL_TARGET_MIN_R*risk,10), tick, up=side == 1)
+    high = engine.round_tick(round(entry+side*FULL_TARGET_MAX_R*risk,10), tick, up=side == -1)
     targets = sorted((p['level'] for p in levels if p['side'] == -side
                       and side*(p['level']-entry) > 0), key=lambda price: side*(price-entry))
     for pool in targets:
-        target = engine.round_tick(round(pool-side*.15*atr,10), tick, up=side == -1)
-        if side*(target-low) >= -EPS:
-            return (target, 'BUFFERED_LIQUIDITY_POOL', pool) if side*(high-target) >= -EPS else (
-                high, 'PROJECTION_BEFORE_LIQUIDITY', pool)
+        if side*(pool-low) < tick-EPS:
+            continue
+        target = engine.round_tick(round(pool-side*max(tick,.15*atr),10), tick, up=side == -1)
+        target = max((target,low),key=lambda level:side*level)
+        if side*(high-target) < -EPS:
+            return high, 'PROJECTION_BEFORE_LIQUIDITY', pool
+        return target, 'BUFFERED_LIQUIDITY_POOL', pool
     return low, 'VOLATILITY_PROJECTION', None
 
 

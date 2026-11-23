@@ -15,7 +15,7 @@ from statistics import mean
 from typing import Any
 
 SCHEMA = 'ict_quality_v1'
-STRATEGY = 'bzu-full-position-v14.4'
+STRATEGY = 'bzu-full-position-v14.4.1'
 TF = {'3m':180_000,'15m':900_000,'1H':3_600_000,'4H':14_400_000}
 
 
@@ -403,7 +403,7 @@ PLAN_FIELDS=('institutional_family','scale_policy','organic_confluence','origin_
 def ensure(state: dict, cfg) -> dict:
     q=state.setdefault('quality',{'schema':SCHEMA,'strategy':STRATEGY,'signature':signature(cfg),
                                 'pending':[],'observations':[],'seen':{},'last_run_ts':0})
-    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-m15-displacement-structure-v14','bzu-m15-organic-momentum-v13','bzu-master-rvol-vwap-round-5m-v12','bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
+    if q.get('schema')==SCHEMA and q.get('strategy') in ('bzu-full-position-v14.4','bzu-m15-displacement-structure-v14','bzu-m15-organic-momentum-v13','bzu-master-rvol-vwap-round-5m-v12','bzu-precision-confirmed-single-v11','bzu-checklist-confluence-split-v10','native-mtf-causal-direction-control-v9','confirmed-ict-quality-v1','native-mtf-pretouch-limit-v2','native-mtf-single-scenario-no-commission-v3','native-mtf-causal-episodes-fresh-targets-v4','native-mtf-full-lifecycle-continuous-learning-v5','native-mtf-adaptive-full-exit-open-cap-two-v6','native-mtf-directional-limit-paths-v7','native-mtf-anticipatory-execution-atlas-v8'):
         # Keep all v12.3 evidence, but do not infer win rates for a new entry
         # policy from the old late-confirmation policy.
         state.setdefault('quality_archives',[]).append(copy.deepcopy(q))

@@ -407,5 +407,19 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('brain.orders[0].order_type'),'MARKET');
  assert.equal(run('brain.orders[0].entry'),89.98);
  assert.equal(nodes.get('state-banner').dataset.positionState,'ENTERED');
+ run(`state={...fixtureBackup,brain_config:{schema:1,slippage_bps:0}};
+   globalThis.decayFixture={...orderFixture,id:'decay',side:1,order_type:'MARKET',status:'OPEN',
+     entry:100,risk:1,stop:99,tp:101.50,tp1:101.50,tp2:101.50,exit_policy:'FULL_POSITION_V144',
+     filled_ts:Date.now()-6*3600000,exit_deadline:Date.now(),time_exit_enabled:true};`);
+ assert.equal(run(`brainProtectMfe(decayFixture,{ts:Date.now()-30_000},100.60)`),false);
+ assert.equal(run('decayFixture.stop'),99.65);
+ assert.equal(run('Boolean(decayFixture.breakeven_armed)'),false);
+ run(`decayFixture.stop=99;decayFixture.max_favorable_r=0;
+  Object.assign(brain,{lastTs:0,orders:[decayFixture],sourceTs:state.snapshot_ts,series:{},event:null});
+  advanceBrain({ts:Date.now(),price:99.90,bid:99.90,ask:99.92},null,[]);`);
+ assert.equal(run('brain.orders[0].stop'),99.65);
+ assert.equal(run('brain.orders[0].status'),'OPEN');
+ assert.equal(run(`validCandidate({...fixtureBackup.candidates[0],exit_policy:'FULL_POSITION_V144',
+   tp1:100.22,tp2:100.22})`),true);
  console.log('PASS: FLAT radar, PAPER execution and storage, position rays, live telemetry, ticker and ledger.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

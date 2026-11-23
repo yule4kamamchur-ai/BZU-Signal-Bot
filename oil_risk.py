@@ -80,6 +80,13 @@ def ny_volatility(ts):
 
 
 
+def volatility_bounds(atr1h, adr, multiplier):
+    floor = round(max(.50, 1.15 * (atr1h or 0.)), 10)
+    cap = round(multiplier * max(1.8 * (atr1h or 0.), .45 * (adr or 0.)), 10)
+    return floor, max(floor, cap)
+
+
+
 def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
                                      *, as_of=None, active_session=False):
     """ATR uses 14 true ranges; ADR averages up to 14 complete observed days."""
@@ -96,15 +103,15 @@ def compute_organic_oil_risk_profile(price, candles_15m, candles_1h, candles_4h,
     days = list(daily_ranges(m15, h1, h4).values())[-14:]
     adr = mean(high - low for high, low, _ in days) if days else None
     multiplier = NY_STOP_MULTIPLIER if ny_volatility(as_of) else 1.
-    volatility_distance = multiplier * max(1.5 * (atr1h or 0), .42 * (adr or 0))
+    floor, cap = volatility_bounds(atr1h, adr, multiplier)
     h4_ranges = contiguous_ranges([(c.ts, (c.high, c.low, c.close)) for c in h4], H4)
     atr4h = mean(h4_ranges[-14:]) if len(h4_ranges) >= 14 else None
     return {'model': MODEL, 'as_of_ts': as_of, 'reference_price': price,
             'atr_15m': atr15,
             'atr_1h': atr1h, 'atr_source': '1H_TRUE_RANGE' if hourly else '15M_X_2_15' if atr1h else 'UNAVAILABLE',
             'adr_d1': adr, 'adr_days': len(days), 'session_multiplier': multiplier,
-            'atr_4h': atr4h, 'volatility_distance': volatility_distance,
-            'floor': volatility_distance, 'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
+            'atr_4h': atr4h, 'floor': floor, 'cap': cap,
+            'min_rr1': ENTRY_TP1_MIN, 'min_rr2': TP2_MIN}
 
 
 def enabled(cfg):
@@ -170,31 +177,38 @@ def stop_anchors(snapshot, cfg, engine, side):
 
 
 def stop_geometry(entry, local_boundary, side, profile, anchors, tick, engine, *, timeframe=None):
-    """Use the larger of the observed structural distance and the volatility budget."""
-    volatility = profile.get('volatility_distance')
-    if volatility is None:
-        volatility = profile.get('session_multiplier', 1.) * max(
-            1.5 * (profile.get('atr_1h') or 0), .42 * (profile.get('adr_d1') or 0))
+    """Clamp buffered structure to the ATR floor and ATR/ADR risk ceiling."""
+    floor, cap = volatility_bounds(profile.get('atr_1h'), profile.get('adr_d1'),
+                                   profile.get('session_multiplier', 1.))
     atr = profile.get('atr_15m') or 0.
-    floor = round(max(volatility, 1.2 * (profile.get('atr_4h') or 0) if timeframe == '4H' else 0.),10)
     buffer = max(tick, .20 * atr)
-    local_distance = side * (entry - local_boundary)
+    local_distance = side*(entry-local_boundary)
     anchor = min((point for point in anchors if point['timeframe'] in ('15m','1H','4H')
-                  and local_distance <= side*(entry-point['level']) <= max(local_distance, floor)),
+                  and local_distance <= side*(entry-point['level']) <= max(local_distance, cap)),
                  key=lambda point: side*(entry-point['level']), default=None)
     boundary = anchor['level'] if anchor else local_boundary
     structural_distance = max(0., side*(entry-boundary)) + buffer
-    raw = max(floor, structural_distance)
-    stop = engine.round_tick(round(entry-side*raw, 10), tick, up=side == -1)
-    risk = round(side*(entry-stop), 10)
-    reason = ('OIL_VOLATILITY_UNAVAILABLE' if floor <= 0 or (timeframe == '4H' and not profile.get('atr_4h')) else
-              'INVALID_STRUCTURAL_FALSIFIER' if local_distance < 0 else
+    raw = min(cap, max(floor, structural_distance))
+    stop = engine.round_tick(round(entry-side*raw,10), tick, up=side == -1)
+    # When the theoretical limits fit between ticks, allow the minimum grid
+    # distance that satisfies the floor.
+    floor_stop = engine.round_tick(round(entry-side*floor,10), tick, up=side == -1)
+    furthest = engine.round_tick(round(entry-side*cap,10), tick, up=side == 1)
+    if side*(furthest-floor_stop) > 0:
+        furthest = floor_stop
+    if side*(stop-furthest) < 0:
+        stop = furthest
+    risk = round(side*(entry-stop),10)
+    effective_cap = max(cap, round(side*(entry-floor_stop),10))
+    reason = ('INVALID_STRUCTURAL_FALSIFIER' if local_distance < 0 else
               'INVALID_STOP_PRICE' if stop <= 0 else None)
-    return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': risk, 'target': raw,
-                        'macro_anchor': anchor, 'anchor_source': anchor['timeframe'] if anchor else 'CONFIRMED_ZONE',
-                        'anchor_valid': reason is None, 'timeframe': timeframe,
-                        'boundary': boundary, 'buffer': buffer,
-                        'structural_distance': structural_distance, 'gate': reason}
+    return stop, risk, {**profile, 'entry': entry, 'floor': floor, 'cap': effective_cap,
+                        'theoretical_cap': cap, 'target':raw, 'macro_anchor':anchor,
+                        'anchor_source': anchor['timeframe'] if anchor else 'CONFIRMED_ZONE',
+                        'anchor_valid':reason is None, 'timeframe':timeframe,
+                        'boundary':boundary, 'buffer':buffer,
+                        'structural_distance':structural_distance,
+                        'structural_clipped':risk < structural_distance-1e-8,'gate':reason}
 
 
 def macro_extrema(snapshot, as_of, engine, side):

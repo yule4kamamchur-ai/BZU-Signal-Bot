@@ -102,12 +102,13 @@ def build(state, snapshot, result, cfg, engine):
             'be_stop': plan.get('breakeven_price') if plan.get('be_confirmed_ts') else None,
             'be_confirmed_ts': plan.get('be_confirmed_ts'),
             'liquidity_protection': plan.get('liquidity_protection'), 'mfe_protection': plan.get('mfe_protection'),
+            'time_decay_protection':plan.get('time_decay_protection'),
             'entry_fee_rate': (plan.get('entry_fee_rate', engine.fee_rate(
                 execution, 'maker' if order_type == 'LIMIT' else 'taker')) if execution.include_commission else 0.),
             'exit_fee_rate': engine.fee_rate(execution, 'taker'),
             'slippage_bps': execution.slippage_bps,
             'exit_deadline': plan.get('exit_deadline'),
-            'time_exit_enabled': bool(active and (
+            'time_exit_enabled': bool(active and not engine.bzu_policy.full_position(plan) and (
                 plan.get('time_exit_enabled') and not (partial or plan.get('scale_policy')==engine.bzu_policy.SCALE_POLICY)
                 if engine.bzu_policy.is_new(plan) else not plan.get('tp1_decision_gate'))),
             'paper_touch_tolerance': oil_risk.PAPER_TOUCH_TOLERANCE if (
@@ -496,6 +497,11 @@ def build(state, snapshot, result, cfg, engine):
                 'schema':1, 'missed_target_r':engine.bzu_policy.MISSED_TARGET_R,
                 'market_band_atr':engine.scanner.MARKET_IMPULSE_BAND_ATR,
                 'mfe_lock_steps':position_monitor.MFE_LOCK_STEPS,
+                'time_decay':{'wait_ms':cfg.max_hold_minutes*60_000,'step_ms':position_monitor.TIME_DECAY_STEP_MS,
+                              'start_r':position_monitor.TIME_DECAY_START_R,
+                              'increment_r':position_monitor.TIME_DECAY_INCREMENT_R},
+                'full_target_min_r':engine.execution_rules.FULL_TARGET_MIN_R,
+                'full_target_max_r':engine.execution_rules.FULL_TARGET_MAX_R,
                 'adverse_lock_ms':engine.bzu_policy.ADVERSE_LOCK_BARS * oil_risk.M15,
                 'maker_fee':engine.fee_rate(cfg,'maker'), 'taker_fee':engine.fee_rate(cfg,'taker'),
                 'slippage_bps':cfg.slippage_bps, 'reentry_history':reentry_history,

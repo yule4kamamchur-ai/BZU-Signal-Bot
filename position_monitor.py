@@ -258,7 +258,56 @@ def guard(position, ts, *, structural_only=False):
             'adverse_close_pair': position.get('adverse_close_pair'), 'regime': regime}
 
 
-def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
+TIME_DECAY_STOP_POLICY = 'TIME_DECAY_TRAIL'
+TIME_DECAY_STEP_MS = 2 * 60 * 60_000
+TIME_DECAY_START_R = -.35
+TIME_DECAY_INCREMENT_R = .25
+
+
+def cost_protected(position, stop, cfg, engine):
+    cost = engine.bzu_policy.breakeven_price(position, engine.execution_config(position,cfg),engine)
+    return position['side']*(stop-cost) >= -EPS
+
+
+def strongest_stop(position, engine):
+    amendment = engine.bzu_policy.protective_amendment(position)
+    stop = position['stop']
+    if amendment and position['side']*(amendment['price']-stop) > EPS:
+        return amendment['price']
+    return stop
+
+
+def time_decay_stop(position, snapshot, ts, price, cfg, engine):
+    filled = position.get('filled_ts')
+    if filled is None:
+        return None
+    deadline = position.get('exit_deadline')
+    if deadline is None:
+        deadline = filled + position.get('max_hold_minutes',cfg.max_hold_minutes)*60_000
+    if ts < deadline:
+        return None
+    current = strongest_stop(position,engine)
+    if position.get('breakeven_armed') or cost_protected(position,current,cfg,engine):
+        return None
+    side, entry, risk = position['side'], position['entry'], position['risk']
+    lock = TIME_DECAY_START_R + TIME_DECAY_INCREMENT_R*((ts-deadline)//TIME_DECAY_STEP_MS)
+    raw = engine.round_tick(round(entry+side*lock*risk,10),cfg.tick,up=side==1)
+    levels = [raw]
+    if snapshot is not None:
+        rows = oil_risk.closed(snapshot.candles.get('15m',()),oil_risk.M15,ts)[-96:]
+        swing = next((p for p in reversed(engine.pivots(rows,strength=2))
+                      if p['kind']==('LOW' if side==1 else 'HIGH') and p['ts']>=filled
+                      and p['known_ts']+oil_risk.M15<=ts),None)
+        if swing:
+            stop = engine.round_tick(round(swing['level']-side*cfg.tick,10),cfg.tick,up=side==-1)
+            levels.append(stop)
+    # A completed bar may already have crossed a proposed amendment. Keep the
+    # effective stop and wait for a placeable amendment at a later observation.
+    return max((stop for stop in levels if stop>0 and side*(stop-current)>EPS
+                and side*(price-stop)>=cfg.tick-EPS), key=lambda stop:side*stop,default=None)
+
+
+def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine, *, snapshot=None):
     """Decide from information already known at the executable observation."""
     decision = {'should_exit': False, 'exit_reason': None, 'stop': None}
     if position['risk'] <= 0 or partial_taken(position):
@@ -281,20 +330,11 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine):
             if rr <= -.40 + EPS and side*(price-swing) <= -cfg.tick + EPS:
                 return {**decision, 'should_exit': True, 'exit_reason': 'CLOSED_ADVERSE_STRUCTURE_SHIFT'}
             stop = engine.round_tick(round(entry-side*.55*risk,10), cfg.tick, up=side == -1)
-            previous = engine.bzu_policy.protective_amendment(position)
-            strongest = previous['price'] if previous and side*(previous['price']-position['stop']) > 0 else position['stop']
-            if side*(stop-strongest) > EPS and side*(price-stop) >= cfg.tick-EPS:
+            if side*(stop-strongest_stop(position,engine)) > EPS and side*(price-stop) >= cfg.tick-EPS:
                 decision.update(stop=stop, stop_policy='ADVERSE_STRUCTURE_TIGHTEN')
-        if (decision['stop'] is None and engine.bzu_policy.full_position(plan=position)
-                and bars >= STALE_BARS and peak < STALE_MFE-EPS):
-            stop = engine.round_tick(round(entry-side*STALE_STOP_R*risk,10), cfg.tick, up=side == -1)
-            previous = engine.bzu_policy.protective_amendment(position)
-            if (side*(stop-position['stop']) > EPS
-                    and (not previous or side*(stop-previous['price']) > EPS)):
-                if side*(price-stop) <= EPS:
-                    decision.update(should_exit=True, exit_reason='CLOSED_STALE_TIME_STOP', exit_trigger_level=stop)
-                else:
-                    decision.update(stop=stop, stop_policy='STALE_TIME_STOP')
+        stop = time_decay_stop(position,snapshot,ts,price,cfg,engine)
+        if stop is not None and (decision['stop'] is None or side*(stop-decision['stop'])>EPS):
+            decision.update(stop=stop,stop_policy=TIME_DECAY_STOP_POLICY)
         return decision
     swing = position.get('protection_structure_level')
     beyond_swing = swing is None or side*(price-swing)<=EPS
@@ -347,7 +387,7 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 
 
 MFE_STOP_POLICY = 'MFE_PROTECTION'
-MFE_LOCK_STEPS = ((.85, .08), (1.25, .55), (1.65, 1.10))
+MFE_LOCK_STEPS = ((.60, -.35), (.85, .08), (1.25, .55), (1.65, 1.10))
 LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
 
 
@@ -363,13 +403,16 @@ def mfe_protection(position, ts, price, cfg, engine):
     side, entry = position['side'], position['entry']
     raw_stop = entry + side * locked_r * position['risk']
     rounded = engine.round_tick(round(raw_stop, 10), cfg.tick, up=side == 1)
-    cost_stop = engine.bzu_policy.breakeven_price(position, engine.execution_config(position, cfg), engine)
-    stop = max(rounded, cost_stop) if side == 1 else min(rounded, cost_stop)
-    existing = engine.bzu_policy.protective_amendment(position)
-    if side * (stop - position['stop']) <= EPS or (existing and side * (stop - existing['price']) <= EPS):
+    stop = rounded
+    if locked_r >= 0:
+        cost_stop = engine.bzu_policy.breakeven_price(position,engine.execution_config(position,cfg),engine)
+        stop = max((rounded,cost_stop), key=lambda level:side*level)
+    if stop <= 0 or side*(stop-strongest_stop(position,engine)) <= EPS:
         return None
-    return {'policy': MFE_STOP_POLICY, 'price': stop, 'effective_ts': ts, 'peak_r': peak,
-            'exit_now': side * (price - stop) <= EPS}
+    if locked_r < 0 and side*(price-stop) < cfg.tick-EPS:
+        return None
+    return {'policy':MFE_STOP_POLICY,'price':stop,'effective_ts':ts,'peak_r':peak,
+            'lock_r':locked_r,'exit_now':side*(price-stop)<=EPS}
 
 
 def is_mfe_stop(position):
@@ -382,6 +425,10 @@ def is_bounce_stop(position):
 
 def is_stale_stop(position):
     return position.get('stale_stop') == position['stop']
+
+
+def is_time_decay_stop(position):
+    return (position.get('time_decay_protection') or {}).get('price') == position['stop']
 
 
 def confirmed_m5_structure(snapshot, after, as_of, side, stop, tick):

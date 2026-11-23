@@ -697,6 +697,9 @@ def build_checklist(state, snapshot, result, cfg, engine):
             lines += [f"✅ Друга частина {label}: середній вхід {ev['entry']:.8g} • {when}"]
         elif kind in ('BREAKEVEN_ARMED', 'STRUCTURAL_TRAIL_ARMED'):
             lines += [f"🛡️ {label}: SL → {ev['stop']:.8g} • з наступної свічки"]
+        elif kind == 'PAPER_STOP_AMENDED' and ev.get('reason') in ('TIME_DECAY_TRAIL','MFE_PROTECTION'):
+            detail = 'часовий супровід' if ev['reason']=='TIME_DECAY_TRAIL' else 'зменшення ризику після +0.60R'
+            lines += [f"🛡️ {label}: SL → {ev['stop']:.8g} • {detail}"]
         elif kind == 'TP1_PARTIAL':
             if ev.get('scale_policy') == 'SCALE_OUT_1R':
                 lines += [f"🎯 {label}: 50% зафіксовано на +1.00R @ {ev['price']:.8g}"]

@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.0-intraday"
-REPORT_RELEASE = 'v14.4.0'
+VERSION = "full-ict-v14.4.1-intraday"
+REPORT_RELEASE = 'v14.4.1'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -1447,11 +1447,21 @@ def arm_mfe_protection(state, position, ts, price, cfg):
     for leg in position.get('entry_legs', ()):
         if leg['status'] == 'PENDING':
             leg['status'] = 'CANCELLED_AFTER_MFE_LOCK'
-    position.update(pending_stop={key: guard[key] for key in ('price', 'effective_ts', 'policy')},
-                    breakeven_price=guard['price'], breakeven_armed=True, be_confirmed_ts=ts)
-    emit(state, 'BREAKEVEN_ARMED', ts, order_id=position['id'], stop=guard['price'],
-         peak_r=guard['peak_r'], reason=guard['policy'])
+    position['pending_stop'] = {key: guard[key] for key in ('price','effective_ts','policy')}
+    protected = position_monitor.cost_protected(position,guard['price'],cfg,sys.modules[__name__])
+    if protected:
+        position.update(breakeven_price=guard['price'],breakeven_armed=True,be_confirmed_ts=ts)
+    emit(state,'BREAKEVEN_ARMED' if protected else 'PAPER_STOP_AMENDED',ts,
+         order_id=position['id'],stop=guard['price'],peak_r=guard['peak_r'],reason=guard['policy'],effective_ts=ts)
     return False
+
+
+def staged_stop_exit_reason(amendment):
+    if amendment and amendment['policy']==position_monitor.MFE_STOP_POLICY:
+        return 'MFE_PROTECTIVE_EXIT'
+    if amendment and amendment['policy']==position_monitor.TIME_DECAY_STOP_POLICY:
+        return 'TIME_DECAY_STOP'
+    return None
 
 
 def observe_position_mfe(state, position, bar, ts, cfg):
@@ -1460,10 +1470,10 @@ def observe_position_mfe(state, position, bar, ts, cfg):
     # A prior quote may have armed a stop inside this candle. Its close is
     # observable afterward, but its earlier wick cannot execute that stop.
     amendment = bzu_policy.protective_amendment(position)
-    if (amendment and amendment['policy'] == position_monitor.MFE_STOP_POLICY
-            and bar.ts < amendment['effective_ts'] <= ts
-            and position['side'] * (bar.close - amendment['price']) <= 1e-8):
-        close_at_observed_price(state, position, bar.close, ts, 'MFE_PROTECTIVE_EXIT', cfg)
+    reason = staged_stop_exit_reason(amendment)
+    if (reason and bar.ts < amendment['effective_ts'] <= ts
+            and position['side']*(bar.close-amendment['price'])<=1e-8):
+        close_at_observed_price(state,position,bar.close,ts,reason,cfg)
         return True
     return arm_mfe_protection(state, position, ts, bar.close, cfg)
 
@@ -1483,7 +1493,7 @@ def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
             emit(state, 'BREAKEVEN_ARMED', ts, order_id=position['id'], stop=protection['price'],
                  reason=position_monitor.LIQUIDITY_STOP_POLICY)
     position_monitor.observe_structure(position, snapshot, ts, cfg, engine)
-    decision = position_monitor.evaluate_active_trade_lifecycle(position, ts, price, cfg, engine)
+    decision = position_monitor.evaluate_active_trade_lifecycle(position,ts,price,cfg,engine,snapshot=snapshot)
     if decision['should_exit']:
         if 'exit_trigger_level' in decision:
             position['guard_exit_trigger_level'] = decision['exit_trigger_level']
@@ -1498,12 +1508,18 @@ def apply_lifecycle_guard(state, position, snapshot, ts, price, cfg):
     elif decision['stop'] is not None:
         stop = decision['stop']
         reason = decision.get('stop_policy', 'STALE_TIME_STOP')
-        position['stop'] = stop  # This decision follows the completed execution candle.
-        if reason == 'STALE_TIME_STOP':
-            position.update(stale_stop=stop, stale_stop_ts=ts)
+        if reason == position_monitor.TIME_DECAY_STOP_POLICY:
+            proof = {'price':stop,'effective_ts':ts,'policy':reason}
+            position.update(pending_stop=proof,time_decay_protection=proof)
+            if position_monitor.cost_protected(position,stop,cfg,engine):
+                position.update(breakeven_price=stop,breakeven_armed=True,be_confirmed_ts=ts)
         else:
-            position['adverse_structure_stop'] = {'price': stop, 'effective_ts': ts}
-        emit(state, 'PAPER_STOP_AMENDED', ts, order_id=position['id'], stop=stop, reason=reason)
+            position['stop'] = stop
+            if reason == 'STALE_TIME_STOP':
+                position.update(stale_stop=stop, stale_stop_ts=ts)
+            else:
+                position['adverse_structure_stop'] = {'price':stop,'effective_ts':ts}
+        emit(state,'PAPER_STOP_AMENDED',ts,order_id=position['id'],stop=stop,reason=reason,effective_ts=ts)
 
 
 def close_at_observed_price(state, position, price, ts, reason, cfg):
@@ -1532,9 +1548,10 @@ def check_quote_exits(state, snapshot, cfg):
             continue
         price = snapshot.bid if position['side'] == 1 else snapshot.ask
         amendment = bzu_policy.protective_amendment(position)
-        if amendment and amendment['policy'] == position_monitor.MFE_STOP_POLICY:
-            if ts >= amendment['effective_ts'] and position['side'] * (price - amendment['price']) <= 1e-8:
-                close_at_observed_price(view, position, price, ts, 'MFE_PROTECTIVE_EXIT', cfg)
+        pending_reason = staged_stop_exit_reason(amendment)
+        if pending_reason:
+            if ts>=amendment['effective_ts'] and position['side']*(price-amendment['price'])<=1e-8:
+                close_at_observed_price(view,position,price,ts,pending_reason,cfg)
                 store_slot(state, number, view)
                 continue
         else:
@@ -1555,7 +1572,9 @@ def check_quote_exits(state, snapshot, cfg):
         position_monitor.track(position, ts, price, price)
         if position['side'] * (price - position['stop']) <= 0:
             # An ordinary hard stop is reconciled against its execution bar.
-            if position_monitor.is_stale_stop(position):
+            if position_monitor.is_time_decay_stop(position):
+                close_at_observed_price(view,position,price,ts,'TIME_DECAY_STOP',cfg)
+            elif position_monitor.is_stale_stop(position):
                 close_at_observed_price(view, position, price, ts, 'CLOSED_STALE_TIME_STOP', cfg)
             elif position_monitor.is_bounce_stop(position):
                 close_at_observed_price(view, position, price, ts, 'CLOSED_BOUNCE_BREAKEVEN', cfg)
@@ -3029,7 +3048,7 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
         reason = event.get('reason')
         text = {'STOP':'стоп','STOP_GAP':'стоп із розривом ціни',
                 'TAKE_PROFIT':'тейк-профіт','ADAPTIVE_FULL_EXIT':'повний вихід за зміною умов','INTRADAY_TIME_EXIT':'кінець часу угоди',
-                'MFE_PROTECTIVE_EXIT':'захист після сприятливого руху',
+                'MFE_PROTECTIVE_EXIT':'захист після сприятливого руху','TIME_DECAY_STOP':'стоп часового супроводу',
                 'POST_DEADLINE_THESIS_INVALIDATED':'вихід після втрати торгового сценарію'}.get(reason,'завершення')
         value = event['net_r']
         outcome = 'прибуток' if value>0 else 'збиток' if value<0 else 'беззбитково'
@@ -3045,7 +3064,7 @@ def message_event(state: dict, event: dict, cfg: Config) -> Optional[str]:
     if kind in ('TP1','TP2','TP3'):
         return None  # Legacy partial events remain in the ledger, not in current alerts.
     if kind=='PAPER_STOP_AMENDED':
-        return f"🛡️ {at} {label} Перенесення стопа на {event['stop']:.6g} з {local_time(event['effective_ts'],cfg)}"
+        return f"🛡️ {at} {label} Перенесення стопа на {event['stop']:.6g} з {local_time(event.get('effective_ts',event['ts']),cfg)}"
     if kind in ('CANCELLED','EXPIRED'):
         text = 'скасовано' if kind=='CANCELLED' else 'строк очікування завершився'
         reasons = {'CONFIRMED_HTF_FLIP':'змінився напрямок', 'STRUCTURE_INVALIDATED_NOW':'сетап утратив чинність',
@@ -3100,6 +3119,8 @@ REASON_UA = {
     'CLOSED_BOUNCE_BREAKEVEN':'спрацював стоп на вході після поглинання',
     'CLOSED_STALE_TIME_STOP':'спрацював шестигодинний тайм-стоп',
     'STALE_TIME_STOP':'стоп підтягнуто до −0.35R після шести годин',
+    'TIME_DECAY_TRAIL':'часовий супровід підтягнув SL',
+    'TIME_DECAY_STOP':'спрацював стоп часового супроводу',
     'CLOSED_ADVERSE_STRUCTURE_SHIFT':'структура або режим змінилися проти позиції',
     'CLOSED_EARLY_IMPULSE_FAILURE':'ранній зустрічний імпульс після входу по маркету',
     'CLOSED_REPLACED_BY_FRESH_SETUP':'позицію замінено свіжим сетапом A або A+',

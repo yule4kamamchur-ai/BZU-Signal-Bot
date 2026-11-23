@@ -62,14 +62,91 @@ class FullPositionTest(unittest.TestCase):
             hard=monitor.evaluate_active_trade_lifecycle(p,NOW,100.-.46*side,self.cfg,engine)
             self.assertEqual(hard['exit_reason'],'CLOSED_ADVERSE_STRUCTURE_SHIFT')
 
-    def test_risk_uses_observed_volatility_and_does_not_clip_structure(self):
-        profile={'atr_15m':.35,'atr_1h':1.2,'adr_d1':3.,'session_multiplier':1.45,'atr_4h':2.6}
-        stop,risk,details=oil_risk.stop_geometry(100.,97.,1,profile,[],.01,engine,timeframe='4H')
-        self.assertGreaterEqual(risk,3.12)
-        self.assertLessEqual(stop,96.93)
-        self.assertIsNone(details['gate'])
-        stop,risk,_=oil_risk.stop_geometry(100.,101.,-1,profile,[],.01,engine)
-        self.assertEqual((stop,risk),(102.61,2.61))
+    def test_atr_floor_adr_ceiling_and_buffered_structure(self):
+        profile={'atr_15m':.262142857,'atr_1h':.195,'adr_d1':2.905,'session_multiplier':1.}
+        for side in (1,-1):
+            anchor={'level':89.92-side*.72,'timeframe':'15m'}
+            stop,risk,details=oil_risk.stop_geometry(89.92,89.92-side*.67,side,profile,[anchor],.01,engine)
+            self.assertEqual(details['floor'],.5)
+            self.assertEqual(details['theoretical_cap'],1.30725)
+            self.assertEqual(risk,.78)
+            self.assertAlmostEqual(stop,89.92-side*.78)
+            self.assertFalse(details['structural_clipped'])
+            self.assertIsNone(details['gate'])
+            _,risk,details=oil_risk.stop_geometry(89.92,89.92-side*1.6,side,profile,[],.01,engine)
+            self.assertEqual(risk,1.30)
+            self.assertTrue(details['structural_clipped'])
+            self.assertIsNone(details['gate'])
+        self.assertEqual(oil_risk.volatility_bounds(1.2,3.,1.45),(1.38,3.132))
+
+    def test_full_target_prefers_nearest_pool_in_new_band(self):
+        for side in (1,-1):
+            pools=[{'side':-side,'level':100+side*distance} for distance in (1.66,1.44,2.0)]
+            target,source,pool=rules.full_target(pools,100.,1.,side,.4,.01,engine)
+            self.assertAlmostEqual(target,100+side*1.38)
+            self.assertEqual(source,'BUFFERED_LIQUIDITY_POOL')
+            self.assertAlmostEqual(pool,100+side*1.44)
+            narrow=[{'side':-side,'level':100+side*1.37}]
+            target,_,_=rules.full_target(narrow,100.,1.,side,.4,.01,engine)
+            self.assertAlmostEqual(target,100+side*1.35)
+            self.assertTrue(rules.full_target_ratios_valid(1.35,1.35))
+
+    def test_time_decay_only_amends_placeable_stops_and_stops_after_be(self):
+        for side in (1,-1):
+            p=self.position(side)
+            p['exit_deadline']=NOW
+            p['time_exit_enabled']=True  # Persisted v14.4.0 plan.
+            guard=monitor.evaluate_active_trade_lifecycle(p,NOW,100.-side*.5,self.cfg,engine)
+            self.assertFalse(guard['should_exit'])
+            self.assertIsNone(guard['stop'])
+            for hours,expected in ((0,-.35),(2,-.10),(4,.15)):
+                guard=monitor.evaluate_active_trade_lifecycle(p,NOW+hours*3_600_000,100+side*.3,self.cfg,engine)
+                self.assertFalse(guard['should_exit'])
+                self.assertEqual(guard['stop_policy'],'TIME_DECAY_TRAIL')
+                self.assertAlmostEqual(guard['stop'],100+side*expected)
+            p['breakeven_armed']=True
+            self.assertIsNone(monitor.evaluate_active_trade_lifecycle(p,NOW+4*3_600_000,100.5,self.cfg,engine)['stop'])
+
+    def test_time_decay_uses_a_swing_only_after_confirmation(self):
+        p=self.position()
+        now=NOW//M15*M15
+        p['exit_deadline']=now-1
+        p['filled_ts']=now-10*M15
+        candles=[engine.Candle(now+(i-5)*M15,100.1,100.4,99.88 if i==2 else 99.98,100.1)
+                 for i in range(5)]
+        snap=engine.Snapshot(now,100.1,{'15m':candles})
+        self.assertEqual(monitor.time_decay_stop(p,snap,now-1,100.1,self.cfg,engine),99.65)
+        self.assertEqual(monitor.time_decay_stop(p,snap,now,100.1,self.cfg,engine),99.87)
+
+    def test_elapsed_time_does_not_close_paper_and_cannot_use_an_earlier_wick(self):
+        cfg=self.cfg
+        p=self.position()
+        p.update(exit_deadline=NOW+30_000,time_exit_enabled=True)
+        state=engine.new_state(cfg)
+        state['active']=p
+        engine.apply_lifecycle_guard(state,p,None,NOW+30_000,100.05,cfg)
+        self.assertEqual(p['pending_stop']['price'],99.65)
+        self.assertFalse(p.get('breakeven_armed',False))
+        engine.manage_bar(state,engine.Candle(NOW,99.9,100.19,99.5,99.8),cfg,step=M1)
+        self.assertIsNotNone(state['active'])
+        self.assertFalse(state['trades'])
+        engine.manage_bar(state,engine.Candle(NOW+M1,99.8,99.9,99.59,99.7),cfg,step=M1)
+        self.assertEqual(state['trades'][0]['close_reason'],'TIME_DECAY_STOP')
+
+    def test_negative_ratchet_is_not_breakeven_and_is_not_backdated(self):
+        p=self.position()
+        cfg=self.cfg
+        state=engine.new_state(cfg)
+        state['active']=p
+        engine.manage_bar(state,engine.Candle(NOW,100.01,100.6,99.50,100.20),cfg,step=M1)
+        self.assertIs(state['active'],p)
+        self.assertEqual(p['pending_stop']['price'],99.65)
+        self.assertEqual(p['mfe_protection']['lock_r'],-.35)
+        self.assertFalse(p.get('breakeven_armed',False))
+        self.assertEqual(state['events'][-1]['kind'],'PAPER_STOP_AMENDED')
+        engine.manage_bar(state,engine.Candle(NOW+M1,100.20,100.85,99.8,100.30),cfg,step=M1)
+        self.assertTrue(p['breakeven_armed'])
+        self.assertEqual(p['pending_stop']['price'],100.08)
 
     def test_full_target_and_post_only_penetration(self):
         target,source,_=rules.full_target([{'level':101.8,'side':-1}],100.,1.,1,.4,.01,engine)
@@ -188,3 +265,23 @@ class ExchangeTest(unittest.TestCase):
         self.assertEqual(path,'/api/v5/trade/amend-algos')
         self.assertEqual(payload['newSlTriggerPx'],'100.55')
         self.assertFalse(payload['cxlOnFail'])
+
+    def test_exchange_timer_amends_stop_without_sending_market_close(self):
+        plan=FullPositionTest().position()
+        cfg=engine.Config(tick=.01,slippage_bps=0.)
+        snap=engine.Snapshot(NOW,99.91,{},99.90,99.92,True,NOW,'BZ-USDT-SWAP')
+        api=FakeOKX()
+        parent={'state':'filled','avgPx':'100','fillTime':str(NOW-6*3_600_000)}
+        pos={'pos':'2','posSide':'net','avgPx':'100'}
+        bracket={'algoClOrdId':'p','algoId':'algo','sz':'2','slTriggerPx':'99','tpTriggerPx':'101.75'}
+        api.algos=[bracket]
+        tracked={'plan':plan,'client_id':'parent','algo_client_id':'p','fallback_algo_id':'f','margin':'cross'}
+        okx._guard(api,cfg.instrument,tracked,pos,parent,snap,cfg,engine)
+        self.assertEqual(len(api.posts),1)
+        self.assertEqual(api.posts[0][0],'/api/v5/trade/amend-algos')
+        self.assertEqual(api.posts[0][1]['newSlTriggerPx'],'99.65')
+        api.posts.clear()
+        bracket['slTriggerPx']='100.08'
+        protected=replace(snap,price=100.30,bid=100.29,ask=100.31)
+        okx._guard(api,cfg.instrument,tracked,pos,parent,protected,cfg,engine)
+        self.assertEqual(api.posts,[])
