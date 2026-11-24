@@ -342,6 +342,24 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine, *, snapsho
             stop = engine.round_tick(round(entry-side*lock*risk,10), cfg.tick, up=side == -1)
             if side*(stop-strongest_stop(position,engine)) > EPS and side*(price-stop) >= cfg.tick-EPS:
                 decision.update(stop=stop, stop_policy='ADVERSE_STRUCTURE_TIGHTEN')
+        # Pre-London Shield (06:45-07:15 UTC) for positions opened in thin Asian session
+        tod = ts % oil_risk.DAY
+        if (decision['stop'] is None and _opened_in_asia(position)
+                and (6 * 60 + 45) * 60_000 <= tod < (7 * 60 + 15) * 60_000):
+            target_r = .05 if (rr >= .30 - EPS or peak >= .40 - EPS) else -.45
+            pl_stop = engine.round_tick(round(entry + side * target_r * risk, 10), cfg.tick, up=side == 1)
+            if target_r >= 0:
+                cost_stop = engine.bzu_policy.breakeven_price(position, engine.execution_config(position, cfg), engine)
+                pl_stop = max((pl_stop, cost_stop), key=lambda level: side * level)
+            if side * (pl_stop - strongest_stop(position, engine)) > EPS and side * (price - pl_stop) >= cfg.tick - EPS:
+                decision.update(stop=pl_stop, stop_policy='PRE_LONDON_SHIELD')
+        # Early Squeeze Guard for sweep entries with dead follow-through
+        is_sweep = (position.get('setup') in ('LIQUIDITY_SWEEP_REVERSAL_SHORT', 'SWEEP_RECLAIM')
+                    or position.get('source_strategy') == 'MULTIBAR_SWEEP')
+        if (decision['stop'] is None and is_sweep and bars >= 3 and peak < .15 - EPS and rr <= -.45 + EPS):
+            sq_stop = engine.round_tick(round(entry - side * .55 * risk, 10), cfg.tick, up=side == -1)
+            if side * (sq_stop - strongest_stop(position, engine)) > EPS and side * (price - sq_stop) >= cfg.tick - EPS:
+                decision.update(stop=sq_stop, stop_policy='EARLY_SQUEEZE_GUARD')
         stop = time_decay_stop(position,snapshot,ts,price,cfg,engine)
         if stop is not None and (decision['stop'] is None or side*(stop-decision['stop'])>EPS):
             decision.update(stop=stop,stop_policy=TIME_DECAY_STOP_POLICY)
@@ -399,12 +417,19 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 MFE_STOP_POLICY = 'MFE_PROTECTION'
 MFE_LOCK_STEPS = ((.60, -.35), (.85, .08), (1.25, .55), (1.65, 1.10))
 LATE_MFE_LOCK_STEPS = ((.60, -.35), (.70, .08), (1.25, .55), (1.65, 1.10))
+ASIA_MFE_LOCK_STEPS = ((.55, .08), (.90, .45), (1.25, .80))
 LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
+
+
+def _opened_in_asia(position):
+    return bool(position.get('asia_session'))
 
 
 def mfe_lock_steps(position, engine):
     if not engine.bzu_policy.full_position(position):
         return LEGACY_MFE_LOCK_STEPS
+    if _opened_in_asia(position):
+        return ASIA_MFE_LOCK_STEPS
     return LATE_MFE_LOCK_STEPS if position.get('late_entry') else MFE_LOCK_STEPS
 
 

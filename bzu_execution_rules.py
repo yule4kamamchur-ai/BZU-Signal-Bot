@@ -19,6 +19,14 @@ def early_ny(ts):
     return 13 * oil_risk.H1 <= ts % oil_risk.DAY < (13 * 60 + 105) * 60_000
 
 
+def asia_session(ts):
+    return ts is not None and 0 <= ts % oil_risk.DAY < 7 * oil_risk.H1
+
+
+def pre_london(ts):
+    return ts is not None and 5 * oil_risk.H1 <= ts % oil_risk.DAY < 7 * oil_risk.H1
+
+
 def range_location(snapshot, price):
     cache = vars(snapshot).setdefault('_entry_ranges', {})
     if snapshot.now not in cache:
@@ -150,10 +158,12 @@ def full_target_ratios_valid(rr1, rr2):
     return FULL_TARGET_MIN_R-EPS <= rr1 <= FULL_TARGET_MAX_R+EPS and abs(rr1-rr2) <= EPS
 
 
-def full_target(levels, entry, risk, side, atr, tick, engine):
+def full_target(levels, entry, risk, side, atr, tick, engine, *, min_r=None, max_r=None):
     """Choose the nearest reachable buffered pool in the full-exit band."""
-    low = engine.round_tick(round(entry+side*FULL_TARGET_MIN_R*risk,10), tick, up=side == 1)
-    high = engine.round_tick(round(entry+side*FULL_TARGET_MAX_R*risk,10), tick, up=side == -1)
+    lo_r = FULL_TARGET_MIN_R if min_r is None else min_r
+    hi_r = FULL_TARGET_MAX_R if max_r is None else max_r
+    low = engine.round_tick(round(entry+side*lo_r*risk,10), tick, up=side == 1)
+    high = engine.round_tick(round(entry+side*hi_r*risk,10), tick, up=side == -1)
     targets = sorted((p['level'] for p in levels if p['side'] == -side
                       and side*(p['level']-entry) > 0), key=lambda price: side*(price-entry))
     for pool in targets:
@@ -201,6 +211,26 @@ def setup_confirmation(name, zone, snapshot, side, tick, engine, settle, *, appr
         level = zone.get('reference', (zone['low'] + zone['high']) / 2)
         brake = approach if approach is not None else approach_velocity(snapshot, side, zone, level, tick, engine)
         return 'WAIT_PULLBACK_REJECTION' if brake['blocked'] else None
+    if name == 'BREAKOUT_RETEST' and pre_london(snapshot.now):
+        known = zone.get('impulse_known_ts') or zone['known_ts']
+        volume = scanner.event_rvol(snapshot, '15m', known).get('rvol') or 0.
+        if volume < 1.6 - EPS:
+            return 'WAIT_PRE_LONDON_VOLUME'
+        return None
+    if name == 'LIQUIDITY_SWEEP_REVERSAL_SHORT' or kind == 'MULTIBAR_SWEEP':
+        sweep = _sweep(snapshot, rows, side, tick, engine, zone=zone, lookback=6)
+        sweep_ts = sweep['sweep_ts'] if sweep else (zone.get('sweep') or {}).get('sweep_ts') or zone.get('known_ts')
+        if not sweep_ts:
+            return 'WAIT_ARMED_SWEEP_CHOCH'
+        atr_local = engine.atr(rows[:-1])
+        choch = direction.structural_flip(snapshot, side, sweep_ts, tick, engine, timeframes=('15m', '5m'))['confirmed']
+        ema20, _ = direction.trend_references(snapshot)
+        last_bar = rows[-1]
+        disp = (atr_local > 0 and side * (last_bar.close - last_bar.open) >= .80 * atr_local - EPS
+                and (ema20 is None or side * (last_bar.close - ema20) >= -EPS))
+        if choch or disp:
+            return None
+        return 'WAIT_ARMED_SWEEP_CHOCH'
     if name not in {'OPENING_RANGE_BREAKOUT', 'FAILED_OPENING_RANGE_BREAKOUT', 'OR_FAILURE_2_SHORT',
                     'SESSION_MEAN_RECLAIM', 'DIRECTION_FLIP_15M', 'SWEEP_RECLAIM', 'PULLBACK_CONTINUATION',
                     'MOMENTUM_NO_PULLBACK_CONTINUATION', 'ACCELERATION_PULLBACK_REENTRY'}:

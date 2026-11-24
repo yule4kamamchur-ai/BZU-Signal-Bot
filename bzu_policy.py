@@ -185,7 +185,10 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
         if room_r is not None and room_r < 1.35-1e-8:
             return None, 'BLOCKED_NO_ROOM_TO_STRUCTURE'
         fresh = execution_rules.available_pools(snapshot,levels,cfg.tick)
-        target, source, pool = execution_rules.full_target(fresh,entry,risk,side,a15,cfg.tick,engine)
+        _is_asia = execution_rules.asia_session(snapshot.now)
+        _min_r, _max_r = (1.20, 1.40) if _is_asia else (None, None)
+        target, source, pool = execution_rules.full_target(
+            fresh,entry,risk,side,a15,cfg.tick,engine,min_r=_min_r,max_r=_max_r)
         entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')
         exit_fee = engine.fee_rate(cfg, 'taker')
         rr = side*(target-entry)/risk

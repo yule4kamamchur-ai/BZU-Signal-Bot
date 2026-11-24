@@ -328,7 +328,15 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
     aligned = regime.get('side_4h') == side
     counter = regime.get('side_4h') == -side
     h1_against_4h = regime.get('side_1h') == side and counter
+    from bzu_execution_rules import asia_session as _is_asia, pre_london as _is_pre_london
     ny_session = oil_risk.ny_volatility(snapshot.now)
+    asia = _is_asia(snapshot.now)
+    pre_lon = _is_pre_london(snapshot.now)
+    counter_short_sweep = (
+        side == -1
+        and (regime.get('side_1h') == 1 or regime.get('side_4h') == 1)
+        and (setup == 'LIQUIDITY_SWEEP_REVERSAL_SHORT' or source_strategy == 'MULTIBAR_SWEEP')
+    )
     active_wave_atr = (regime.get('active_structure') or {}).get('wave_atr') or 0.
     trend_strength = regime.get('trend_strength')
     exhausted_wave = active_wave_atr > 3.0 and (trend_strength is None or trend_strength < .15)
@@ -346,8 +354,9 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
     tier = 1. if probability >= .70 else .65 if probability >= .50 else .35
     risk_mult = min(
         tier,
+        .30 if counter_short_sweep else 1.,
         .40 if (counter or h1_against_4h) else 1.,
-        .50 if (late or exhausted_wave) else 1.,
+        .50 if (late or exhausted_wave or pre_lon) else 1.,
         .60 if ny_session else 1.,
         .50 if (adverse_limit and not (calibration is not None and probability >= .65)) else 1.,
     )
@@ -359,7 +368,9 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
             'meta_context':context,'meta_heuristic':score,'meta_recent_weight':recent,
             'risk_multiplier':risk_mult,
             'range_pos':location, 'late_entry':late, 'counter_4h':counter,
-            'ny_session':ny_session, 'exhausted_wave':exhausted_wave, 'adverse_limit_guard':adverse_limit,
+            'ny_session':ny_session, 'asia_session':asia, 'pre_london':pre_lon,
+            'counter_short_sweep':counter_short_sweep,
+            'exhausted_wave':exhausted_wave, 'adverse_limit_guard':adverse_limit,
             'rejection_required':require_rejection}
 
 
