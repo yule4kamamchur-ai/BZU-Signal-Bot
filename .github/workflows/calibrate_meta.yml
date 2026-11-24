@@ -1,0 +1,77 @@
+name: BZU Auto Meta-Model Calibration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/calibrate_meta.yml'
+  schedule:
+    - cron: '0 3 1,15 * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days of OKX history to calibrate on (30..365)'
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bzu-meta-calibration
+  cancel-in-progress: false
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BOT_BRANCH: ${{ github.event.repository.default_branch }}
+      PYTHONUNBUFFERED: '1'
+      DAYS: ${{ inputs.days || '180' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BOT_BRANCH }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install --no-cache-dir -r requirements.txt
+          fi
+
+      - name: Run offline walk-forward meta calibration
+        run: |
+          mkdir -p calibration
+          python3 calibrate_meta_model.py \
+            --days "$DAYS" \
+            --scan-minutes 15 \
+            --output calibration/meta_priors.json \
+            --report calibration/report.json
+
+      - name: Commit and push calibration priors
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add calibration/meta_priors.json calibration/report.json
+          if git diff --cached --quiet; then
+            echo "No calibration changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(calibration): update meta_priors.json (${DAYS}d walk-forward)"
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin "$BOT_BRANCH"
+            if git push origin "HEAD:$BOT_BRANCH"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Failed to push calibration priors after 3 attempts"
+          exit 1
