@@ -304,14 +304,35 @@ def prepare_sizing(state, snapshot, cfg, engine):
         return 'INVALID_PRIORS'
 
 
-def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r, late=False, setup=None):
-    """Use the checked posterior when available and preserve the cold-start score."""
+ADVERSE_LIMIT_SETUPS = frozenset({
+    'PULLBACK_CONTINUATION',
+    'MOMENTUM_NO_PULLBACK_CONTINUATION',
+    'DAILY_WEEKLY_OPEN_RECLAIM',
+})
+ADVERSE_LIMIT_STRATEGIES = frozenset({
+    'FVG_PULLBACK',
+    'SR_FLIP_RECLAIM',
+    'FVG_BEAR',
+    'RECLAIM_BREAKER',
+})
+
+
+def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
+                     late=False, setup=None, source_strategy=None):
+    """Use the checked posterior when available and guard high-adverse-selection limits."""
     from bzu_execution_rules import range_location
+    import oil_risk
     import trade_meta_model as model
 
     location = range_location(snapshot, entry)
     aligned = regime.get('side_4h') == side
     counter = regime.get('side_4h') == -side
+    h1_against_4h = regime.get('side_1h') == side and counter
+    ny_session = oil_risk.ny_volatility(snapshot.now)
+    active_wave_atr = (regime.get('active_structure') or {}).get('wave_atr') or 0.
+    trend_strength = regime.get('trend_strength')
+    exhausted_wave = active_wave_atr > 3.0 and (trend_strength is None or trend_strength < .15)
+    adverse_limit = (setup in ADVERSE_LIMIT_SETUPS or source_strategy in ADVERSE_LIMIT_STRATEGIES)
     premium_discount = location is not None and side * (location - .5) <= 0
     factors = {'htf_4h': aligned, 'premium_discount': premium_discount,
                'fresh_wave': bool(wave_ts and 0 <= snapshot.now-wave_ts <= 4*TF['15m']),
@@ -323,11 +344,23 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r, la
     calibration = getattr(snapshot,'_execution_calibration',None)
     probability, recent = model.sizing_posterior(*calibration,context) if calibration else (score,0.)
     tier = 1. if probability >= .70 else .65 if probability >= .50 else .35
+    risk_mult = min(
+        tier,
+        .40 if (counter or h1_against_4h) else 1.,
+        .50 if (late or exhausted_wave) else 1.,
+        .60 if ny_session else 1.,
+        .50 if (adverse_limit and not (calibration is not None and probability >= .65)) else 1.,
+    )
+    require_rejection = (
+        counter or late or probability < .50
+        or ny_session or exhausted_wave or adverse_limit or h1_against_4h
+    )
     return {'meta_prob':probability, 'meta_prob_calibrated':calibration is not None, 'meta_factors':factors,
             'meta_context':context,'meta_heuristic':score,'meta_recent_weight':recent,
-            'risk_multiplier':min(tier, .40 if counter else 1., .50 if late else 1.),
+            'risk_multiplier':risk_mult,
             'range_pos':location, 'late_entry':late, 'counter_4h':counter,
-            'rejection_required':counter or late or probability < .50}
+            'ny_session':ny_session, 'exhausted_wave':exhausted_wave, 'adverse_limit_guard':adverse_limit,
+            'rejection_required':require_rejection}
 
 
 def confluence(plan, snapshot, proof, cfg, engine):

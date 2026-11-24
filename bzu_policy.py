@@ -458,8 +458,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         rvol = scanner.event_rvol(snapshot,volume_tf,wave_ts)['rvol']
         _, room_r = oil_risk.structural_room(side,entry,risk,scenario_planner.structure_levels(snapshot,engine),
                                               trend=trend or opposing_4h or multibar or local_reversal)
+        src_strat = anchor.evidence.get('source_strategy') or zone.get('kind')
         sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                 rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type)
+                                                 rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type,
+                                                 source_strategy=src_strat)
         diag.update(sizing,original_range_pos=original_location)
     else:
         entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
@@ -579,7 +581,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             confirmation_tf = market_trigger.get('confirmation_timeframe') or ('5m' if pattern.startswith('M5_') else '15m')
             rvol = scanner.event_rvol(snapshot,confirmation_tf,market_trigger['known_ts'])['rvol']
             sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                     rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type)
+                                                     rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type,
+                                                     source_strategy=src_strat)
             require_rejection = sizing['rejection_required']
         if require_rejection:
             rejection = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)

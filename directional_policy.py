@@ -230,6 +230,14 @@ def regime_side(regime):
 
 
 def market_regime(snapshot, tick, engine):
+    _cache = vars(snapshot).setdefault('_dp_market_regime', {})
+    _key = (snapshot.now, snapshot.price, tick)
+    if _key not in _cache:
+        _cache[_key] = _market_regime_impl(snapshot, tick, engine)
+    return dict(_cache[_key])
+
+
+def _market_regime_impl(snapshot, tick, engine):
     import strategy_organics
     r=strategy_organics.classify(snapshot)
     one=engine.bias(closed(snapshot,'1H'))['side'] or r.trend_1h
@@ -266,6 +274,14 @@ def opposing_four_hour(snapshot, side, engine):
 
 def execution_regime(snapshot, cfg, engine):
     """Give a confirmed intraday shift priority over a lagging hourly bias."""
+    _cache = vars(snapshot).setdefault('_dp_execution_regime', {})
+    _key = (snapshot.now, snapshot.price, getattr(cfg, 'tick', None), getattr(cfg, 'instrument', None))
+    if _key not in _cache:
+        _cache[_key] = _execution_regime_impl(snapshot, cfg, engine)
+    return dict(_cache[_key])
+
+
+def _execution_regime_impl(snapshot, cfg, engine):
     import oil_risk
 
     regime = market_regime(snapshot, cfg.tick, engine)
