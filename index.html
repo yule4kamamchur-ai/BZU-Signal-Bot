@@ -5,23 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
 <title>BZU · v14.4 Pro Cockpit</title>
-<link rel="stylesheet" href="./live_terminal.css?v=14.4.1">
+<link rel="stylesheet" href="./live_terminal.css?v=14.4.7">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
-<script defer src="./live_terminal.js?v=14.4.6"></script>
+<script defer src="./live_terminal.js?v=14.4.7"></script>
 </head>
 <body>
 <header class="masthead">
   <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>REAL-TIME BRAIN</span></h1><p class="muted">Brent · v14.4 · Live Brain · 3s Sync</p></div></div>
   <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
 </header>
-<section id="state-banner" class="state-banner banner-waiting" data-mode="WAITING" aria-labelledby="state-title">
+<section id="state-banner" class="state-banner banner-waiting" data-mode="WAITING" aria-labelledby="state-title" aria-describedby="state-detail">
   <div class="state-heading"><div><p id="state-eyebrow" class="eyebrow" hidden></p><h2 id="state-title">Завантажуємо стан бота…</h2></div><span id="state-pill" class="badge"></span></div>
-  <p id="state-detail" class="sr-only"></p>
+  <p id="state-detail"></p>
   <ol class="stepper sr-only" aria-label="Етапи угоди"><li id="step-scan">1 · Пошук</li><li id="step-pending">2 · Лімітка</li><li id="step-active">3 · Супровід</li></ol>
 </section>
 <div class="summary">
   <div class="tile"><small>ЦІНА OKX</small><strong id="price">—</strong><small id="quote-status">Очікуємо котирування</small></div>
-  <div class="tile"><small>РЕЖИМ РИНКУ</small><strong id="regime">—</strong></div>
+  <div class="tile"><small>РЕЖИМ РИНКУ</small><strong id="regime">—</strong><small id="regime-matrix" class="regime-matrix"></small></div>
   <div class="tile"><small>ЦИКЛ БОТА · КИЇВ</small><strong id="stamp">—</strong><small id="state-status">Очікуємо зліпок</small></div>
   <div class="tile"><small>СЬОГОДНІ</small><strong id="daily">—</strong><small id="capacity">0/2 місць</small></div>
 </div>
@@ -39,6 +39,7 @@
     <section class="panel tactical-panel" aria-labelledby="radar-title">
       <div class="bar"><h2 id="radar-title">Тактичний радар сетапів</h2><small id="radar-source">За журналом</small></div>
       <p id="tactical-focus" class="tactical-focus" data-side="range">Очікуємо дані</p>
+      <ul id="radar-watchlist" class="radar-watchlist" aria-label="Рівні спостереження" hidden></ul>
       <p id="alert" role="status" aria-live="polite"></p>
       <article id="radar-primary" class="tactical-primary" aria-label="Активна позиція або ордер" hidden></article>
       <div id="tactical-reserves" hidden>

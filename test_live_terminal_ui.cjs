@@ -33,9 +33,10 @@ const ctx={localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>stor
   removeItem:key=>storage.delete(key)},document,window:{innerWidth:1440},navigator:{clipboard:{writeText:async text=>{clipboard=text;}}},
   Intl,URLSearchParams,AbortSignal,Date:TestDate,console,setInterval(){},clearInterval(){},WebSocket:function(){},
   fetch:async()=>({ok:false,status:503,json:async()=>({})})};
-const series={setData(data){chartCalls.data=data;},update(){},applyOptions(){},priceToCoordinate:p=>400-(p-98)*100,
+const series={setData(data){chartCalls.data=data;},update(bar){chartCalls.lastBar=bar;},applyOptions(){},priceToCoordinate:p=>400-(p-98)*100,
   attachPrimitive(primitive){primitive.attached({requestUpdate(){}});chartCalls.primitive=primitive;}};
-ctx.window.LightweightCharts={CandlestickSeries:{},LineStyle:{Dashed:2,Solid:0},createChart(){return {addSeries:()=>series,
+ctx.window.LightweightCharts={CandlestickSeries:{},LineStyle:{Dashed:2,Solid:0},createChart(){return {addSeries:(_type,options)=>{
+  chartCalls.seriesOptions=options;return series;},
   timeScale:()=>({fitContent(){},timeToCoordinate:t=>200+(t-clock.value/1000)/30}),priceScale:()=>({applyOptions(){}})};}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('live_terminal.js','utf8'),ctx);
 const run=source=>vm.runInContext(source,ctx),text=id=>nodes.get(id).textContent;
@@ -62,6 +63,10 @@ ctx.fixtureBackup=cleanFixture;
 
 (async()=>{
  await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(chartCalls.seriesOptions.priceLineVisible,true);
+ assert.equal(chartCalls.seriesOptions.priceLineStyle,ctx.window.LightweightCharts.LineStyle.Dashed);
+ assert.equal(chartCalls.seriesOptions.priceLineWidth,1);
+ assert.equal(chartCalls.seriesOptions.priceLineColor,'#ff8a3d');
  run('state={...fixtureBackup};');
  assert.equal(run(`validCandidate({...fixtureBackup.candidates[0],exit_policy:'FULL_POSITION_V144',
    tp1:100.34,tp2:100.34})`),true);
@@ -80,7 +85,7 @@ ctx.fixtureBackup=cleanFixture;
     {...fixtureBackup.candidates[0],entry:89.50,stop:88.85,tp1:90.5,tp2:91}
  ]};stateError=false;quote={price:89.54,ts:Date.now()};render();`);
  assert.match(text('state-title'),/SHORT .*@ 89.71/);
- assert.match(text('tactical-focus'),/ОЧІКУЄМО SHORT/);
+ assert.match(text('tactical-focus'),/ПРІОРИТЕТ SHORT ↓.*Стежимо за SHORT.*89.71/);
  assert.equal(radar.hidden,true);
  assert.deepEqual(tone(),['neutral','neutral','neutral']);
  assert.match(text('zones'),/89.71.*90.36.*88.73.*Чекаємо підходу/);
@@ -89,9 +94,58 @@ ctx.fixtureBackup=cleanFixture;
  assert.equal(run('positionBox(tacticalRadar().order)'),null);
  assert.equal(nodes.get('chart-legend').hidden,true);
  run('quote={price:89.59,ts:Date.now()};render();');
- assert.match(text('state-title'),/SHORT .*@ 89.71.*0.12/);
+ assert.match(text('state-title'),/SHORT .*@ 89.71/);
+ assert.match(text('state-detail'),/Δ \+0.12/);
  assert.ok(!html.includes('Кандидати на вхід'));
  assert.ok(!html.includes('Зони сканера'));
+
+ // A server-led cockpit can have fresh context even when no order is admissible.
+ run(`state={...fixtureBackup,brain_config:{schema:1,entry_policy:'SERVER_FULL_POSITION'},
+   primary_bias:-1,market_regime:'BEARISH_ACTIVE',price:86.34,candidates:[],
+   trend_matrix:{side:0,side_4h:-1,side_1h:0},structure_sync:{side:-1,timeframe:'15m'},
+   developing_setup:{setup:'FVG_PULLBACK',side:-1,level:87.13,trigger:'Чекаємо ретест 87.13–87.89 $ і закриття M15 нижче 87.13 $',
+     preview:{entry:87.13,stop:88.10,tp1:85.65,rr1:1.53}},
+   plan_pool:[{kind:'FVG_BEAR',side:-1,entry:86.56,stop:87.3,tp1:85.1,rr1:1.97,reason_text:'Чекаємо підхід до зони'},
+     {kind:'DEMAND_OB',side:1,entry:86.04,stop:85.7,tp1:86.84,rr1:2.35,reason:'WAIT_M15_ENTRY_REJECTION'},
+     {kind:'EXPIRED_ZONE',side:-1,entry:86.35,valid_until:Date.now()},
+     {kind:'SPENT_ZONE',side:1,entry:86.33,gate_reason:'EXHAUSTED_MOVE'}]};
+   Object.assign(brain,{computed:Date.now(),matrix:{side:0},rows:[]});
+   quote={price:86.34,ts:Date.now()};render();`);
+ assert.match(text('state-title'),/ПРІОРИТЕТ SHORT ↓.*FVG_PULLBACK @ 87.13/);
+ assert.match(text('tactical-focus'),/ПРІОРИТЕТ SHORT ↓.*FVG_PULLBACK @ 87.13.*Δ \+0.79/);
+ assert.match(text('state-detail'),/Δ \+0.79.*Чекаємо ретест 87.13–87.89.*закриття M15/);
+ assert.match(text('regime-matrix'),/4H ↓ 1H ↔ M15 ↓ Пріоритет: SHORT/);
+ assert.equal(text('regime'),'Низхідний тренд');
+ assert.equal(nodes.get('radar-watchlist').children.length,3);
+ assert.match(text('radar-watchlist'),/SHORT.*FVG_BEAR.*86.56.*Δ \+0.22.*R:R ≈ 1.97.*Чекаємо підхід/);
+ assert.match(text('radar-watchlist'),/LONG.*DEMAND_OB.*86.04.*Δ −0.30.*R:R ≈ 2.35.*закриту свічку/);
+ assert.doesNotMatch(text('radar-watchlist'),/EXPIRED_ZONE|SPENT_ZONE/);
+ assert.equal(run('tacticalRadar().queue.length'),0);
+
+ // The normal ticker path updates the close used by the built-in price line.
+ run(`acceptTicker({instId:state.instrument,last:'86.40',ts:String(Date.now()+1000),bidPx:'86.39',askPx:'86.41'});render();`);
+ assert.equal(chartCalls.lastBar.close,86.40);
+ assert.match(text('state-detail'),/Δ \+0.73/);
+
+ run(`state={...state,primary_bias:1,developing_setup:null};quote={price:86.34,ts:Date.now()};render();`);
+ assert.match(text('state-title'),/ПРІОРИТЕТ LONG ↑.*FVG_BEAR @ 86.56/);
+ assert.match(text('tactical-focus'),/ПРІОРИТЕТ LONG ↑.*FVG_BEAR @ 86.56/);
+
+ run(`state={...state,primary_bias:0,plan_pool:[],market_regime:'RANGE',
+   dealing_range:{range_low:85.80,range_high:87.23}};render();`);
+ assert.match(text('state-title'),/ДІАПАЗОН \(85.80–87.23 \$\).*Шукаємо відбій/);
+ assert.match(text('tactical-focus'),/ДІАПАЗОН \(ОБИДВА НАПРЯМКИ\).*85.80–87.23/);
+ assert.match(text('state-detail'),/SHORT від верхньої межі 87.23 \$ \(Δ \+0.89 \$\).*LONG від нижньої межі 85.80 \$ \(Δ −0.54 \$\)/);
+ assert.equal(nodes.get('radar-watchlist').children.length,2);
+ assert.match(text('radar-watchlist'),/SHORT Верхня межа.*LONG Нижня межа/);
+ assert.doesNotMatch(text('radar-watchlist'),/R:R/);
+
+ run('stateError=true;brain.computed=0;render();');
+ assert.equal(text('state-title'),'ЧЕКАЄМО ОНОВЛЕННЯ ДАНИХ');
+ assert.equal(nodes.get('radar-watchlist').hidden,true);
+
+ // Restore chart state for the remaining position and candle tests.
+ run('stateError=false;history=[];currentBar=undefined;lastSampleTime=0;brain.computed=0;');
 
  run(`state={...fixtureBackup,brain_config:{schema:1,missed_target_r:.75,browser_replace_atr:1,
    market_band_atr:.65,market_min_rr:1.35,limit_min_rr:1.40,risk_floor:.65,risk_cap:1.15,ttl_ms:5400000},
@@ -100,7 +154,8 @@ ctx.fixtureBackup=cleanFixture;
    quote={price:99.65,bid:99.64,ask:99.66,ts:Date.now()+1000};advanceBrain(quote,null,[]);render();`);
  assert.equal(run('displayOrders()[0].status'),'OPEN');
  assert.equal(run('state.orders[0].status'),'PENDING');
- assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*PnL/);
+ assert.match(text('state-title'),/В УГОДІ LONG @ 99.66/);
+ assert.match(text('state-detail'),/PnL/);
  assert.match(text('radar-primary'),/В УГОДІ/);
  const key=run('brainStorageKey(state.instrument)');
  const persisted=JSON.parse(storage.get(key));
@@ -110,7 +165,9 @@ ctx.fixtureBackup=cleanFixture;
  run(`Object.assign(brain,{sourceTs:0,orders:[],event:null});syncBrain(state,true);
    quote={price:99.77,bid:99.76,ask:99.78,ts:Date.now()+1000};advanceBrain(quote,null,[]);render();`);
  assert.equal(run('displayOrders()[0].status'),'OPEN');
- assert.match(text('state-title'),/В УГОДІ LONG @ 99.66.*\+0.27R/);
+ assert.match(text('state-title'),/В УГОДІ LONG @ 99.66/);
+ assert.match(text('state-detail'),/\+0.27R/);
+ assert.equal(nodes.get('radar-watchlist').hidden,true);
  assert.equal(axisViews().length,6);
  assert.equal(axisViews()[0].text(),'99.66');
  assert.equal(axisViews()[0].backColor(),'#303341');
