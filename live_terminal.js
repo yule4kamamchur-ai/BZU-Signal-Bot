@@ -1683,6 +1683,17 @@ function renderTacticalRadar(price, view, pnl, tone) {
       metric.append(element('dt',label),reading);
       metrics.append(metric);
     }
+    if (number(order.risk_multiplier) || number(order.meta_prob)) {
+      const sm=element('div');
+      sm.dataset.level='sizing';
+      const val=number(order.risk_multiplier)?Number(order.risk_multiplier).toFixed(2)+'×':'1.00×';
+      const rd=element('dd',val);
+      if (number(order.meta_prob)) {
+        rd.append(element('span','P='+Math.round(order.meta_prob*100)+'% '+(order.meta_prob_calibrated?'Bayes':'Score'),'target-r-badge'));
+      }
+      sm.append(element('dt','Ставка'),rd);
+      metrics.append(sm);
+    }
     primary.append(heading,metrics);
     if (active) {
       const panel=element('div',null,'position-telemetry');
@@ -1705,7 +1716,8 @@ function renderTacticalRadar(price, view, pnl, tone) {
     const row=element('tr');
     const side=element('strong',sideLabel(plan.side)+' · '+(plan.timeframe??''),plan.side===1?'long':'short');
     const name=td('');
-    name.append(side,element('small',zoneName(plan.kind??plan.setup)));
+    const qsz=sizingBadgeText(plan);
+    name.append(side,element('small',zoneName(plan.kind??plan.setup)+(qsz?' · '+qsz:'')));
     const risk=plan.side*(plan.entry-plan.stop);
     row.append(name,td(format(plan.entry)),td(format(plan.stop)),td(format(plan.tp1)+' · '+
       (plan.side*(plan.tp1-plan.entry)/risk).toFixed(2)+'R'),td(activationText(plan,price)));
@@ -1755,6 +1767,15 @@ function setBannerMode(mode) {
   }
   return banner;
 }
+function sizingBadgeText(item) {
+  if (!item) return '';
+  const parts = [];
+  if (number(item.risk_multiplier)) parts.push('Ставка ' + Number(item.risk_multiplier).toFixed(2) + '×');
+  if (number(item.meta_prob)) {
+    parts.push('P=' + Math.round(item.meta_prob * 100) + '% (' + (item.meta_prob_calibrated ? 'Bayes' : 'Score') + ')');
+  }
+  return parts.join(' · ');
+}
 function renderBanner(price, usable, view, pnl, tone) {
   const {order,plan,priority,reference,range}=view;
   let mode='WAITING', pill='РАДАР', title='РАДАР · '+priorityText(priority), detail='Очікуємо конкретний рівень для спостереження.';
@@ -1763,7 +1784,8 @@ function renderBanner(price, usable, view, pnl, tone) {
     pill=(order.local?'PAPER · ':'В УГОДІ · ')+(order.order_type??order.type??'LIMIT');
     title='В УГОДІ '+sideLabel(order.side)+' @ '+format(order.entry);
     const pnlText=number(pnl)?signed(pnl,'R')+' ('+signed(pnl*order.risk,' $/од.')+')':'—';
-    detail='PnL '+pnlText+' · SL '+format(order.stop)+' | '+(fullPosition(order)?'TP 100% ':'TP1 ')+format(order.tp1);
+    const sz=sizingBadgeText(order);
+    detail='PnL '+pnlText+(sz?' · '+sz:'')+' · SL '+format(order.stop)+' | '+(fullPosition(order)?'TP 100% ':'TP1 ')+format(order.tp1);
   } else if (order?.status==='CANCELLING'||(order?.status==='PENDING'&&!pendingIsCurrent(order,price))) {
     pill='ЗВІРКА';
     title='ЗВІРКА ЛІМІТКИ '+sideLabel(order.side)+' @ '+format(order.entry);
@@ -1772,7 +1794,8 @@ function renderBanner(price, usable, view, pnl, tone) {
     mode='PENDING';
     pill=order.local?'PAPER · LIMIT':'LIMIT';
     title='ЛІМІТ ВИСТАВЛЕНО '+sideLabel(order.side)+' @ '+format(order.entry);
-    detail='Δ '+format(Math.abs(price-order.entry))+' $ · SL '+format(order.stop)+' | '+
+    const sz=sizingBadgeText(order);
+    detail='Δ '+format(Math.abs(price-order.entry))+' $'+(sz?' · '+sz:'')+' · SL '+format(order.stop)+' | '+
       (fullPosition(order)?'TP 100% ':'TP1 ')+format(order.tp1);
   } else if (!usable && !liveBrainFresh()) {
     title='ЧЕКАЄМО ОНОВЛЕННЯ ДАНИХ';
