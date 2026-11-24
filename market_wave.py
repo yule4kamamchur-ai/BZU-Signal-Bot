@@ -27,6 +27,23 @@ CONTINUATIONS = frozenset({'BULLISH_BREAKER', 'BEARISH_BREAKER', 'CONTINUATION_P
                            'M5_IMPULSE_OB', 'FLAG_RETEST'})
 
 
+def confirmed_hourly_reversal(snapshot, side, tick, engine):
+    """A known hourly pivot breaks, then two subsequent closes hold the level."""
+    rows = oil_risk.closed(snapshot.candles.get('1H', ()), oil_risk.H1, snapshot.now)[-96:]
+    if not rows or snapshot.now - rows[-1].ts >= 2*oil_risk.H1:
+        return {}
+    pivots = engine.pivots(rows, strength=2)
+    for i in range(len(rows)-3, max(4,len(rows)-25), -1):
+        follow = rows[i:]
+        if any(b.ts-a.ts != oil_risk.H1 for a,b in zip(follow,follow[1:])):
+            break
+        pivot = ict.body_break(rows,i,pivots,side,tick,oil_risk.H1)
+        if pivot and all(side*(bar.close-pivot['level']) >= tick-1e-8 for bar in follow[1:]):
+            return {'proof':'CONFIRMED_1H_REVERSAL', 'side':side, 'level':pivot['level'],
+                    'break_ts':rows[i].ts+oil_risk.H1, 'known_ts':rows[i+2].ts+oil_risk.H1}
+    return {}
+
+
 def structure_breaks(rows, step, tick, engine, lookback, hourly_points=()):
     """A displacement must cross a pivot known before the candle opened."""
     points = engine.pivots(rows[-max(80, lookback + 12):], strength=1)
@@ -1035,8 +1052,10 @@ def focus_context(snapshot, regime, dealing_range, tick):
     proof = regime.get('structure_sync') or {}
     early = proof.get('proof')==EARLY_M15_RECLAIM and proof.get('side')==wave_side and bool(wave_side)
     matrix_side = (regime.get('trend_matrix') or {}).get('side',0)
-    wave_proof = proof.get('proof') in (RECENT_SWING,BOS_IMPULSE,EMA_MATRIX,'DISPLACEMENT_MSS_FVG')
-    trend_side = wave_side if early or wave_proof or matrix_side==wave_side or ema_side==wave_side else 0
+    wave_proof = proof.get('proof') in (RECENT_SWING,BOS_IMPULSE,EMA_MATRIX,'DISPLACEMENT_MSS_FVG',
+                                         'CONFIRMED_1H_REVERSAL')
+    pullback = regime.get('local_pullback_side') == -wave_side and wave_side != 0
+    trend_side = wave_side if pullback or early or wave_proof or matrix_side==wave_side or ema_side==wave_side else 0
     range_side = trend_side or ema_side
     location = None
     if dealing_range:
@@ -1044,7 +1063,9 @@ def focus_context(snapshot, regime, dealing_range, tick):
         location = 100*(snapshot.price-low)/(high-low)
     discount = location is not None and location < 30
     premium = location is not None and location > 70
-    phase = ('BULLISH_RECLAIM' if early and wave_side==1 else
+    phase = ('BULLISH_PULLBACK' if pullback and wave_side==1 else
+             'BEARISH_PULLBACK' if pullback else
+             'BULLISH_RECLAIM' if early and wave_side==1 else
              'BEARISH_RECLAIM' if early else
              'BEARISH_DISCOUNT' if range_side == -1 and discount else
              'BULLISH_PREMIUM' if range_side == 1 and premium else
@@ -1052,6 +1073,8 @@ def focus_context(snapshot, regime, dealing_range, tick):
              'RANGE' if regime.get('state') in ('RANGE','RANGE_LIQUIDITY_ROTATION') else 'TRANSITION')
     labels = {'BULLISH_RECLAIM':'Підтверджений висхідний злам M15',
               'BEARISH_RECLAIM':'Підтверджений низхідний злам M15',
+              'BULLISH_PULLBACK':'Відкат у висхідному режимі 4H',
+              'BEARISH_PULLBACK':'Відкат у низхідному режимі 4H',
               'BEARISH_DISCOUNT':'Низхідна структура біля дна діапазону',
               'BULLISH_PREMIUM':'Висхідна структура біля вершини діапазону',
               'BEARISH':'Тренд низхідний','BULLISH':'Тренд висхідний',

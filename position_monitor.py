@@ -164,7 +164,7 @@ def adverse_close_pair(position, snapshot, tick, engine):
                   if p['kind']==kind and p['known_ts']+step<=first.ts),None)
     if not swing or any(side*(bar.close-swing['level'])>-tick+EPS for bar in (first,last)):
         return None
-    return {'known_ts':last.ts+step, 'level':swing['level'],
+    return {'known_ts':last.ts+step, 'first_ts':first.ts, 'last_close':last.close, 'level':swing['level'],
             'ema20':ema, 'session_vwap':vwap}
 
 
@@ -183,6 +183,14 @@ def observe_structure(position, snapshot, ts, cfg, engine):
             position.pop('adverse_close_pair',None)
         else:
             position['adverse_close_pair'] = pair
+        if pair and pair.get('first_ts') and engine.bzu_policy.full_position(position):
+            rows = oil_risk.closed(snapshot.candles.get('15m', ()), oil_risk.M15, pair['first_ts'])[-96:]
+            kind = 'LOW' if position['side'] == 1 else 'HIGH'
+            swing = next((p for p in reversed(engine.pivots(rows,strength=2))
+                          if p['kind'] == kind and entered <= p['ts']
+                          and p['known_ts']+oil_risk.M15 <= pair['first_ts']), None)
+            position['post_entry_protected_swing'] = ({'level':swing['level'], 'pivot_ts':swing['ts'],
+                'known_ts':swing['known_ts']+oil_risk.M15} if swing else None)
     rows = _recent(as_of, '15m', 15)
     atr = engine.atr(rows[:-1])
     position.pop('adverse_impulse_ts', None)
@@ -324,12 +332,14 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine, *, snapsho
             return decision
         if (bars >= ADVERSE_HOLD_BARS and proof and 0 <= ts-proof['known_ts'] < STEPS['15m']
                 and all(side*(price-proof[key]) < 0 for key in ('level','ema20','session_vwap'))):
-            swing = position.get('protection_structure_level')
-            if swing is None:
-                swing = proof['level']
-            if rr <= -.40 + EPS and side*(price-swing) <= -cfg.tick + EPS:
+            swing = position.get('post_entry_protected_swing') or {}
+            confirmed = ((position.get('filled_ts') or ts) <= swing.get('pivot_ts', 0)
+                         < swing.get('known_ts', 0) <= proof.get('first_ts', 0))
+            if (confirmed and rr <= -.40 + EPS and
+                    max(side*(price-swing['level']), side*(proof['last_close']-swing['level'])) <= -cfg.tick + EPS):
                 return {**decision, 'should_exit': True, 'exit_reason': 'CLOSED_ADVERSE_STRUCTURE_SHIFT'}
-            stop = engine.round_tick(round(entry-side*.55*risk,10), cfg.tick, up=side == -1)
+            lock = .55 if confirmed else .60
+            stop = engine.round_tick(round(entry-side*lock*risk,10), cfg.tick, up=side == -1)
             if side*(stop-strongest_stop(position,engine)) > EPS and side*(price-stop) >= cfg.tick-EPS:
                 decision.update(stop=stop, stop_policy='ADVERSE_STRUCTURE_TIGHTEN')
         stop = time_decay_stop(position,snapshot,ts,price,cfg,engine)
@@ -388,7 +398,14 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 
 MFE_STOP_POLICY = 'MFE_PROTECTION'
 MFE_LOCK_STEPS = ((.60, -.35), (.85, .08), (1.25, .55), (1.65, 1.10))
+LATE_MFE_LOCK_STEPS = ((.60, -.35), (.70, .08), (1.25, .55), (1.65, 1.10))
 LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
+
+
+def mfe_lock_steps(position, engine):
+    if not engine.bzu_policy.full_position(position):
+        return LEGACY_MFE_LOCK_STEPS
+    return LATE_MFE_LOCK_STEPS if position.get('late_entry') else MFE_LOCK_STEPS
 
 
 def mfe_protection(position, ts, price, cfg, engine):
@@ -396,7 +413,7 @@ def mfe_protection(position, ts, price, cfg, engine):
     if not oil_risk.enabled(cfg) or position['risk'] <= 0 or ts <= (position.get('filled_ts') or 0):
         return None
     peak = metrics(position, ts)['max_favorable_r']
-    steps = MFE_LOCK_STEPS if engine.bzu_policy.full_position(position) else LEGACY_MFE_LOCK_STEPS
+    steps = mfe_lock_steps(position, engine)
     locked_r = next((lock for trigger, lock in reversed(steps) if peak >= trigger - EPS), None)
     if locked_r is None:
         return None

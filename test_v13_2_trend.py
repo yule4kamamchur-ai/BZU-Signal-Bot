@@ -51,7 +51,7 @@ class TrendBreakout(TestCase):
             candles = self.mirrored(rows,-side)
             snap = replace(snapshot,price=candles[-1].close,candles={'15m':candles})
             original = {'state':'BULLISH_ACTIVE' if side==-1 else 'BEARISH_ACTIVE',
-                        'side_1h':-side,'side_4h':-side,'active_structure':{'side':-side}}
+                        'side_1h':-side,'side_4h':0,'active_structure':{'side':-side}}
             directions = (93.36,93.64) if side==-1 else (106.64,106.36)
             with self.subTest(side=side), patch.object(engine.policy,'market_regime',return_value=original), \
                  patch.object(engine.policy,'trend_references',return_value=directions), \

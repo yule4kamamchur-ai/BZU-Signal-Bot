@@ -225,8 +225,8 @@ def day_extrema(snapshot):
 
 def regime_side(regime):
     state = regime.get('state', '')
-    return 1 if state in ('BULLISH_TREND', 'BULLISH_ACTIVE') else (
-        -1 if state in ('BEARISH_TREND', 'BEARISH_ACTIVE') else 0)
+    return 1 if state in ('BULLISH_TREND', 'BULLISH_ACTIVE', 'BULLISH_PULLBACK') else (
+        -1 if state in ('BEARISH_TREND', 'BEARISH_ACTIVE', 'BEARISH_PULLBACK') else 0)
 
 
 def market_regime(snapshot, tick, engine):
@@ -254,6 +254,16 @@ def market_regime(snapshot, tick, engine):
             'range_high':max((c.high for c in rows),default=snapshot.price)}
 
 
+def opposing_four_hour(snapshot, side, engine):
+    import strategy_organics
+
+    rows = closed(snapshot,'4H')
+    if not rows:
+        return False
+    observed = engine.bias(rows)['side'] or strategy_organics.classify(snapshot).trend_4h
+    return observed == -side
+
+
 def execution_regime(snapshot, cfg, engine):
     """Give a confirmed intraday shift priority over a lagging hourly bias."""
     import oil_risk
@@ -263,7 +273,7 @@ def execution_regime(snapshot, cfg, engine):
         return regime
     from market_wave import (
         BOS_IMPULSE, EMA_MATRIX, RECENT_SWING, bos_impulse_zones, breakdown_intact, breakdown_zones,
-        chronological_wave, displacement_override, early_structure_reclaim,
+        chronological_wave, confirmed_hourly_reversal, displacement_override, early_structure_reclaim,
     )
 
     one, four = regime.get('side_1h', 0), regime.get('side_4h', 0)
@@ -296,6 +306,15 @@ def execution_regime(snapshot, cfg, engine):
     if matrix['side'] and (not sync or sync['side']!=matrix['side']):
         sync = {'side':matrix['side'],'known_ts':matrix['known_ts'],'proof':EMA_MATRIX}
     side = sync.get('side') or one or four
+    if four and side == -four:
+        reversal = confirmed_hourly_reversal(snapshot, side, cfg.tick, engine)
+        if not reversal:
+            label = 'BULLISH' if four == 1 else 'BEARISH'
+            return {**regime, 'state':label+'_PULLBACK', 'trend_state':label+'_TREND',
+                    'wave_phase':label+'_PULLBACK', 'trend_phase':label+'_PULLBACK_OPPORTUNITY',
+                    'trend_anchor_side':four, 'trend_anchor_timeframe':'4H', 'trend_matrix':matrix,
+                    'active_structure':{}, 'structure_sync':{}, 'local_pullback_side':side}
+        sync = reversal
     if not side or (not sync and one and four and one != four):
         return {**regime,'trend_matrix':matrix}
     m15 = closed(snapshot, '15m')
@@ -311,7 +330,8 @@ def execution_regime(snapshot, cfg, engine):
             'active_structure': sync if sync.get('proof') in (RECENT_SWING,BOS_IMPULSE,EMA_MATRIX)
                                 else regime.get('active_structure',{}),
             'trend_matrix':matrix,
-            'trend_anchor_side': side, 'trend_anchor_timeframe': '15m' if sync else '1H' if one else '4H',
+            'trend_anchor_side': side, 'trend_anchor_timeframe': ('1H' if sync.get('proof') == 'CONFIRMED_1H_REVERSAL'
+                                  else '15m' if sync else '1H' if one else '4H'),
             'structure_sync': sync,
             'trend_phase': ('BULLISH_PULLBACK_OPPORTUNITY' if side == 1 else 'BEARISH_PULLBACK_OPPORTUNITY')
                            if pullback else 'TREND_CONTINUATION'}

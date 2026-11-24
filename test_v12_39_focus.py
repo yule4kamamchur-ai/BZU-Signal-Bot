@@ -40,7 +40,7 @@ class SingleFocus(unittest.TestCase):
             snap,cfg = early_reclaim_fixture(side)
             level, protected = (89.85,89.22) if side==1 else (90.15,90.78)
             old_state = 'BEARISH_ACTIVE' if side==1 else 'BULLISH_ACTIVE'
-            slow = {'state':old_state,'side_1h':-side,'side_4h':-side,
+            slow = {'state':old_state,'side_1h':-side,'side_4h':0,
                     'active_structure':{},'local_structure':{}}
             before_close = replace(snap, now=snap.now-1-engine.TF['15m'])
             with patch.object(engine.policy,'market_regime',return_value=slow), \

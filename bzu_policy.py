@@ -64,6 +64,9 @@ def missed_target_level(plan):
     distance = MISSED_TARGET_R * risk
     target = partial_target(plan)
     if target is not None and side * (target - entry) > 0:
+        fraction = plan.get('missed_target_fraction')
+        if fraction is not None:
+            return round(entry + fraction*(target-entry), 10)
         if plan.get('limit_ttl_ms', 0) > PENDING_LIMIT_TTL_MS and full_position(plan):
             return target
         distance = min(distance, side * (target - entry))
@@ -71,7 +74,8 @@ def missed_target_level(plan):
 
 
 def missed_target_multiple(plan, target):
-    if plan.get('limit_ttl_ms', 0) > PENDING_LIMIT_TTL_MS and full_position(plan):
+    if full_position(plan) and (plan.get('missed_target_fraction') is not None or
+                                plan.get('limit_ttl_ms', 0) > PENDING_LIMIT_TTL_MS):
         return abs(target - plan['entry']) / plan['risk']
     return MISSED_TARGET_R
 
@@ -349,6 +353,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if zone_error and zone_error != 'RANGE_ZONE_TOO_CLOSE':
         return None, zone_error
     trend = oil_risk.enabled(cfg) and scanner.wave.trend_zone(zone, regime, origin)
+    opposing_4h = oil_risk.enabled(cfg) and regime.get('side_4h') == -side
     relation = 'WITH_TREND' if trend else None
     counter_confirmation = None
     sweep_override = direction.reversal_sweep_override(side, zone, snapshot, cfg.tick)
@@ -379,7 +384,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                                        oil_risk.snapshot_profile(snapshot)['adr_d1'])))
     if multibar or edge_reversal:
         relation = scanner.REVERSAL_RELATION
-    if oil_risk.enabled(cfg) and not (local_reversal or multibar or direction.aligned_setup(snapshot,side,zone,regime)):
+    if oil_risk.enabled(cfg) and not (opposing_4h or local_reversal or multibar or direction.aligned_setup(snapshot,side,zone,regime)):
         anchor_side = (regime.get('trend_anchor_side') or direction.regime_side(regime) or
                        direction.regime_side({'state': regime.get('trend_state')}))
         if anchor_side == -side:
@@ -421,10 +426,22 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             swings[-1]['level'] if swings else anchor.invalidation)
     preferred = (anchor.level if organic_formation else (low + high) / 2 if countertrend else None)
     oil = (oil_risk.snapshot_profile(snapshot), oil_risk.stop_anchors(snapshot, cfg, engine, side)) if oil_risk.enabled(cfg) else None
+    sizing = {}
+    early_impulse = False
+    rejection = None
     if oil:
         entry, entry_basis = ((zone['reference'],'STRUCTURAL_REFERENCE') if breakdown or zone['kind']==scanner.wave.BASE else
             strategy_direct_entries.adaptive_limit(snapshot,zone,origin,side,cfg.tick,engine))
-        if entry_basis in ('SHALLOW_M15_RETEST','ZONE_EDGE_BUFFER','STRUCTURAL_REFERENCE_BUFFER'):
+        original_location = execution_rules.range_location(snapshot,entry)
+        quote_location = execution_rules.range_location(snapshot,snapshot.price)
+        late = (original_location is not None and side*(original_location-.5) > .25 or
+                quote_location is not None and side*(quote_location-.5) > .25
+                and abs(snapshot.price-entry) <= .25*a15)
+        early_impulse = execution_rules.fresh_aligned_impulse(snapshot,side,regime,zone,origin)
+        entry, refined = execution_rules.refined_entry(snapshot,side,zone,entry,cfg.tick,engine,
+                                                        early=early_impulse,late=late)
+        entry_basis = refined or entry_basis
+        if refined or entry_basis in ('SHALLOW_M15_RETEST','ZONE_EDGE_BUFFER','STRUCTURAL_REFERENCE_BUFFER'):
             # Keep the original structural invalidation and carry the witnessed
             # execution band through router and dashboard geometry validation.
             zone = {**zone,'execution_low':min(low,entry),'execution_high':max(high,entry)}
@@ -433,9 +450,17 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         inside = low <= snapshot.price <= high
         gate = scenario_planner.entry_error(snapshot,cfg,engine,side,entry,zone,
             trend=bool(breakdown or trend or scanner.continuation_setup(anchor.evidence.get('source_strategy'),zone['kind'],anchor.setup_type)),regime=regime)
-        if gate:
+        if gate and not opposing_4h:
             diag.update(entry=entry, stop=stop, risk=risk)
             return None, gate
+        wave_ts = origin.get('break_known_ts') or impulse_known
+        volume_tf = (zone.get('wave_proof') or {}).get('timeframe', origin.get('timeframe',tf))
+        rvol = scanner.event_rvol(snapshot,volume_tf,wave_ts)['rvol']
+        _, room_r = oil_risk.structural_room(side,entry,risk,scenario_planner.structure_levels(snapshot,engine),
+                                              trend=trend or opposing_4h or multibar or local_reversal)
+        sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
+                                                 rvol=rvol,room_r=room_r,late=late)
+        diag.update(sizing,original_range_pos=original_location)
     else:
         entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
             low, high, snapshot.price, structural, side, a15, cfg, engine, preferred=preferred, oil=oil)
@@ -468,7 +493,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     mark('VALID_STOP', valid_stop)
     if not valid_stop:
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
-    if approach.get('blocked') and not sniper_reversal and not (oil and session['post_sweep_only']):
+    require_rejection = sizing.get('rejection_required', False)
+    if approach.get('blocked') and not (require_rejection or sniper_reversal or oil and session['post_sweep_only']):
         diag['status']='WATCHING'
         if oil:
             return None, 'WAIT_PULLBACK_REJECTION' if zone['kind'] == 'FVG_PULLBACK' else 'CONFIRMATION_REQUIRED'
@@ -495,7 +521,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     market_trigger = None
     pullback = bool(oil and scanner.structural_pullback(zone))
     proof_quote = entry if pullback and side*(quote-entry)<0 else quote
-    if oil:
+    if oil and not opposing_4h:
         gate = direction.trend_entry_error(snapshot,side,snapshot.price,zone,cfg.tick)
         if gate:
             return None, gate
@@ -546,12 +572,30 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 return None, 'WAIT_NY_POST_SWEEP'
             opening_proof = True
         elif not market_trigger or market_trigger['pattern'] == 'INSTANT_TOUCH_MARKET_FILL':
-            market_trigger = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine)
+            market_trigger = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,
+                                                            early=early_impulse)
+        if market_trigger:
+            pattern = market_trigger['pattern']
+            confirmation_tf = market_trigger.get('confirmation_timeframe') or ('5m' if pattern.startswith('M5_') else '15m')
+            rvol = scanner.event_rvol(snapshot,confirmation_tf,market_trigger['known_ts'])['rvol']
+            sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
+                                                     rvol=rvol,room_r=room_r,late=late)
+            require_rejection = sizing['rejection_required']
+        if require_rejection:
+            rejection = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
+            if not rejection:
+                diag['status'] = 'WATCHING'
+                return None, 'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION'
+            if not opening_proof:
+                market_trigger = rejection
         if not market_trigger and snapshot.metadata.get('scan_gap_ms', 0) > 600_000:
             market_trigger = execution_rules.late_retest_evidence(snapshot,side,zone,entry,risk,cfg,engine)
         if market_trigger:
             retest_route = execution_rules.retest_reason(snapshot,side,quote,market_trigger,regime,a15,cfg.tick)
             if retest_route:
+                if require_rejection:
+                    diag['status'] = 'WATCHING'
+                    return None, 'WAIT_M15_ENTRY_REJECTION'
                 old_entry = entry
                 entry = execution_rules.retest_entry(snapshot,zone,side,entry,retest_route,cfg.tick,engine)
                 stop, risk, organic_risk = oil_risk.stop_geometry(
@@ -570,7 +614,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 distance = abs(snapshot.price-entry)
         error = execution_rules.setup_confirmation(anchor.setup_type,zone,snapshot,side,cfg.tick,engine,
                                                    bool(market_trigger), approach=approach)
-        if error and (market_trigger or not retest_route or zone['kind'] == 'FVG_PULLBACK'):
+        if error and not rejection and (market_trigger or not retest_route or zone['kind'] == 'FVG_PULLBACK'):
             return None, error
     decay = engine.quality.consolidation_decay(zone, snapshot, side, cfg.tick, engine)
     diag['zone_decay'] = decay
@@ -579,7 +623,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'ZONE_CONSOLIDATION_DECAY'
     range_market_gate = (scenario_planner.market_range_error(snapshot,cfg,engine,side,quote,zone,regime)
                          if oil and market_trigger else None)
-    if range_market_gate and not opening_proof:
+    if range_market_gate and not (opening_proof or opposing_4h and rejection):
         market_trigger = None
     if (oil and zone['kind']==scanner.wave.BASE and
             (zone.get('wave_proof') or {}).get('trigger')!='BREAKOUT'):
@@ -601,11 +645,17 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     confirmed_retest = bool(passive and audit['touched'] and
                             (approach.get('confirmation_known_ts') or 0) > audit['touch_ts'])
     can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only or counter_confirmation or retest_route)
+    can_wait = can_wait and not require_rejection
     if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
         return None, 'ZONE_NOT_AHEAD_OF_PRICE'
     allowed, why = direction.regime_admission(
         side, quote if market_trigger else entry, regime, snapshot, cfg.tick, engine, linked_sweep or zone, require_macro=bool(oil))
     mark('HTF_ALIGNMENT', allowed)
+    if opposing_4h and rejection:
+        relation = 'COUNTER_TREND'
+        counter_confirmation = rejection
+        local_reversal = True
+        allowed = True
     if not allowed and not opening_proof:
         return None, why
 
@@ -621,7 +671,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                       'move_r': catchup['move_r'], 'pattern': 'CONFIRMED_RETEST'}
     action = 'NEW_PENDING_LIMIT'
     geometry = None
-    target_trend = (trend or exhaustion_bonus or reclaim or sniper_reversal or opening_proof or
+    target_trend = (trend or exhaustion_bonus or reclaim or sniper_reversal or opening_proof or opposing_4h or
                     (market_trigger or {}).get('pattern') == 'TREND_CONTINUATION_MARKET')
     if market_trigger:
         impulse_market = market_trigger['pattern']=='TREND_CONTINUATION_MARKET'
@@ -709,6 +759,21 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     mark('PASSIVE_LIMIT', True)
     mark('TARGET_RR', True)
     tp1, tp2, rr2 = geometry['tp1'], geometry['tp2'], geometry['rr2']
+    missed_fraction = .75 if oil and trend and action != 'ACTIVE_ENTRY' else None
+    if missed_fraction:
+        missed_level = entry + missed_fraction*(tp1-entry)
+        if scanner.target_crossed(side,snapshot,missed_level,zone['known_ts']):
+            return None, 'EXHAUSTED_MOVE'
+    if oil:
+        if rejection:
+            rvol = scanner.event_rvol(snapshot,'15m',rejection['known_ts'])['rvol']
+        sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
+                                                 rvol=rvol,room_r=geometry.get('room_r'),late=late)
+        if sizing['rejection_required'] and not rejection:
+            diag.update(sizing,status='WATCHING')
+            return None, 'WAIT_M15_ENTRY_REJECTION'
+        sizing['rejection_required'] = bool(rejection)
+        diag.update(sizing)
     has_runner = side * (tp2 - tp1) > 0
     diag['round_level_protection'] = {'original_stop': raw_stop, 'stop': stop,
         'original_targets': geometry['raw_targets'], 'tp1': tp1, 'tp2': tp2}
@@ -722,7 +787,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         return None, 'SESSION_CLOSED'
     event = engine.anchor_key(anchor,cfg)
     proof = copy.deepcopy(anchor.evidence)
-    p = {'id':engine.ident(event,snapshot.now), 'order_id':engine.ident(event,snapshot.now),
+    p = {**sizing, 'id':engine.ident(event,snapshot.now), 'order_id':engine.ident(event,snapshot.now),
          'event_key':event, 'zone_key':engine.anchor_zone_key(anchor,cfg),
          'policy':POLICY, 'instrument':cfg.instrument, 'side':side,
          'setup':anchor.setup_type, 'setup_type':anchor.setup_type,
@@ -748,7 +813,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
          'order_type':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
          'execution_preference':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
-         'market_trigger':market_trigger, 'obstacle':geometry.get('obstacle'), 'structural_room_r':geometry.get('room_r'), 'checkpoints':geometry.get('checkpoints', []),
+         'market_trigger':market_trigger, 'entry_confirmation':rejection, 'early_impulse_entry':early_impulse,
+         'obstacle':geometry.get('obstacle'), 'structural_room_r':geometry.get('room_r'), 'checkpoints':geometry.get('checkpoints', []),
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
          'risk':risk, 'organic_risk':organic_risk, 'tp':tp2, 'tp1':tp1, 'tp2':tp2, 'tp3':tp2,
          'rr1':side*(tp1-entry)/risk, 'rr2':rr2, 'rr3':rr2, 'gross_rr':rr2,
@@ -776,6 +842,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'entry_fee_rate':geometry['entry_fee'], 'exit_fee_rate':geometry['exit_fee'], 'slippage_bps':cfg.slippage_bps,
          'placed_ts':snapshot.now, 'effective_ts':effective, 'expires_ts':expires,
          'limit_ttl_ms':limit_ttl if oil and action != 'ACTIVE_ENTRY' else 0,
+         'missed_target_fraction':missed_fraction,
          'expiry_reason':'LIMIT_TTL',
          'max_hold_minutes':cfg.max_hold_minutes, 'intraday':True,
          'time_exit_enabled':False,
@@ -997,6 +1064,7 @@ def close(state, p, price, ts, reason, cfg, engine, ambiguous=False):
     t = {**copy.deepcopy(p), 'status':'CLOSED', 'remaining':0., 'exit':price,
          'closed_ts':ts, 'closed_at':engine.iso(ts), 'close_reason':reason,
          'gross_r':gross, 'realized_r':gross, 'fees_r':fees, 'net_r':gross-fees, 'pnl_r':gross-fees,
+         'portfolio_net_r':(gross-fees)*p.get('risk_multiplier',1.),
          'result':'WIN' if gross-fees>0 else 'LOSS' if gross-fees<0 else 'BREAKEVEN',
          'bot_version_at_entry':p.get('entry_version',p.get('version',engine.VERSION)),
          'exit_version':engine.VERSION, 'ambiguous_ohlc':ambiguous,

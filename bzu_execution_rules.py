@@ -19,6 +19,45 @@ def early_ny(ts):
     return 13 * oil_risk.H1 <= ts % oil_risk.DAY < (13 * 60 + 105) * 60_000
 
 
+def range_location(snapshot, price):
+    cache = vars(snapshot).setdefault('_entry_ranges', {})
+    if snapshot.now not in cache:
+        bars = [b for b in direction.closed(snapshot,'15m')[-96:] if b.ts >= snapshot.now-oil_risk.DAY]
+        cache[snapshot.now] = (min((b.low for b in bars), default=price),
+                               max((b.high for b in bars), default=price))
+    low, high = cache[snapshot.now]
+    return (price-low)/(high-low) if high > low else None
+
+
+def fresh_aligned_impulse(snapshot, side, regime, zone, origin):
+    if regime.get('side_4h') != side:
+        return False
+    location = range_location(snapshot,snapshot.price)
+    wave = zone.get('wave_proof') or {}
+    known = (wave.get('break_ts') or origin.get('break_known_ts') or
+             (zone.get('known_ts') if wave.get('first_retest') else None))
+    return (location is not None and side*(location-.5) <= 0 and known is not None
+            and 0 <= snapshot.now-known < 2*oil_risk.M15)
+
+
+def refined_entry(snapshot, side, zone, fallback, tick, engine, *, early, late):
+    low, high = zone['low'], zone['high']
+    if late and 'FVG' in zone['kind']:
+        price, basis = (low+high)/2, 'LATE_FVG_MIDPOINT'
+    elif late:
+        ema, _ = direction.trend_references(snapshot)
+        if ema is None or not low <= ema <= high or side*(ema-fallback) > -tick:
+            return fallback, None
+        price, basis = ema, 'LATE_EMA20_RETEST'
+    elif early and 'FVG' in zone['kind']:
+        proximal = high if side == 1 else low
+        price, basis = proximal-side*.20*(high-low), 'EARLY_FVG_20_PCT'
+    else:
+        return fallback, None
+    # Round toward the interior of the zone.
+    return engine.round_tick(round(price,10),tick,up=side == -1), basis
+
+
 def _sweep(snapshot, rows, side, tick, engine, *, zone=None, lookback=3):
     """A closed wick raid and reclaim of a level known before the raid."""
     for raid in reversed(rows[-lookback:]):
@@ -223,22 +262,35 @@ def setup_confirmation(name, zone, snapshot, side, tick, engine, settle, *, appr
     return None if quiet or rejection and settle else 'WAIT_PULLBACK_REJECTION'
 
 
-def level_rejection(snapshot, side, zone, entry, risk, cfg, engine):
+def level_rejection(snapshot, side, zone, entry, risk, cfg, engine, *, early=False, strict=False):
     rows = direction.closed(snapshot, '15m')
     if len(rows) < 15 or not snapshot.trusted or risk <= 0:
         return None
     bar = rows[-1]
     known = bar.ts+oil_risk.M15
     quote = snapshot.ask if side == 1 else snapshot.bid
-    radius = .20*engine.atr(rows[:-1])
+    radius = (.25 if early or strict else .20)*engine.atr(rows[:-1])
     extreme = bar.low if side == 1 else bar.high
-    if (not 0 <= snapshot.ticker_ts-known < oil_risk.M15 or bar.ts < zone['known_ts']
-            or abs(quote-entry) > radius+EPS or abs(extreme-entry) > radius+cfg.tick
-            or side*(bar.close-entry) < cfg.tick-EPS or side*(bar.close-bar.open) < cfg.tick-EPS
+    if (not 0 <= snapshot.now-snapshot.ticker_ts <= 120_000
+            or not 0 <= snapshot.ticker_ts-known < oil_risk.M15 or bar.ts < zone['known_ts']
+            or quote <= 0 or abs(quote-entry) > radius+EPS
+            or (not strict and abs(extreme-entry) > radius+cfg.tick)
+            or side*(bar.close-entry) < cfg.tick-EPS
             or side*(quote-entry) < -cfg.tick/2):
         return None
+    wick = min(bar.open,bar.close)-bar.low if side == 1 else bar.high-max(bar.open,bar.close)
+    previous = rows[-2]
+    engulfing = side*(previous.close-previous.open) < 0 and ict.reversal_engulfing(previous,bar,side,cfg.tick,oil_risk.M15)
+    if strict:
+        if not (bar.low <= entry+cfg.tick and bar.high >= entry-cfg.tick
+                and (wick > 0 and wick >= .35*(bar.high-bar.low)-EPS or engulfing)):
+            return None
+    elif side*(bar.close-bar.open) < cfg.tick-EPS:
+        return None
     return {'pattern':'M15_CONFIRMED_LEVEL_REJECTION', 'known_ts':known, 'limit_entry':entry,
-            'initial_risk':risk, 'max_distance':radius, 'reference_close':bar.close}
+            'initial_risk':risk, 'max_distance':radius, 'reference_close':bar.close,
+            'strict_rejection':strict, 'confirmation_timeframe':'15m', 'wick_ratio':wick/max(cfg.tick,bar.high-bar.low),
+            'engulfing':engulfing}
 
 
 def late_retest_evidence(snapshot, side, zone, entry, risk, cfg, engine):

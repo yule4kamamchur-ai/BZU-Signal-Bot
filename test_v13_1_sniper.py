@@ -64,7 +64,7 @@ class Sniper(TestCase):
             self.assertEqual(engine.policy.trend_entry_error(snapshot,1,94.,{'kind':market_wave.BASE}),
                              'BASE_TREND_REFERENCES_MISSING')
 
-    def test_pullback_planner_keeps_limit_when_quote_chases(self):
+    def test_late_pullback_planner_waits_when_quote_chases(self):
         snapshot, cfg = base_fixture()
         level = 93.69
         snapshot = replace(snapshot,price=93.84,bid=93.83,ask=93.85)
@@ -90,9 +90,8 @@ class Sniper(TestCase):
              patch.object(bzu_policy.zones,'first_test',return_value={'mitigated':False,'touched':False}), \
              patch.object(engine,'full_targets',return_value=[]):
             plan, reason = bzu_policy.plan(anchor,{},snapshot,cfg,{},engine)
-        self.assertIsNotNone(plan, reason)
-        self.assertEqual((plan['order_type'],plan['entry']),('LIMIT',level))
-        self.assertIsNone(plan['market_trigger'])
+        self.assertIsNone(plan)
+        self.assertEqual(reason, 'WAIT_M15_ENTRY_REJECTION')
 
     def test_closed_m5_sweep_engulfing_before_m15_and_35_percent_retest(self):
         snapshot,cfg = base_fixture()

@@ -35,7 +35,7 @@ class TraderBrain(TestCase):
         for side in (1,-1):
             history = oriented(rows,-side)
             snap = replace(template,now=NOW,price=history[-1].close,candles={'15m':history})
-            old = {'state':'RANGE','side_1h':-side,'side_4h':-side}
+            old = {'state':'RANGE','side_1h':-side,'side_4h':0}
             ema20,vwap = (100.,100.10) if side==-1 else (100.,99.90)
             with self.subTest(side=side), patch.object(direction,'trend_references',return_value=(ema20,vwap)), \
                  patch.object(direction,'market_regime',return_value=old), \

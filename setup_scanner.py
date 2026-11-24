@@ -40,7 +40,9 @@ DIRECTIONAL_FORMATIONS = frozenset({'CONFIRMED_FVG', 'BREAKER_FLIP_15M',
     'SESSION_SWEEP_ENGULFING_15M', 'SWEEP_RECLAIM_ZONE', 'SESSION_OB', 'IMPULSE_OTE_15M',wave.BASE}) | wave.REVERSALS | wave.CONTINUATIONS | wave.TREND_ZONES
 PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'zone_origin', 'approach', 'session_gate', 'planning_policy', 'entry_checks',
-    'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition')
+    'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition',
+    'meta_prob', 'meta_prob_calibrated', 'risk_multiplier', 'range_pos', 'late_entry',
+    'entry_confirmation', 'rejection_required')
 
 
 def zone_direction_matches(zone, side):

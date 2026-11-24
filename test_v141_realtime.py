@@ -125,7 +125,7 @@ class RealTimeRelease(TestCase):
         self.assertEqual([row['status'] for row in book['orders']], ['CANCELLED'])
         self.assertEqual(engine.active_plans(book), [])
 
-    def run_market_replacement(self, *, same_event=False, offset=0, tracked=False):
+    def run_market_replacement(self, *, same_event=False, offset=0, tracked=False, full_position=False):
         from test_full_limit_engine import analysis, snapshot
         from test_pending_limit_lifecycle import TrendReplacement
 
@@ -139,6 +139,10 @@ class RealTimeRelease(TestCase):
         new.update(action_type='ACTIVE_ENTRY', order_type='MARKET', entry=bid,
                    market_trigger=proof, stop=91.86, tp1=89.35, tp=89., tp2=89.,
                    entry_legs=[{'name':'ACTIVE','price':bid,'fraction':1.,'status':'PENDING'}])
+        if full_position:
+            old.update(exit_policy=bzu_policy.FULL_POSITION_EXIT,post_only=True)
+            new.update(exit_policy=bzu_policy.FULL_POSITION_EXIT, tp=89.35, tp2=89.35,
+                       early_impulse_entry=True, risk_multiplier=1.)
         if same_event:
             new['event_key'] = old['event_key']
         book = engine.new_state(cfg)
@@ -149,7 +153,7 @@ class RealTimeRelease(TestCase):
         s.candles['15m'] = [replace(c,open=90.89,high=91.14,low=90.64,close=90.89)
                             for c in s.candles['15m']]
         s.candles['1m'] = [engine.Candle(NOW-MINUTE,90.90,90.93,90.86,90.89)]
-        market = {'state':'BEARISH_ACTIVE','trend_anchor_side':-1}
+        market = {'state':'BEARISH_ACTIVE','trend_anchor_side':-1,'side_4h':-1}
         with patch.object(engine,'analyze',return_value=analysis([new])), \
              patch.object(engine,'review_waiting_conditions'), \
              patch.object(engine.policy,'execution_regime',return_value=market), \

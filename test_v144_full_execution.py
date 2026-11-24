@@ -53,14 +53,116 @@ class FullPositionTest(unittest.TestCase):
         for side in (1,-1):
             p=self.position(side)
             p['adverse_close_pair']={'known_ts':NOW,'level':100.-.12*side,
-                                     'ema20':100.,'session_vwap':100.}
-            p['protection_structure_level']=100.-.44*side
+                'ema20':100.,'session_vwap':100.,'first_ts':NOW-2*M15,'last_close':100.-.46*side}
+            p['post_entry_protected_swing']={'level':100.-.44*side,
+                'pivot_ts':NOW-5*M15,'known_ts':NOW-3*M15}
             mild=monitor.evaluate_active_trade_lifecycle(p,NOW,100.-.20*side,self.cfg,engine)
             self.assertFalse(mild['should_exit'])
             self.assertAlmostEqual(mild['stop'],100.-.55*side)
             self.assertFalse(monitor.evaluate_active_trade_lifecycle(p,NOW,100.-.41*side,self.cfg,engine)['should_exit'])
             hard=monitor.evaluate_active_trade_lifecycle(p,NOW,100.-.46*side,self.cfg,engine)
             self.assertEqual(hard['exit_reason'],'CLOSED_ADVERSE_STRUCTURE_SHIFT')
+
+    def test_journal_264_short_only_tightens_without_a_post_entry_swing_at_minus_044r(self):
+        plan = self.position(-1)
+        plan.update(entry=86.82,risk=.91,stop=87.73,initial_stop=87.73,protection_structure_level=None,
+                    adverse_close_pair={'known_ts':NOW,'first_ts':NOW-2*M15,'level':87.04,
+                                        'ema20':86.9978,'session_vwap':87.0621,'last_close':87.22})
+        decision = monitor.evaluate_active_trade_lifecycle(plan,NOW,86.82+.44*.91,self.cfg,engine)
+        self.assertFalse(decision['should_exit'])
+        self.assertAlmostEqual(decision['stop'],87.37)
+        plan.update(stop=87.33,post_entry_protected_swing={'level':87.04,
+                    'pivot_ts':plan['filled_ts']-M15,'known_ts':NOW-2*M15})
+        decision = monitor.evaluate_active_trade_lifecycle(plan,NOW,87.21744,self.cfg,engine)
+        self.assertFalse(decision['should_exit'])
+        self.assertIsNone(decision['stop'])
+
+    def test_journal_265_bounce_stays_a_bearish_pullback_and_blind_long_cannot_route(self):
+        from test_full_limit_engine import analysis, snapshot
+        from test_pending_limit_lifecycle import NOW as SCAN, waiting
+
+        snap = snapshot(SCAN,price=86.78)
+        old_regime = {'state':'BULLISH_ACTIVE','side_1h':1,'side_4h':-1,
+                      'active_structure':{'side':1}}
+        plan = waiting(1,SCAN)
+        plan.update(entry=86.73, risk=.79, stop=85.94, initial_stop=85.94,
+                    tp=88.21, tp1=88.21, tp2=88.21, exit_policy=bzu_policy.FULL_POSITION_EXIT,
+                    setup='RANGE_EDGE_REVERSAL',source_strategy='FVG_BULL',
+                    entry_zone={'side':1,'kind':'FVG_BULL','known_ts':SCAN-M15,'low':86.52,'high':86.69})
+        state = engine.new_state(self.cfg)
+        with patch.object(engine.policy,'market_regime',return_value=old_regime), \
+             patch.object(engine.policy,'market_matrix',return_value={'side':1,'known_ts':SCAN}), \
+             patch.object(engine,'analyze',return_value=analysis([plan])), \
+             patch.object(engine.scenario_planner,'focus',return_value={'developing_setup':None}):
+            regime = engine.policy.execution_regime(snap,self.cfg,engine)
+            self.assertEqual((regime['state'],regime['trend_anchor_side']),('BEARISH_PULLBACK',-1))
+            result = engine.run_cycle(state,snap,self.cfg)
+        self.assertEqual(result['selected_plans'],[])
+        self.assertEqual(engine.pending_plans(state),[])
+
+    def test_confirmed_early_market_cancels_the_full_position_limit_first(self):
+        from test_v141_realtime import RealTimeRelease
+
+        result, state, _, old = RealTimeRelease().run_market_replacement(full_position=True)
+        self.assertEqual(result['action'],'ACTIVE_ENTRY')
+        self.assertEqual([row['status'] for row in state['orders']],['CANCELLED','FILLED'])
+        self.assertEqual(engine.active_plans(state)[0]['replaces_order_id'],old['id'])
+
+    def test_hourly_switch_needs_two_more_closed_hours_and_holds_only_above_the_swing(self):
+        from market_wave import confirmed_hourly_reversal
+
+        hour = 3_600_000
+        known = NOW//hour*hour
+        candles = [engine.Candle(known-i*hour,100.,100.20,99.70,100.) for i in range(17,0,-1)]
+        candles[-5] = replace(candles[-5],high=100.50)
+        candles += [engine.Candle(known+i*hour,100.20 if not i else 100.75,100.90,100.10,100.75)
+                    for i in range(3)]
+        snap = engine.Snapshot(known+2*hour,100.75,{'1H':candles})
+        self.assertFalse(confirmed_hourly_reversal(snap,1,.01,engine))
+        snap = replace(snap,now=known+3*hour)
+        result = confirmed_hourly_reversal(snap,1,.01,engine)
+        self.assertEqual((result['level'],result['known_ts']),(100.50,known+3*hour))
+        lost = replace(snap,candles={'1H':candles[:-1]+[replace(candles[-1],close=100.40)]})
+        self.assertFalse(confirmed_hourly_reversal(lost,1,.01,engine))
+
+    def test_strict_m15_rejection_accepts_closed_wick_or_engulfing_at_limit_price(self):
+        rows = [engine.Candle(NOW-i*M15,86.80,87.20,86.76,86.80) for i in range(22,0,-1)]
+        zone = {'kind':'FVG_BULL','side':1,'low':86.52,'high':86.69,'known_ts':NOW-3*M15}
+        quote = engine.Snapshot(NOW,86.79,{'15m':rows},86.78,86.80,True,NOW)
+        for last, expected in ((engine.Candle(NOW-M15,86.76,86.85,86.65,86.80),True),
+                               (engine.Candle(NOW-M15,86.73,86.86,86.72,86.83),False)):
+            probe = replace(quote,candles={'15m':rows[:-1]+[last]})
+            self.assertEqual(bool(rules.level_rejection(probe,1,zone,86.73,.79,self.cfg,engine,strict=True)),expected)
+            if expected:
+                intrabar = replace(probe,now=NOW-1,ticker_ts=NOW-1)
+                self.assertIsNone(rules.level_rejection(intrabar,1,zone,86.73,.79,self.cfg,engine,strict=True))
+        previous = engine.Candle(NOW-2*M15,86.82,86.84,86.73,86.74)
+        engulf = engine.Candle(NOW-M15,86.73,86.87,86.72,86.85)
+        snap = replace(quote,candles={'15m':rows[:-2]+[previous,engulf]})
+        self.assertTrue(rules.level_rejection(snap,1,zone,86.73,.79,self.cfg,engine,strict=True)['engulfing'])
+
+    def test_sizing_tiers_early_fvg_and_late_short_management(self):
+        bar = engine.Candle(NOW-M15,90.,100.,80.,89.)
+        snap = engine.Snapshot(NOW,92.,{'15m':[bar]})
+        quality = engine.quality
+        sizing = lambda side, entry, macro, wave_ts, vol, room, late=False: quality.execution_sizing(
+            snap,side,entry,{'side_4h':macro},wave_ts=wave_ts,rvol=vol,room_r=room,late=late)
+        self.assertEqual(sizing(-1,92.,-1,NOW,1.2,1.35)['risk_multiplier'],1.)
+        self.assertEqual(sizing(-1,92.,-1,NOW-5*M15,None,1.35)['risk_multiplier'],.65)
+        self.assertEqual(sizing(1,88.,-1,NOW-5*M15,None,1.35)['risk_multiplier'],.35)
+        self.assertEqual(sizing(1,88.,-1,NOW,1.2,1.35)['risk_multiplier'],.40)
+        self.assertEqual(sizing(-1,83.,-1,NOW,1.2,1.35,True)['risk_multiplier'],.50)
+        zone = {'kind':'FVG_PULLBACK','low':92.,'high':93.,'known_ts':NOW}
+        self.assertTrue(rules.fresh_aligned_impulse(snap,-1,{'side_4h':-1},zone,{'break_known_ts':NOW-M15}))
+        self.assertEqual(rules.refined_entry(snap,-1,zone,92.,.01,engine,early=True,late=False),
+                         (92.20,'EARLY_FVG_20_PCT'))
+        price, basis = rules.refined_entry(snap,-1,zone,92.,.01,engine,early=False,late=True)
+        self.assertEqual((price,basis),(92.50,'LATE_FVG_MIDPOINT'))
+        plan = self.position(-1)
+        plan.update(late_entry=True,max_favorable_r=.70)
+        self.assertAlmostEqual(monitor.mfe_protection(plan,NOW,99.3,self.cfg,engine)['price'],99.92)
+        plan.update(order_type='LIMIT',missed_target_fraction=.75)
+        self.assertAlmostEqual(bzu_policy.missed_target_level(plan),100.-.75*1.75)
 
     def test_atr_floor_adr_ceiling_and_buffered_structure(self):
         profile={'atr_15m':.262142857,'atr_1h':.195,'adr_d1':2.905,'session_multiplier':1.}
@@ -229,6 +331,15 @@ class FakeOKX:
 
 
 class ExchangeTest(unittest.TestCase):
+    def test_risk_multiplier_is_applied_before_okx_contract_rounding(self):
+        plan = FullPositionTest().position()
+        plan['risk_multiplier'] = .35
+        with patch.dict('os.environ',{'OKX_RISK_USDT':'8.03','OKX_ORDER_NOTIONAL_USDT':''}):
+            self.assertEqual(okx.contract_size(FakeOKX(),'BZ-USDT-SWAP',plan,'cross'),'281')
+        plan['risk_multiplier'] = .40
+        with patch.dict('os.environ',{'OKX_RISK_USDT':'','OKX_ORDER_NOTIONAL_USDT':'MAX'}):
+            self.assertEqual(okx.contract_size(FakeOKX(),'BZ-USDT-SWAP',plan,'cross'),'400')
+
     def test_market_waits_for_exchange_cancel_and_fresh_selection(self):
         old = FullPositionTest().position()
         old.update(order_type='LIMIT', event_key='old')

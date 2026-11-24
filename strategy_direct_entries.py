@@ -244,6 +244,16 @@ def front_run_candidate(plan, snapshot, cfg, engine):
         if profile['gate']:
             return None
         levels = rules.available_pools(snapshot,engine.scenario_planner.structure_levels(snapshot,engine),cfg.tick)
+        loc = rules.range_location(snapshot,quote)
+        late = bool(plan.get('late_entry') or loc is not None and side*(loc-.5) > .25)
+        origin = plan.get('zone_origin') or {}
+        rvol = engine.scanner.event_rvol(snapshot,'5m',trigger['known_ts'])['rvol']
+        _, room_r = oil_risk.structural_room(side,quote,risk,levels,trend=True)
+        sizing = engine.quality.execution_sizing(snapshot,side,quote,regime,wave_ts=origin.get('break_known_ts'),
+                                                 rvol=rvol,room_r=room_r,late=late)
+        if sizing['rejection_required']:
+            return None
+        candidate.update(sizing)
         tp1, source, pool = rules.full_target(levels,quote,risk,side,atr,cfg.tick,engine)
         tp2=tp1
         candidate.update(tp=tp1,tp3=tp1,tp1_source=source,tp2_source=source,liquidity_pool=pool,

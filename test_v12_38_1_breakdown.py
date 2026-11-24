@@ -17,13 +17,13 @@ from test_v12_31_market_wave import snapshot
 ENV = {'BZU_ENTRY_MODE':'HYBRID','BZU_EDGE_MODE':'SHADOW','BZU_ENTRY_PLAYBOOK_MODE':'STRICT'}
 
 
-def breakdown_fixture(price=91.93):
+def breakdown_fixture(price=91.93, htf_side=1):
     rows = [(91.33,91.45,91.25,91.36)]*100 + [
         (91.36,91.98,91.32,91.90),(91.90,92.26,91.89,92.20)] + [
         (92.21,92.33,92.10,92.25)]*13 + [
         (92.24,92.33,92.00,92.22),(92.22,92.30,92.15,92.25),
         (92.25,92.35,92.12,92.23),(92.23,92.25,91.86,91.93)]
-    return snapshot(price,rows,[],htf_side=1)
+    return snapshot(price,rows,[],htf_side=htf_side)
 
 
 def targets(context, snap, side, entry, cfg):
@@ -42,7 +42,7 @@ class BreakdownCapture(unittest.TestCase):
         self.assertLess(proof['ema50'],snap.price)
         self.assertGreater(proof['ema20'],snap.price)
         self.assertGreaterEqual(proof['body_atr'],1.15)
-        self.assertEqual(direction.execution_regime(snap,cfg,engine)['state'],'BEARISH_ACTIVE')
+        self.assertEqual(direction.execution_regime(snap,cfg,engine)['state'],'BULLISH_PULLBACK')
         weak=[*snap.candles['15m']]
         weak[-1]=replace(weak[-1],open=92.11)
         self.assertFalse(wave.breakdown_zones(replace(snap,candles={**snap.candles,'15m':weak}),cfg.tick,engine))
@@ -54,7 +54,7 @@ class BreakdownCapture(unittest.TestCase):
                                           (91.20,'WATCH',None,None)):
             with self.subTest(price=price), patch.object(scenarios,'structure_levels',return_value=levels), \
                  patch.object(engine,'full_targets',side_effect=targets), patch.dict(os.environ,ENV):
-                snap,cfg=breakdown_fixture(price)
+                snap,cfg=breakdown_fixture(price,htf_side=-1)
                 book=engine.new_state(cfg)
                 result=engine.run_cycle(book,snap,cfg)
                 if kind:
@@ -104,7 +104,7 @@ class BreakdownCapture(unittest.TestCase):
                                                        bad,cfg),'DISTANT_BREAKDOWN_RETEST')
 
     def test_breakdown_does_not_bypass_structural_room(self):
-        snap,cfg=breakdown_fixture()
+        snap,cfg=breakdown_fixture(htf_side=-1)
         nearby=[{'side':1,'kind':'1H_SWING_LOW','level':91.89,'known_ts':NOW-STEP,'hard_barrier':True}]
         with patch.object(scenarios,'structure_levels',return_value=nearby), \
              patch.object(engine,'full_targets',side_effect=targets), patch.dict(os.environ,ENV):

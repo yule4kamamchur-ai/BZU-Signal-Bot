@@ -999,7 +999,8 @@ function brainProtectMfe(order,market,price) {
   if (order.risk<=0 || market.ts<=(order.filled_ts??market.ts)) return false;
   const peak=Math.max(order.max_favorable_r??0, side*(price-order.entry)/order.risk);
   order.max_favorable_r=peak;
-  const tiers=fullPosition(order)?(config.time_decay?config.mfe_lock_steps??fullExitMfeSteps:fullExitMfeSteps):brainMfeSteps;
+  const fullTiers=order.late_entry?config.late_mfe_lock_steps:config.mfe_lock_steps;
+  const tiers=fullPosition(order)?(config.time_decay?fullTiers??fullExitMfeSteps:fullExitMfeSteps):brainMfeSteps;
   const step=tiers.findLast(([trigger])=>peak>=trigger-1e-8);
   if (!step) return false;
   const lock=step[1], desired=order.entry+side*lock*order.risk;

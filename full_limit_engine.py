@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.2-intraday"
-REPORT_RELEASE = 'v14.4.2'
+VERSION = "full-ict-v14.4.3-intraday"
+REPORT_RELEASE = 'v14.4.3'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -919,6 +919,8 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                                'event_ts':src.get('strategy_event_ts')}
         else:
             admitted,ict_reason=policy.admit(p,proof)
+        if p.get('entry_confirmation') and p.get('zone_origin',{}).get('confirmed'):
+            admitted, ict_reason = True, 'M15_REJECTION_CONFIRMED'
         if q['accepted'] and not admitted:
             q={**q,'accepted':False,'reason':ict_reason}
             assessments[p['id']]=q
@@ -1955,6 +1957,9 @@ def pending_scenario_error(plan, snapshot, cfg):
 def pending_entry_gate(plan, trades, as_of, cfg):
     if bzu_policy.full_position(plan) and execution_rules.early_ny(as_of.now) and not plan.get('opening_sweep_confirmed'):
         return 'WAIT_NY_POST_SWEEP'
+    if (bzu_policy.full_position(plan) and oil_risk.enabled(cfg)
+            and policy.opposing_four_hour(as_of,plan['side'],sys.modules[__name__])):
+        return 'WAIT_M15_COUNTER_4H_REJECTION'
     if resting_organic_limit(plan,cfg):
         return pending_scenario_error(plan,as_of,cfg)
     session = bzu_policy.session_gate(as_of.now)
@@ -2190,6 +2195,9 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
     if resting_organic_limit(pending,cfg):
         if bzu_policy.full_position(pending) and execution_rules.early_ny(snapshot.now) and not pending.get('opening_sweep_confirmed'):
             request_cancel(state,pending,'WAIT_NY_POST_SWEEP',snapshot.now)
+            return
+        if bzu_policy.full_position(pending) and policy.opposing_four_hour(snapshot,pending['side'],sys.modules[__name__]):
+            request_cancel(state,pending,'WAIT_M15_COUNTER_4H_REJECTION',snapshot.now)
             return
         if (snapshot.trusted and pending['placed_ts'] <= snapshot.ticker_ts <= snapshot.now
                 and snapshot.now - snapshot.ticker_ts <= 120_000
@@ -2489,7 +2497,17 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             trigger = candidate.get('market_trigger') or {}
             side = candidate['side']
             opening_proof = trigger.get('pattern')==execution_rules.EARLY_NY
-            if not opening_proof and not candidate.get('opening_sweep_confirmed') and policy.trend_entry_error(
+            counter_4h = bzu_policy.full_position(candidate) and market.get('side_4h') == -side
+            strict = counter_4h or candidate.get('rejection_required')
+            if strict:
+                witness = candidate.get('entry_confirmation') or {}
+                if candidate.get('order_type') != 'MARKET' or not witness:
+                    continue
+                rejection = execution_rules.level_rejection(s,side,zone,witness['limit_entry'],witness['initial_risk'],
+                                                                 cfg,sys.modules[__name__],strict=True)
+                if not rejection or rejection['known_ts'] != witness.get('known_ts'):
+                    continue
+            if not (counter_4h or opening_proof or candidate.get('opening_sweep_confirmed')) and policy.trend_entry_error(
                     s,side,s.price,zone,cfg.tick):
                 continue
             if candidate.get('order_type')=='MARKET':
@@ -2506,16 +2524,17 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                         continue
                     if side*(quote-level)<0:
                         proof_quote = level
-                if not opening_proof and policy.trend_entry_error(s,side,quote,zone,cfg.tick):
+                if not (counter_4h or opening_proof) and policy.trend_entry_error(s,side,quote,zone,cfg.tick):
                     continue
-                if not opening_proof and scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
+                if not (counter_4h or opening_proof) and scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
                     continue
                 if trigger.get('pattern') == execution_rules.EARLY_NY:
                     proof = execution_rules.opening_trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
                                                             cfg,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M15_CONFIRMED_LEVEL_REJECTION':
                     proof = execution_rules.level_rejection(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
-                                                            cfg,sys.modules[__name__])
+                        cfg,sys.modules[__name__],early=bool(candidate.get('early_impulse_entry')),
+                        strict=bool(trigger.get('strict_rejection')))
                 elif trigger.get('pattern')=='MARKET_FRONT_RUN_CATCH':
                     incumbent = next((p for p in pending_plans(state) if p['id'] == candidate.get('replaces_order_id')), None)
                     proof = strategy_direct_entries.front_run_trigger(incumbent,s,cfg,sys.modules[__name__]) if incumbent else None
@@ -2564,9 +2583,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     candidate.get('source_strategy'),zone.get('kind'),candidate.get('setup')),regime=market)
             _, room_r = oil_risk.structural_room(candidate['side'],candidate['entry'],candidate['risk'],
                 scenario_planner.structure_levels(s,sys.modules[__name__]),
-                trend=candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
+                trend=counter_4h or candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
             min_room = scanner.MARKET_IMPULSE_MIN_RR if scanner.market_plan(candidate) else scanner.LIMIT_NEW_MIN_RR
-            if not opening_proof and (gate or (room_r is not None and room_r < min_room-1e-8)):
+            if not opening_proof and ((gate and not counter_4h) or (room_r is not None and room_r < min_room-1e-8)):
                 continue
         if (dominant and candidate['side'] != dominant
                 and not candidate.get('local_reversal_override')
@@ -3177,6 +3196,8 @@ REASON_UA = {
     'LIMIT_TTL':'вичерпано строк очікування лімітки',
     'MFE_PROTECTION':'підтягнуто стоп після сприятливого руху',
     'WAIT_NY_POST_SWEEP':'потрібен свіп ліквідності та підтверджене закриття M15',
+    'WAIT_M15_COUNTER_4H_REJECTION':'сетап проти 4H очікує закритого відбою M15',
+    'WAIT_M15_ENTRY_REJECTION':'сетап очікує закритого відбою M15',
     'NY_POST_SWEEP':'MARKET після свіпу та імпульсного закриття M15 у NY',
     'HTF_EXTENDED_RETEST':'LIMIT на ретест після віддалення від EMA20 M15',
     'GAP_RETEST':'LIMIT на ретест після затримки циклу',

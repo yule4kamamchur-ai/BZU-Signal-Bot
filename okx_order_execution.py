@@ -120,6 +120,10 @@ def contract_size(api, instrument, plan, margin):
         fee = decimal(plan.get('exit_fee_rate',0))+decimal(plan.get('entry_fee_rate',0))
         slippage = decimal(plan.get('slippage_bps',0))/10_000
         raw = decimal(budget)/(ct_value*(decimal(plan['risk'])+decimal(plan['entry'])*(fee+slippage)))
+    multiplier = decimal(plan.get('risk_multiplier',1.))
+    if not multiplier.is_finite() or not 0 < multiplier <= 1:
+        raise ExecutionError('OKX_INVALID_RISK_MULTIPLIER')
+    raw *= multiplier
     size = (raw//step)*step
     if size < decimal(spec['minSz']) or size > cap:
         raise ExecutionError('OKX_SIZE_OUTSIDE_AVAILABLE_RANGE')
@@ -214,7 +218,7 @@ def _guard(api, inst, tracked, position, parent, snap, cfg, engine):
     position_monitor.track(active,snap.ticker_ts,quote,quote)
     position_monitor.observe_structure(active,snap,snap.ticker_ts,cfg,engine)
     tracked['monitor'] = {k:active[k] for k in active if k.startswith((
-        'max_favorable','max_adverse','protection_structure','adverse_close_pair'))}
+        'max_favorable','max_adverse','protection_structure','post_entry_protected_swing','adverse_close_pair'))}
     guard = position_monitor.evaluate_active_trade_lifecycle(active,snap.ticker_ts,quote,cfg,engine,snapshot=snap)
     mfe = position_monitor.mfe_protection(active,snap.ticker_ts,quote,cfg,engine)
     if guard['should_exit'] or (mfe and mfe['exit_now']):
@@ -253,6 +257,7 @@ def synchronize(api, state, book, result, snap, cfg, engine, persist):
                                for e in result.get('events',[]))
             if (live or is_predecessor or snap.now>=plan['expires_ts'] or cancellation or (waiting and waiting.get('cancel_requested_ts'))
                     or tracked.get('status') == 'CANCELLATION_REQUESTED'
+                    or (engine.bzu_policy.full_position(plan) and engine.policy.opposing_four_hour(snap,plan['side'],engine))
                     or (rules.early_ny(snap.now) and not plan.get('opening_sweep_confirmed'))):
                 if tracked.get('status') != 'CANCELLATION_REQUESTED':
                     tracked['status'] = 'CANCELLATION_REQUESTED'

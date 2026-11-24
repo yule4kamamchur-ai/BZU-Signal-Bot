@@ -72,7 +72,8 @@ class ScenarioContracts(unittest.TestCase):
         self.assertFalse(wave.displacement_override(replace(snap,now=NOW-1),cfg.tick,engine))
         proof=wave.displacement_override(snap,cfg.tick,engine)
         self.assertEqual((proof['proof'],proof['side'],proof['known_ts']), ('DISPLACEMENT_MSS_FVG',1,NOW))
-        self.assertEqual(direction.execution_regime(snap,cfg,engine)['trend_anchor_side'],1)
+        regime = direction.execution_regime(snap,cfg,engine)
+        self.assertEqual((regime['state'],regime['trend_anchor_side']),('BEARISH_PULLBACK',-1))
         candles=snap.candles['15m']
         self.assertIsNotNone(ict.breaker_evidence(candles,len(candles)-2,
             engine.pivots(candles,strength=1),1,cfg.tick))

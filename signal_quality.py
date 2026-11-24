@@ -259,6 +259,27 @@ def assess(plan, snapshot, context, cfg, engine, rows, settings: Settings=Settin
             'ranking_adjustment':stat['ranking_adjustment']}
 
 
+def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r, late=False):
+    """Weighted decision score for routing and sizing; calibration is separate."""
+    from bzu_execution_rules import range_location
+
+    location = range_location(snapshot, entry)
+    aligned = regime.get('side_4h') == side
+    counter = regime.get('side_4h') == -side
+    premium_discount = location is not None and side * (location - .5) <= 0
+    factors = {'htf_4h': aligned, 'premium_discount': premium_discount,
+               'fresh_wave': bool(wave_ts and 0 <= snapshot.now-wave_ts <= 4*TF['15m']),
+               'confirmation_volume': rvol is not None and rvol >= 1.2-1e-8,
+               'liquidity_room': room_r is None or room_r >= 1.35-1e-8}
+    weights = (30, 15, 20, 15, 20)
+    score = sum(weight for passed, weight in zip(factors.values(), weights) if passed) / 100
+    tier = 1. if score >= .70 else .65 if score >= .50 else .35
+    return {'meta_prob':score, 'meta_prob_calibrated':False, 'meta_factors':factors,
+            'risk_multiplier':min(tier, .40 if counter else 1., .50 if late else 1.),
+            'range_pos':location, 'late_entry':late, 'counter_4h':counter,
+            'rejection_required':counter or late or score < .50}
+
+
 def confluence(plan, snapshot, proof, cfg, engine):
     """Score reversal and trend evidence independently."""
     import directional_policy as direction
@@ -295,6 +316,10 @@ def confluence(plan, snapshot, proof, cfg, engine):
     if plan.get('structure_reclaim') and fresh and bos:
         route = 'STRUCTURAL_RECLAIM'
         components = {'base': 25, 'structure_break': 25, 'retest_confirmed': 24, 'fresh_zone': 10}
+        trigger = True
+    if fresh and plan.get('entry_confirmation'):
+        route = 'M15_REJECTION_CONFIRMED'
+        components = {'base':25, 'confirmed_rejection':30, 'fresh_zone':15}
         trigger = True
     volume = volume_footprint(plan, snapshot, proof, sweeps)
     parts = {**components, 'relative_volume_bonus': volume['bonus'],
@@ -396,6 +421,7 @@ PLAN_FIELDS=('institutional_family','scale_policy','organic_confluence','origin_
              'tp','tp0','tp1','tp2','tp3','risk','partials','placed_ts','effective_ts','expires_ts',
              'invalidation','htf_1h','htf_4h','score','net_rr','gross_rr','costs_r','timeframe',
              'zone_created_ts','last_bar','execution','status','target_cancel_armed','version',
+             'missed_target_fraction','limit_ttl_ms','entry_confirmation','risk_multiplier','meta_prob','late_entry',
              'setup_timeframe','micro_timeframe','formation_timeframe','formation_micro_timeframe','entry_route','queue_execution_policy','pattern_proof','entry_policy','detector_confirmed',
              'max_hold_minutes','intraday','time_exit_enabled','post_only','entry_retest_reason','include_commission','entry_fee_rate','exit_fee_rate','slippage_bps','exit_policy','full_exit_target','full_exit_candidates','exit_selection','target_management','exit_path_barriers','tp1_decision_gate')
 
