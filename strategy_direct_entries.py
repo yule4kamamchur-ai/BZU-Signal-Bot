@@ -250,7 +250,7 @@ def front_run_candidate(plan, snapshot, cfg, engine):
         rvol = engine.scanner.event_rvol(snapshot,'5m',trigger['known_ts'])['rvol']
         _, room_r = oil_risk.structural_room(side,quote,risk,levels,trend=True)
         sizing = engine.quality.execution_sizing(snapshot,side,quote,regime,wave_ts=origin.get('break_known_ts'),
-                                                 rvol=rvol,room_r=room_r,late=late)
+                                                 rvol=rvol,room_r=room_r,late=late,setup=plan.get('setup'))
         if sizing['rejection_required']:
             return None
         candidate.update(sizing)

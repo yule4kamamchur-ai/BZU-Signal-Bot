@@ -238,3 +238,116 @@ def evaluate(model, features, *, net_rr, costs_r=0.0):
             'entry_gate_enabled':True,'accepted':acceptable,
             'reason':'META_LOW_PROBABILITY_OR_NONPOSITIVE_EXPECTANCY' if not acceptable else 'META_ACCEPTED',
             'score_adjustment':max(-SCORE_ADJUSTMENT_CAP,min(SCORE_ADJUSTMENT_CAP,(p-.65)*12))}
+
+
+# Keep the execution calibration separate from the older logistic ranking model.
+PRIOR_SCHEMA = 'bzu-empirical-bayes-v1'
+PRIOR_STRENGTH = 30.
+DAILY_DECAY = .985
+DAY_MS = 86_400_000
+MIN_WALK_FORWARD = 20
+
+
+def sizing_context(setup, side_4h, location, now):
+    """Use the admission-time price and the bot's fixed UTC session labels."""
+    hour = now // 3_600_000 % 24
+    session = 'ASIA' if hour < 7 else 'LONDON' if hour < 13 else 'NY' if hour < 21 else 'LATE'
+    bucket = ('UNKNOWN' if location is None else 'BOTTOM' if location < .25 else
+              'LOWER' if location < .50 else 'UPPER' if location < .75 else 'TOP')
+    return [setup or 'UNKNOWN', side_4h if side_4h in (-1, 0, 1) else 0, bucket, session]
+
+
+def sizing_keys(context):
+    import json
+
+    setup, side, bucket, session = context
+    return [json.dumps(parts, separators=(',', ':')) for parts in
+            ((), (side,), (setup, side), (setup, side, bucket, session))]
+
+
+def sizing_labels(rows, *, before, after=0):
+    """Accept finite, completed labels once. Later sources may replace proxies."""
+    unique = {}
+    for row in rows:
+        start, end = row.get('decision_ts', row.get('placed_ts')), row.get('closed_ts')
+        value, context = row.get('net_r'), row.get('meta_context')
+        key = row.get('calibration_id') or row.get('event_key') or row.get('id')
+        if (not key or not isinstance(start, int) or not isinstance(end, int)
+                or not after <= start < end < before or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not isinstance(context, (list, tuple)) or len(context) != 4):
+            continue
+        unique[key] = {**row, 'decision_ts':start, 'win':int(value > 0),
+                       'session':context[-1], 'side_4h':context[1]}
+    return sorted(unique.values(), key=lambda r:(r['decision_ts'],r['closed_ts'],str(r.get('id',''))))
+
+
+def independent_sizing_labels(rows):
+    last = -1
+    for row in rows:
+        if row['decision_ts'] >= last:
+            yield row
+            last = row['closed_ts']
+
+
+def sizing_counts(rows, *, as_of=None):
+    """Fractional counts with a recency weight for each completed observation."""
+    counts = {}
+    for row in rows:
+        weight = DAILY_DECAY ** ((as_of-row['closed_ts'])/DAY_MS) if as_of is not None else 1.
+        for key in sizing_keys(row['meta_context']):
+            count = counts.setdefault(key,[0.,0.])
+            count[0] += weight*row['win']
+            count[1] += weight
+    return counts
+
+
+def prior_probability(counts, context):
+    probability = .50
+    for key in sizing_keys(context):
+        wins, total = counts.get(key,(0.,0.))
+        probability = (wins + 8*probability)/(total+8)
+    return probability
+
+
+def sizing_posterior(priors, recent, context):
+    probability = prior_probability(priors,context)
+    # Match the finest available context with current evidence. A missing
+    # exact context falls back through setup, macro direction and global.
+    for key in reversed(sizing_keys(context)):
+        wins, total = recent.get(key,(0.,0.))
+        if total:
+            return (PRIOR_STRENGTH*probability+wins)/(PRIOR_STRENGTH+total), total
+    return probability, 0.
+
+
+def walk_forward_sizing(rows, begin, end):
+    """Expanding training over the final 30% of calendar time, with purging."""
+    holdout = begin + (end-begin)*70//100
+    folds, scores, gates = [], [], []
+    for i in range(3):
+        start = holdout+(end-holdout)*i//3
+        finish = holdout+(end-holdout)*(i+1)//3
+        train = [row for row in rows if row['closed_ts'] < start]
+        test = list(independent_sizing_labels(row for row in rows
+                    if start <= row['decision_ts'] < finish and row['closed_ts'] < finish
+                    and (not gates or row['decision_ts'] >= gates[-1])))
+        counts = sizing_counts(train)
+        if train and test:
+            for row in test:
+                p = prior_probability(counts,row['meta_context'])
+                constant = (counts['[]'][0]+4)/(counts['[]'][1]+8)
+                heuristic = row.get('meta_heuristic')
+                heuristic = heuristic if isinstance(heuristic,(int,float)) and 0 <= heuristic <= 1 else .5
+                label = row['win']
+                scores.append(((p-label)**2,(constant-label)**2,(heuristic-label)**2))
+            gates.append(test[-1]['closed_ts'])
+        folds.append({'train_labels':len(train),'test_labels':len(test) if train else 0,
+                      'test_start_ts':start,'test_end_ts':finish})
+    n = len(scores)
+    brier, baseline, heuristic = (map(lambda values:sum(values)/n,zip(*scores)) if n else (None,None,None))
+    reliable = n >= MIN_WALK_FORWARD and sum(bool(fold['test_labels']) for fold in folds) >= 2
+    validated = reliable and brier < baseline and brier <= heuristic
+    return {'validated':validated,'test_labels':n,'brier':brier,'baseline_brier':baseline,
+            'heuristic_brier':heuristic,'folds':folds,
+            'status':('VALIDATED' if validated else 'INSUFFICIENT_HOLDOUT' if not reliable
+                      else 'NO_HOLDOUT_IMPROVEMENT')}

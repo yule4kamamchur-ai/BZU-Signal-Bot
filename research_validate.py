@@ -15,6 +15,7 @@ import math
 from random import Random
 import sys
 import time
+from itertools import islice
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -51,11 +52,11 @@ def request_json(url: str) -> dict:
     raise RuntimeError('History download failed')
 
 
-def fetch_rows(instrument: str, timeframe: str, begin: int, end: int, fetch=request_json) -> list[dict]:
+def fetch_rows(instrument: str, timeframe: str, begin: int, end: int, fetch=request_json, *, page_size=100) -> list[dict]:
     cursor=end;found={}
     for _ in range(10000):
         url='https://www.okx.com/api/v5/market/history-candles?'+urllib.parse.urlencode(
-            {'instId':instrument,'bar':timeframe,'after':str(cursor),'limit':100})
+            {'instId':instrument,'bar':timeframe,'after':str(cursor),'limit':page_size})
         body=fetch(url);raw=body.get('data',[])
         if not raw:
             break
@@ -64,7 +65,7 @@ def fetch_rows(instrument: str, timeframe: str, begin: int, end: int, fetch=requ
         if earliest>=cursor:
             raise ValueError('History pagination did not move backwards')
         for c in rows:
-            if c.confirmed and begin<=c.ts and c.ts+engine.TF[timeframe]<=end:
+            if c.confirmed and begin<=c.ts and c.ts+engine.CANDLE_TF[timeframe]<=end:
                 found[c.ts]=asdict(c)
         if earliest<=begin:
             break
@@ -187,17 +188,20 @@ def snapshots(data: dict):
         current={}
         for tf,rows in raw.items():
             index=bisect_right(available[tf],now)
-            eligible=rows[:index]
+            eligible=rows[max(0,index-300):index]
             if data.get('first_seen'):
                 seen=data['first_seen'].get(tf,{})
-                eligible=[c for c in eligible if str(c.ts) in seen and seen[str(c.ts)]['observed_ts']<=now]
+                available_at_scan=(rows[i] for i in range(index-1,-1,-1)
+                                   if seen.get(str(rows[i].ts),{}).get('observed_ts',now+1)<=now)
+                eligible=list(reversed(list(islice(available_at_scan,300))))
             revisions={r['ts']:engine.Candle.parse(r['bar']) for r in data.get('revisions',[])
                        if r['timeframe']==tf and r['observed_ts']<=now}
             eligible=[revisions.get(c.ts,c) for c in eligible]
             current[tf]=eligible[-300:]
         if not current['3m']:
             continue
-        price=current['3m'][-1].close
+        price=(current['1m'][-1].close if data.get('price_from_1m') and current['1m']
+               else current['3m'][-1].close)
         spread=max(tick,price*engine.finite(data.get('spread_bps',2))/10_000)
         if quotes:
             quote=quotes[now]

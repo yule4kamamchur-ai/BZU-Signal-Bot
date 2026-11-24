@@ -495,6 +495,7 @@ def build(state, snapshot, result, cfg, engine):
             'status':'READY' if healthy else 'DATA_HOLD','system_mode':system_mode,'orders':orders,
             'execution':'SIGNAL_LEDGER','execution_audit':state.get('execution_audit'),
             'exchange_status':state.get('exchange_status'),
+            'meta_calibration_status':state.get('meta_calibration_status','NO_PRIORS'),
             'daily':engine.day_stats(state,snapshot.now,cfg),
             'dealing_range':engine.scenario_planner.build(snapshot,cfg,engine)['range'] if healthy and profile else None,
             'brain_config':{

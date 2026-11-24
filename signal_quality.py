@@ -9,7 +9,9 @@ import copy
 import hashlib
 import json
 import math
+import os
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -259,9 +261,53 @@ def assess(plan, snapshot, context, cfg, engine, rows, settings: Settings=Settin
             'ranking_adjustment':stat['ranking_adjustment']}
 
 
-def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r, late=False):
-    """Weighted decision score for routing and sizing; calibration is separate."""
+def calibration_signature(cfg):
+    fields = ('instrument','tick','include_commission','maker_fee','taker_fee','slippage_bps',
+              'max_hold_minutes','ttl_minutes')
+    return digest({name:getattr(cfg,name) for name in fields})
+
+
+@lru_cache(maxsize=4)
+def _read_priors(path, modified, size):
+    return json.loads(path.read_text())
+
+
+def prepare_sizing(state, snapshot, cfg, engine):
+    """Freeze training and finalized observations once for this whole scan."""
+    import trade_meta_model as model
+    from shadow_ledger import LABEL_SCHEMA
+
+    snapshot._execution_calibration = None
+    if state.get('calibration_replay'):
+        return 'REPLAY_HEURISTIC'
+    path = Path(os.environ.get('META_PRIORS_FILE', Path(__file__).with_name('meta_priors.json')))
+    try:
+        stat = path.stat()
+        artifact = _read_priors(path,stat.st_mtime_ns,stat.st_size)
+        if (artifact.get('schema') != model.PRIOR_SCHEMA or artifact.get('label_schema') != LABEL_SCHEMA
+                or artifact.get('engine_version') != engine.VERSION or artifact.get('instrument') != cfg.instrument
+                or artifact.get('signature') != calibration_signature(cfg)):
+            return 'INCOMPATIBLE_PRIORS'
+        if artifact['validation']['validated'] is not True or not 0 < artifact['data_end_ts'] < snapshot.now:
+            return 'UNVALIDATED_PRIORS'
+        counts = artifact['counts']
+        if '[]' not in counts or not all(math.isfinite(w) and math.isfinite(n) and 0 <= w <= n
+                                        for w,n in counts.values()):
+            return 'INVALID_PRIORS'
+        recent = model.sizing_labels([*state.get('shadow_trades',{}).get('outcomes',()), *state['trades']],
+                                     before=snapshot.now, after=artifact['data_end_ts'])
+        snapshot._execution_calibration = (counts,model.sizing_counts(recent,as_of=snapshot.now))
+        return 'EMPIRICAL_BAYES'
+    except FileNotFoundError:
+        return 'NO_PRIORS'
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return 'INVALID_PRIORS'
+
+
+def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r, late=False, setup=None):
+    """Use the checked posterior when available and preserve the cold-start score."""
     from bzu_execution_rules import range_location
+    import trade_meta_model as model
 
     location = range_location(snapshot, entry)
     aligned = regime.get('side_4h') == side
@@ -273,11 +319,15 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r, la
                'liquidity_room': room_r is None or room_r >= 1.35-1e-8}
     weights = (30, 15, 20, 15, 20)
     score = sum(weight for passed, weight in zip(factors.values(), weights) if passed) / 100
-    tier = 1. if score >= .70 else .65 if score >= .50 else .35
-    return {'meta_prob':score, 'meta_prob_calibrated':False, 'meta_factors':factors,
+    context = model.sizing_context(setup,regime.get('side_4h'),location,snapshot.now)
+    calibration = getattr(snapshot,'_execution_calibration',None)
+    probability, recent = model.sizing_posterior(*calibration,context) if calibration else (score,0.)
+    tier = 1. if probability >= .70 else .65 if probability >= .50 else .35
+    return {'meta_prob':probability, 'meta_prob_calibrated':calibration is not None, 'meta_factors':factors,
+            'meta_context':context,'meta_heuristic':score,'meta_recent_weight':recent,
             'risk_multiplier':min(tier, .40 if counter else 1., .50 if late else 1.),
             'range_pos':location, 'late_entry':late, 'counter_4h':counter,
-            'rejection_required':counter or late or score < .50}
+            'rejection_required':counter or late or probability < .50}
 
 
 def confluence(plan, snapshot, proof, cfg, engine):

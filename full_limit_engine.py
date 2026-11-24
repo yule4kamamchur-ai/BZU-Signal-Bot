@@ -29,12 +29,13 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.3-intraday"
-REPORT_RELEASE = 'v14.4.3'
+VERSION = "full-ict-v14.4.4-intraday"
+REPORT_RELEASE = 'v14.4.4'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
 import signal_quality as quality
+import shadow_ledger
 import setup_scanner as scanner
 import price_forecast
 import limit_structure
@@ -2372,6 +2373,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     state.setdefault('pending_orders',[])
     amend_at_report(state, s, cfg)
     quality.advance(state,s,cfg,sys.modules[__name__])
+    shadow_ledger.advance(state,s,cfg,sys.modules[__name__])
+    state['meta_calibration_status'] = quality.prepare_sizing(state,s,cfg,sys.modules[__name__])
     # A non-PAPER reconciliation still needs a human check. Existing positions
     # continue to be managed; one uncertain interval never erases another plan.
     unresolved = [view['reconciliation'] for _,view in slot_views(state) if view.get('reconciliation')]
@@ -2621,6 +2624,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         valid = [p for p in valid if p['zone_quality']['tactic'] in ('LIMIT', 'MARKET')]
     elif entry_mode == 'LIVE_REACTION':
         can_place = False
+    if single_limit and not analysis['health']:
+        shadow_ledger.watch(state,valid,s,cfg,sys.modules[__name__])
     active=active_plans(state)
     pending=pending_plans(state)
     # Legacy fills and uncertain executions retain their slots. Cancel excess
@@ -3518,12 +3523,17 @@ def export_journal(path: Path, state: dict, core=None) -> None:
                       "max_pending": 1 if state.get('pending_policy') == PENDING_POLICY else 2,
                       "ledger_revision": 2, "order_sequence": state.get('order_sequence',0),
                       "setup_matrix": state.get("setup_matrix",[]), "watch":state.get("watch",[]),
+                      "shadow_trades":state.get('shadow_trades',{}),
+                      "meta_calibration_status":state.get('meta_calibration_status','NO_PRIORS'),
                       "best_scenario":state.get("best_scenario"), "include_commission":state.get("include_commission",False),
                       "price_tick":state.get("price_tick"),
                       "reconciliation_history": state.get('reconciliation_history',[]),
                       "quality_summary": {"strategy":quality.STRATEGY,
                                           "observed_outcomes":len(state.get('quality',{}).get('observations',[])),
                                           "shadow_plans":len(state.get('quality',{}).get('pending',[])),
+                                          "calibration_shadow_open":len(state.get('shadow_trades',{}).get('pending',{})),
+                                          "calibration_shadow_labelled":sum(row.get('net_r') is not None
+                                              for row in state.get('shadow_trades',{}).get('outcomes',())),
                                           "target_win_rate":quality.Settings().target_win_rate,
                                           "target_validated":False},
                       "statistics": statistics(state["trades"]),
@@ -4148,7 +4158,7 @@ def main(core) -> int:
                     'test_market_rr_uses_unchanged_targets',
                 }
                 current = unittest.defaultTestLoader.loadTestsFromNames(
-                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain','test_v141_realtime','test_v144_full_execution'))
+                    ('test_v12_38_scenarios','test_v12_38_1_breakdown','test_v12_39_focus','test_v12_40_execution','test_v12_42_unified_execution','test_v13_intraday','test_v13_1_sniper','test_v13_2_trend','test_v14_trader_brain','test_v141_realtime','test_v144_full_execution','test_meta_calibration'))
                 retained = [case for module in (*historical,*current) for group in module for case in group
                             if case.id().rsplit('.',1)[-1] not in superseded]
                 organic = runner.run(unittest.TestSuite(retained))

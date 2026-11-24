@@ -459,7 +459,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         _, room_r = oil_risk.structural_room(side,entry,risk,scenario_planner.structure_levels(snapshot,engine),
                                               trend=trend or opposing_4h or multibar or local_reversal)
         sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                 rvol=rvol,room_r=room_r,late=late)
+                                                 rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type)
         diag.update(sizing,original_range_pos=original_location)
     else:
         entry, stop, risk, entry_basis, _, inside = scanner.zone_entry_geometry(
@@ -579,7 +579,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             confirmation_tf = market_trigger.get('confirmation_timeframe') or ('5m' if pattern.startswith('M5_') else '15m')
             rvol = scanner.event_rvol(snapshot,confirmation_tf,market_trigger['known_ts'])['rvol']
             sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                     rvol=rvol,room_r=room_r,late=late)
+                                                     rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type)
             require_rejection = sizing['rejection_required']
         if require_rejection:
             rejection = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
@@ -768,7 +768,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if rejection:
             rvol = scanner.event_rvol(snapshot,'15m',rejection['known_ts'])['rvol']
         sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                 rvol=rvol,room_r=geometry.get('room_r'),late=late)
+                                                 rvol=rvol,room_r=geometry.get('room_r'),late=late,setup=anchor.setup_type)
         if sizing['rejection_required'] and not rejection:
             diag.update(sizing,status='WATCHING')
             return None, 'WAIT_M15_ENTRY_REJECTION'
