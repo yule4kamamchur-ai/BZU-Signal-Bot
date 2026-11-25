@@ -350,18 +350,27 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
     score = sum(weight for passed, weight in zip(factors.values(), weights) if passed) / 100
     context = model.sizing_context(setup,regime.get('side_4h'),location,snapshot.now)
     calibration = getattr(snapshot,'_execution_calibration',None)
-    probability, recent = model.sizing_posterior(*calibration,context) if calibration else (score,0.)
-    tier = 1. if probability >= .70 else .65 if probability >= .50 else .35
+    calibrated = calibration is not None
+    probability, recent = model.sizing_posterior(*calibration,context) if calibrated else (score,0.)
+    if calibrated:
+        # Real empirical win-rate tiers for ~1.4-1.8R payoff (break-even WR ~38-41%)
+        tier = 1. if probability >= .45 else .65 if probability >= .36 else .35
+        low_prob = probability < .34
+        strong_calibrated = probability >= .45
+    else:
+        tier = 1. if probability >= .70 else .65 if probability >= .50 else .35
+        low_prob = probability < .50
+        strong_calibrated = False
     risk_mult = min(
         tier,
         .30 if counter_short_sweep else 1.,
         .40 if (counter or h1_against_4h) else 1.,
         .50 if (late or exhausted_wave or pre_lon) else 1.,
         .60 if ny_session else 1.,
-        .50 if (adverse_limit and not (calibration is not None and probability >= .65)) else 1.,
+        .50 if (adverse_limit and not strong_calibrated) else 1.,
     )
     require_rejection = (
-        counter or late or probability < .50
+        counter or late or low_prob
         or ny_session or exhausted_wave or adverse_limit or h1_against_4h
     )
     return {'meta_prob':probability, 'meta_prob_calibrated':calibration is not None, 'meta_factors':factors,
