@@ -223,7 +223,7 @@ def setup_confirmation(name, zone, snapshot, side, tick, engine, settle, *, appr
         if not sweep_ts:
             return 'WAIT_ARMED_SWEEP_CHOCH'
         atr_local = engine.atr(rows[:-1])
-        choch = direction.structural_flip(snapshot, side, sweep_ts, tick, engine, timeframes=('15m', '5m'))['confirmed']
+        choch = direction.structural_flip(snapshot, side, sweep_ts, tick, engine, timeframes=('15m',))['confirmed']
         ema20, _ = direction.trend_references(snapshot)
         last_bar = rows[-1]
         disp = (atr_local > 0 and side * (last_bar.close - last_bar.open) >= .80 * atr_local - EPS
