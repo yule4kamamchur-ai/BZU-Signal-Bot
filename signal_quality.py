@@ -361,11 +361,12 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
         tier = 1. if probability >= .70 else .65 if probability >= .50 else .35
         low_prob = probability < .50
         strong_calibrated = False
+    poor_location_no_vol = (not premium_discount) and (not factors['confirmation_volume'])
     risk_mult = min(
         tier,
         .30 if counter_short_sweep else 1.,
         .40 if (counter or h1_against_4h) else 1.,
-        .50 if (late or exhausted_wave or pre_lon) else 1.,
+        .50 if (late or exhausted_wave or pre_lon or poor_location_no_vol) else 1.,
         .60 if ny_session else 1.,
         .50 if (adverse_limit and not strong_calibrated) else 1.,
     )

@@ -116,7 +116,7 @@ def opening_trigger(snapshot, side, zone, entry, risk, cfg, engine, *, allow_lat
             'sweep': proof}
 
 
-def retest_reason(snapshot, side, quote, trigger, regime, atr, tick):
+def retest_reason(snapshot, side, quote, trigger, regime, atr, tick, *, sizing=None):
     ema, _ = direction.trend_references(snapshot)
     if ema is not None and regime.get('side_1h') == regime.get('side_4h') == side:
         if side*(quote-ema) > 1.2*atr:
@@ -126,13 +126,23 @@ def retest_reason(snapshot, side, quote, trigger, regime, atr, tick):
         reference = trigger.get('reference_close', trigger.get('limit_entry', quote))
         if side*(quote-reference) > max(tick, .20*atr):
             return 'GAP_RETEST'
+    if sizing:
+        return 'CONFIRMATION_BODY_RETEST'
     return None
 
 
 def retest_entry(snapshot, zone, side, fallback, reason, tick, engine):
     ema, _ = direction.trend_references(snapshot)
     kind = zone.get('kind', '')
-    if 'FVG' in kind:
+    if reason == 'CONFIRMATION_BODY_RETEST':
+        rows = direction.closed(snapshot, '15m')
+        if rows:
+            last = rows[-1]
+            mid = (last.open + last.close) / 2
+            level = min(mid, fallback) if side == 1 else max(mid, fallback)
+        else:
+            level = fallback
+    elif 'FVG' in kind:
         level = (zone['low']+zone['high'])/2
     elif reason == 'HTF_EXTENDED_RETEST' and ema is not None:
         level = ema

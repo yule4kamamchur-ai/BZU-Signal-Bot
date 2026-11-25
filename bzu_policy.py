@@ -597,9 +597,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if not market_trigger and snapshot.metadata.get('scan_gap_ms', 0) > 600_000:
             market_trigger = execution_rules.late_retest_evidence(snapshot,side,zone,entry,risk,cfg,engine)
         if market_trigger:
-            retest_route = execution_rules.retest_reason(snapshot,side,quote,market_trigger,regime,a15,cfg.tick)
+            retest_route = execution_rules.retest_reason(snapshot,side,quote,market_trigger,regime,a15,cfg.tick,sizing=sizing)
             if retest_route:
-                if require_rejection:
+                if require_rejection and retest_route != 'CONFIRMATION_BODY_RETEST':
                     diag['status'] = 'WATCHING'
                     return None, 'WAIT_M15_ENTRY_REJECTION'
                 old_entry = entry
