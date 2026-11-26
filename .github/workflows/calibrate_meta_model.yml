@@ -1,0 +1,102 @@
+name: BZU Meta Calibration v14.4.6
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Public OKX history (days, 1-365)'
+        default: '180'
+      scan_minutes:
+        description: 'Match production configuration (3 worker, 5 GitHub, 15 research)'
+        type: choice
+        options: ['3', '5', '15']
+        default: '5'
+      adaptive_exits:
+        description: 'Match the production exit policy'
+        type: choice
+        options: ['SHADOW', 'ACTIVE']
+        default: 'SHADOW'
+      publish:
+        description: 'Publish only a validated, compatible prior'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 3 * * 0'
+
+permissions:
+  contents: write
+concurrency:
+  group: bzu-meta-calibration
+  cancel-in-progress: false
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      BZU_OKX_EXECUTION: PAPER
+      INCLUDE_COMMISSION: 'true'
+      OKX_INST_ID: BZ-USDT-SWAP
+      MAKER_FEE_RATE: ${{ vars.MAKER_FEE_RATE || '0.0002' }}
+      TAKER_FEE_RATE: ${{ vars.TAKER_FEE_RATE || '0.0005' }}
+      LIMIT_MAX_STOP_ATR: '4.00'
+      BZU_MIN_STOP_ABSOLUTE: '0.20'
+      BZU_MAX_STOP_ABSOLUTE: '0.75'
+      MIN_NET_RR: '1.80'
+      MIN_SETUP_SCORE: '60'
+      LIMIT_MAX_DISTANCE_ATR: '3.50'
+      SESSION_END_HOUR: '22'
+      DAYS: ${{ inputs.days || '180' }}
+      SCAN: ${{ inputs.scan_minutes || (vars.BZU_SERVER_MODE == 'WORKER' && '3' || '5') }}
+      EXITS: ${{ inputs.adaptive_exits || vars.BZU_ADAPTIVE_EXITS || 'SHADOW' }}
+      PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish == true }}
+      BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install requirements
+        run: pip install -r requirements.txt
+      - name: Run focused regression tests
+        run: python -m unittest test_meta_calibration test_v144_full_execution test_v141_realtime test_v145_expectancy test_v146_adaptive_entry
+      - name: Run causal replay
+        run: |
+          python calibrate_meta_model.py --days "$DAYS" --scan-minutes "$SCAN" --adaptive-exits "$EXITS" \
+            --output calibration/meta_priors.json --report calibration/report.json --labels calibration/labels.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bzu-meta-calibration
+          path: calibration/
+          if-no-files-found: warn
+      - name: Publish only validated results on unchanged strategy
+        if: success() && env.PUBLISH == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('calibration/meta_priors.json')
+          a=json.loads(p.read_text())
+          if a['validation']['validated'] is not True:
+              print('Holdout not validated. Keep existing prior.')
+              Path('/tmp/bzu_skip_publish').touch()
+          PY
+          if [ -f /tmp/bzu_skip_publish ]; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin "$BRANCH"
+          if ! git diff --quiet HEAD FETCH_HEAD -- '*.py' '.github/workflows/main.yml' 'compose.yaml'; then
+            echo 'Strategy changed during replay. Do not publish an incompatible prior.'
+            exit 0
+          fi
+          # A new state commit is harmless. Rebase only our one-file update.
+          cp calibration/meta_priors.json meta_priors.json
+          git add meta_priors.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Calibrate validated BZU expectancy prior'
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
