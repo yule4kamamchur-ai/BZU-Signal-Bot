@@ -403,10 +403,12 @@
       const ageTag = age === null ? 'немає даних' : `${Math.floor(age/60)} хв ${age%60} с тому`;
       const sourceTag = snapshotSource ? ` · ${snapshotSource}` : '';
       const attempt = data.last_attempt_ts && data.last_attempt_ts > data.updated_ts ? ` · спроба ${new Date(data.last_attempt_ts).toLocaleTimeString('uk-UA',{timeZone:'Europe/Kyiv'})}` : '';
+      const denied = health.status === 'FAILED_DATA' && (health.access_denied || (data.errors || []).some(e => /HTTP Error (401|403|451)/.test(e)));
+      const statusLabel = denied ? '⚠ MEXC: ВІДМОВА API' : health.status === 'FAILED_DATA' ? '⚠ MEXC: НЕМАЄ ДАНИХ' : stale ? '⚠ ЗАСТАРІЛИЙ АНАЛІЗ' : health.status === 'DEGRADED' ? '⚠ ЧАСТКОВІ ДАНІ' : 'Аналіз';
       const perf = health.timings && Number.isFinite(health.timings.scan_s) ? ` · аналіз ${health.timings.scan_s.toFixed(1)} с` : '';
-      updEl.textContent = `${stale ? '⚠ ЗАСТАРІЛИЙ АНАЛІЗ' : health.status === 'DEGRADED' ? '⚠ ЧАСТКОВІ ДАНІ' : 'Аналіз'}: ${data.updated_kyiv || '—'} Київ · ${ageTag} · цикл ${interval/60} хв${perf}${health.errors ? ' · помилок '+health.errors : ''}${scannerFetchError ? ' · помилка завантаження' : ''}${attempt}${sourceTag}${liveTag}`;
+      updEl.textContent = `${statusLabel}: ${data.updated_kyiv || '—'} Київ · ${ageTag} · цикл ${interval/60} хв${perf}${health.errors ? ' · помилок '+health.errors : ''}${Number.isInteger(health.fresh_quotes) ? ' · REST '+health.fresh_quotes+'/7' : ''}${scannerFetchError ? ' · помилка завантаження' : ''}${attempt}${sourceTag}${liveTag}`;
       updEl.classList.toggle('ms-dn',stale);
-      updEl.title = [(data.errors || []).join('\n'),health.last_error, health.run_id ? `GitHub run: ${health.run_id}` : '', health.recovered?.length ? `Відновлено: ${health.recovered.join(', ')}` : '', health.derived?.length ? `Агреговано: ${health.derived.join(', ')}` : '',fetchDetails].filter(Boolean).join('\n');
+      updEl.title = [(data.errors || []).join('\n'),health.last_error, health.api_base ? `REST: ${health.api_base}` : '', health.fanout_skipped ? 'Запити зупинені після двох відмов API' : '', health.run_id ? `GitHub run: ${health.run_id}` : '', health.recovered?.length ? `Відновлено: ${health.recovered.join(', ')}` : '', health.derived?.length ? `Агреговано: ${health.derived.join(', ')}` : '',fetchDetails].filter(Boolean).join('\n');
 
     }
   }

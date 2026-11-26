@@ -187,6 +187,6 @@ class StrategyTests(unittest.TestCase):
 
     def test_workflow_separate_and_worker_interval(self):
         main=Path('.github/workflows/main.yml').read_text(); self.assertNotIn('python bot_oneshot.py',main); self.assertNotIn('signal_journal_v6_4.json',main)
-        self.assertIn("'1-59/5 * * * *'",main); self.assertIn('mexc_worker.py',Path('compose.yaml').read_text()); self.assertIn('"180"',Path('compose.yaml').read_text())
+        self.assertIn('workflow_dispatch:',main); self.assertIn('mexc_worker.py',Path('compose.yaml').read_text()); self.assertIn('"180"',Path('compose.yaml').read_text())
 
 if __name__=='__main__': unittest.main()

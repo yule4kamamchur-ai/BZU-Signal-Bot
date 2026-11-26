@@ -32,9 +32,9 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-MEXC_BASE = os.getenv("MEXC_FUTURES_BASE", "https://contract.mexc.com")
+MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.1 STRUCTURAL"
+SCANNER_VERSION = "BZU MULTI v15.1.1 API FIX"
 
 INSTRUMENTS: tuple[dict[str, Any], ...] = (
     {
@@ -182,7 +182,7 @@ def _http_json(url: str, timeout: float = 7.0) -> dict[str, Any]:
         _next_request=time.monotonic()+.14
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "BZU-MultiScanner/15.1", "Accept": "application/json"},
+        headers={"User-Agent": "BZU-MultiScanner/15.1.1", "Accept": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload=json.loads(resp.read().decode("utf-8"))
@@ -907,28 +907,47 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     started=time.monotonic(); cut=now_ms if now_ms is not None else int(time.time()*1000)
     memory=memory or {}; errors=[]; data={}; ticks={}; timings={}
     active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active")) if a}
-    tasks={}; counts={}
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        tasks[pool.submit(fetch_contract_ticks,fetcher)]=("DETAIL","")
-        for sym,interval,count in [("BTC_USDT","Min15",100),("BTC_USDT","Min60",40)]+[
-            (spec["symbol"],tf,count) for spec in INSTRUMENTS for tf,count in (("Min1",180),("Min5",130),("Min15",110),("Min60",145),("Hour4",35))]:
-            if interval=="Min1" and sym in active_symbols:
-                # Catch up all unseen minutes across normal outages, up to the API window.
-                a=active_symbols[sym]; cursor=a.get("processed_until_ts",a.get("opened_ts") or a.get("placed_ts") or cut)
-                count=max(count,min(1400,(cut-int(cursor))//60000+5))
-            counts[(sym,interval)]=count
-            tasks[pool.submit(fetch_klines,sym,interval,count,cut,fetcher)]=(sym,interval)
-        for future in as_completed(tasks):
-            key=tasks[future]
-            try:
-                value=future.result()
-                if not value: errors.append(f"{key[0]}/{key[1]}: empty response")
-                if key[0]=="DETAIL": ticks=value
-                else: data[key]=value
-            except Exception as exc:
-                errors.append(f"{key[0]}/{key[1]}: {type(exc).__name__} {str(exc)[:100]}")
-    # Retry missing requests once, independently, with pacing in the real HTTP transport.
-    failed=[key for key in tasks.values() if (not ticks if key[0]=="DETAIL" else not data.get(key))]
+    tasks={}; counts={}; denied=set(); http_statuses={}; skipped=False
+    def record_error(key, exc, retry=False):
+        code=getattr(exc,"code",None)
+        label="TICKER" if key[0]=="TICKER" else f"{key[0]}/{key[1]}"
+        if isinstance(code,int):
+            http_statuses[label]=code
+            if code in (401,403,451): denied.add(key)
+        errors.append(f"{label}: {'retry ' if retry else ''}{type(exc).__name__} {str(exc)[:120]}")
+    # Confirm broad access denial using two different public endpoints BEFORE fan-out.
+    # A denied endpoint is not retried in the same cycle. No alternate proxy/host bypass.
+    try:
+        ticks=fetch_contract_ticks(fetcher)
+        if not ticks: errors.append("DETAIL/: empty response")
+    except Exception as exc:
+        record_error(("DETAIL",""),exc)
+    if ("DETAIL","") in denied:
+        try: fetch_all_tickers(fetcher=fetcher)
+        except Exception as exc: record_error(("TICKER",""),exc)
+        if ("TICKER","") in denied:
+            skipped=True
+            errors.append("MEXC: access denied on two public endpoints; remaining requests skipped")
+    if not skipped:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for sym,interval,count in [("BTC_USDT","Min15",100),("BTC_USDT","Min60",40)]+[
+                (spec["symbol"],tf,count) for spec in INSTRUMENTS for tf,count in (("Min1",180),("Min5",130),("Min15",110),("Min60",145),("Hour4",35))]:
+                if interval=="Min1" and sym in active_symbols:
+                    # Catch up all unseen minutes across normal outages, up to the API window.
+                    a=active_symbols[sym]; cursor=a.get("processed_until_ts",a.get("opened_ts") or a.get("placed_ts") or cut)
+                    count=max(count,min(1400,(cut-int(cursor))//60000+5))
+                counts[(sym,interval)]=count
+                tasks[pool.submit(fetch_klines,sym,interval,count,cut,fetcher)]=(sym,interval)
+            for future in as_completed(tasks):
+                key=tasks[future]
+                try:
+                    value=future.result()
+                    if not value: errors.append(f"{key[0]}/{key[1]}: empty response")
+                    data[key]=value
+                except Exception as exc: record_error(key,exc)
+    # Retry transient failures only; don't retry forbidden/unauthorized endpoints.
+    failed=[key for key in tasks.values() if not data.get(key) and key not in denied]
+    if not ticks and ("DETAIL","") not in denied and not skipped: failed.append(("DETAIL",""))
     recovered=[]
     if failed:
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -942,12 +961,13 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
                 sym,tf=key=retry[future]
                 try: value=future.result()
                 except Exception as exc:
-                    errors.append(f"{sym}/{tf}: retry {type(exc).__name__} {str(exc)[:100]}"); continue
+                    record_error(key,exc,retry=True); continue
                 if value:
                     if sym=="DETAIL": ticks=value
                     else: data[key]=value
                     recovered.append(f"{sym}/{tf}")
                     errors=[e for e in errors if not e.startswith(f"{sym}/{tf}:")]
+                    http_statuses.pop(f"{sym}/{tf}",None)
     # Derive only complete contiguous exchange candles; never fill gaps with invented prices.
     derived=[]
     for sym in {key[0] for key in counts}:
@@ -961,16 +981,17 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
                 errors=[e for e in errors if not e.startswith(f"{sym}/{dst}:")]
     timings["candles_s"]=round(time.monotonic()-started,3)
     quote_start=time.monotonic()
-    try: tickers=fetch_all_tickers(fetcher=fetcher)
-    except Exception as exc:
-        tickers={}; errors.append(f"TICKER: {type(exc).__name__}")
-    if not tickers:
-        try:
-            tickers=fetch_all_tickers(fetcher=fetcher)
-            if tickers:
-                recovered.append("TICKER"); errors=[e for e in errors if not e.startswith("TICKER:")]
-        except Exception as exc:
-            errors.append(f"TICKER: retry {type(exc).__name__}")
+    tickers={}
+    if not skipped and ("TICKER","") not in denied:
+        try: tickers=fetch_all_tickers(fetcher=fetcher)
+        except Exception as exc: record_error(("TICKER",""),exc)
+        if not tickers and ("TICKER","") not in denied:
+            try:
+                tickers=fetch_all_tickers(fetcher=fetcher)
+                if tickers:
+                    recovered.append("TICKER"); errors=[e for e in errors if not e.startswith("TICKER:")]
+                    http_statuses.pop("TICKER",None)
+            except Exception as exc: record_error(("TICKER",""),exc,retry=True)
     quote_ts=now_ms if now_ms is not None else int(time.time()*1000)
     timings["ticker_s"]=round(time.monotonic()-quote_start,3)
     for sym,ticker in tickers.items():
@@ -979,7 +1000,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
             if stamp<10_000_000_000: stamp*=1000
             ticker["_observed_ts"]=min(stamp,quote_ts) if stamp<=quote_ts+5000 else 0
         except (ValueError,TypeError): ticker["_observed_ts"]=0
-    if not tickers: errors.append("TICKER: empty response")
+    if not tickers and ("TICKER","") not in denied: errors.append("TICKER: empty response")
     btc15=data.get(("BTC_USDT","Min15"),[]); btc1=data.get(("BTC_USDT","Min60"),[])
     btc_price=float((tickers.get("BTC_USDT") or {}).get("lastPrice") or (btc15[-1].close if btc15 else 0.))
     btc_macro=analyze_btc_macro(btc15,btc1,btc_price)
@@ -1005,7 +1026,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     timings["scan_s"]=round(time.monotonic()-started,3)
     return {"version":SCANNER_VERSION,"exchange":"MEXC","updated_ts":now,"scan_started_ts":cut,
         "updated_kyiv":datetime.fromtimestamp(now/1000,tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m.%Y %H:%M"),
-        "health":{"status":"DEGRADED" if errors or any(r.get("status_ua")=="ДАНІ НЕСВІЖІ" or not r.get("candles_1m") for r in results) else "OK","timings":timings,"expected_interval_sec":int(os.getenv("MEXC_SCAN_INTERVAL_SEC","300")),"assets":len(results),"errors":len(errors),"recovered":recovered,"derived":derived,"source":"GITHUB_ACTIONS" if os.getenv("GITHUB_RUN_ID") else "WORKER_OR_LOCAL","run_id":os.getenv("GITHUB_RUN_ID"),"run_attempt":os.getenv("GITHUB_RUN_ATTEMPT")},
+        "health":{"status":"DEGRADED" if errors or any(r.get("status_ua")=="ДАНІ НЕСВІЖІ" or not r.get("candles_1m") for r in results) else "OK","timings":timings,"expected_interval_sec":int(os.getenv("MEXC_SCAN_INTERVAL_SEC","300")),"assets":len(results),"errors":len(errors),"recovered":recovered,"derived":derived,"source":"GITHUB_ACTIONS" if os.getenv("GITHUB_RUN_ID") else "WORKER_OR_LOCAL","run_id":os.getenv("GITHUB_RUN_ID"),"run_attempt":os.getenv("GITHUB_RUN_ATTEMPT"),"api_base":MEXC_BASE,"api_http_statuses":http_statuses,"access_denied":bool(denied),"fanout_skipped":skipped},
         "defaults":{"deposit_usdt":deposit,"risk_pct":risk_pct,"max_leverage":max_leverage},
         "btc_macro":btc_macro,"top_pick":top,"instruments":ranked,"ready_count":sum(r["status"]=="READY" for r in ranked),
         "watch_count":sum(r["status"]=="WATCH" for r in ranked),"errors":errors}
@@ -1068,6 +1089,7 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         # An unavailable market must not masquerade as a successful refresh.
         fresh_count=sum(bool(r.get("quote_valid")) and r.get("quote_ts",0)>=state["updated_ts"]-60000 for r in state["instruments"])
         state["health"]["fresh_quotes"]=fresh_count
+        state["health"]["fresh_analysis_count"]=sum(bool(r.get("analysis_fresh")) for r in state["instruments"])
         state["last_attempt_ts"]=state["updated_ts"]
         if not fresh_count or not any(r.get("analysis_fresh") for r in state["instruments"]):
             state["health"]["status"]="FAILED_DATA"
@@ -1076,7 +1098,7 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
             state["updated_ts"]=previous.get("updated_ts",0); state["updated_kyiv"]=previous.get("updated_kyiv","")
         _atomic_write(memory_path,mem); _atomic_write(output,state)
         print(f"[MULTI-SCANNER] assets={len(state['instruments'])}/7 fresh={fresh_count} status={state['health']['status']} timings={state['health']['timings']} errors={state['errors']}",flush=True)
-        if notify:
+        if notify and state["health"]["status"]!="FAILED_DATA":
             try: maybe_notify(state,memory_path)
             except Exception as exc: logging.warning("Telegram delivery failed: %s",type(exc).__name__)
         return state
