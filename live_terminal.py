@@ -221,7 +221,7 @@ def build(state, snapshot, result, cfg, engine):
                *analysis.get('setup_matrix', state.get('setup_matrix', [])),
                *analysis.get('poi_paths', []), *analysis.get('candidate_plans', []), *radar_plans, *admitted, *plans]
     for row in sources:
-        side, reason = row.get('side'), row.get('reason', (row.get('quality') or {}).get('reason'))
+        side, reason = row.get('side'), row.get('final_rejection') or row.get('reason', (row.get('quality') or {}).get('reason'))
         if side not in (-1, 1) or reason in RETIRED:
             continue
         raw_zone = row.get('entry_zone') or {}
@@ -256,6 +256,8 @@ def build(state, snapshot, result, cfg, engine):
                 item[field] = value
         approach = row.get('approach') or {}
         item['confirmation_timeframe'] = approach.get('confirmation_timeframe') or ('5m/15m' if 'IMPULSE' in (reason or '') else None)
+        for key in ('timing_required','timing_options','timing_witnesses','timing_route','timing_witness','final_rejection'):
+            if key in row: item[key]=row[key]
         item['status'] = ('WAIT_CONFIRMATION' if approach.get('blocked') or
                           any(token in (reason or '') for token in ('CONFIRM', 'WAIT_RETEST', 'WAIT_BREAK')) else
                           'CANDIDATE' if reason == 'ACCEPTED' or row.get('status') == 'LIMIT_READY' or
@@ -307,8 +309,9 @@ def build(state, snapshot, result, cfg, engine):
         z.update(calc)
         z['institutional_family'] = (geometry or {}).get('institutional_family')
         z['scale_policy'] = (geometry or {}).get('scale_policy')
-        z['timing_route'] = (geometry or {}).get('timing_route')
-        z['timing_witness'] = (geometry or {}).get('timing_witness')
+        z['timing_route'] = (geometry or {}).get('timing_route') or original.get('timing_route')
+        z['timing_witness'] = (geometry or {}).get('timing_witness') or original.get('timing_witness')
+        z['timing_required'] = (geometry or {}).get('timing_required') or original.get('timing_required')
         if profile and engine.scanner.structural_pullback(z):
             z['market_pullback_max'] = .15*atr15
         z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])
@@ -327,9 +330,11 @@ def build(state, snapshot, result, cfg, engine):
         if (z.get('setup') == 'SESSION_MEAN_RECLAIM' and not engine.scanner.market_plan(z)
                 and not z.get('entry_retest_reason')):
             gate = 'SESSION_MEAN_LIMIT_DISABLED'
-        if gate == 'EXHAUSTED_MOVE':
+        if original.get('final_rejection'):
+            gate=original['final_rejection']
+        elif gate == 'EXHAUSTED_MOVE':
             pass
-        elif z['priority'] == 'COUNTER_TREND':
+        elif z['priority'] == 'COUNTER_TREND' and not z['execution_admitted']:
             gate = 'BLOCKED_BY_TREND'
         elif not healthy:
             gate = 'DATA_HOLD'
@@ -358,6 +363,8 @@ def build(state, snapshot, result, cfg, engine):
                             'AHEAD' if z['side'] * (snapshot.price - z['entry']) > 0 else 'AT_OR_THROUGH_ENTRY'))
         if not actionable:
             z['tactic'] = 'OBSERVE'
+            z['reason_text']=reasons.get(original.get('final_rejection') or original.get('reason'),original.get('reason_text') or original.get('reason'))
+            z['gate_reason_text']=reasons.get(gate,gate)
         elif entry_mode == 'LIVE_REACTION':
             z['tactic'] = 'REACTION_M5'
         if order:

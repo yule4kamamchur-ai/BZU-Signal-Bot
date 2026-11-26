@@ -2,7 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const OKX = 'https://www.okx.com/api/v5/market';
-const DASHBOARD_RELEASE = 'v14.4.6';
+const DASHBOARD_RELEASE = 'v14.4.7';
 const STATE_MAX_AGE = 27 * 60_000;
 const QUOTE_MAX_AGE = 15_000;
 const chartFrames = { '5m': 300, '15m': 900 };
@@ -1473,6 +1473,24 @@ function radarPriority(usable, fresh) {
   return local ?? server ?? trend;
 }
 
+function waitingReason(row) {
+  const code=[row.final_rejection,row.engine_reason,row.reason,row.gate_reason,row.risk_gate].find(v=>v && !['ACCEPTED','CANDIDATE','READY','NONE'].includes(v));
+  const translations={WAIT_M15_COUNTER_4H_REJECTION:'Контртренд: потрібен закритий відбій M15',
+    WAIT_M15_ENTRY_REJECTION:'Підвищений ризик: потрібен закритий відбій M15',
+    WAIT_M5_OR_M15_COUNTER_CONFIRMATION:'Контртренд: сильний M5 або строгий M15',
+    WAIT_FAST_ENTRY_CONFIRMATION:'Очікуємо актуальне підтвердження M1/M3/M5',
+    WAIT_PULLBACK_REJECTION:'Очікуємо реакцію на відкат',
+    NO_EVALUATED_SETUP:'Сетап для зони ще не оцінено',
+    BLOCKED_BY_TREND:'Конфлікт напрямку тренду'};
+  const detail=code && [row.gate_reason,row.risk_gate].includes(code)?row.gate_reason_text:code && [row.reason,row.engine_reason,row.final_rejection].includes(code)?row.reason_text:null;
+  // Only a server gate may prescribe M15 as the actual entry condition.
+  const descriptive=[row.reason_text,row.trigger].find(t=>typeof t==='string' && t.trim() && !/M15/i.test(t));
+  const text=translations[code]??detail??code??descriptive??'Очікуємо підхід до зони та перевірку торгових умов';
+  const options=Array.isArray(row.timing_options)?row.timing_options.join(' / '):'';
+  const timing=row.timing_required==='M5_OR_M15'?'M5 або M15':row.timing_required==='ADAPTIVE'?'адаптивний LIMIT / M1 / M3 / M5':row.timing_required==='M15'?'строгий M15':null;
+  return text+(options?' · Доступно: '+options:timing?' · Режим: '+timing:'');
+}
+
 function observation(row, price, now, developing=false) {
   if (!row || ![1,-1].includes(row.side) || row.mitigated ||
       invalidZones.has(zoneFingerprint(row)) ||
@@ -1486,9 +1504,7 @@ function observation(row, price, now, developing=false) {
   const entry=preview.entry??level;
   const risk=row.side*(entry-preview.stop);
   const ratio=number(preview.rr1)?preview.rr1:risk>0?row.side*(preview.tp1-entry)/risk:null;
-  const waitingForClose=[row.gate_reason,row.reason].some(reason=>typeof reason==='string'&&reason.startsWith('WAIT_M15'));
-  const reason=row.trigger || (!row.actionable && row.reason_text) || (row.actionable?activationText(row,price,false):
-    waitingForClose?'Чекаємо закриту свічку відбою M15':'Чекаємо підхід до зони та підтвердження M15');
+  const reason=row.actionable?activationText(row,price,false):waitingReason(row);
   return {name:row.kind??row.setup??row.label??'Структурний рівень',side:row.side,level,entry,
     ratio:number(ratio)&&ratio>0?ratio:null,reason,timeframe:row.timeframe};
 }
@@ -1506,8 +1522,8 @@ function radarObservation(price, plan, usable, fresh, now) {
   const high=suppliedRange?.high??suppliedRange?.range_high??(usable?state.range_high:null);
   const range=number(low)&&number(high)&&low>0&&high>low?{low,high}:null;
   const boundaries=range?[
-    {side:-1,level:high,name:'Верхня межа діапазону',isBoundary:true,reason:'Чекаємо свіпу або відбою M15 від верхньої межі'},
-    {side:1,level:low,name:'Нижня межа діапазону',isBoundary:true,reason:'Чекаємо свіпу або відбою M15 від нижньої межі'}
+    {side:-1,level:high,name:'Верхня межа діапазону',isBoundary:true,reason:'Чекаємо свіпу або підтвердженої реакції від верхньої межі'},
+    {side:1,level:low,name:'Нижня межа діапазону',isBoundary:true,reason:'Чекаємо свіпу або підтвердженої реакції від нижньої межі'}
   ]:[];
   const reference=candidate??developing??serverRows[0]??localRows[0];
   const watchlist=[];
@@ -1813,7 +1829,7 @@ function renderBanner(price, usable, view, pnl, tone) {
     const band=format(range.low)+'–'+format(range.high)+' $';
     title='РАДАР · '+(priority?priorityText(priority)+' · ':'')+'ДІАПАЗОН ('+band+') · Шукаємо відбій від меж';
     detail='SHORT від верхньої межі '+format(range.high)+' $'+priceDelta(range.high,price)+
-      ' · LONG від нижньої межі '+format(range.low)+' $'+priceDelta(range.low,price)+' після свіпу або відбою M15';
+      ' · LONG від нижньої межі '+format(range.low)+' $'+priceDelta(range.low,price)+' після свіпу або підтвердженої реакції';
   }
   const execution=state.exchange_status;
   if (execution?.mode && execution.mode!=='PAPER') {

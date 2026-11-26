@@ -574,6 +574,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
     retest_witness = None
     timing_route = None
     opening_proof = False
+    counter_m5 = False
+    counter_m5_context = False
     if oil:
         if session['post_sweep_only']:
             market_trigger = execution_rules.opening_trigger(
@@ -590,19 +592,22 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
                      if (proof := timing.trigger(snapshot,side,zone,entry,risk,cfg,engine,tf0))}
             strict_proof = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
             options = (['EARLY_LIMIT'] if early_ok else []) + list(micro) + (['M15'] if strict_proof else [])
+            counter_m5_context = timing.counter_m5_context_allowed(side,regime,sizing,approach)
+            counter_m5 = timing.counter_m5_allowed(snapshot,side,regime,sizing,approach,micro.get('M5'))
             if require_rejection:
-                options = ['M15'] if strict_proof else []
-            diag['timing_options'] = options
+                options = (['M5'] if counter_m5 else []) + (['M15'] if strict_proof else [])
+            diag.update(timing_options=options, timing_required=('M5_OR_M15' if counter_m5_context else 'M15' if require_rejection else 'ADAPTIVE'),
+                        timing_witnesses={k:{'known_ts':v['known_ts'],'recovered_between_scans':v.get('recovered_between_scans',False)} for k,v in micro.items()})
             # Forced routes are paper alternatives only, and must meet the same risk gate.
             if timing_override is not None:
                 if timing_override not in options:
                     return None, 'TIMING_ROUTE_UNAVAILABLE'
                 timing_route = timing_override
             elif require_rejection:
-                timing_route = 'M15'
+                timing_route = 'M5' if counter_m5 else 'M15'
             elif micro:
                 # Fast confirmation in calm aligned trends; M5 in mixed/range conditions.
-                preferred = ('M3','M1','M5') if early_ok or (approach.get('calm') and regime.get('side_4h')==side) else ('M5','M3')
+                preferred = ('M3','M1','M5') if early_ok or (approach.get('calm') and regime.get('side_4h')==side) else ('M5','M3','M1')
                 timing_route = next((k for k in preferred if k in micro),None)
             if timing_route is None and early_ok:
                 timing_route = 'EARLY_LIMIT'
@@ -610,23 +615,27 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
                 market_trigger = None
             elif timing_route in micro:
                 market_trigger = micro[timing_route]
+                if require_rejection and timing_route=='M5' and counter_m5:
+                    rejection = market_trigger
             elif timing_route == 'M15':
                 market_trigger = strict_proof
                 rejection = strict_proof
                 if not market_trigger:
                     diag['status'] = 'WATCHING'
-                    return None, 'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION'
+                    return None, ('WAIT_M5_OR_M15_COUNTER_CONFIRMATION' if counter_m5_context else
+                                  'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION')
             elif not market_trigger or market_trigger['pattern'] == 'INSTANT_TOUCH_MARKET_FILL':
                 market_trigger = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,early=early_impulse)
             if market_trigger:
                 pattern = market_trigger['pattern']
                 confirmation_tf = market_trigger.get('confirmation_timeframe') or ('5m' if pattern.startswith('M5_') else '15m')
                 rvol = scanner.event_rvol(snapshot,confirmation_tf,market_trigger['known_ts'])['rvol']
-        if require_rejection:
+        if require_rejection and not (counter_m5 and timing_route=='M5' and rejection):
             rejection = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
             if not rejection:
                 diag['status'] = 'WATCHING'
-                return None, 'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION'
+                return None, ('WAIT_M5_OR_M15_COUNTER_CONFIRMATION' if counter_m5_context else
+                                  'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION')
             timing_route = 'M15'
             if not opening_proof:
                 market_trigger = rejection
@@ -819,7 +828,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
             return None, 'EXHAUSTED_MOVE'
     if oil:
         if rejection:
-            rvol = scanner.event_rvol(snapshot,'15m',rejection['known_ts'])['rvol']
+            rvol = scanner.event_rvol(snapshot,rejection.get('confirmation_timeframe','15m'),rejection['known_ts'])['rvol']
         sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
                                                  rvol=rvol,room_r=geometry.get('room_r'),late=late,setup=anchor.setup_type,
                                                  source_strategy=src_strat)
@@ -827,7 +836,11 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
             diag.update(sizing,status='WATCHING')
             return None, 'WAIT_M15_ENTRY_REJECTION'
         sizing['rejection_required'] = bool(require_rejection or sizing['rejection_required'])
+        if timing_route=='M5' and counter_m5 and not timing.counter_m5_allowed(snapshot,side,regime,sizing,approach,rejection):
+            return None,'WAIT_M15_COUNTER_4H_REJECTION'
         diag.update(sizing)
+    if counter_m5 and timing_route=='M5' and action!='ACTIVE_ENTRY':
+        return None,'WAIT_M5_OR_M15_COUNTER_CONFIRMATION'
     has_runner = side * (tp2 - tp1) > 0
     diag['round_level_protection'] = {'original_stop': raw_stop, 'stop': stop,
         'original_targets': geometry['raw_targets'], 'tp1': tp1, 'tp2': tp2}

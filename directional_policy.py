@@ -18,6 +18,14 @@ RECLAIM_REQUIRED = frozenset({'SESSION_MEAN_RECLAIM', 'DAILY_WEEKLY_OPEN_RECLAIM
 
 
 def session_vwap(snapshot):
+    # Same as-of data is requested by many zones and detectors in one cycle.
+    cache=vars(snapshot).setdefault('_session_vwap_cache',{})
+    key=(snapshot.now,id(snapshot.candles.get('1m')),id(snapshot.candles.get('15m')))
+    if key not in cache: cache[key]=_session_vwap_impl(snapshot)
+    return dict(cache[key])
+
+
+def _session_vwap_impl(snapshot):
     """HLC3 VWAP from 00:00 UTC, requiring non-overlapping day coverage.
 
     Full 15m history plus available 1m tail avoids another network request.

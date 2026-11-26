@@ -21,6 +21,7 @@ import urllib.request
 import urllib.error
 from bisect import bisect_left, bisect_right
 from contextlib import contextmanager
+from functools import lru_cache
 from dataclasses import asdict, dataclass, field, replace, fields
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -29,8 +30,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.6-intraday"
-REPORT_RELEASE = 'v14.4.6'
+VERSION = "full-ict-v14.4.7-intraday"
+REPORT_RELEASE = 'v14.4.7'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -269,27 +270,32 @@ def round_tick(value: float, tick: float, up: bool = False) -> float:
     return float(q.to_integral_value(rounding=ROUND_CEILING if up else ROUND_FLOOR) * Decimal(str(tick)))
 
 
-def atr(rows: list[Candle], period: int = 14) -> float:
-    if len(rows) < 2:
-        return 0.0
-    tr = [max(c.high - c.low, abs(c.high - p.close), abs(c.low - p.close))
-          for p, c in zip(rows, rows[1:])]
+@lru_cache(maxsize=8192)
+def _atr_window(window, period):
+    tr=[max(h-l,abs(h-p[2]),abs(l-p[2])) for p,(h,l,c) in zip(window,window[1:])]
     return mean(tr[-period:])
 
 
+def atr(rows: list[Candle], period: int = 14) -> float:
+    if len(rows)<2: return 0.0
+    window=rows[-period-1:] if period>0 else rows
+    return _atr_window(tuple((c.high,c.low,c.close) for c in window),period)
+
+
+@lru_cache(maxsize=2048)
+def _pivot_window(window,strength):
+    found=[]
+    for i in range(strength,len(window)-strength):
+        ts,h,l=window[i]; others=window[i-strength:i]+window[i+1:i+strength+1]
+        if all(h>x[1] for x in others): found.append(('HIGH',h,ts,window[i+strength][0]))
+        if all(l<x[2] for x in others): found.append(('LOW',l,ts,window[i+strength][0]))
+    return tuple(found)
+
+
 def pivots(rows: list[Candle], strength: int = 2) -> list[dict]:
-    """Pivots carry availability time; all right-hand bars must already exist."""
-    found = []
-    for i in range(strength, len(rows) - strength):
-        others = rows[i-strength:i] + rows[i+1:i+strength+1]
-        for kind, yes, level in (
-            ("HIGH", all(rows[i].high > x.high for x in others), rows[i].high),
-            ("LOW", all(rows[i].low < x.low for x in others), rows[i].low),
-        ):
-            if yes:
-                found.append({"kind": kind, "level": level, "ts": rows[i].ts,
-                              "known_ts": rows[i+strength].ts})
-    return found
+    """Cache only candle content, never future data or mutable plan state."""
+    return [{'kind':k,'level':v,'ts':ts,'known_ts':known} for k,v,ts,known in
+            _pivot_window(tuple((c.ts,c.high,c.low) for c in rows),strength)]
 
 
 def bias(rows: list[Candle]) -> dict:
@@ -882,7 +888,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             admission_paths.append({'setup':a.setup_type,'timeframe':tf,'side':core.side_sign(a.side),
                 'entry':diagnostics.get('entry', a.level),'reason':reason,'event_key':key,
                 'entry_source':'PLANNER' if 'entry' in diagnostics else 'ANCHOR',
-                **{k:diagnostics[k] for k in ('stop','risk','tp1','tp2','approach','status') if k in diagnostics},
+                **{k:diagnostics[k] for k in ('stop','risk','tp1','tp2','approach','status','timing_required','timing_options','timing_witnesses') if k in diagnostics},
                 'route':a.evidence.get('entry_route','NATIVE_PATTERN'),
                 'source_strategy':a.evidence.get('source_strategy'),
                 'entry_zone':diagnostics.get('entry_zone') or a.evidence.get('entry_zone'),
@@ -2564,9 +2570,21 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     regime = market.get('state')
     dominant = policy.regime_side(market)
     confirmed = []
+    def reject_final(candidate, reason):
+        if candidate.get('shadow_timing_only'): return
+        candidate['final_rejection']=reason
+        rejected=analysis.setdefault('rejections',{})
+        rejected[reason]=rejected.get(reason,0)+1
+        for row in analysis.get('setup_matrix',[]):
+            if row.get('signal_id')==candidate.get('id'):
+                row.update(status='BLOCKED',reason=reason,final_rejection=reason)
+        for row in analysis.get('poi_paths',[]):
+            if row.get('event_key')==candidate.get('event_key') and row.get('reason')=='ACCEPTED':
+                row.update(reason=reason,final_rejection=reason)
     for candidate in valid:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
         if sar and candidate['side'] != sar['side'] and not candidate.get('shadow_timing_only'):
+            reject_final(candidate,'STOP_AND_REVERSE_DIRECTION')
             continue
         if single_limit:
             trigger = candidate.get('market_trigger') or {}
@@ -2580,16 +2598,26 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                                     and candidate.get('entry_retest_reason')=='CONFIRMATION_BODY_RETEST'
                                     and candidate.get('post_only') is True and not counter_4h)
                 if not witness or (candidate.get('order_type') != 'MARKET' and not confirmed_retest):
+                    reject_final(candidate,'FINAL_CONFIRMATION_REQUIRED')
                     continue
-                rejection = execution_rules.level_rejection(s,side,zone,witness['limit_entry'],witness['initial_risk'],
+                if counter_4h and candidate.get('timing_route')=='M5' and witness.get('pattern')==adaptive_entry.PATTERN:
+                    rejection=adaptive_entry.trigger(s,side,zone,witness['limit_entry'],witness['initial_risk'],cfg,sys.modules[__name__],'5m')
+                    velocity=adaptive_entry.approach(s,side,zone,witness['limit_entry'],cfg.tick,sys.modules[__name__])
+                    if not adaptive_entry.counter_m5_allowed(s,side,market,candidate,velocity,rejection):
+                        rejection=None
+                else:
+                    rejection = execution_rules.level_rejection(s,side,zone,witness['limit_entry'],witness['initial_risk'],
                                                                  cfg,sys.modules[__name__],strict=True)
                 if not rejection or rejection['known_ts'] != witness.get('known_ts'):
+                    reject_final(candidate,'FINAL_CONFIRMATION_STALE')
                     continue
             if not (counter_4h or opening_proof or candidate.get('opening_sweep_confirmed')) and policy.trend_entry_error(
                     s,side,s.price,zone,cfg.tick):
+                reject_final(candidate,'FINAL_TREND_GATE')
                 continue
             if (candidate.get('order_type')=='LIMIT' and bzu_policy.full_position(candidate)
                     and session['post_sweep_only'] and not candidate.get('opening_sweep_confirmed')):
+                reject_final(candidate,'WAIT_NY_POST_SWEEP')
                 continue
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
@@ -2603,18 +2631,21 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     a15 = atr(policy.closed(s,'15m'))
                     if (level is None or distal is None or
                             not scanner.pullback_quote_allowed(side,level,distal,quote,a15)):
+                        reject_final(candidate,'FINAL_PULLBACK_DISTANCE')
                         continue
                     if side*(quote-level)<0:
                         proof_quote = level
                 if not (counter_4h or opening_proof) and policy.trend_entry_error(s,side,quote,zone,cfg.tick):
+                    reject_final(candidate,'FINAL_TREND_GATE')
                     continue
                 if not (counter_4h or opening_proof) and scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
+                    reject_final(candidate,'FINAL_MARKET_RANGE')
                     continue
                 if trigger.get('pattern') == adaptive_entry.PATTERN:
                     tf0=trigger.get('confirmation_timeframe')
                     proof=adaptive_entry.trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],cfg,sys.modules[__name__],tf0) if tf0 in adaptive_entry.STEPS else None
                     velocity=adaptive_entry.approach(s,side,zone,trigger['limit_entry'],cfg.tick,sys.modules[__name__])
-                    if velocity['blocked'] or counter_4h:
+                    if velocity['blocked'] or (counter_4h and not adaptive_entry.counter_m5_allowed(s,side,market,candidate,velocity,proof)):
                         proof=None
                 elif trigger.get('pattern') == execution_rules.EARLY_NY:
                     proof = execution_rules.opening_trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
@@ -2654,22 +2685,28 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 else:
                     proof = None
                 if not proof or proof['known_ts'] != trigger.get('known_ts') or abs(quote-candidate['entry']) > 1e-8:
+                    reject_final(candidate,'FINAL_TRIGGER_STALE_OR_QUOTE_MOVED')
                     continue
                 if bzu_policy.full_position(candidate) and session['post_sweep_only'] and proof['pattern'] != execution_rules.EARLY_NY:
+                    reject_final(candidate,'WAIT_NY_POST_SWEEP')
                     continue
                 if bzu_policy.full_position(candidate) and execution_rules.retest_reason(
                         s,side,quote,proof,market,atr(policy.closed(s,'15m')),cfg.tick):
+                    reject_final(candidate,'FINAL_RETEST_REQUIRED')
                     continue
             elif candidate.get('timing_route') in ('M1','M3','M5') and (candidate.get('timing_witness') or {}).get('pattern')==adaptive_entry.PATTERN:
                 witness=candidate['timing_witness']; tf0=witness['confirmation_timeframe']
                 proof=adaptive_entry.trigger(s,side,zone,witness['limit_entry'],witness['initial_risk'],cfg,sys.modules[__name__],tf0)
                 if not proof or proof['known_ts']!=witness['known_ts'] or adaptive_entry.approach(s,side,zone,witness['limit_entry'],cfg.tick,sys.modules[__name__])['blocked']:
+                    reject_final(candidate,'FINAL_MICRO_PROOF_INVALID')
                     continue
             elif candidate.get('timing_route')=='EARLY_LIMIT' and candidate.get('approach',{}).get('brake_model')=='ADAPTIVE_M1_M15_V1' and not adaptive_entry.early_allowed(
                     s,side,candidate['entry'],zone,market,candidate,adaptive_entry.approach(s,side,zone,candidate['entry'],cfg.tick,sys.modules[__name__]),cfg.tick,sys.modules[__name__]):
+                reject_final(candidate,'FINAL_EARLY_LIMIT_INVALID')
                 continue
             elif (bzu_policy.full_position(candidate) and session['post_sweep_only']
                   and not candidate.get('opening_sweep_confirmed')):
+                reject_final(candidate,'WAIT_NY_POST_SWEEP')
                 continue
             gate = scenario_planner.entry_error(s,cfg,sys.modules[__name__],candidate['side'],
                 candidate['entry'] if zone.get('kind')==scanner.wave.BREAKDOWN or
@@ -2682,29 +2719,36 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 trend=counter_4h or candidate.get('trend_rel') in ('WITH_TREND',scanner.REVERSAL_RELATION))
             min_room = scanner.MARKET_IMPULSE_MIN_RR if scanner.market_plan(candidate) else scanner.LIMIT_NEW_MIN_RR
             if not opening_proof and ((gate and not counter_4h) or (room_r is not None and room_r < min_room-1e-8)):
+                reject_final(candidate,gate if gate and not counter_4h else 'FINAL_STRUCTURAL_ROOM')
                 continue
         if (dominant and candidate['side'] != dominant
                 and not candidate.get('local_reversal_override')
                 and not (candidate.get('zone_origin', {}).get('wave_confirmed')
                          and scanner.wave.reversal_override(candidate['side'], zone, s, cfg.tick, require_macro=single_limit))):
+            reject_final(candidate,'FINAL_DIRECTION_CONFLICT')
             continue
         if single_limit and not oil_risk.is_organic(candidate):
+            reject_final(candidate,'FINAL_ORGANIC_GEOMETRY')
             continue
         relation = candidate.get('trend_rel')
         if (single_limit and dominant == -candidate['side'] and not candidate.get('local_reversal_override') and
                 (relation != 'COUNTER_TREND' or not candidate.get('counter_confirmation'))):
+            reject_final(candidate,'FINAL_COUNTER_PROOF_REQUIRED')
             continue
         if (candidate.get('setup') == 'SESSION_MEAN_RECLAIM' and candidate.get('action_type') != 'ACTIVE_ENTRY'
                 and not candidate.get('entry_retest_reason')):
+            reject_final(candidate,'SESSION_MEAN_LIMIT_DISABLED')
             continue
         if scanner.candidate_plan_error({**candidate, **zone, 'score_source': 'CONTEXT'},
                                         min_score=max(60,scanner.min_plan_score(relation, candidate.get('market_trigger'),
                                             structural=oil_risk.is_organic(candidate))), min_rr=min_room if single_limit else 1.40):
+            reject_final(candidate,'FINAL_PLAN_GEOMETRY')
             continue
         assessment = scanner.calculate_zone_trade_plan(
             zone, s, cfg, sys.modules[__name__], dominant, analysis.get('full_context', {}),
             geometry=candidate, regime=regime)
         if not assessment or assessment['tactic'] == 'OBSERVE':
+            reject_final(candidate,'FINAL_ZONE_OBSERVE')
             continue
         candidate['zone_quality'] = assessment
         if relation in ('WITH_TREND', scanner.REVERSAL_RELATION):
@@ -3296,7 +3340,24 @@ REASON_UA = {
     'MFE_PROTECTION':'підтягнуто стоп після сприятливого руху',
     'WAIT_NY_POST_SWEEP':'потрібен свіп ліквідності та підтверджене закриття M15',
     'WAIT_M15_COUNTER_4H_REJECTION':'сетап проти 4H очікує закритого відбою M15',
-    'WAIT_FAST_ENTRY_CONFIRMATION':'очікування швидкого підтвердження після торкання зони',
+    'WAIT_FAST_ENTRY_CONFIRMATION':'очікування актуального M1/M3/M5 після торкання зони',
+    'WAIT_M5_OR_M15_COUNTER_CONFIRMATION':'контртренд: потрібен сильний M5 або строгий M15',
+    'STOP_AND_REVERSE_DIRECTION':'напрямок не відповідає чинному сценарію розвороту',
+    'FINAL_CONFIRMATION_REQUIRED':'фінальна перевірка: потрібне підтвердження, не пасивний вхід',
+    'FINAL_CONFIRMATION_STALE':'підтвердження більше не чинне',
+    'FINAL_TREND_GATE':'фінальна перевірка напрямку не пройдена',
+    'FINAL_PULLBACK_DISTANCE':'ціна за межами допустимого відкату',
+    'FINAL_MARKET_RANGE':'MARKET поза допустимим діапазоном',
+    'FINAL_TRIGGER_STALE_OR_QUOTE_MOVED':'тригер втратив чинність або ціна змінилася',
+    'FINAL_RETEST_REQUIRED':'ціна віддалилася, потрібен повторний тест',
+    'FINAL_MICRO_PROOF_INVALID':'швидкий тригер більше не чинний або зустрічний імпульс',
+    'FINAL_EARLY_LIMIT_INVALID':'умови раннього пасивного входу більше не виконуються',
+    'FINAL_STRUCTURAL_ROOM':'замало простору до структурної перешкоди',
+    'FINAL_DIRECTION_CONFLICT':'конфлікт напрямку з портфельною політикою',
+    'FINAL_ORGANIC_GEOMETRY':'непідтверджена структурна геометрія',
+    'FINAL_COUNTER_PROOF_REQUIRED':'немає підтвердженого контртрендового сценарію',
+    'FINAL_PLAN_GEOMETRY':'не пройдено фінальну перевірку ціни, стопа, RR або оцінки',
+    'FINAL_ZONE_OBSERVE':'зона придатна лише для спостереження',
     'ADAPTIVE_ADVERSE_APPROACH':'ліміт скасовано через зустрічний імпульс',
     'WAIT_M15_ENTRY_REJECTION':'сетап очікує закритого відбою M15',
     'NY_POST_SWEEP':'MARKET після свіпу та імпульсного закриття M15 у NY',

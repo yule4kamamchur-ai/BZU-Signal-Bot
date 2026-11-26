@@ -8,6 +8,7 @@ from __future__ import annotations
 ROUTES = ('EARLY_LIMIT', 'M1', 'M3', 'M5', 'M15')
 STEPS = {'1m':60000,'3m':180000,'5m':300000}
 PATTERN = 'ADAPTIVE_CLOSED_RECLAIM'
+MAX_RECOVERY_MS = 20 * 60_000
 
 
 def rows(snapshot, tf):
@@ -73,7 +74,9 @@ def early_allowed(snapshot,side,entry,zone,regime,sizing,velocity,tick,engine):
             0<snapshot.bid<=snapshot.ask and atr>0 and snapshot.ask-snapshot.bid<=max(2*tick,.12*atr)):
         return False
     quote=snapshot.ask if side==1 else snapshot.bid
-    return (regime.get('side_4h')==side and regime.get('side_1h')==side and
+    return (regime.get('side_4h')==side and regime.get('side_1h') in (0,side) and
+            (regime.get('side_1h')==side or regime.get('trend_anchor_side')==side or
+             regime.get('side_15m')==side or (regime.get('local_structure') or {}).get('side')==side) and
             not sizing.get('rejection_required') and not sizing.get('late_entry') and
             velocity.get('calm') is True and 0<=snapshot.now-zone['known_ts']<=8*900000 and
             tick<=side*(quote-entry)<=1.2*atr and
@@ -81,32 +84,82 @@ def early_allowed(snapshot,side,entry,zone,regime,sizing,velocity,tick,engine):
 
 
 def trigger(snapshot,side,zone,entry,risk,cfg,engine,tf):
+    """Recover a closed witness since the previous scan, never a historical fill.
+
+    After a missed trigger the current quote must still be close to the level;
+    every subsequent minute must be present and preserve the reclaim/stop.
+    A bounded lookback prevents resurrecting old signals after long outages.
+    """
     step=STEPS[tf]; bars=rows(snapshot,tf)
-    if len(bars)<16 or not snapshot.trusted or risk<=0 or not 0<=snapshot.now-snapshot.ticker_ts<=120000:
+    if (len(bars)<16 or not snapshot.trusted or risk<=0 or
+            not 0<=snapshot.now-snapshot.ticker_ts<=120000 or
+            not 0<snapshot.bid<=snapshot.ask):
         return None
-    bar,prev=bars[-1],bars[-2]; known=bar.ts+step
-    if (not 0<=snapshot.now-known<step or snapshot.ticker_ts<known or bar.ts<zone['known_ts'] or
-            bar.ts-prev.ts!=step or any(b.ts-a.ts!=step for a,b in zip(bars[-16:],bars[-15:]))):
-        return None
-    atr=engine.atr(bars[:-1]); a15=engine.atr(engine.policy.closed(snapshot,'15m'))
-    if atr<=0 or a15<=0: return None
+    a15=engine.atr(engine.policy.closed(snapshot,'15m'))
     quote=snapshot.ask if side==1 else snapshot.bid
     radius=min(.25*a15,.18*risk)
-    if not (quote>0 and -cfg.tick/2<=side*(quote-entry)<=radius and
-            bar.low<=entry+cfg.tick and bar.high>=entry-cfg.tick and side*(bar.close-entry)>=cfg.tick):
+    if a15<=0 or not -cfg.tick/2<=side*(quote-entry)<=radius:
         return None
-    width=max(cfg.tick,bar.high-bar.low)
-    wick=min(bar.open,bar.close)-bar.low if side==1 else bar.high-max(bar.open,bar.close)
-    body=side*(bar.close-bar.open)
-    edge=prev.high if side==1 else prev.low
-    shift=side*(bar.close-edge)>=cfg.tick and body>=.5*atr
-    rejection=wick>=.35*width and body>=cfg.tick and side*(bar.close-entry)>=max(cfg.tick,.15*atr)
-    # M1 is the noisiest route: demand an actual local break, not only a wick.
-    if not (shift or (tf!='1m' and rejection)):
-        return None
-    return {'pattern':PATTERN,'known_ts':known,'limit_entry':entry,'initial_risk':risk,
-            'max_distance':radius,'reference_close':bar.close,'confirmation_timeframe':tf,
-            'strict_rejection':False,'micro_shift':shift,'wick_ratio':wick/width}
+    gap=max(0,int(snapshot.metadata.get('scan_gap_ms') or 0))
+    horizon=min(MAX_RECOVERY_MS,max(step,gap))
+    minutes=rows(snapshot,'1m')
+    last_closed=snapshot.now//60000*60000
+    for i in range(len(bars)-1,14,-1):
+        bar,prev=bars[i],bars[i-1]; known=bar.ts+step
+        age=snapshot.now-known
+        if age>=horizon: break
+        if (age<0 or snapshot.ticker_ts<known or bar.ts<zone['known_ts'] or
+                any(b.ts-a.ts!=step for a,b in zip(bars[i-15:i],bars[i-14:i+1]))):
+            continue
+        if not (bar.low<=entry+cfg.tick and bar.high>=entry-cfg.tick and side*(bar.close-entry)>=cfg.tick):
+            continue
+        atr=engine.atr(bars[max(0,i-15):i])
+        if atr<=0: continue
+        width=max(cfg.tick,bar.high-bar.low)
+        wick=min(bar.open,bar.close)-bar.low if side==1 else bar.high-max(bar.open,bar.close)
+        body=side*(bar.close-bar.open)
+        edge=prev.high if side==1 else prev.low
+        shift=side*(bar.close-edge)>=cfg.tick and body>=.5*atr
+        rejection=wick>=.35*width and body>=cfg.tick and side*(bar.close-entry)>=max(cfg.tick,.15*atr)
+        if not (shift or (tf!='1m' and rejection)):
+            continue
+        # Require complete M1 evidence after the witness, including all minutes
+        # between it and the actual scan; never use the historical close as fill.
+        later=[c for c in minutes if known<=c.ts<last_closed]
+        if [c.ts for c in later]!=list(range(known,last_closed,60000)):
+            continue
+        stop=entry-side*risk
+        if any(side*(c.close-entry)<-cfg.tick or
+               (c.low<=stop if side==1 else c.high>=stop) for c in later):
+            continue
+        if side*(quote-bar.close)>radius:
+            continue
+        baseline=sum(c.volume for c in bars[i-15:i])/15
+        return {'pattern':PATTERN,'known_ts':known,'limit_entry':entry,'initial_risk':risk,
+                'max_distance':radius,'reference_close':bar.close,'confirmation_timeframe':tf,
+                'strict_rejection':False,'micro_shift':shift,'wick_ratio':wick/width,
+                'rvol':bar.volume/baseline if baseline>0 else None,
+                'body_atr':body/atr,'recovered_between_scans':age>=step,
+                'confirmation_age_ms':age,'scan_gap_ms':gap}
+    return None
+
+
+def counter_m5_context_allowed(side, regime, sizing, velocity):
+    return bool(regime.get('side_4h')==-side and regime.get('side_1h')==side and
+                not sizing.get('late_entry') and not sizing.get('exhausted_wave') and
+                velocity.get('micro_available') and not velocity.get('blocked'))
+
+
+def counter_m5_allowed(snapshot, side, regime, sizing, velocity, proof):
+    """Counter-H4 MARKET needs H1 alignment and affirmative local reversal.
+
+    M15 is retained for shock, late entry, exhaustion and NY opening policy.
+    The existing countertrend risk cap is unchanged.
+    """
+    return bool(counter_m5_context_allowed(side,regime,sizing,velocity) and
+                proof and proof.get('confirmation_timeframe')=='5m' and
+                proof.get('micro_shift') and (proof.get('rvol') or 0)>=1.2 and
+                (proof.get('body_atr') or 0)>=.65)
 
 
 def route(plan):

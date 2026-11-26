@@ -43,7 +43,7 @@ PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition',
     'meta_prob', 'meta_prob_calibrated', 'risk_multiplier', 'range_pos', 'late_entry',
     'entry_confirmation', 'rejection_required', 'expectancy_status', 'expectancy',
-    'adaptive_exit_profile', 'adaptive_exit_enabled', 'spread_r', 'timing_route', 'timing_options', 'timing_witness')
+    'adaptive_exit_profile', 'adaptive_exit_enabled', 'spread_r', 'timing_route', 'timing_options', 'timing_witness', 'timing_required', 'timing_witnesses', 'final_rejection')
 
 
 def zone_direction_matches(zone, side):
@@ -815,29 +815,9 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
 
 
 def closed_five_minutes(snapshot):
-    """UTC-aligned 5m bars, requiring all five confirmed constituent minutes.
-
-    Live snapshots already fetch 1m. No new network request or worker is
-    needed. Explicit 5m data is useful for archived snapshots without 1m.
-    If minute data exists, a gap cannot be hidden by a coarser candle.
-    """
-    if not snapshot.candles.get('1m'):
-        return sorted({c.ts:c for c in snapshot.candles.get('5m', [])
-            if c.confirmed and c.ts % 300_000 == 0
-            and c.ts+300_000 <= snapshot.now}.values(), key=lambda c:c.ts)
-    groups={}
-    for c in snapshot.candles['1m']:
-        if c.confirmed and c.ts % 60_000 == 0 and c.ts+60_000 <= snapshot.now:
-            groups.setdefault(c.ts//300_000*300_000, {})[c.ts]=c
-    result=[]
-    for start,minutes in sorted(groups.items()):
-        if set(minutes) != {start+i*60_000 for i in range(5)}:
-            continue
-        bars=[minutes[start+i*60_000] for i in range(5)]
-        result.append(replace(bars[0], ts=start, high=max(c.high for c in bars),
-            low=min(c.low for c in bars), close=bars[-1].close,
-            volume=sum(c.volume for c in bars), confirmed=True))
-    return result
+    """Reuse the causal UTC-aligned aggregate already built for entry timing."""
+    from adaptive_entry import rows
+    return list(rows(snapshot,'5m'))
 
 
 def m5_breaker(zone, snapshot, tick):

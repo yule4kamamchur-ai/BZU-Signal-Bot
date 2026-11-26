@@ -277,7 +277,7 @@ def calibration_signature(cfg):
                "scenario_planner.py", "market_wave.py", "entry_playbooks.py",
                "entry_adverse_selection.py", "adaptive_entry.py", "limit_structure.py", "strategy_organics.py",
                "trade_dependencies.py", "ict_methodology.py", "trade_meta_model.py",
-               "bot_oneshot.py", "research_validate.py", "calibrate_meta_model.py")
+               "bot_oneshot.py", "research_validate.py", "calibrate_meta_model.py", "calibration_storage.py")
     return digest({"configuration":signature(cfg), "sources":_strategy_fingerprints(modules),
                    "entry_mode":os.getenv("BZU_ENTRY_MODE", "HYBRID"),
                    "edge_mode":os.getenv("BZU_EDGE_MODE", "SHADOW"),

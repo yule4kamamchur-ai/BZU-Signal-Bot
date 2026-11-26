@@ -18,12 +18,13 @@ import signal_quality as quality
 import trade_meta_model as model
 import expectancy_model as ev
 import adaptive_entry
+import calibration_storage as storage
 
 INSTRUMENT = 'BZ-USDT-SWAP'
 WARMUP = 11 * shadow.DAY
 
 
-def download_history(days, end, scan_minutes, fetch=research.request_json):
+def download_history(days, end, scan_minutes, fetch=research.request_json, *, cache_dir=None):
     """Obtain native, closed OKX candles with an instrument-aware start."""
     query = urllib.parse.urlencode({'instType':'SWAP','instId':INSTRUMENT})
     instruments = fetch('https://www.okx.com/api/v5/public/instruments?' + query)['data']
@@ -41,7 +42,8 @@ def download_history(days, end, scan_minutes, fetch=research.request_json):
         raise ValueError('Not enough history after the warm-up interval')
     candles = {}
     for tf in engine.CANDLE_TF:
-        candles[tf] = research.fetch_rows(INSTRUMENT,tf,start-WARMUP,end,fetch,page_size=300)
+        candles[tf] = storage.cached_rows(cache_dir,INSTRUMENT,tf,start-WARMUP,end,
+            lambda:research.fetch_rows(INSTRUMENT,tf,start-WARMUP,end,fetch,page_size=300))
         print(f'OKX {tf}: {len(candles[tf])} completed bars',flush=True)
     return {'instrument':INSTRUMENT,'tick':tick,'start_ts':start,'end_ts':end,
             'candles':candles,'source':'OKX_PUBLIC_CONFIRMED_HISTORY',
@@ -67,19 +69,41 @@ def archive_history(path, days, scan_minutes, end=None):
     return data
 
 
-def run(data, cfg, *, progress=100):
+def run(data, cfg, *, progress=100, checkpoint=None, resume=False, max_seconds=None, checkpoint_every=100, max_scans=None):
     if data['instrument'] != INSTRUMENT or cfg.instrument != INSTRUMENT:
         raise ValueError(f'Expected {INSTRUMENT} in the input and configuration')
     if not data.get('quotes'):
         research.audit_data(data)
+    started=time.monotonic()
+    signature=quality.calibration_signature(cfg)
+    fingerprint=storage.digest(data) if checkpoint else None
     state = engine.new_state(cfg)
     state['calibration_replay'] = True
-    actions = Counter()
-    rejections = Counter()
-    shadow_routes = Counter()
-    scans = 0
-    censored = 0
-    for snapshot in research.snapshots(data):
+    actions=Counter(); rejections=Counter(); shadow_routes=Counter()
+    scans=0; censored=0; cursor=None
+    if resume:
+        if not checkpoint or not Path(checkpoint).exists():
+            raise ValueError('Resume requires a saved checkpoint')
+        saved=storage.load(checkpoint)
+        if (saved.get('schema')!=storage.SCHEMA or saved.get('signature')!=signature or
+                saved.get('dataset_digest')!=fingerprint or saved.get('engine_version')!=engine.VERSION):
+            raise ValueError('Checkpoint data/configuration/strategy mismatch; start a new replay')
+        state=saved['state']; cursor=saved['cursor']; scans=saved['scans']; censored=saved['censored']
+        actions.update(saved['actions']); rejections.update(saved['rejections']); shadow_routes.update(saved['shadow_routes'])
+        print(f'Resuming {scans} completed scans through {engine.iso(cursor)}',flush=True)
+    elif checkpoint and Path(checkpoint).exists():
+        raise ValueError('Checkpoint already exists; use --resume or a new path')
+    initial_scans=scans
+    total=research.snapshot_count(data)
+    last_saved=time.monotonic()
+    def persist():
+        nonlocal last_saved
+        if checkpoint and cursor is not None:
+            storage.save(checkpoint,{'schema':storage.SCHEMA,'signature':signature,'engine_version':engine.VERSION,
+                'dataset_digest':fingerprint,'cursor':cursor,'scans':scans,'censored':censored,'state':state,
+                'actions':dict(actions),'rejections':dict(rejections),'shadow_routes':dict(shadow_routes)})
+            last_saved=time.monotonic()
+    for snapshot in research.snapshots(data,after=cursor):
         snapshot.metadata['require_1m'] = True
         result = engine.run_cycle(state,snapshot,cfg)
         actions[result['action']] += 1
@@ -97,8 +121,19 @@ def run(data, cfg, *, progress=100):
                 view.update(active=None,reconciliation=None)
                 engine.store_slot(state,number,view)
         scans += 1
+        cursor=snapshot.now
         if progress and scans % progress == 0:
-            print(f'Replay {scans} scans through {engine.iso(snapshot.now)}',flush=True)
+            speed=(scans-initial_scans)/max(.001,time.monotonic()-started)
+            print(f'Replay {scans}/{total} ({100*scans/max(1,total):.1f}%) through {engine.iso(cursor)} | {speed:.2f} scans/s',flush=True)
+        if checkpoint and (scans%checkpoint_every==0 or time.monotonic()-last_saved>=60):
+            persist()
+        if (max_scans is not None and scans-initial_scans>=max_scans or
+                max_seconds is not None and time.monotonic()-started>=max_seconds):
+            if not checkpoint: raise ValueError('A bounded run requires a checkpoint')
+            persist()
+            print(f'PAUSED safely after {scans}/{total} scans; resume from checkpoint',flush=True)
+            return None, {'status':'PAUSED','scan_count':scans,'planned_scans':total,'cursor':cursor}, None
+    persist()
     if not scans:
         raise ValueError('The selected history contains no executable scan snapshots')
     ledger = shadow.ensure(state)
@@ -168,21 +203,53 @@ def main():
     parser.add_argument('--output',type=Path,default=Path('calibration/meta_priors.json'))
     parser.add_argument('--report',type=Path,default=Path('calibration/report.json'))
     parser.add_argument('--labels',type=Path,help='Optional completed replay labels for inspection')
+    parser.add_argument('--history-cache',type=Path,help='Reuse validated exact-range closed candle downloads')
+    parser.add_argument('--dataset',type=Path,help='Freeze exact input dataset in gzip JSON for replay/resume')
+    parser.add_argument('--checkpoint',type=Path,help='Atomic gzip JSON replay state')
+    parser.add_argument('--resume',action='store_true',help='Continue matching saved dataset and checkpoint')
+    parser.add_argument('--max-seconds',type=float,help='Pause safely after this replay budget (between scans)')
+    parser.add_argument('--checkpoint-every',type=int,default=100)
+    parser.add_argument('--status',type=Path,help='Write PAUSED or COMPLETE status for workflow orchestration')
     args = parser.parse_args()
     if not 1 <= args.days <= 365:
         parser.error('--days must be 1..365')
     os.environ.update(BZU_ENTRY_MODE='HYBRID',BZU_EDGE_MODE='SHADOW',BZU_ENTRY_PLAYBOOK_MODE='STRICT',
                       BZU_ADAPTIVE_EXITS=args.adaptive_exits,BZU_OKX_EXECUTION='PAPER')
+    if args.checkpoint_every<1 or (args.max_seconds is not None and args.max_seconds<=0):
+        parser.error('Checkpoint frequency and time budget must be positive')
+    if (args.resume or args.max_seconds is not None) and not args.checkpoint:
+        parser.error('--resume/--max-seconds require --checkpoint')
+    if args.resume and (not args.dataset or not args.dataset.exists()):
+        parser.error('--resume requires the original frozen --dataset')
+    request={'days':args.days,'scan_minutes':args.scan_minutes,'adaptive_exits':args.adaptive_exits,
+             'archive':str(args.archive) if args.archive else None}
     end = args.end_ms or int(time.time()*1000)
-    data = (archive_history(args.archive,args.days,args.scan_minutes,args.end_ms) if args.archive
-            else download_history(args.days,end,args.scan_minutes))
+    if args.resume:
+        frozen=storage.load(args.dataset)
+        if frozen.get('request')!=request or (args.end_ms is not None and frozen.get('requested_end')!=args.end_ms):
+            parser.error('Saved dataset request does not match; do not change days/scan/exits/end when resuming')
+        data=frozen['data']
+    else:
+        if args.dataset and args.dataset.exists():
+            parser.error('Dataset exists; use --resume or a fresh path')
+        data=(archive_history(args.archive,args.days,args.scan_minutes,args.end_ms) if args.archive
+              else download_history(args.days,end,args.scan_minutes,cache_dir=args.history_cache))
+        if args.dataset:
+            storage.save(args.dataset,{'request':request,'requested_end':args.end_ms,'data':data})
     cfg = replace(engine.Config.from_env(),core=core,instrument=data['instrument'],tick=data['tick'],
                   analysis_scan_minutes=args.scan_minutes)
-    artifact, report, labels = run(data,cfg)
+    # A partial result can never be mistaken for a validated prior.
+    if args.status: engine.atomic_write(args.status,{'status':'RUNNING'})
+    artifact, report, labels = run(data,cfg,checkpoint=args.checkpoint,resume=args.resume,
+                                   max_seconds=args.max_seconds,checkpoint_every=args.checkpoint_every)
+    if artifact is None:
+        if args.status: engine.atomic_write(args.status,report)
+        return 0
     for path, content in ((args.output,artifact),(args.report,report),(args.labels,{'labels':labels})):
         if path is not None:
             path.parent.mkdir(parents=True,exist_ok=True)
             engine.atomic_write(path,content)
+    if args.status: engine.atomic_write(args.status,{'status':'COMPLETE','scan_count':report['scan_count'],'validation':artifact['validation']['status']})
     print(f"{report['scan_count']} scans, {len(labels)} completed labels: {artifact['validation']['status']}",
           flush=True)
     return 0

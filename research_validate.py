@@ -165,7 +165,16 @@ def archive_dataset(archive: dict) -> dict:
                            'First-observed confirmed candles; later provider corrections are not substituted']}
 
 
-def snapshots(data: dict):
+def snapshot_count(data: dict):
+    if data.get('quotes'):
+        return len({int(q['now']) for q in data['quotes'] if data['start_ts']<=int(q['now'])<=data['end_ts']})
+    interval=int(data.get('scan_interval_ms',engine.TF['15m'])); delay=int(data.get('report_delay_ms',180_000))
+    times={((c.ts+engine.TF['3m']+interval-1)//interval)*interval+delay
+           for row in data['candles']['3m'] for c in [engine.Candle.parse(row)] if c.confirmed}
+    return sum(data['start_ts']<=t<=data['end_ts'] for t in times)
+
+
+def snapshots(data: dict, *, after=None):
     raw={tf:sorted({c.ts:c for row in data['candles'].get(tf,[]) for c in [engine.Candle.parse(row)] if c.confirmed}.values(),
                    key=lambda c:c.ts) for tf in engine.CANDLE_TF}
     if not raw['3m']:
@@ -182,8 +191,24 @@ def snapshots(data: dict):
     quotes={int(q['now']):q for q in data.get('quotes',[])}
     times=sorted(quotes) if quotes else sorted({((c.ts+engine.TF['3m']+interval-1)//interval)*interval+delay for c in raw['3m']})
     start=int(data['start_ts']);end=int(data['end_ts']);tick=engine.finite(data.get('tick',.001))
+    # Revisions are applied only once when their observed timestamp is reached.
+    # Stable ordering matches the archive's last revision for equal observation times.
+    revisions_by_tf={tf:sorted(((j,r) for j,r in enumerate(data.get('revisions',[])) if r['timeframe']==tf),
+                               key=lambda item:item[1]['observed_ts']) for tf in raw}
+    revisions_by_tf['peer']=sorted(enumerate(data.get('smt_revisions',[])),key=lambda item:item[1]['observed_ts'])
+    revision_map={tf:{} for tf in revisions_by_tf}; revision_pos={tf:0 for tf in revisions_by_tf}
+    revision_priority={tf:{} for tf in revisions_by_tf}
+    def revision_at(tf,now):
+        stream=revisions_by_tf[tf]; i=revision_pos[tf]; found=revision_map[tf]
+        while i<len(stream) and stream[i][1]['observed_ts']<=now:
+            j,r=stream[i]
+            if j>=revision_priority[tf].get(r['ts'],-1):
+                found[r['ts']]=engine.Candle.parse(r['bar']); revision_priority[tf][r['ts']]=j
+            i+=1
+        revision_pos[tf]=i
+        return found
     for now in times:
-        if not start<=now<=end:
+        if not start<=now<=end or (after is not None and now<=after):
             continue
         current={}
         for tf,rows in raw.items():
@@ -194,8 +219,7 @@ def snapshots(data: dict):
                 available_at_scan=(rows[i] for i in range(index-1,-1,-1)
                                    if seen.get(str(rows[i].ts),{}).get('observed_ts',now+1)<=now)
                 eligible=list(reversed(list(islice(available_at_scan,300))))
-            revisions={r['ts']:engine.Candle.parse(r['bar']) for r in data.get('revisions',[])
-                       if r['timeframe']==tf and r['observed_ts']<=now}
+            revisions=revision_at(tf,now)
             eligible=[revisions.get(c.ts,c) for c in eligible]
             current[tf]=eligible[-300:]
         if not current['3m']:
@@ -214,7 +238,7 @@ def snapshots(data: dict):
         if data.get('smt_first_seen'):
             seen=data['smt_first_seen']
             snap.smt_candles=[c for c in snap.smt_candles if seen.get(str(c.ts),{}).get('observed_ts',2**63-1)<=now]
-        peer_revisions={r['ts']:engine.Candle.parse(r['bar']) for r in data.get('smt_revisions',[]) if r['observed_ts']<=now}
+        peer_revisions=revision_at('peer',now)
         snap.smt_candles=[peer_revisions.get(c.ts,c) for c in snap.smt_candles]
         if quotes and quotes[now].get('smt_available') is False:
             snap.smt_candles=[]

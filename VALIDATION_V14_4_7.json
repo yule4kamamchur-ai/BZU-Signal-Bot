@@ -1,0 +1,864 @@
+{
+  "version": "v14.4.7",
+  "comparison": {
+    "settings": {
+      "days": 2,
+      "scan_minutes": 15,
+      "end_ms": 1793901600000,
+      "adaptive_exits": "SHADOW",
+      "include_commission": true,
+      "execution": "PAPER",
+      "source_file": "research_market_v12_6.json",
+      "note": "Observed archive scan timestamps, not a regular M15 or M5 simulation; same input and config for both versions."
+    },
+    "baseline_v14_4_6": {
+      "observed_range": [
+        "2026-11-04T04:57:00+00:00",
+        "2026-11-05T18:00:00+00:00"
+      ],
+      "source": "OKX_PUBLIC_RUNTIME_COLLECTOR",
+      "scan_count": 152,
+      "actions": {
+        "DATA_HOLD": 16,
+        "WATCH": 69,
+        "ACTIVE_ENTRY": 4,
+        "FOLLOW": 63
+      },
+      "training_labels": 19,
+      "independent_labels": 7,
+      "closed_portfolio": 4,
+      "portfolio_statistics": {
+        "trades": 4,
+        "wins": 4,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.5100999795960008,
+        "net_r": 4.4116412732966115,
+        "expectancy_r": 1.1029103183241529,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "risk_weighted_statistics": {
+        "trades": 4,
+        "wins": 4,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.5100999795960008,
+        "net_r": 2.0298578239181273,
+        "expectancy_r": 0.5074644559795318,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "placed_orders": 4,
+      "portfolio_open_at_end": 0,
+      "portfolio_pending_at_end": 0,
+      "portfolio_censored_by_data_gap": 0,
+      "shadow_realized": 11,
+      "shadow_open_or_pending": 0,
+      "shadow_outcomes": {
+        "MISSED_TARGET": 3,
+        "LIMIT_TTL": 1,
+        "ENTRY_INVALIDATED": 4,
+        "MFE_PROTECTIVE_EXIT": 4,
+        "TAKE_PROFIT": 6,
+        "STOP": 1
+      },
+      "data_bars": {
+        "3m": 14087,
+        "15m": 2969,
+        "1H": 912,
+        "4H": 313,
+        "1m": 18019
+      },
+      "limitations": [
+        "Collector attribution, not provider cryptographic attestation",
+        "First-observed candle versions and actual observed quotes only"
+      ],
+      "validation": {
+        "validated": false,
+        "test_labels": 0,
+        "brier": null,
+        "baseline_brier": null,
+        "ev_mae": null,
+        "baseline_ev_mae": null,
+        "sized_net_r": 0,
+        "constant_risk_net_r": 0,
+        "fill_brier": null,
+        "folds": [
+          {
+            "train_labels": 18,
+            "test_labels": 0,
+            "test_start_ts": 1793861586000,
+            "test_end_ts": 1793874924000
+          },
+          {
+            "train_labels": 18,
+            "test_labels": 0,
+            "test_start_ts": 1793874924000,
+            "test_end_ts": 1793888262000
+          },
+          {
+            "train_labels": 19,
+            "test_labels": 0,
+            "test_start_ts": 1793888262000,
+            "test_end_ts": 1793901600000
+          }
+        ],
+        "status": "INSUFFICIENT_HOLDOUT"
+      },
+      "route_validation": {
+        "EARLY_LIMIT": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M1": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M3": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M5": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M15": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        }
+      },
+      "route_statistics": {
+        "EARLY_LIMIT": {
+          "resolved_attempts": 6,
+          "filled": 1,
+          "shadow_alternatives": 1,
+          "statistics": {
+            "trades": 1,
+            "wins": 1,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": 1.0,
+            "wilson_lower_95": 0.20654329147389294,
+            "net_r": 0.00788864646464879,
+            "expectancy_r": 0.00788864646464879,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 2
+        },
+        "M1": {
+          "resolved_attempts": 1,
+          "filled": 1,
+          "shadow_alternatives": 0,
+          "statistics": {
+            "trades": 1,
+            "wins": 1,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": 1.0,
+            "wilson_lower_95": 0.20654329147389294,
+            "net_r": 1.2462916825688037,
+            "expectancy_r": 1.2462916825688037,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 1
+        },
+        "M3": {
+          "resolved_attempts": 0,
+          "filled": 0,
+          "shadow_alternatives": 0,
+          "statistics": {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": null,
+            "wilson_lower_95": null,
+            "net_r": 0,
+            "expectancy_r": null,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 0
+        },
+        "M5": {
+          "resolved_attempts": 1,
+          "filled": 1,
+          "shadow_alternatives": 0,
+          "statistics": {
+            "trades": 1,
+            "wins": 1,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": 1.0,
+            "wilson_lower_95": 0.20654329147389294,
+            "net_r": 1.2576306661290435,
+            "expectancy_r": 1.2576306661290435,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 1
+        },
+        "M15": {
+          "resolved_attempts": 5,
+          "filled": 5,
+          "shadow_alternatives": 1,
+          "statistics": {
+            "trades": 5,
+            "wins": 4,
+            "losses": 1,
+            "breakeven": 0,
+            "win_rate": 0.8,
+            "wilson_lower_95": 0.37552826411853885,
+            "net_r": 2.54387947418894,
+            "expectancy_r": 0.5087758948377881,
+            "profit_factor": 5.129264331643895,
+            "max_drawdown_r": 0.6160611842391307
+          },
+          "independent_attempts": 3
+        }
+      },
+      "matched_route_episodes": 3,
+      "matched_route_comparison": {
+        "EARLY_LIMIT vs M15": {
+          "episodes": 1,
+          "net_r_first": 0.0,
+          "net_r_second": 1.394382479865784,
+          "mean_delta_first_minus_second_r": -1.394382479865784
+        },
+        "EARLY_LIMIT vs LEGACY_LIMIT": {
+          "episodes": 2,
+          "net_r_first": 0.00788864646464879,
+          "net_r_second": 0.00788864646464879,
+          "mean_delta_first_minus_second_r": 0.0
+        }
+      },
+      "candidate_rejections": {
+        "ZONE_ORIGIN_BOS_REQUIRED": 28845,
+        "MICRO_ZONE_EXCLUDED": 3390,
+        "WAIT_M15_ENTRY_REJECTION": 173,
+        "WAIT_PULLBACK_REJECTION": 3111,
+        "WAIT_CONFIRMED_BREAK_FOR_LIMIT": 997,
+        "ZONE_MITIGATED": 5691,
+        "BLOCKED_NO_ROOM_TO_STRUCTURE": 6,
+        "WAIT_ARMED_SWEEP_CHOCH": 166,
+        "WAIT_M15_COUNTER_4H_REJECTION": 889,
+        "CAPITULATION_RECOVERY_NOT_CONFIRMED": 654,
+        "AGAINST_VWAP_EMA20": 3225,
+        "CURRENT_WAVE_PROOF_EXPIRED": 1778,
+        "WAIT_FRESH_IGNITION": 697,
+        "DISTANT_ZONE": 2005,
+        "WAIT_FAST_ENTRY_CONFIRMATION": 170,
+        "LEVEL_OR_EVENT_COOLDOWN": 170,
+        "EXHAUSTED_MOVE": 20,
+        "WAIT_SWEEP_DISPLACEMENT_FVG_RETEST": 200,
+        "ANCHOR_EXPIRED_AWAITING_NEW_EVENT": 494,
+        "WAIT_VWAP_SWEEP": 2,
+        "ICT_SWEEP_STRUCTURE_SEQUENCE_MISSING": 2,
+        "WAIT_TREND_VWAP_RETEST": 213,
+        "INVALID_STRUCTURAL_FALSIFIER": 13,
+        "BLOCKED_OUTSIDE_HTF_POI": 115,
+        "WAIT_NY_POST_SWEEP": 548,
+        "DISTANT_BREAKDOWN_RETEST": 6,
+        "WAIT_VWAP_REGIME": 8,
+        "WAIT_RETEST": 3,
+        "ANCHOR_INVALIDATED": 8,
+        "ICT_SWEEP_OR_BOS_FVG_REQUIRED": 6,
+        "ZONE_ORIGIN_HISTORY_MISSING": 10
+      },
+      "shadow_route_candidates": {
+        "EARLY_LIMIT": 1,
+        "M15": 1
+      }
+    },
+    "updated_v14_4_7": {
+      "observed_range": [
+        "2026-11-04T04:57:00+00:00",
+        "2026-11-05T18:00:00+00:00"
+      ],
+      "source": "OKX_PUBLIC_RUNTIME_COLLECTOR",
+      "scan_count": 152,
+      "actions": {
+        "DATA_HOLD": 16,
+        "WATCH": 69,
+        "ACTIVE_ENTRY": 4,
+        "FOLLOW": 63
+      },
+      "training_labels": 19,
+      "independent_labels": 7,
+      "closed_portfolio": 4,
+      "portfolio_statistics": {
+        "trades": 4,
+        "wins": 4,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.5100999795960008,
+        "net_r": 4.4116412732966115,
+        "expectancy_r": 1.1029103183241529,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "risk_weighted_statistics": {
+        "trades": 4,
+        "wins": 4,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.5100999795960008,
+        "net_r": 2.0298578239181273,
+        "expectancy_r": 0.5074644559795318,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "placed_orders": 4,
+      "portfolio_open_at_end": 0,
+      "portfolio_pending_at_end": 0,
+      "portfolio_censored_by_data_gap": 0,
+      "shadow_realized": 11,
+      "shadow_open_or_pending": 0,
+      "shadow_outcomes": {
+        "MISSED_TARGET": 3,
+        "LIMIT_TTL": 1,
+        "ENTRY_INVALIDATED": 4,
+        "MFE_PROTECTIVE_EXIT": 4,
+        "TAKE_PROFIT": 6,
+        "STOP": 1
+      },
+      "data_bars": {
+        "3m": 14087,
+        "15m": 2969,
+        "1H": 912,
+        "4H": 313,
+        "1m": 18019
+      },
+      "limitations": [
+        "Collector attribution, not provider cryptographic attestation",
+        "First-observed candle versions and actual observed quotes only"
+      ],
+      "validation": {
+        "validated": false,
+        "test_labels": 0,
+        "brier": null,
+        "baseline_brier": null,
+        "ev_mae": null,
+        "baseline_ev_mae": null,
+        "sized_net_r": 0,
+        "constant_risk_net_r": 0,
+        "fill_brier": null,
+        "folds": [
+          {
+            "train_labels": 18,
+            "test_labels": 0,
+            "test_start_ts": 1793861586000,
+            "test_end_ts": 1793874924000
+          },
+          {
+            "train_labels": 18,
+            "test_labels": 0,
+            "test_start_ts": 1793874924000,
+            "test_end_ts": 1793888262000
+          },
+          {
+            "train_labels": 19,
+            "test_labels": 0,
+            "test_start_ts": 1793888262000,
+            "test_end_ts": 1793901600000
+          }
+        ],
+        "status": "INSUFFICIENT_HOLDOUT"
+      },
+      "route_validation": {
+        "EARLY_LIMIT": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M1": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M3": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M5": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        },
+        "M15": {
+          "validated": false,
+          "test_labels": 0,
+          "brier": null,
+          "baseline_brier": null,
+          "ev_mae": null,
+          "baseline_ev_mae": null,
+          "sized_net_r": 0,
+          "constant_risk_net_r": 0,
+          "fill_brier": null,
+          "folds": [
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793861586000,
+              "test_end_ts": 1793874924000
+            },
+            {
+              "train_labels": 18,
+              "test_labels": 0,
+              "test_start_ts": 1793874924000,
+              "test_end_ts": 1793888262000
+            },
+            {
+              "train_labels": 19,
+              "test_labels": 0,
+              "test_start_ts": 1793888262000,
+              "test_end_ts": 1793901600000
+            }
+          ],
+          "status": "INSUFFICIENT_HOLDOUT"
+        }
+      },
+      "route_statistics": {
+        "EARLY_LIMIT": {
+          "resolved_attempts": 6,
+          "filled": 1,
+          "shadow_alternatives": 1,
+          "statistics": {
+            "trades": 1,
+            "wins": 1,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": 1.0,
+            "wilson_lower_95": 0.20654329147389294,
+            "net_r": 0.00788864646464879,
+            "expectancy_r": 0.00788864646464879,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 2
+        },
+        "M1": {
+          "resolved_attempts": 1,
+          "filled": 1,
+          "shadow_alternatives": 0,
+          "statistics": {
+            "trades": 1,
+            "wins": 1,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": 1.0,
+            "wilson_lower_95": 0.20654329147389294,
+            "net_r": 1.2462916825688037,
+            "expectancy_r": 1.2462916825688037,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 1
+        },
+        "M3": {
+          "resolved_attempts": 0,
+          "filled": 0,
+          "shadow_alternatives": 0,
+          "statistics": {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": null,
+            "wilson_lower_95": null,
+            "net_r": 0,
+            "expectancy_r": null,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 0
+        },
+        "M5": {
+          "resolved_attempts": 1,
+          "filled": 1,
+          "shadow_alternatives": 0,
+          "statistics": {
+            "trades": 1,
+            "wins": 1,
+            "losses": 0,
+            "breakeven": 0,
+            "win_rate": 1.0,
+            "wilson_lower_95": 0.20654329147389294,
+            "net_r": 1.2576306661290435,
+            "expectancy_r": 1.2576306661290435,
+            "profit_factor": null,
+            "max_drawdown_r": 0.0
+          },
+          "independent_attempts": 1
+        },
+        "M15": {
+          "resolved_attempts": 5,
+          "filled": 5,
+          "shadow_alternatives": 1,
+          "statistics": {
+            "trades": 5,
+            "wins": 4,
+            "losses": 1,
+            "breakeven": 0,
+            "win_rate": 0.8,
+            "wilson_lower_95": 0.37552826411853885,
+            "net_r": 2.54387947418894,
+            "expectancy_r": 0.5087758948377881,
+            "profit_factor": 5.129264331643895,
+            "max_drawdown_r": 0.6160611842391307
+          },
+          "independent_attempts": 3
+        }
+      },
+      "matched_route_episodes": 3,
+      "matched_route_comparison": {
+        "EARLY_LIMIT vs M15": {
+          "episodes": 1,
+          "net_r_first": 0.0,
+          "net_r_second": 1.394382479865784,
+          "mean_delta_first_minus_second_r": -1.394382479865784
+        },
+        "EARLY_LIMIT vs LEGACY_LIMIT": {
+          "episodes": 2,
+          "net_r_first": 0.00788864646464879,
+          "net_r_second": 0.00788864646464879,
+          "mean_delta_first_minus_second_r": 0.0
+        }
+      },
+      "candidate_rejections": {
+        "ZONE_ORIGIN_BOS_REQUIRED": 28845,
+        "MICRO_ZONE_EXCLUDED": 3390,
+        "WAIT_M15_ENTRY_REJECTION": 173,
+        "WAIT_PULLBACK_REJECTION": 3110,
+        "WAIT_CONFIRMED_BREAK_FOR_LIMIT": 997,
+        "ZONE_MITIGATED": 5691,
+        "BLOCKED_NO_ROOM_TO_STRUCTURE": 6,
+        "WAIT_ARMED_SWEEP_CHOCH": 165,
+        "WAIT_M5_OR_M15_COUNTER_CONFIRMATION": 224,
+        "CAPITULATION_RECOVERY_NOT_CONFIRMED": 654,
+        "AGAINST_VWAP_EMA20": 3225,
+        "CURRENT_WAVE_PROOF_EXPIRED": 1778,
+        "WAIT_FRESH_IGNITION": 697,
+        "DISTANT_ZONE": 2005,
+        "WAIT_FAST_ENTRY_CONFIRMATION": 170,
+        "LEVEL_OR_EVENT_COOLDOWN": 170,
+        "EXHAUSTED_MOVE": 20,
+        "WAIT_SWEEP_DISPLACEMENT_FVG_RETEST": 200,
+        "ANCHOR_EXPIRED_AWAITING_NEW_EVENT": 494,
+        "WAIT_VWAP_SWEEP": 2,
+        "WAIT_M15_COUNTER_4H_REJECTION": 665,
+        "ICT_SWEEP_STRUCTURE_SEQUENCE_MISSING": 2,
+        "WAIT_TREND_VWAP_RETEST": 213,
+        "INVALID_STRUCTURAL_FALSIFIER": 14,
+        "BLOCKED_OUTSIDE_HTF_POI": 115,
+        "WAIT_NY_POST_SWEEP": 548,
+        "DISTANT_BREAKDOWN_RETEST": 6,
+        "WAIT_VWAP_REGIME": 8,
+        "WAIT_RETEST": 3,
+        "ANCHOR_INVALIDATED": 8,
+        "ICT_SWEEP_OR_BOS_FVG_REQUIRED": 7,
+        "ZONE_ORIGIN_HISTORY_MISSING": 10
+      },
+      "shadow_route_candidates": {
+        "EARLY_LIMIT": 1,
+        "M15": 1
+      }
+    },
+    "wall_clock_seconds": {
+      "baseline": 105.35,
+      "updated": 50.82,
+      "speedup_ratio": 2.0730027548209367,
+      "time_reduction_pct": 51.76079734219269
+    }
+  },
+  "checkpoint_test": {
+    "paused_after_scans": 88,
+    "resumed_to_scans": 152,
+    "second_process": true,
+    "json_equality_to_uninterrupted": {
+      "report": true,
+      "prior": true,
+      "labels": true
+    },
+    "pause_wall_seconds": 27.57,
+    "resume_wall_seconds": 24.96
+  },
+  "tests": {
+    "python_focused": {
+      "passed": 75,
+      "failed": 0
+    },
+    "dashboard_offline_scenarios": {
+      "passed": 11
+    },
+    "legacy_ui_test": "Fails at preexisting PENDING != OPEN assertion; intentionally updated obsolete wait-message assertions; no browser rendering test.",
+    "yaml_parsed": true,
+    "shell_syntax": true,
+    "python_compile": true,
+    "javascript_syntax": true
+  },
+  "limitations": [
+    "Local benchmark, not GitHub runner timing.",
+    "No 180-day or 14-day live OKX API replay; market sample has only 4 portfolio trades.",
+    "No validated prior: INSUFFICIENT_HOLDOUT.",
+    "New recovery rules have synthetic unit coverage but no additional portfolio entry in this short comparison.",
+    "GitHub workflow parsed locally; artifact upload/download and automatic execution not tested on hosted runner.",
+    "Only uploaded checkpoints survive runner loss."
+  ]
+}

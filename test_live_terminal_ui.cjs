@@ -113,12 +113,13 @@ ctx.fixtureBackup=cleanFixture;
    quote={price:86.34,ts:Date.now()};render();`);
  assert.match(text('state-title'),/ПРІОРИТЕТ SHORT ↓.*FVG_PULLBACK @ 87.13/);
  assert.match(text('tactical-focus'),/ПРІОРИТЕТ SHORT ↓.*FVG_PULLBACK @ 87.13.*Δ \+0.79/);
- assert.match(text('state-detail'),/Δ \+0.79.*Чекаємо ретест 87.13–87.89.*закриття M15/);
+ assert.match(text('state-detail'),/Δ \+0.79.*Очікуємо підхід до зони та перевірку торгових умов/);
+ assert.doesNotMatch(text('state-detail'),/M15/);
  assert.match(text('regime-matrix'),/4H ↓ 1H ↔ M15 ↓ Пріоритет: SHORT/);
  assert.equal(text('regime'),'Низхідний тренд');
  assert.equal(nodes.get('radar-watchlist').children.length,3);
  assert.match(text('radar-watchlist'),/SHORT.*FVG_BEAR.*86.56.*Δ \+0.22.*R:R ≈ 1.97.*Чекаємо підхід/);
- assert.match(text('radar-watchlist'),/LONG.*DEMAND_OB.*86.04.*Δ −0.30.*R:R ≈ 2.35.*закриту свічку/);
+ assert.match(text('radar-watchlist'),/LONG.*DEMAND_OB.*86.04.*Δ −0.30.*R:R ≈ 2.35.*закритий відбій M15/);
  assert.doesNotMatch(text('radar-watchlist'),/EXPIRED_ZONE|SPENT_ZONE/);
  assert.equal(run('tacticalRadar().queue.length'),0);
 

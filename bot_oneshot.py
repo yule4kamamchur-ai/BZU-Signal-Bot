@@ -85,7 +85,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v14.4.6-intraday"
+BOT_VERSION = "full-ict-v14.4.7-intraday"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -1498,7 +1498,7 @@ def true_ranges(candles: list[Candle]) -> list[float]:
 def atr(candles: list[Candle], period: int = 14) -> float:
     if len(candles) < period + 1:
         return 0.0
-    trs = true_ranges(candles)
+    trs = true_ranges(candles[-period-1:] if period>0 else candles)
     return mean(trs[-period:]) if trs else 0.0
 
 
@@ -1742,6 +1742,10 @@ def detect_fvg(candles: list[Candle], atr_value: float, limit: int = 8) -> list[
         return []
     rows = [c for c in candles if getattr(c, "confirmed", True)]
     zones: list[Zone] = []
+    # Suffix extremes answer the same mitigation question in O(1).
+    suffix_low=[float('inf')]*(len(rows)+1); suffix_high=[float('-inf')]*(len(rows)+1)
+    for j in range(len(rows)-1,-1,-1):
+        suffix_low[j]=min(rows[j].low,suffix_low[j+1]); suffix_high[j]=max(rows[j].high,suffix_high[j+1])
     for i in range(2, len(rows)):
         a, b, c = rows[i - 2], rows[i - 1], rows[i]
         gap_up = c.low - a.high
@@ -1751,14 +1755,14 @@ def detect_fvg(candles: list[Candle], atr_value: float, limit: int = 8) -> list[
                 kind="FVG_BULL", side=Side.LONG.value, low=a.high, high=c.low,
                 created_ts=int(b.ts), timeframe="15m",
                 strength=round(clamp(gap_up / atr_value, 0.0, 4.0), 3),
-                mitigated=any(r.low <= a.high for r in rows[i + 1:]),
+                mitigated=suffix_low[i+1] <= a.high,
             ))
         if gap_down > 0.25 * atr_value:
             zones.append(Zone(
                 kind="FVG_BEAR", side=Side.SHORT.value, low=c.high, high=a.low,
                 created_ts=int(b.ts), timeframe="15m",
                 strength=round(clamp(gap_down / atr_value, 0.0, 4.0), 3),
-                mitigated=any(r.high >= a.low for r in rows[i + 1:]),
+                mitigated=suffix_high[i+1] >= a.low,
             ))
     unmitigated = [z for z in zones if not z.mitigated]
     unmitigated.sort(key=lambda z: (z.strength, z.created_ts), reverse=True)

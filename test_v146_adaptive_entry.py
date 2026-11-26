@@ -1,4 +1,4 @@
-"""v14.4.6 causal timing and independent route evidence (no network/orders)."""
+"""v14.4.7 causal timing and independent route evidence (no network/orders)."""
 from dataclasses import replace
 from unittest import TestCase
 from unittest.mock import patch
@@ -40,7 +40,7 @@ class AdaptiveEntryTests(TestCase):
         self.assertEqual(len(core.DETECTORS),24)
         self.assertEqual(set(core.DETECTED_SETUP_TYPES),set(quality.CONTRACTS))
         self.assertEqual(core.BOT_VERSION,engine.VERSION)
-        self.assertIn('14.4.6',engine.VERSION)
+        self.assertIn('14.4.7',engine.VERSION)
 
     def test_closed_complete_buckets_no_future_or_missing_minute(self):
         s=self.snapshot()
