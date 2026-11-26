@@ -8,10 +8,11 @@
 <link rel="stylesheet" href="./live_terminal.css?v=14.4.7">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <script defer src="./live_terminal.js?v=14.4.7-release-check-1"></script>
+<script defer src="./multi_scanner.js?v=14.5"></script>
 </head>
 <body>
 <header class="masthead">
-  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>REAL-TIME BRAIN</span></h1><p class="muted">Brent · UI v14.4.7 · Live Brain · 3s Sync</p><p id="server-release" class="muted" role="status">Сервер: версію не підтверджено</p></div></div>
+  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>REAL-TIME BRAIN</span></h1><p class="muted">Multi-Scanner MEXC (UKOIL · XPT · SOL · LINK · LTC · APT · ORDI) · Live Brain</p><p id="server-release" class="muted" role="status">Сервер: версію не підтверджено</p></div></div>
   <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
 </header>
 <section id="state-banner" class="state-banner banner-waiting" data-mode="WAITING" aria-labelledby="state-title" aria-describedby="state-detail">
@@ -25,6 +26,46 @@
   <div class="tile"><small>ЦИКЛ БОТА · КИЇВ</small><strong id="stamp">—</strong><small id="state-status">Очікуємо зліпок</small></div>
   <div class="tile"><small>СЬОГОДНІ</small><strong id="daily">—</strong><small id="capacity">0/2 місць</small></div>
 </div>
+
+<section id="multi-scanner-section" class="panel ms-panel" aria-labelledby="ms-title">
+  <div class="ms-header">
+    <div>
+      <h2 id="ms-title">Мультисканер MEXC · Найкращий вибір із 7 активів</h2>
+      <p id="ms-updated" class="muted">Очікуємо дані мультисканера…</p>
+    </div>
+    <div class="ms-header-right">
+      <span id="ms-btc-pill" class="ms-btc-pill">BTC Макро: очікуємо…</span>
+      <div class="ms-calc-inputs" aria-label="Калькулятор ризику">
+        <label>Депозит $<input id="ms-deposit" type="number" value="100" min="10" step="10"></label>
+        <label>Ризик %<input id="ms-risk" type="number" value="3" min="0.5" max="20" step="0.5"></label>
+        <label>Макс. плече ×<input id="ms-lev" type="number" value="5" min="1" max="50" step="1"></label>
+      </div>
+    </div>
+  </div>
+  <div class="ms-grid">
+    <article id="ms-highlight" class="ms-highlight">
+      <div class="ms-empty">Завантажуємо топ-сигнал MEXC…</div>
+    </article>
+    <div class="ms-table-wrap">
+      <table class="ms-table">
+        <thead>
+          <tr>
+            <th>Актив</th>
+            <th class="ms-num">Ціна / 24г</th>
+            <th class="ms-tf">4H·1H·15m</th>
+            <th>Статус</th>
+            <th class="ms-num">Напрям</th>
+            <th class="ms-num">R:R</th>
+            <th class="ms-num">Бал</th>
+          </tr>
+        </thead>
+        <tbody id="ms-rows">
+          <tr><td colspan="7" class="ms-empty">Очікуємо дані…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
 <main class="cockpit">
   <div class="market-column">
     <section class="panel chart-panel" aria-labelledby="chart-title">

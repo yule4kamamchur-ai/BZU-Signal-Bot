@@ -1,4 +1,4 @@
-name: BZU Auto Bot — ICT v14.4.5 — GitHub-only Scan / 15m Telegram
+name: BZU Auto Bot — ICT v14.4.7 — GitHub-only Scan / 15m Telegram
 
 on:
   schedule:
@@ -33,7 +33,7 @@ jobs:
       RESEARCH_ARCHIVE_FILE: research_market_v12_6.json
       OKX_INST_ID: ${{ vars.OKX_INST_ID || 'BZ-USDT-SWAP' }}
       # Live price tick is read from OKX by full_limit_engine.py.
-      EXPECTED_BOT_VERSION: 'full-ict-v14.4.5-intraday'
+      EXPECTED_BOT_VERSION: 'full-ict-v14.4.7-intraday'
       INCLUDE_COMMISSION: 'true'
       ANALYSIS_SCAN_MINUTES: '5'
       # Compatibility settings for legacy geometry. Brent v12.32 uses oil_risk.py.
@@ -62,7 +62,7 @@ jobs:
       # Confirmed HTF pre-limits use the paper queue; other reaction setups use M5 watch.
       BZU_ENTRY_MODE: 'HYBRID'
       BZU_EDGE_MODE: 'SHADOW'
-      BZU_ADAPTIVE_EXITS: ${{ vars.BZU_ADAPTIVE_EXITS || 'SHADOW' }}
+      BZU_ADAPTIVE_EXITS: ${{ vars.BZU_ADAPTIVE_EXITS || 'ACTIVE' }}
       BZU_ENTRY_PLAYBOOK_MODE: 'STRICT'
 
     steps:
@@ -83,7 +83,7 @@ jobs:
       # Run only cheap safety checks in live trading. The full regression suite can run offline with --self-test.
       - name: Fast preflight (version, detectors, imports and syntax)
         run: |
-          python -m py_compile bot_oneshot.py full_limit_engine.py notification_report.py live_terminal.py \
+          python -m py_compile mexc_multi_scanner.py bot_oneshot.py full_limit_engine.py notification_report.py live_terminal.py \
             setup_scanner.py market_wave.py oil_risk.py signal_quality.py expectancy_model.py shadow_ledger.py ict_methodology.py portfolio_arbitration.py \
             bzu_policy.py bzu_execution_rules.py okx_order_execution.py position_monitor.py limit_structure.py lifecycle_forecast.py trade_dependencies.py research_zone_policy_1220.py \
             entry_adverse_selection.py edge_intelligence.py entry_playbooks.py strategy_organics.py strategy_direct_entries.py edge_research.py strategy_research.py trade_meta_model.py directional_policy.py setup_paths.py
@@ -96,7 +96,7 @@ jobs:
               'setup_scanner.py', 'market_wave.py', 'oil_risk.py', 'signal_quality.py', 'ict_methodology.py',
               'portfolio_arbitration.py', 'entry_adverse_selection.py', 'edge_intelligence.py',
               'entry_playbooks.py', 'strategy_organics.py', 'strategy_direct_entries.py',
-              'trade_meta_model.py', 'expectancy_model.py', 'shadow_ledger.py', 'directional_policy.py', 'setup_paths.py',
+              'trade_meta_model.py', 'expectancy_model.py', 'adaptive_entry.py', 'shadow_ledger.py', 'directional_policy.py', 'setup_paths.py',
               'last_signal_v6_4.json', 'signal_journal_v6_4.json',
           )
           missing = [file for file in must_exist if not Path(file).is_file()]
@@ -111,7 +111,7 @@ jobs:
           expected = os.environ['EXPECTED_BOT_VERSION']
           print(f'Version check: launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}/24, expected={expected}')
           if (actual[0] != expected or actual[1] != expected or actual[2] != 24):
-              raise SystemExit('Mismatched v14.4.5 files: update bot_oneshot.py and full_limit_engine.py together. '
+              raise SystemExit('Mismatched v14.4.7 files: update bot_oneshot.py and full_limit_engine.py together. '
                                f'launcher={actual[0]}, engine={actual[1]}, detectors={actual[2]}, expected={expected}')
           if 'RANGE_COMPRESSION_BREAKOUT' not in setup_paths.BREAK_RETEST:
               raise SystemExit('setup_paths.py is older than v12.13: replace it from the complete v12.13 patch')
@@ -144,6 +144,7 @@ jobs:
         shell: bash
         run: |
           python bot_oneshot.py --auto-report
+          python mexc_multi_scanner.py --notify || echo '[WARN] Multi-scanner skipped this cycle'
 
       - name: Save signal memory and journal
         id: persist
@@ -156,7 +157,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           # Commit only runtime files, never remove unrelated or legacy files.
-          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json notification_checkpoint_v12.json live_state.json; do
+          for file in last_signal_v6_4.json signal_journal_v6_4.json market_history_v12.json research_market_v12_6.json notification_checkpoint_v12.json live_state.json multi_scanner_state.json multi_scanner_memory.json; do
             if [ -f "$file" ]; then
               git add -f -- "$file"
             fi
@@ -225,7 +226,8 @@ jobs:
         if: ${{ always() && steps.persist.outcome == 'success' && hashFiles('live_state.json') != '' }}
         run: |
           mkdir -p pages-artifact
-          cp index.html live_terminal.js live_terminal.css live_state.json pages-artifact/
+          cp index.html live_terminal.js live_terminal.css multi_scanner.js live_state.json pages-artifact/
+          [ -f multi_scanner_state.json ] && cp multi_scanner_state.json pages-artifact/ || true
 
       - name: Upload terminal for GitHub Pages
         id: pages_upload

@@ -1172,3 +1172,201 @@ footer {
   font-size:9px;
   opacity:.8;
 }
+
+
+/* === BZU Multi-Asset Scanner MEXC Pro Panel === */
+.ms-panel {
+  margin: 0 0 18px;
+  padding: 18px 20px;
+  background: linear-gradient(180deg, rgba(20, 25, 38, 0.96), rgba(13, 17, 26, 0.98));
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+}
+.ms-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+.ms-header h2 { margin: 0 0 2px; font-size: 1.05rem; letter-spacing: 0.01em; }
+.ms-header-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.ms-btc-pill {
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+.ms-calc-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ms-calc-inputs label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.8);
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.ms-calc-inputs input {
+  width: 54px;
+  background: transparent;
+  border: none;
+  color: #f8fafc;
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-align: right;
+  outline: none;
+}
+.ms-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.25fr);
+  gap: 16px;
+  align-items: start;
+}
+.ms-highlight {
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  border-radius: 12px;
+  padding: 15px 16px;
+}
+.ms-hl-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ms-hl-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ms-top-tag {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fb923c;
+  background: rgba(249, 115, 22, 0.14);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+.ms-fee {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.14);
+  padding: 3px 7px;
+  border-radius: 999px;
+}
+.ms-hl-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.ms-hl-sym { margin: 0; font-size: 1.2rem; color: #f8fafc; }
+.ms-hl-price { color: #fb923c; font-weight: 700; margin-left: 6px; }
+.ms-hl-sub { margin: 4px 0 0; font-size: 0.84rem; color: #94a3b8; }
+.ms-mexc-btn {
+  display: inline-block;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #f97316;
+  color: #0b0d14;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ms-mexc-btn:hover { background: #fb923c; }
+.ms-hl-levels, .ms-sizing-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ms-lvl, .ms-sizing-bar > div {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 8px;
+  padding: 8px 9px;
+}
+.ms-lvl small, .ms-sizing-bar small {
+  display: block;
+  font-size: 0.68rem;
+  color: #94a3b8;
+  margin-bottom: 3px;
+}
+.ms-lvl strong, .ms-sizing-bar strong {
+  font-size: 0.88rem;
+  color: #f8fafc;
+  white-space: nowrap;
+}
+.ms-sizing-bar > div { background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.22); }
+.ms-hl-reason { margin: 4px 0 0; font-size: 0.82rem; color: #cbd5e1; }
+.ms-table-wrap { overflow-x: auto; }
+.ms-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.ms-table th {
+  text-align: left;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  font-weight: 600;
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  white-space: nowrap;
+}
+.ms-table td {
+  padding: 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  color: #e2e8f0;
+  vertical-align: middle;
+}
+.ms-row { cursor: pointer; transition: background 0.15s ease; }
+.ms-row:hover { background: rgba(148, 163, 184, 0.08); }
+.ms-row-selected { background: rgba(249, 115, 22, 0.12); }
+.ms-sym-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ms-num { text-align: right !important; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ms-tf { text-align: center !important; white-space: nowrap; letter-spacing: 2px; }
+.ms-cl {
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+.ms-cl-energy { background: rgba(249, 115, 22, 0.2); color: #fdba74; }
+.ms-cl-metals { background: rgba(234, 179, 8, 0.2); color: #fde047; }
+.ms-cl-crypto { background: rgba(56, 189, 248, 0.18); color: #7dd3fc; }
+.ms-pill {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ms-pill-ready { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.45); }
+.ms-pill-watch { background: rgba(251, 191, 36, 0.16); color: #fcd34d; border: 1px solid rgba(251, 191, 36, 0.35); }
+.ms-pill-wait { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
+.ms-up, .ms-side-long { color: #4ade80 !important; }
+.ms-dn, .ms-side-short { color: #f87171 !important; }
+.ms-flat, .ms-side-flat { color: #94a3b8 !important; }
+.ms-empty { padding: 16px; text-align: center; color: #94a3b8; }
+@media (max-width: 980px) {
+  .ms-grid { grid-template-columns: 1fr; }
+  .ms-hl-levels, .ms-sizing-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
