@@ -5,22 +5,41 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
 <title>BZU MULTI · Pro Cockpit</title>
-<link rel="stylesheet" href="./live_terminal.css?v=14.5.5">
+<link rel="stylesheet" href="./live_terminal.css?v=14.6.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <script defer src="./live_terminal.js?v=14.4.7-release-check-1"></script>
-<script defer src="./multi_scanner.js?v=14.5.5"></script>
+<script defer src="./multi_scanner.js?v=14.6.0"></script>
 </head>
 <body>
 <header class="masthead">
   <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>MULTI</span></h1><p class="muted">Multi-Scanner MEXC (UKOIL · XPT · SOL · LINK · LTC · APT · ORDI) · Live Brain</p><p id="server-release" class="muted" role="status">Сервер: версію не підтверджено</p></div></div>
   <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
 </header>
-<section id="state-banner" class="state-banner banner-waiting" data-mode="WAITING" aria-labelledby="state-title" aria-describedby="state-detail">
+<section id="ms-dual-slots" class="ms-dual-slots" aria-label="Активні слоти угод">
+  <div id="ms-slot-oil" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
+    <div class="ms-slot-top">
+      <span class="ms-slot-label">СЛОТ 1 · НАФТА (BRENT)</span>
+      <span id="ms-slot-oil-badge" class="ms-slot-badge">ВІЛЬНО</span>
+    </div>
+    <div id="ms-slot-oil-title" class="ms-slot-title">Очікуємо сигнал по нафті…</div>
+    <div id="ms-slot-oil-sub" class="ms-slot-sub">Макс. 1 активна угода · клік відкриває графік UKOIL</div>
+  </div>
+  <div id="ms-slot-cm" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
+    <div class="ms-slot-top">
+      <span class="ms-slot-label">СЛОТ 2 · КРИПТА / МЕТАЛ (MEXC)</span>
+      <span id="ms-slot-cm-badge" class="ms-slot-badge">ВІЛЬНО</span>
+    </div>
+    <div id="ms-slot-cm-title" class="ms-slot-title">Очікуємо A+ сигнал (SOL · LINK · LTC · APT · ORDI · XPT)</div>
+    <div id="ms-slot-cm-sub" class="ms-slot-sub">Макс. 1 активна угода · клік відкриває графік токена</div>
+  </div>
+</section>
+
+<section id="state-banner" class="state-banner banner-waiting" hidden data-mode="WAITING" aria-labelledby="state-title" aria-describedby="state-detail">
   <div class="state-heading"><div><p id="state-eyebrow" class="eyebrow" hidden></p><h2 id="state-title">Завантажуємо стан бота…</h2></div><span id="state-pill" class="badge"></span></div>
   <p id="state-detail"></p>
   <ol class="stepper sr-only" aria-label="Етапи угоди"><li id="step-scan">1 · Пошук</li><li id="step-pending">2 · Лімітка</li><li id="step-active">3 · Супровід</li></ol>
 </section>
-<div class="summary">
+<div class="summary" hidden>
   <div class="tile"><small>ЦІНА OKX</small><strong id="price">—</strong><small id="quote-status">Очікуємо котирування</small></div>
   <div class="tile"><small>РЕЖИМ РИНКУ</small><strong id="regime">—</strong><small id="regime-matrix" class="regime-matrix"></small></div>
   <div class="tile"><small>ЦИКЛ БОТА · КИЇВ</small><strong id="stamp">—</strong><small id="state-status">Очікуємо зліпок</small></div>
@@ -114,6 +133,24 @@
     </section>
   </aside>
 </main>
+
+<section id="ms-daily-summary" class="panel ms-daily-bar" aria-label="Підсумок угод за сьогодні">
+  <div class="ms-daily-cell">
+    <small>СЬОГОДНІ · НАФТА (BRENT)</small>
+    <strong id="ms-day-oil">0 уг. · +0.00 R</strong>
+    <small id="ms-day-oil-sub" class="muted">За сервером · Київ</small>
+  </div>
+  <div class="ms-daily-cell">
+    <small>СЬОГОДНІ · КРИПТА / МЕТАЛ</small>
+    <strong id="ms-day-cm">0 уг. · +0.00 R ($0.00)</strong>
+    <small id="ms-day-cm-sub" class="muted">Паперовий трекер MEXC · Київ</small>
+  </div>
+  <div class="ms-daily-cell ms-daily-total">
+    <small>РАЗОМ ЗА СЬОГОДНІ</small>
+    <strong id="ms-day-total">0 уг. · +0.00 R</strong>
+    <small id="ms-day-total-sub" class="muted">2 незалежні слоти (1 Нафта + 1 Крипта/Метал)</small>
+  </div>
+</section>
 <footer><span>Live Brain · 3 с &nbsp; Серверний журнал окремо</span><span id="copy-status" role="status" aria-live="polite"></span><span>PAPER · SIGNAL LEDGER</span></footer>
 </body>
 </html>

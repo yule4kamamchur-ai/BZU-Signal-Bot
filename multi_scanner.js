@@ -3,6 +3,7 @@
   'use strict';
 
   const STATE_URL = './multi_scanner_state.json';
+  const LIVE_STATE_URL = './live_state.json';
   const MEXC_WS_URL = 'wss://contract.mexc.com/edge';
   const SYMBOLS = ['UKOIL_USDT', 'XPT_USDT', 'SOL_USDT', 'LINK_USDT', 'LTC_USDT', 'APT_USDT', 'ORDI_USDT', 'BTC_USDT'];
   const TV_MAP = {
@@ -16,6 +17,7 @@
   };
 
   let latestData = null;
+  let liveOilState = null;
   let selectedSymbol = null;
   let selectedTf = '15m';
   let chartMode = 'tv'; // 'tv' | 'levels'
@@ -417,6 +419,7 @@
       if (hl) hl.textContent = `${fmtPrice(price, item.tick)} $`;
       tickChartPrice(sym, price);
     }
+    renderDualSlotsAndDaily();
   }
 
   function connectMexcWebSocket() {
@@ -457,32 +460,151 @@
     } catch (_) {}
   }
 
+
+  function fmtSigned(v, dec = 2) {
+    const n = Number(v || 0);
+    return `${n >= 0 ? '+' : ''}${n.toFixed(dec)}`;
+  }
+
+  function renderDualSlotsAndDaily() {
+    // --- SLOT 1: OIL (from live_state.json) ---
+    const oilCard = $('ms-slot-oil');
+    const oilBadge = $('ms-slot-oil-badge');
+    const oilTitle = $('ms-slot-oil-title');
+    const oilSub = $('ms-slot-oil-sub');
+    const oilOrders = (liveOilState && (liveOilState.orders || liveOilState.active_orders)) || [];
+    const oilActive = oilOrders.find((o) => o && (o.status === 'ACTIVE' || o.status === 'OPEN' || o.filled_ts)) || oilOrders[0] || null;
+    const oilDaily = (liveOilState && liveOilState.daily) || {};
+    const oilDayTrades = Number(oilDaily.entries || oilDaily.trades || 0);
+    const oilDayR = Number(oilDaily.net_r || 0);
+
+    if (oilCard && oilTitle && oilSub && oilBadge) {
+      oilCard.classList.remove('ms-slot-pos', 'ms-slot-neg', 'ms-slot-free');
+      if (oilActive && posNum(oilActive.entry)) {
+        const side = oilActive.side === 1 || oilActive.side === 'LONG' ? 1 : -1;
+        const sideTxt = side === 1 ? 'LONG' : 'SHORT';
+        const entry = Number(oilActive.entry);
+        const stop = posNum(oilActive.stop);
+        const tp = posNum(oilActive.tp || oilActive.tp1);
+        const risk = posNum(oilActive.risk) || (stop ? Math.abs(entry - stop) : 0);
+        const curP = posNum(livePrices.UKOIL_USDT) || posNum(liveOilState && liveOilState.price) || entry;
+        const pnlR = risk > 0 ? side * (curP - entry) / risk : 0;
+        oilCard.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
+        oilBadge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R`;
+        oilTitle.textContent = `В УГОДІ ${sideTxt} @ ${entry.toFixed(2)} $`;
+        oilSub.textContent = `Ціна ${curP.toFixed(2)} · SL ${stop ? stop.toFixed(2) : '—'} · TP ${tp ? tp.toFixed(2) : '—'} · клік → графік`;
+      } else {
+        oilCard.classList.add('ms-slot-free');
+        oilBadge.textContent = 'ВІЛЬНО';
+        oilTitle.textContent = 'Немає відкритої угоди по нафті';
+        oilSub.textContent = 'Слот 1 вільний · очікуємо підтверджений сигнал Brent';
+      }
+    }
+
+    // --- SLOT 2: CRYPTO / METAL (from multi_scanner_state.json -> cm_slot) ---
+    const cmCard = $('ms-slot-cm');
+    const cmBadge = $('ms-slot-cm-badge');
+    const cmTitle = $('ms-slot-cm-title');
+    const cmSub = $('ms-slot-cm-sub');
+    const cmSlot = (latestData && latestData.cm_slot) || {};
+    const cmActive = cmSlot.active || null;
+    const cmDaily = cmSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
+
+    if (cmCard && cmTitle && cmSub && cmBadge) {
+      cmCard.classList.remove('ms-slot-pos', 'ms-slot-neg', 'ms-slot-free');
+      if (cmActive && posNum(cmActive.entry)) {
+        const side = Number(cmActive.side || 1);
+        const sideTxt = side === 1 ? 'LONG' : 'SHORT';
+        const tick = cmActive.tick || 0.001;
+        const entry = Number(cmActive.entry);
+        const stop = posNum(cmActive.stop);
+        const tp = posNum(cmActive.tp);
+        const risk = posNum(cmActive.risk) || (stop ? Math.abs(entry - stop) : 0);
+        const curP = posNum(livePrices[cmActive.symbol]) || posNum(cmActive.current_price) || entry;
+        const pnlR = risk > 0 ? side * (curP - entry) / risk : Number(cmActive.pnl_r || 0);
+        const riskUsd = Number((cmActive.sizing && cmActive.sizing.risk_usd) || 3);
+        const pnlUsd = pnlR * riskUsd;
+        cmCard.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
+        cmBadge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
+        cmTitle.textContent = `${cmActive.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} $`;
+        cmSub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)} · TP ${fmtPrice(tp, tick)}${cmActive.be_armed ? ' · Б/У' : ''}`;
+      } else {
+        cmCard.classList.add('ms-slot-free');
+        cmBadge.textContent = 'ВІЛЬНО';
+        cmTitle.textContent = 'Немає відкритої угоди по крипті / металу';
+        cmSub.textContent = 'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI · XPT';
+      }
+    }
+
+    // --- DAILY RESULTS SUMMARY BAR ---
+    const dOil = $('ms-day-oil');
+    const dCm = $('ms-day-cm');
+    const dTot = $('ms-day-total');
+    if (dOil) {
+      dOil.textContent = `${oilDayTrades} уг. · ${fmtSigned(oilDayR)} R`;
+      dOil.className = oilDayR > 0 ? 'ms-up' : oilDayR < 0 ? 'ms-dn' : '';
+    }
+    const cmTrades = Number(cmDaily.trades || 0);
+    const cmR = Number(cmDaily.net_r || 0);
+    const cmUsd = Number(cmDaily.net_usd || 0);
+    if (dCm) {
+      dCm.textContent = `${cmTrades} уг. · ${fmtSigned(cmR)} R (${fmtSigned(cmUsd)}$)`;
+      dCm.className = cmR > 0 ? 'ms-up' : cmR < 0 ? 'ms-dn' : '';
+    }
+    if (dTot) {
+      const totTrades = oilDayTrades + cmTrades;
+      const totR = oilDayR + cmR;
+      dTot.textContent = `${totTrades} уг. · ${fmtSigned(totR)} R`;
+      dTot.className = totR > 0 ? 'ms-up' : totR < 0 ? 'ms-dn' : '';
+    }
+  }
+
   function renderAll(updateChart = false) {
     if (!latestData) return;
+    renderDualSlotsAndDaily();
     renderMeta(latestData);
     renderTable(latestData, updateChart);
   }
 
   async function loadScannerState() {
     try {
-      const res = await fetch(`${STATE_URL}?t=${Date.now()}`, { cache: 'no-store' });
-      if (!res.ok) return;
-      const first = !latestData;
-      latestData = await res.json();
-      renderAll(first || chartMode === 'levels');
+      const [r1, r2] = await Promise.all([
+        fetch(`${STATE_URL}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null),
+        fetch(`${LIVE_STATE_URL}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null),
+      ]);
+      if (r2 && r2.ok) {
+        liveOilState = await r2.json();
+      }
+      if (r1 && r1.ok) {
+        const first = !latestData;
+        latestData = await r1.json();
+        renderAll(first || chartMode === 'levels');
+      } else {
+        renderDualSlotsAndDaily();
+      }
     } catch (_) {}
   }
 
   function wireBannerClick() {
-    const banner = $('state-banner');
-    if (banner) {
-      banner.style.cursor = 'pointer';
-      banner.title = 'Натисни, щоб відкрити активну угоду по нафті (Brent)';
-      banner.addEventListener('click', () => {
+    const oilCard = $('ms-slot-oil');
+    if (oilCard) {
+      oilCard.addEventListener('click', () => {
         selectedSymbol = 'UKOIL_USDT';
         renderAll(true);
-        const brentPanel = $('chart-title') || document.querySelector('main.cockpit');
-        if (brentPanel) brentPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const sec = $('multi-scanner-section');
+        if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+    const cmCard = $('ms-slot-cm');
+    if (cmCard) {
+      cmCard.addEventListener('click', () => {
+        const act = latestData && latestData.cm_slot && latestData.cm_slot.active;
+        if (act && act.symbol) {
+          selectedSymbol = act.symbol;
+          renderAll(true);
+        }
+        const sec = $('multi-scanner-section');
+        if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
   }

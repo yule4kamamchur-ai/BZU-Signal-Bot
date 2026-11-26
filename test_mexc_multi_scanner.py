@@ -146,5 +146,52 @@ class MultiScannerTests(unittest.TestCase):
         self.assertFalse(res["btc_aligned"])
 
 
+    def test_cm_paper_slot_opens_and_closes_tp(self):
+        now_ms = 1_795_700_000_000
+        state = {
+            "updated_ts": now_ms,
+            "instruments": [
+                {
+                    "symbol": "APT_USDT", "short": "APT", "label": "Aptos (APT)",
+                    "cluster": "CRYPTO", "cluster_ua": "КРИПТА", "fee_tag": "0% Maker",
+                    "mexc_url": "https://www.mexc.com/futures/APT_USDT", "tick": 0.0001,
+                    "status": "READY", "status_ua": "ВХІД ЗАРАЗ (A+)", "score": 94,
+                    "side": 1, "side_ua": "LONG ↑", "setup": "M5_LIQUIDITY_SWEEP_RECLAIM",
+                    "setup_ua": "M5 свіп", "order_type": "MARKET",
+                    "entry": 0.3850, "stop": 0.3800, "tp": 0.3950, "be_trigger": 0.3895,
+                    "rr": 2.0, "price": 0.3850, "sizing": {"risk_usd": 3.0}, "candles_5m": [],
+                },
+                {
+                    "symbol": "XPT_USDT", "short": "XPT", "label": "PLATINUM (XPT)",
+                    "cluster": "METALS", "cluster_ua": "МЕТАЛ", "fee_tag": "0% FEE",
+                    "mexc_url": "https://www.mexc.com/futures/XPT_USDT", "tick": 0.01,
+                    "status": "READY", "status_ua": "ВХІД ЗАРАЗ (A+)", "score": 88,
+                    "side": 1, "side_ua": "LONG ↑", "setup": "M5_LIQUIDITY_SWEEP_RECLAIM",
+                    "setup_ua": "M5 свіп", "order_type": "MARKET",
+                    "entry": 1300.0, "stop": 1290.0, "tp": 1320.0, "be_trigger": 1309.0,
+                    "rr": 2.0, "price": 1300.0, "sizing": {"risk_usd": 3.0}, "candles_5m": [],
+                },
+            ],
+        }
+        mem = {}
+        ms.update_cm_paper_slot(state, mem, now_ms=now_ms)
+        self.assertTrue(state["cm_slot"]["occupied"])
+        self.assertEqual(state["cm_slot"]["active"]["symbol"], "APT_USDT")
+        # Platinum must be locked while APT holds Slot 2 (Crypto+Metals shared slot)
+        xpt = next(r for r in state["instruments"] if r["symbol"] == "XPT_USDT")
+        self.assertEqual(xpt["status"], "WATCH")
+
+        # Next scan: APT hits TP (0.3950)
+        state["instruments"][0]["candles_5m"] = [{"t": now_ms // 1000 + 300, "o": 0.385, "h": 0.396, "l": 0.384, "c": 0.395}]
+        state["instruments"][0]["price"] = 0.3950
+        state["instruments"][0]["status"] = "WAIT"
+        state["instruments"][1]["status"] = "WAIT"
+        ms.update_cm_paper_slot(state, mem, now_ms=now_ms + 300_000)
+        self.assertFalse(state["cm_slot"]["occupied"])
+        self.assertEqual(state["cm_slot"]["daily"]["trades"], 1)
+        self.assertEqual(state["cm_slot"]["daily"]["net_r"], 2.0)
+        self.assertEqual(state["cm_slot"]["daily"]["net_usd"], 6.0)
+
+
 if __name__ == "__main__":
     unittest.main()

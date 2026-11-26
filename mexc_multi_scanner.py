@@ -658,8 +658,16 @@ def analyze_instrument(
     return best
 
 
-def rank_and_lock_clusters(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Rank all instruments and enforce max 1 READY per cluster (Energy/Metals/Crypto)."""
+def _slot_group(cluster: str) -> str:
+    return "OIL" if cluster == "ENERGY" else "CRYPTO_METAL"
+
+
+def rank_and_lock_clusters(
+    results: list[dict[str, Any]],
+    *,
+    cm_slot_busy: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Rank all instruments and enforce max 1 READY in OIL and max 1 in CRYPTO+METALS."""
     ranked = sorted(
         results,
         key=lambda r: (
@@ -670,16 +678,21 @@ def rank_and_lock_clusters(results: list[dict[str, Any]]) -> tuple[list[dict[str
         ),
         reverse=True,
     )
-    active_clusters: set[str] = set()
+    active_groups: set[str] = {"CRYPTO_METAL"} if cm_slot_busy else set()
     for item in ranked:
         if item["status"] == "READY":
-            if item["cluster"] in active_clusters:
+            grp = _slot_group(item["cluster"])
+            if grp in active_groups:
                 item["status"] = "WATCH"
-                item["status_ua"] = "ЗАЙНЯТО В КЛАСТЕРІ"
+                item["status_ua"] = "СЛОТ ЗАЙНЯТО" if (grp == "CRYPTO_METAL" and cm_slot_busy) else "ЗАЙНЯТО В КЛАСТЕРІ"
                 item["cluster_locked"] = True
-                item["reason_ua"] = f"Сильніший сигнал уже активний у кластері {item['cluster_ua']}"
+                item["reason_ua"] = (
+                    "Слот Крипта/Метал уже в угоді — чекаємо закриття"
+                    if (grp == "CRYPTO_METAL" and cm_slot_busy)
+                    else "Сильніший сигнал уже активний у групі Крипта/Метал"
+                )
             else:
-                active_clusters.add(item["cluster"])
+                active_groups.add(grp)
     top_pick = ranked[0] if ranked and ranked[0]["status"] in ("READY", "WATCH") else None
     return ranked, top_pick
 
@@ -807,6 +820,171 @@ def run_scan(
     }
 
 
+
+
+def _kyiv_day(ts_ms: int) -> str:
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%Y-%m-%d")
+
+
+def update_cm_paper_slot(
+    state: dict[str, Any],
+    memory: dict[str, Any],
+    *,
+    now_ms: int,
+) -> dict[str, Any]:
+    """Maintain 1 independent paper position slot for CRYPTO + METALS and track daily stats."""
+    today = _kyiv_day(now_ms)
+    daily = memory.get("cm_daily") or {}
+    if daily.get("day") != today:
+        daily = {"day": today, "trades": 0, "wins": 0, "losses": 0, "net_r": 0.0, "net_usd": 0.0}
+
+    active = memory.get("cm_active")
+    by_sym = {r["symbol"]: r for r in state.get("instruments", [])}
+
+    # 1. Advance existing active CRYPTO/METAL paper position on latest 5m candles & price
+    if isinstance(active, dict) and active.get("symbol") in by_sym:
+        item = by_sym[active["symbol"]]
+        side = int(active["side"])
+        entry = float(active["entry"])
+        risk = float(active["risk"])
+        cur_stop = float(active["stop"])
+        tp = float(active["tp"])
+        peak_r = float(active.get("peak_r", 0.0))
+        opened_sec = int(active.get("opened_ts", 0)) // 1000
+        candles = [c for c in (item.get("candles_5m") or []) if int(c["t"]) >= opened_sec]
+
+        closed_reason = None
+        exit_price = float(item.get("price") or entry)
+
+        for c in candles:
+            hi, lo = float(c["h"]), float(c["l"])
+            # Conservative check: stop before TP
+            if (side == 1 and lo <= cur_stop) or (side == -1 and hi >= cur_stop):
+                exit_price = cur_stop
+                closed_reason = "BE_STOP" if active.get("be_armed") else "STOP"
+                break
+            if (side == 1 and hi >= tp) or (side == -1 and lo <= tp):
+                exit_price = tp
+                closed_reason = "TAKE_PROFIT"
+                break
+            fav_r = (hi - entry) / risk if side == 1 else (entry - lo) / risk
+            if fav_r > peak_r:
+                peak_r = fav_r
+            if peak_r >= 1.40:
+                new_s = round_price(entry + side * 0.55 * risk, float(item.get("tick") or 0.001))
+                if side * (new_s - cur_stop) > 0:
+                    cur_stop = new_s
+                    active["be_armed"] = True
+            elif peak_r >= 0.90:
+                new_s = round_price(entry + side * 0.05 * risk, float(item.get("tick") or 0.001))
+                if side * (new_s - cur_stop) > 0:
+                    cur_stop = new_s
+                    active["be_armed"] = True
+
+        # Check timeout (18h max hold)
+        if closed_reason is None and now_ms - int(active.get("opened_ts", now_ms)) >= 18 * 3_600_000:
+            closed_reason = "TIME_EXIT"
+            exit_price = float(item.get("price") or entry)
+
+        if closed_reason:
+            net_r = round(side * (exit_price - entry) / risk, 2)
+            risk_usd = float((active.get("sizing") or {}).get("risk_usd") or 3.0)
+            net_usd = round(net_r * risk_usd, 2)
+            daily["trades"] += 1
+            if net_r > 0:
+                daily["wins"] += 1
+            elif net_r < 0:
+                daily["losses"] += 1
+            daily["net_r"] = round(daily["net_r"] + net_r, 2)
+            daily["net_usd"] = round(daily["net_usd"] + net_usd, 2)
+            history = memory.get("cm_history") or []
+            history.append({
+                "symbol": active["symbol"],
+                "label": active["label"],
+                "cluster_ua": active["cluster_ua"],
+                "side": side,
+                "side_ua": active["side_ua"],
+                "entry": entry,
+                "exit": exit_price,
+                "net_r": net_r,
+                "net_usd": net_usd,
+                "reason": closed_reason,
+                "closed_ts": now_ms,
+                "closed_kyiv": datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m %H:%M"),
+            })
+            memory["cm_history"] = history[-30:]
+            active = None
+        else:
+            cur_p = float(item.get("price") or entry)
+            pnl_r = round(side * (cur_p - entry) / risk, 2) if risk > 0 else 0.0
+            risk_usd = float((active.get("sizing") or {}).get("risk_usd") or 3.0)
+            active.update(
+                stop=cur_stop,
+                peak_r=round(peak_r, 2),
+                current_price=cur_p,
+                pnl_r=pnl_r,
+                pnl_usd=round(pnl_r * risk_usd, 2),
+            )
+
+    # 2. If Slot 2 (CRYPTO/METAL) is free, open best READY candidate in CRYPTO or METALS
+    if active is None:
+        cm_ready = [
+            r for r in state.get("instruments", [])
+            if _slot_group(r["cluster"]) == "CRYPTO_METAL" and r["status"] == "READY"
+            and r.get("entry") and r.get("stop") and r.get("tp")
+        ]
+        if cm_ready:
+            pick = cm_ready[0]
+            risk = abs(float(pick["entry"]) - float(pick["stop"]))
+            if risk > 0:
+                active = {
+                    "symbol": pick["symbol"],
+                    "short": pick["short"],
+                    "label": pick["label"],
+                    "cluster": pick["cluster"],
+                    "cluster_ua": pick["cluster_ua"],
+                    "fee_tag": pick["fee_tag"],
+                    "mexc_url": pick["mexc_url"],
+                    "tick": pick["tick"],
+                    "side": pick["side"],
+                    "side_ua": pick["side_ua"],
+                    "setup": pick["setup"],
+                    "setup_ua": pick["setup_ua"],
+                    "order_type": pick["order_type"],
+                    "entry": float(pick["entry"]),
+                    "stop": float(pick["stop"]),
+                    "initial_stop": float(pick["stop"]),
+                    "tp": float(pick["tp"]),
+                    "be_trigger": pick.get("be_trigger"),
+                    "risk": risk,
+                    "rr": pick["rr"],
+                    "score": pick["score"],
+                    "sizing": pick["sizing"],
+                    "opened_ts": now_ms,
+                    "opened_kyiv": datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m %H:%M"),
+                    "current_price": float(pick["price"]),
+                    "pnl_r": 0.0,
+                    "pnl_usd": 0.0,
+                    "peak_r": 0.0,
+                    "be_armed": False,
+                }
+                # Re-lock other CRYPTO/METAL instruments now that Slot 2 is occupied
+                ranked, top_pick = rank_and_lock_clusters(state["instruments"], cm_slot_busy=True)
+                state["instruments"] = ranked
+                state["top_pick"] = top_pick
+                state["ready_count"] = sum(1 for r in ranked if r["status"] == "READY")
+
+    memory["cm_active"] = active
+    memory["cm_daily"] = daily
+    state["cm_slot"] = {
+        "occupied": active is not None,
+        "active": active,
+        "daily": daily,
+        "last_closed": (memory.get("cm_history") or [])[-1] if memory.get("cm_history") else None,
+    }
+    return state
+
+
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -856,7 +1034,21 @@ def main() -> int:
     risk_pct = float(os.getenv("BZU_RISK_PCT", "3.0"))
     max_lev = float(os.getenv("BZU_MAX_LEVERAGE", "5.0"))
 
+    mem: dict[str, Any] = {}
+    if args.memory.is_file():
+        try:
+            mem = json.loads(args.memory.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            mem = {}
+
     state = run_scan(deposit=deposit, risk_pct=risk_pct, max_leverage=max_lev)
+    if mem.get("cm_active"):
+        ranked, top_pick = rank_and_lock_clusters(state["instruments"], cm_slot_busy=True)
+        state["instruments"] = ranked
+        state["top_pick"] = top_pick
+        state["ready_count"] = sum(1 for r in ranked if r["status"] == "READY")
+    update_cm_paper_slot(state, mem, now_ms=state["updated_ts"])
+    _atomic_write(args.memory, mem)
     _atomic_write(args.output, state)
 
     notified = maybe_notify(state, args.memory) if args.notify else []
