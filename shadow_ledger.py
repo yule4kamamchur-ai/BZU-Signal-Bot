@@ -28,9 +28,12 @@ def watch(state, plans, snapshot, cfg, engine):
         zone = plan.get('entry_zone') or {}
         order_type = plan['order_type']
         trigger = (plan.get('market_trigger') or {}).get('known_ts') if order_type == 'MARKET' else None
-        identity = engine.ident(plan['side'],order_type,trigger,zone.get('timeframe'),
-                                zone.get('known_ts', plan['placed_ts']),
-                                *(round(zone.get(k, plan['entry']) / cfg.tick) for k in ('low', 'high')))
+        group = engine.ident(plan['side'],zone.get('timeframe'),zone.get('known_ts', plan['placed_ts']),
+                             *(round(zone.get(k, plan['entry']) / cfg.tick) for k in ('low', 'high')))
+        identity = engine.ident(group,plan.get('timing_route','LEGACY'))
+        if plan.get('expectancy_label_schema')!=ev.LABEL_SCHEMA:
+            identity = engine.ident(plan['side'],order_type,trigger,zone.get('timeframe'),zone.get('known_ts',plan['placed_ts']),*(round(zone.get(k,plan['entry'])/cfg.tick) for k in ('low','high')))
+        plan['timing_episode_id']=group
         plan['calibration_id'] = str(identity)
         if identity in ledger['seen']:
             continue
@@ -42,13 +45,13 @@ def watch(state, plans, snapshot, cfg, engine):
                   'policy','exit_policy','post_only','invalidation','opening_sweep_confirmed',
                   'missed_target_fraction','limit_ttl_ms','missed_target_r','target_cancel_armed',
                   'entry_fee_rate','exit_fee_rate','slippage_bps','event_key','setup','htf_4h','range_pos',
-                  'meta_context','meta_heuristic','meta_prob','risk_multiplier')
+                  'meta_context','meta_heuristic','meta_prob','risk_multiplier','timing_route','timing_episode_id','shadow_timing_only')
         row = {key: plan[key] for key in fields if key in plan}
         row.update(id=identity, calibration_id=identity, decision_ts=snapshot.now,
                    next_bar=minute if market else max(minute, plan.get('effective_ts', minute)),
                    filled_ts=snapshot.now if market else None, mfe_r=0., mae_r=0.)
-        if plan.get('expectancy_label_schema') == ev.LABEL_SCHEMA:
-            row.update(expectancy_label_schema=ev.LABEL_SCHEMA,expectancy_context=plan['expectancy_context'],
+        if plan.get('expectancy_label_schema') in ev.SHARED_LABEL_SCHEMAS:
+            row.update(expectancy_label_schema=plan['expectancy_label_schema'],expectancy_context=plan['expectancy_context'],
                        expectancy_signature=plan.get('expectancy_signature'),
                        shared_plan=copy.deepcopy(plan))
             row['shared_plan']['decision_ts']=snapshot.now
@@ -70,7 +73,7 @@ def watch(state, plans, snapshot, cfg, engine):
 def _outcome(row, ts, reason, exit_price=None, *, ambiguous=False):
     evidence = {k: row[k] for k in ('calibration_id','event_key','setup','side','htf_4h','range_pos',
                'meta_context','meta_heuristic','meta_prob','risk_multiplier','decision_ts','filled_ts',
-               'mfe_r','mae_r','entry','risk','order_type','expectancy_label_schema','expectancy_context','expectancy_signature') if k in row}
+               'mfe_r','mae_r','entry','risk','order_type','expectancy_label_schema','expectancy_context','expectancy_signature','timing_route','timing_episode_id','shadow_timing_only') if k in row}
     evidence.update(id=row['id'], label_schema=row.get('expectancy_label_schema',LABEL_SCHEMA), source='SHADOW_PAPER', closed_ts=ts,
                     close_reason=reason, ambiguous_ohlc=ambiguous, net_r=None, session=row['meta_context'][-1],
                     side_4h=row['meta_context'][1])
@@ -182,7 +185,7 @@ def advance(state, snapshot, cfg, engine):
             if b.confirmed and earliest <= b.ts < boundary}
     entry_gate = {}
     for identity, row in list(ledger['pending'].items()):
-        if row.get('expectancy_label_schema')==ev.LABEL_SCHEMA:
+        if row.get('expectancy_label_schema') in ev.SHARED_LABEL_SCHEMAS and row.get('shared_plan'):
             resolution=_shared_advance(row,snapshot,cfg,engine,bars,boundary)
             if resolution is not None:
                 ledger['outcomes'].append(resolution)

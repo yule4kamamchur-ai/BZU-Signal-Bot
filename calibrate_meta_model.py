@@ -17,6 +17,7 @@ import shadow_ledger as shadow
 import signal_quality as quality
 import trade_meta_model as model
 import expectancy_model as ev
+import adaptive_entry
 
 INSTRUMENT = 'BZ-USDT-SWAP'
 WARMUP = 11 * shadow.DAY
@@ -74,12 +75,16 @@ def run(data, cfg, *, progress=100):
     state = engine.new_state(cfg)
     state['calibration_replay'] = True
     actions = Counter()
+    rejections = Counter()
+    shadow_routes = Counter()
     scans = 0
     censored = 0
     for snapshot in research.snapshots(data):
         snapshot.metadata['require_1m'] = True
         result = engine.run_cycle(state,snapshot,cfg)
         actions[result['action']] += 1
+        rejections.update(result['analysis'].get('rejections',{}))
+        shadow_routes.update(p.get('timing_route','UNKNOWN') for p in result['analysis'].get('shadow_timing_plans',[]))
         faults = result['analysis'].get('health',())
         if ('LIFECYCLE_HISTORY_GAP' in faults and
                 snapshot.now-state['last_run_ts'] >= 2*cfg.analysis_scan_minutes*shadow.MINUTE):
@@ -102,12 +107,36 @@ def run(data, cfg, *, progress=100):
     # by the replay. Unfilled, incomplete or open episodes carry no label.
     labels = ev.labels([*ledger['outcomes'],*state['trades']],before=end+1)
     validation = ev.walk_forward(labels,data['start_ts'],end)
+    route_validation={route:ev.walk_forward(labels,data['start_ts'],end,route=route) for route in adaptive_entry.ROUTES}
+    route_statistics={}
+    for route in adaptive_entry.ROUTES:
+        attempts=[r for r in labels if r['expectancy_context'][-1]==route]
+        filled=[r for r in attempts if r['is_filled']]
+        route_statistics[route]={'resolved_attempts':len(attempts),'filled':len(filled),
+            'shadow_alternatives':sum(bool(r.get('shadow_timing_only')) for r in attempts),
+            'statistics':engine.statistics(filled), 'independent_attempts':len(list(ev.independent(attempts)))}
+    groups={}
+    for r in labels:
+        if r.get('timing_episode_id'):
+            groups.setdefault(r['timing_episode_id'],[]).append(r)
+    matched_groups=[g for g in groups.values() if len({r['expectancy_context'][-1] for r in g})>1]
+    paired={}
+    from itertools import combinations
+    for group in matched_groups:
+        by_route={r['expectancy_context'][-1]:r for r in group}
+        for a,b in combinations(sorted(by_route),2):
+            # Nonfills have zero realized R, censored/unresolved rows are excluded by labels().
+            ra,rb=(by_route[k]['net_r'] if by_route[k]['is_filled'] else 0. for k in (a,b))
+            v=paired.setdefault(a+' vs '+b,{'episodes':0,'net_r_first':0.,'net_r_second':0.})
+            v['episodes']+=1; v['net_r_first']+=ra; v['net_r_second']+=rb
+    for v in paired.values():
+        v['mean_delta_first_minus_second_r']=(v['net_r_first']-v['net_r_second'])/v['episodes']
     artifact = {'schema':ev.SCHEMA,'label_schema':ev.LABEL_SCHEMA,
                 'engine_version':engine.VERSION,'instrument':cfg.instrument,
                 'signature':quality.calibration_signature(cfg),'data_start_ts':data['start_ts'],
                 'data_end_ts':end,'source':data['source'],'prior_strength':ev.SHRINK,
                 'daily_decay':model.DAILY_DECAY,'validation':validation,
-                'counts':ev.counts(labels)}
+                'counts':ev.counts(labels),'route_validation':route_validation}
     report = {'observed_range':[engine.iso(data['start_ts']),engine.iso(end)],
               'source':data['source'],'scan_count':scans,'actions':dict(actions),
               'training_labels':len(labels),'independent_labels':len(list(ev.independent(labels))),
@@ -122,7 +151,10 @@ def run(data, cfg, *, progress=100):
               'shadow_open_or_pending':len(ledger['pending']),
               'shadow_outcomes':dict(Counter(r['close_reason'] for r in ledger['outcomes'])),
               'data_bars':{tf:len(rows) for tf,rows in data['candles'].items()},
-              'limitations':data.get('limitations', []),'validation':validation}
+              'limitations':data.get('limitations', []),'validation':validation,
+              'route_validation':route_validation,'route_statistics':route_statistics,
+              'matched_route_episodes':len(matched_groups),'matched_route_comparison':paired,
+              'candidate_rejections':dict(rejections),'shadow_route_candidates':dict(shadow_routes)}
     return artifact, report, labels
 
 

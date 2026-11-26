@@ -275,7 +275,7 @@ def calibration_signature(cfg):
                "directional_policy.py", "position_monitor.py", "bzu_execution_rules.py",
                "portfolio_arbitration.py", "oil_risk.py", "strategy_direct_entries.py",
                "scenario_planner.py", "market_wave.py", "entry_playbooks.py",
-               "entry_adverse_selection.py", "limit_structure.py", "strategy_organics.py",
+               "entry_adverse_selection.py", "adaptive_entry.py", "limit_structure.py", "strategy_organics.py",
                "trade_dependencies.py", "ict_methodology.py", "trade_meta_model.py",
                "bot_oneshot.py", "research_validate.py", "calibrate_meta_model.py")
     return digest({"configuration":signature(cfg), "sources":_strategy_fingerprints(modules),
@@ -303,6 +303,7 @@ def prepare_sizing(state, snapshot, cfg, engine):
 
     snapshot._execution_calibration = None
     snapshot._expectancy_calibration = None
+    snapshot._validated_timing_routes = ()
     rows=[*state.get('shadow_trades',{}).get('outcomes',()),*state['trades']]
     current_signature=calibration_signature(cfg)
     rows=[r for r in rows if r.get('expectancy_signature')==current_signature]
@@ -323,7 +324,8 @@ def prepare_sizing(state, snapshot, cfg, engine):
                 return "INVALID_EXPECTANCY_PRIORS"
             recent=ev.labels(rows,snapshot.now,artifact["data_end_ts"])
             snapshot._expectancy_calibration=(artifact["counts"],ev.counts(recent, snapshot.now))
-            return "EMPIRICAL_EXPECTANCY_V2"
+            snapshot._validated_timing_routes=tuple(k for k,v in artifact.get('route_validation',{}).items() if v.get('validated') is True)
+            return "EMPIRICAL_EXPECTANCY_V3_ROUTES"
         # v1 data cannot train the new payoff/fill model. Its posterior is retained
         # as an explicit transfer estimate, with no claim of v14.4.5 calibration.
         if (artifact.get('schema') != model.PRIOR_SCHEMA or artifact.get('label_schema') != "bzu-triple-barrier-m1-v1"
@@ -415,7 +417,8 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
     risk_mult = min(tier,structural_cap)
     require_rejection = (
         counter or (late and not aligned)
-        or ny_session or exhausted_wave or adverse_limit or h1_against_4h
+        or exhausted_wave or h1_against_4h
+        or (ny_session and late)
     )
     return {'meta_prob':probability, 'meta_prob_calibrated':calibration is not None, 'meta_factors':factors,
             'meta_context':context,'meta_heuristic':score,'meta_recent_weight':recent,

@@ -43,7 +43,7 @@ PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition',
     'meta_prob', 'meta_prob_calibrated', 'risk_multiplier', 'range_pos', 'late_entry',
     'entry_confirmation', 'rejection_required', 'expectancy_status', 'expectancy',
-    'adaptive_exit_profile', 'adaptive_exit_enabled', 'spread_r')
+    'adaptive_exit_profile', 'adaptive_exit_enabled', 'spread_r', 'timing_route', 'timing_options', 'timing_witness')
 
 
 def zone_direction_matches(zone, side):
@@ -106,7 +106,7 @@ def candidate_plan_error(row, min_score=65, min_rr=1.35):
             if (side*(entry-distal)<-1e-8 or
                     side*(entry-trigger['limit_entry'])>trigger['max_distance']+1e-8):
                 return 'MARKET_CHASE_LIMIT'
-        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH','NY_POST_SWEEP','M15_CONFIRMED_LEVEL_REJECTION'):
+        elif trigger['pattern'] in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH','NY_POST_SWEEP','M15_CONFIRMED_LEVEL_REJECTION','ADAPTIVE_CLOSED_RECLAIM'):
             reference = trigger['reference_close'] if trigger['pattern']=='NY_POST_SWEEP' else trigger['limit_entry']
             if abs(entry-reference) > trigger.get('max_distance',.20*trigger['initial_risk']) + 1e-8:
                 return 'MARKET_CHASE_LIMIT'
@@ -313,7 +313,7 @@ def impulse_market_entry(side, quote, reference, atr15, tick):
 
 def market_plan(plan):
     pattern = (plan.get('market_trigger') or {}).get('pattern')
-    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH','NY_POST_SWEEP','M15_CONFIRMED_LEVEL_REJECTION') or
+    return (plan.get('order_type') == 'MARKET' and (pattern in ('M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH','NY_POST_SWEEP','M15_CONFIRMED_LEVEL_REJECTION','ADAPTIVE_CLOSED_RECLAIM') or
         (plan.get('trend_rel') == 'WITH_TREND' and pattern in MARKET_PATTERNS) or
         (plan.get('trend_rel') == REVERSAL_RELATION and pattern == 'CONFIRMED_REVERSAL')))
 
@@ -757,6 +757,12 @@ def calculate_zone_trade_plan(zone, snapshot, cfg, engine, primary_side=0,
         brake = adverse.approach_velocity(snapshot, side, zone, entry, tick, engine)
     else:
         brake = adverse.approach(snapshot,a,side,{'low':low,'high':high,'known_ts':known},tick,stop=stop,trend=runner)
+    if oil and geometry and geometry.get('timing_route') in ('EARLY_LIMIT','M1','M3','M5'):
+        import adaptive_entry
+        brake=adaptive_entry.approach(snapshot,side,zone,entry,tick,engine)
+    if oil and geometry and geometry.get('entry_confirmation') and geometry.get('rejection_required'):
+        # The final router rechecks this exact strict M15 witness.
+        brake={**brake,'blocked':False}
     stop_breached=any((c.low<=stop if side==1 else c.high>=stop) for c in after)
     tracking_only = inside or (geometry or {}).get('reaction_only')
     passive_touch = bool(oil and not market and touch_quote_eligible(snapshot, side, zone, entry, a, tick)

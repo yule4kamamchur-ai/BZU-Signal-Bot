@@ -252,7 +252,9 @@ def front_run_candidate(plan, snapshot, cfg, engine):
         sizing = engine.quality.execution_sizing(snapshot,side,quote,regime,wave_ts=origin.get('break_known_ts'),
                                                  rvol=rvol,room_r=room_r,late=late,setup=plan.get('setup'),
                                                  source_strategy=plan.get('source_strategy'))
-        if sizing['rejection_required']:
+        import adaptive_entry
+        zone = plan.get('entry_zone')
+        if sizing['rejection_required'] or (zone and adaptive_entry.approach(snapshot,side,zone,plan['entry'],cfg.tick,engine)['blocked']):
             return None
         candidate.update(sizing,market_regime=regime,htf_4h=regime.get('side_4h'),htf_1h=regime.get('side_1h'))
         tp1, source, pool = rules.full_target(levels,quote,risk,side,atr,cfg.tick,engine)
@@ -267,7 +269,7 @@ def front_run_candidate(plan, snapshot, cfg, engine):
         event_key=engine.ident('FRONT_RUN_EVENT', plan['id'], trigger['known_ts']),
         parent_keys=[], replaces_order_id=plan['id'], entry=quote, risk=risk,
         order_type='MARKET', action_type='ACTIVE_ENTRY', execution_source='ACTIVE_ENTRY',
-        market_trigger=trigger, entry_basis='EXECUTABLE_QUOTE', status='PENDING',
+        market_trigger=trigger, timing_route='M5', timing_witness=trigger, entry_basis='EXECUTABLE_QUOTE', status='PENDING',
         effective_ts=snapshot.now, placed_ts=snapshot.now, last_bar=-1,
         entry_fee_rate=engine.fee_rate(cfg, 'taker'),
         entry_legs=[{'name': 'ACTIVE', 'price': quote, 'fraction': 1., 'status': 'PENDING'}],

@@ -29,13 +29,14 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.5-intraday"
-REPORT_RELEASE = 'v14.4.5'
+VERSION = "full-ict-v14.4.6-intraday"
+REPORT_RELEASE = 'v14.4.6'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
 import signal_quality as quality
 import shadow_ledger
+import adaptive_entry
 import setup_scanner as scanner
 import price_forecast
 import limit_structure
@@ -801,7 +802,22 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                 next(c for c in row['entry_checks'] if c['key']=='FRESH_LEVEL')['met']=False
                 scanner.update_readiness(row)
                 refused[reason]=refused.get(reason,0)+1
-        for a in anchors:
+        # The real portfolio marks an anchor used/triggered. Its alternative
+        # confirmation clocks may become observable later, before expiry.
+        # Revisit only previously observed, still-intact triggered anchors;
+        # these candidates cannot affect the real book or its watch matrix.
+        timing_revisit=[]
+        if oil_risk.enabled(cfg):
+            known={anchor_key(a,cfg) for a in anchors}
+            for event,raw in state.get('anchor_memory',{}).items():
+                if event in known or event not in state.get('used_events',{}):
+                    continue
+                if raw.get('state')!='TRIGGERED' or not raw.get('created_ts',0)<=s.now<raw.get('expires_ts',0):
+                    continue
+                a=core.anchor_from_dict(raw)
+                if a is not None and not scanner.retired_brent_setup(a.setup_type,a.evidence):
+                    timing_revisit.append(a)
+        for a in [*anchors,*timing_revisit]:
             tf=a.evidence.get('setup_timeframe','15m')
             route=a.evidence.get('entry_route')
             native=early_context if route=='MICRO_PRECURSOR' else tf_contexts[tf]
@@ -811,8 +827,25 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             rotation = state.get('market_replacement_intent') or {}
             retry_market = (key == rotation.get('event_key') and s.now < rotation['expires_ts'])
             used = key in state.get('used_events', {})
-            if (used and not retry_market) or state.get('level_cooldown',{}).get(level_key,0)>s.now:
-                p, reason = None, "LEVEL_OR_EVENT_COOLDOWN"
+            if (used and not retry_market) or a in timing_revisit:
+                # Replay all available routes for the old episode prospectively.
+                # No real event/level cooldown state is modified by this branch.
+                if oil_risk.enabled(cfg):
+                    _, _ = full_plan(a,native,s,cfg,stats,diagnostics)
+                    zone=diagnostics.get('entry_zone')
+                    if zone and diagnostics.get('timing_options'):
+                        for variant in diagnostics['timing_options']:
+                            alt,_=bzu_policy.plan(a,native,s,cfg,stats,sys.modules[__name__],{},timing_override=variant)
+                            if alt:
+                                alt.update(id=ident(alt['id'],'SHADOW_TIMING',variant),shadow_timing_only=True,
+                                           level_key=level_key,setup_conditions=copy.deepcopy(a.evidence.get('setup_conditions',[])))
+                                plans.append(alt)
+                if a in timing_revisit:
+                    continue
+                diagnostics.pop('timing_options',None)
+                p, reason = None, 'LEVEL_OR_EVENT_COOLDOWN'
+            elif state.get('level_cooldown',{}).get(level_key,0)>s.now:
+                p, reason = None, 'LEVEL_OR_EVENT_COOLDOWN'
             elif (oil_risk.enabled(cfg) and scanner.continuation_setup(
                     a.evidence.get('source_strategy'), (a.evidence.get('entry_zone') or {}).get('kind'), a.setup_type)
                     and scanner.post_tp_exhaustion(core.side_sign(a.side),s,state['trades'],
@@ -873,6 +906,21 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                     row['setup_conditions']=[{'condition':'Патерн підтверджено при формуванні рівня','met':True}]
                 scanner.update_readiness(row)
                 row.update(scanner.proximity(s.price,a.level))
+            # Evaluate other currently available routes on the identical anchor.
+            # They must pass the ordinary quality and final router checks below,
+            # but can never become executable orders. No retrospective fills.
+            if oil_risk.enabled(cfg) and diagnostics.get('timing_options'):
+                for variant in diagnostics['timing_options']:
+                    if p and variant==p.get('timing_route'):
+                        continue
+                    alt, _ = bzu_policy.plan(a,native,s,cfg,stats,sys.modules[__name__],{},timing_override=variant)
+                    if not alt or bzu_policy.adverse_reentry_reason(alt['side'],state['trades'],s,cfg,sys.modules[__name__],plan=alt):
+                        continue
+                    if zone_id in state.get('mitigated_zones',{}):
+                        continue
+                    alt.update(id=ident(alt['id'],'SHADOW_TIMING',variant),shadow_timing_only=True,level_key=level_key,
+                               setup_conditions=copy.deepcopy(a.evidence.get('setup_conditions',[])))
+                    plans.append(alt)
             if p:
                 p["setup_conditions"]=copy.deepcopy(a.evidence.get("setup_conditions",[]))
                 p["level_key"] = level_key
@@ -978,7 +1026,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
             assessments[p['id']]=q
         p['quality'] = q
         for path in admission_paths:
-            if path['event_key']==p['event_key']:
+            if not p.get('shadow_timing_only') and path['event_key']==p['event_key']:
                 path.update(reason=q['reason'] if not q['accepted'] else 'ACCEPTED',
                             score=p['score'], rating=p.get('rating'), entry=p['entry'], entry_source='PLANNER',
                             **{k:p[k] for k in ('stop','risk','tp1','tp2','readiness_pct') if k in p})
@@ -1021,7 +1069,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         p['ict_admission_reason']=ict_reason
         p['distance_pct']=scanner.proximity(s.price,p['entry'])['distance_pct']
     for row in matrix:
-        alternatives=[p for p in plans if p['setup']==row['setup'] and scanner.timeframe(p)==row['timeframe']]
+        alternatives=[p for p in plans if not p.get('shadow_timing_only') and p['setup']==row['setup'] and scanner.timeframe(p)==row['timeframe']]
         if alternatives:
             best=max(alternatives,key=lambda p:(p['quality']['accepted'],scanner.selection_key(p,s.price)))
             q=best['quality']
@@ -1038,9 +1086,14 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
         structural=quality.structural_reason(q['features'])=='CONFIRMED'
         return (q['accepted'],*scanner.selection_key(p,s.price))
     plans.sort(key=priority,reverse=True)
-    eligible_clusters=[p for p in plans if p['quality']['accepted']]
+    eligible_clusters=[p for p in plans if p['quality']['accepted'] and not p.get('shadow_timing_only')]
     clusters=bzu_policy.merge_plans(eligible_clusters,s,cfg,sys.modules[__name__])
-    clusters += [p for p in plans if not p['quality']['accepted']]
+    clusters += [p for p in plans if not p['quality']['accepted'] and not p.get('shadow_timing_only')]
+    alternatives=[]
+    for route in adaptive_entry.ROUTES:
+        alternatives.extend(bzu_policy.merge_plans([p for p in plans if p.get('shadow_timing_only') and p['quality']['accepted'] and p.get('timing_route')==route],s,cfg,sys.modules[__name__]))
+    for alt in alternatives:
+        lifecycle_forecast.select_full_exit(alt,s,cfg,sys.modules[__name__])
     for p in clusters:
         p.setdefault('supporting_setups',[p['setup']])
         p.setdefault('supporting_families',[p['canonical_setup_family']])
@@ -1098,7 +1151,7 @@ def analyze(s: Snapshot, cfg: Config, state: dict) -> dict:
                    'admitted':sum(1 for p in accepted if p.get('entry_route')=='STRATEGY_EVENT'),
                    'rejections':dict(__import__('collections').Counter(
                        p['reason'] for p in direct_paths if p['reason']!='ACCEPTED'))}
-    return {"health": [],"plans": accepted,"direct_strategy":direct_report,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
+    return {"health": [],"plans": accepted,"shadow_timing_plans":alternatives,"direct_strategy":direct_report,"admission_by_side":directional,"candidate_plans":clusters,"quality_assessments":assessments,
             "meta_model":ledger['last_meta_diagnostic'],
             "watch":watch,"setup_matrix":matrix,"poi_paths":admission_paths,"timeframe_contexts":tf_contexts,"early_context":early_context,
             "rejections": refused,"contexts": contexts,"full_context": ctx,
@@ -1910,6 +1963,10 @@ def resting_limit_invalidated(plan, price):
 
 def hold_pending_approach(plan, snapshot, cfg):
     zone = plan.get('entry_zone')
+    if plan.get('timing_route')=='EARLY_LIMIT' and oil_risk.enabled(cfg) and zone:
+        result=adaptive_entry.approach(snapshot,plan['side'],zone,plan['entry'],cfg.tick,sys.modules[__name__])
+        plan['entry_hold']='CONFIRMATION_REQUIRED' if result['blocked'] else None
+        return result['blocked']
     if resting_organic_limit(plan,cfg):
         plan['entry_hold'] = None
         plan.pop('approach_shock_ts', None)
@@ -1956,6 +2013,8 @@ def pending_scenario_error(plan, snapshot, cfg):
 
 
 def pending_entry_gate(plan, trades, as_of, cfg):
+    if plan.get('timing_route')=='EARLY_LIMIT' and oil_risk.enabled(cfg) and plan.get('entry_zone') and adaptive_entry.approach(as_of,plan['side'],plan['entry_zone'],plan['entry'],cfg.tick,sys.modules[__name__])['blocked']:
+        return 'ADAPTIVE_ADVERSE_APPROACH'
     if bzu_policy.full_position(plan) and execution_rules.early_ny(as_of.now) and not plan.get('opening_sweep_confirmed'):
         return 'WAIT_NY_POST_SWEEP'
     if (bzu_policy.full_position(plan) and oil_risk.enabled(cfg)
@@ -2194,6 +2253,9 @@ def review_waiting_conditions(state, pending, snapshot, cfg, htf1=0, htf4=0):
             request_cancel(state, pending, MISSED_TARGET_REASON, snapshot.now)
             return
     if resting_organic_limit(pending,cfg):
+        if pending.get('timing_route')=='EARLY_LIMIT' and hold_pending_approach(pending,snapshot,cfg):
+            request_cancel(state,pending,'ADAPTIVE_ADVERSE_APPROACH',snapshot.now)
+            return
         if bzu_policy.full_position(pending) and execution_rules.early_ny(snapshot.now) and not pending.get('opening_sweep_confirmed'):
             request_cancel(state,pending,'WAIT_NY_POST_SWEEP',snapshot.now)
             return
@@ -2438,17 +2500,18 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         analysis.setdefault('plans', []).extend(front_runs)
     # Recompute the execution context for any front-run conversion at this scan.
     import expectancy_model
-    for candidate in analysis.get('plans',[]):
+    for candidate in [*analysis.get('plans',[]),*analysis.get('shadow_timing_plans',[])]:
         if bzu_policy.full_position(candidate) and candidate.get('meta_context'):
             if (not candidate.get('expectancy_context') or
-                    candidate['expectancy_context'][2]!=candidate.get('order_type')):
+                    candidate['expectancy_context'][2]!=candidate.get('order_type') or len(candidate['expectancy_context'])!=12
+                    or candidate['expectancy_context'][-1]!=adaptive_entry.route(candidate)):
                 expectancy_model.apply(candidate,s,cfg,sys.modules[__name__])
-    valid=sorted((p for p in analysis.get('plans',[])
+    valid=sorted((p for p in [*analysis.get('plans',[]),*analysis.get('shadow_timing_plans',[])]
                   if p.get('readiness_pct',100.)>=100.),
                  key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
     # Compare both directions on the same execution/exit model BEFORE
     # deciding the portfolio direction (not only after selecting one side).
-    for candidate in valid[:6]:
+    for candidate in [p for p in valid if not p.get('shadow_timing_only')][:6]:
         if bzu_policy.is_new(candidate):
             continue  # The completed forecast already exists; its ranking weight is zero.
         use_full_exit(candidate,s.now)
@@ -2484,6 +2547,8 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         candidate['loss_cooldown']=cooldown
         reason = cooldown['reason'] if not cooldown['allowed'] else scanner.pending_tp1_error(candidate)
         if reason:
+            if candidate.get('shadow_timing_only'):
+                continue
             analysis.setdefault('rejections',{})[reason]=analysis.setdefault('rejections',{}).get(reason,0)+1
             analysis.setdefault('watch',[]).append({'setup':candidate['setup'],'side':candidate['side'],
                  'level':candidate['entry'],'reason':reason,'score':candidate.get('score',0)})
@@ -2501,7 +2566,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     confirmed = []
     for candidate in valid:
         zone = {**(candidate.get('entry_zone') or {}), 'side': candidate['side']}
-        if sar and candidate['side'] != sar['side']:
+        if sar and candidate['side'] != sar['side'] and not candidate.get('shadow_timing_only'):
             continue
         if single_limit:
             trigger = candidate.get('market_trigger') or {}
@@ -2523,10 +2588,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             if not (counter_4h or opening_proof or candidate.get('opening_sweep_confirmed')) and policy.trend_entry_error(
                     s,side,s.price,zone,cfg.tick):
                 continue
+            if (candidate.get('order_type')=='LIMIT' and bzu_policy.full_position(candidate)
+                    and session['post_sweep_only'] and not candidate.get('opening_sweep_confirmed')):
+                continue
             if candidate.get('order_type')=='MARKET':
                 quote = s.ask if side==1 else s.bid
                 proof_quote = quote
                 if scanner.structural_pullback(zone) and trigger.get('pattern') not in (
+                        adaptive_entry.PATTERN,
                         'TREND_CONTINUATION_MARKET','INSTANT_TOUCH_MARKET_FILL','MARKET_FRONT_RUN_CATCH',
                         execution_rules.EARLY_NY,'M15_CONFIRMED_LEVEL_REJECTION'):
                     level = trigger.get('limit_entry')
@@ -2541,7 +2610,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                     continue
                 if not (counter_4h or opening_proof) and scenario_planner.market_range_error(s,cfg,sys.modules[__name__],side,quote,zone,market):
                     continue
-                if trigger.get('pattern') == execution_rules.EARLY_NY:
+                if trigger.get('pattern') == adaptive_entry.PATTERN:
+                    tf0=trigger.get('confirmation_timeframe')
+                    proof=adaptive_entry.trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],cfg,sys.modules[__name__],tf0) if tf0 in adaptive_entry.STEPS else None
+                    velocity=adaptive_entry.approach(s,side,zone,trigger['limit_entry'],cfg.tick,sys.modules[__name__])
+                    if velocity['blocked'] or counter_4h:
+                        proof=None
+                elif trigger.get('pattern') == execution_rules.EARLY_NY:
                     proof = execution_rules.opening_trigger(s,side,zone,trigger['limit_entry'],trigger['initial_risk'],
                                                             cfg,sys.modules[__name__])
                 elif trigger.get('pattern') == 'M15_CONFIRMED_LEVEL_REJECTION':
@@ -2585,6 +2660,14 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
                 if bzu_policy.full_position(candidate) and execution_rules.retest_reason(
                         s,side,quote,proof,market,atr(policy.closed(s,'15m')),cfg.tick):
                     continue
+            elif candidate.get('timing_route') in ('M1','M3','M5') and (candidate.get('timing_witness') or {}).get('pattern')==adaptive_entry.PATTERN:
+                witness=candidate['timing_witness']; tf0=witness['confirmation_timeframe']
+                proof=adaptive_entry.trigger(s,side,zone,witness['limit_entry'],witness['initial_risk'],cfg,sys.modules[__name__],tf0)
+                if not proof or proof['known_ts']!=witness['known_ts'] or adaptive_entry.approach(s,side,zone,witness['limit_entry'],cfg.tick,sys.modules[__name__])['blocked']:
+                    continue
+            elif candidate.get('timing_route')=='EARLY_LIMIT' and candidate.get('approach',{}).get('brake_model')=='ADAPTIVE_M1_M15_V1' and not adaptive_entry.early_allowed(
+                    s,side,candidate['entry'],zone,market,candidate,adaptive_entry.approach(s,side,zone,candidate['entry'],cfg.tick,sys.modules[__name__]),cfg.tick,sys.modules[__name__]):
+                continue
             elif (bzu_policy.full_position(candidate) and session['post_sweep_only']
                   and not candidate.get('opening_sweep_confirmed')):
                 continue
@@ -2636,6 +2719,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         can_place = False
     if single_limit and not analysis['health']:
         shadow_ledger.watch(state,valid,s,cfg,sys.modules[__name__])
+    valid=[p for p in valid if not p.get('shadow_timing_only')]
     active=active_plans(state)
     pending=pending_plans(state)
     # Legacy fills and uncertain executions retain their slots. Cancel excess
@@ -3212,6 +3296,8 @@ REASON_UA = {
     'MFE_PROTECTION':'підтягнуто стоп після сприятливого руху',
     'WAIT_NY_POST_SWEEP':'потрібен свіп ліквідності та підтверджене закриття M15',
     'WAIT_M15_COUNTER_4H_REJECTION':'сетап проти 4H очікує закритого відбою M15',
+    'WAIT_FAST_ENTRY_CONFIRMATION':'очікування швидкого підтвердження після торкання зони',
+    'ADAPTIVE_ADVERSE_APPROACH':'ліміт скасовано через зустрічний імпульс',
     'WAIT_M15_ENTRY_REJECTION':'сетап очікує закритого відбою M15',
     'NY_POST_SWEEP':'MARKET після свіпу та імпульсного закриття M15 у NY',
     'HTF_EXTENDED_RETEST':'LIMIT на ретест після віддалення від EMA20 M15',

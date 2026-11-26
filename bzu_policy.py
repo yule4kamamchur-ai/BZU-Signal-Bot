@@ -307,7 +307,8 @@ def breaker_structure_error(plan, snapshot, cfg, engine):
     return None
 
 
-def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
+def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, timing_override=None):
+    import adaptive_entry as timing
     diag = diagnostics if diagnostics is not None else {}
     diag['entry_checks'] = scanner.entry_checks()
     def mark(key, passed):
@@ -485,7 +486,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             risk = side * (entry - stop)
     if side*(entry-anchor.invalidation)<=0:
         return None, 'INVALID_STRUCTURAL_FALSIFIER'
-    approach = (adverse.approach_velocity(snapshot,side,zone,entry,cfg.tick,engine) if oil else
+    approach = (timing.approach(snapshot,side,zone,entry,cfg.tick,engine) if oil else
                 adverse.approach(snapshot,a15,side,zone,cfg.tick,stop=stop,trend=trend or multibar))
     diag.update(entry=entry, level=entry, stop=stop, risk=risk, entry_zone=zone,
                 approach=approach, planning_policy=POLICY, entry_basis=entry_basis,
@@ -498,7 +499,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     mark('VALID_STOP', valid_stop)
     if not valid_stop:
         return None, 'STRUCTURAL_STOP_TOO_WIDE'
-    require_rejection = sizing.get('rejection_required', False)
+    require_rejection = sizing.get('rejection_required', False) or bool(oil and approach.get('blocked'))
+    if oil:
+        sizing['rejection_required'] = require_rejection
     if approach.get('blocked') and not (require_rejection or sniper_reversal or oil and session['post_sweep_only']):
         diag['status']='WATCHING'
         if oil:
@@ -568,6 +571,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     if not market_trigger or touch and zone['kind']==scanner.wave.EMA9_SURF:
         market_trigger = touch
     retest_route = None
+    retest_witness = None
+    timing_route = None
     opening_proof = False
     if oil:
         if session['post_sweep_only']:
@@ -576,25 +581,56 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
             if not market_trigger:
                 return None, 'WAIT_NY_POST_SWEEP'
             opening_proof = True
-        elif not market_trigger or market_trigger['pattern'] == 'INSTANT_TOUCH_MARKET_FILL':
-            market_trigger = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,
-                                                            early=early_impulse)
-        if market_trigger:
-            pattern = market_trigger['pattern']
-            confirmation_tf = market_trigger.get('confirmation_timeframe') or ('5m' if pattern.startswith('M5_') else '15m')
-            rvol = scanner.event_rvol(snapshot,confirmation_tf,market_trigger['known_ts'])['rvol']
-            sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                     rvol=rvol,room_r=room_r,late=late,setup=anchor.setup_type,
-                                                     source_strategy=src_strat)
-            require_rejection = sizing['rejection_required']
+        else:
+            first_zone = {**zone, 'low': entry, 'high': entry} if trend else zone
+            first_touch = zones.first_test(first_zone,minute,side,entry,risk,snapshot.now)
+            early_ok = (not first_touch['touched'] and not first_touch['mitigated'] and
+                        timing.early_allowed(snapshot,side,entry,zone,regime,sizing,approach,cfg.tick,engine))
+            micro = {name: proof for name,tf0 in (('M1','1m'),('M3','3m'),('M5','5m'))
+                     if (proof := timing.trigger(snapshot,side,zone,entry,risk,cfg,engine,tf0))}
+            strict_proof = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
+            options = (['EARLY_LIMIT'] if early_ok else []) + list(micro) + (['M15'] if strict_proof else [])
+            if require_rejection:
+                options = ['M15'] if strict_proof else []
+            diag['timing_options'] = options
+            # Forced routes are paper alternatives only, and must meet the same risk gate.
+            if timing_override is not None:
+                if timing_override not in options:
+                    return None, 'TIMING_ROUTE_UNAVAILABLE'
+                timing_route = timing_override
+            elif require_rejection:
+                timing_route = 'M15'
+            elif micro:
+                # Fast confirmation in calm aligned trends; M5 in mixed/range conditions.
+                preferred = ('M3','M1','M5') if early_ok or (approach.get('calm') and regime.get('side_4h')==side) else ('M5','M3')
+                timing_route = next((k for k in preferred if k in micro),None)
+            if timing_route is None and early_ok:
+                timing_route = 'EARLY_LIMIT'
+            if timing_route == 'EARLY_LIMIT':
+                market_trigger = None
+            elif timing_route in micro:
+                market_trigger = micro[timing_route]
+            elif timing_route == 'M15':
+                market_trigger = strict_proof
+                rejection = strict_proof
+                if not market_trigger:
+                    diag['status'] = 'WATCHING'
+                    return None, 'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION'
+            elif not market_trigger or market_trigger['pattern'] == 'INSTANT_TOUCH_MARKET_FILL':
+                market_trigger = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,early=early_impulse)
+            if market_trigger:
+                pattern = market_trigger['pattern']
+                confirmation_tf = market_trigger.get('confirmation_timeframe') or ('5m' if pattern.startswith('M5_') else '15m')
+                rvol = scanner.event_rvol(snapshot,confirmation_tf,market_trigger['known_ts'])['rvol']
         if require_rejection:
             rejection = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
             if not rejection:
                 diag['status'] = 'WATCHING'
                 return None, 'WAIT_M15_COUNTER_4H_REJECTION' if opposing_4h else 'WAIT_M15_ENTRY_REJECTION'
+            timing_route = 'M15'
             if not opening_proof:
                 market_trigger = rejection
-        if not market_trigger and snapshot.metadata.get('scan_gap_ms', 0) > 600_000:
+        if not market_trigger and timing_route != 'EARLY_LIMIT' and timing_override is None and snapshot.metadata.get('scan_gap_ms', 0) > 600_000:
             market_trigger = execution_rules.late_retest_evidence(snapshot,side,zone,entry,risk,cfg,engine)
         if market_trigger:
             retest_route = execution_rules.retest_reason(snapshot,side,quote,market_trigger,regime,a15,cfg.tick,sizing=sizing)
@@ -602,6 +638,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 if require_rejection and retest_route != 'CONFIRMATION_BODY_RETEST':
                     diag['status'] = 'WATCHING'
                     return None, 'WAIT_M15_ENTRY_REJECTION'
+                retest_witness = market_trigger
                 old_entry = entry
                 entry = execution_rules.retest_entry(snapshot,zone,side,entry,retest_route,cfg.tick,engine)
                 stop, risk, organic_risk = oil_risk.stop_geometry(
@@ -621,7 +658,9 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 distance = abs(snapshot.price-entry)
         error = execution_rules.setup_confirmation(anchor.setup_type,zone,snapshot,side,cfg.tick,engine,
                                                    bool(market_trigger), approach=approach)
-        if error and not rejection and (market_trigger or not retest_route or zone['kind'] == 'FVG_PULLBACK'):
+        generic_pullback = error=='WAIT_PULLBACK_REJECTION' and not approach.get('blocked') and (
+            timing_route=='EARLY_LIMIT' or bool(market_trigger and market_trigger.get('pattern')==timing.PATTERN))
+        if error and not generic_pullback and not rejection and (market_trigger or not retest_route or zone['kind'] == 'FVG_PULLBACK'):
             return None, error
     decay = engine.quality.consolidation_decay(zone, snapshot, side, cfg.tick, engine)
     diag['zone_decay'] = decay
@@ -654,6 +693,12 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only or counter_confirmation or retest_route)
     can_wait = can_wait and (not require_rejection or bool(
         rejection and retest_route=='CONFIRMATION_BODY_RETEST' and not opposing_4h))
+    if oil and not market_trigger and not retest_route and sizing.get('adverse_limit_guard') and timing_route!='EARLY_LIMIT':
+        return None,'WAIT_FAST_ENTRY_CONFIRMATION'
+    if oil and timing_route=='EARLY_LIMIT' and audit['touched']:
+        return None,'WAIT_FAST_ENTRY_CONFIRMATION'
+    if oil and timing_override and timing_override!='EARLY_LIMIT' and not (market_trigger or retest_route):
+        return None,'TIMING_ROUTE_UNAVAILABLE'
     if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
         return None, 'ZONE_NOT_AHEAD_OF_PRICE'
     allowed, why = direction.regime_admission(
@@ -778,10 +823,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
                                                  rvol=rvol,room_r=geometry.get('room_r'),late=late,setup=anchor.setup_type,
                                                  source_strategy=src_strat)
-        if sizing['rejection_required'] and not rejection:
+        if (sizing['rejection_required'] or require_rejection) and not rejection:
             diag.update(sizing,status='WATCHING')
             return None, 'WAIT_M15_ENTRY_REJECTION'
-        sizing['rejection_required'] = bool(rejection)
+        sizing['rejection_required'] = bool(require_rejection or sizing['rejection_required'])
         diag.update(sizing)
     has_runner = side * (tp2 - tp1) > 0
     diag['round_level_protection'] = {'original_stop': raw_stop, 'stop': stop,
@@ -822,6 +867,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'entry':entry, 'limit_price':entry, 'entry_legs':legs,
          'order_type':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
          'execution_preference':'MARKET' if action == 'ACTIVE_ENTRY' else 'LIMIT',
+         'timing_route':timing_route, 'timing_witness':market_trigger or retest_witness,
          'market_trigger':market_trigger, 'entry_confirmation':rejection, 'early_impulse_entry':early_impulse,
          'obstacle':geometry.get('obstacle'), 'structural_room_r':geometry.get('room_r'), 'checkpoints':geometry.get('checkpoints', []),
          'stop':stop, 'initial_stop':stop, 'invalidation':structural,
@@ -867,6 +913,14 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'score':0., 'probability':None, 'probability_status':'UNVALIDATED_SCORE_NOT_WR',
          'evidence':[anchor.reason], 'candidate':{}, 'parent_keys':[],
          'status':'PENDING', 'last_bar':-1, 'version':engine.VERSION}
+    if oil:
+        if timing_override and action!='ACTIVE_ENTRY' and not retest_route and timing_override!='EARLY_LIMIT':
+            return None,'TIMING_ROUTE_UNAVAILABLE'
+        if action!='ACTIVE_ENTRY' and not retest_route:
+            p['timing_route']='EARLY_LIMIT' if timing_route=='EARLY_LIMIT' else 'LEGACY_LIMIT'
+        elif not timing_route:
+            p['timing_route']=timing.route(p)
+        diag['timing_route']=p['timing_route']
     import expectancy_model
     if oil:
         expectancy_model.apply(p,snapshot,cfg,engine,rvol)

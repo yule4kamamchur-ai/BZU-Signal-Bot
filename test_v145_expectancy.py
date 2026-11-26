@@ -15,7 +15,7 @@ import signal_quality as quality
 
 NOW=1794000000000
 M=60000
-CTX=['BREAKOUT_RETEST',1,'LIMIT',1,'BULLISH_TREND','LOWER','LONDON','NORMAL','NORMAL','NORMAL','WITH']
+CTX=['BREAKOUT_RETEST',1,'LIMIT',1,'BULLISH_TREND','LOWER','LONDON','NORMAL','NORMAL','NORMAL','WITH','EARLY_LIMIT']
 
 def row(i, net=1.5, ctx=CTX, **kw):
     start=(i+1)*ev.DAY
@@ -76,7 +76,7 @@ class ExpectancyTests(TestCase):
         with TemporaryDirectory() as d,patch.dict(os.environ,{'META_PRIORS_FILE':str(Path(d)/'prior.json')}):
             path=Path(os.environ['META_PRIORS_FILE'])
             path.write_text(json.dumps(prior))
-            self.assertEqual(quality.prepare_sizing(state,snap,self.cfg,engine),'EMPIRICAL_EXPECTANCY_V2')
+            self.assertEqual(quality.prepare_sizing(state,snap,self.cfg,engine),'EMPIRICAL_EXPECTANCY_V3_ROUTES')
             self.assertIsNotNone(snap._expectancy_calibration)
             path.write_text(json.dumps({**prior,'validation':{'validated':False}}))
             self.assertEqual(quality.prepare_sizing(state,snap,self.cfg,engine),'UNVALIDATED_EXPECTANCY_PRIORS')

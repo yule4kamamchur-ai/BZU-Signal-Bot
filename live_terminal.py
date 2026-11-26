@@ -95,6 +95,7 @@ def build(state, snapshot, result, cfg, engine):
             'post_entry_protected_swing':plan.get('post_entry_protected_swing'),
             'meta_prob':plan.get('meta_prob'), 'meta_prob_calibrated':plan.get('meta_prob_calibrated'),
             'risk_multiplier':plan.get('risk_multiplier',1.), 'range_pos':plan.get('range_pos'),
+            'timing_route':plan.get('timing_route'), 'timing_witness':plan.get('timing_witness'),
             'expectancy':plan.get('expectancy'), 'expectancy_status':plan.get('expectancy_status'),
             'adaptive_exit_profile':plan.get('adaptive_exit_profile'), 'adaptive_exit_enabled':plan.get('adaptive_exit_enabled'),
             'late_entry':bool(plan.get('late_entry')), 'mfe_lock_steps':position_monitor.mfe_lock_steps(plan,engine),
@@ -306,6 +307,8 @@ def build(state, snapshot, result, cfg, engine):
         z.update(calc)
         z['institutional_family'] = (geometry or {}).get('institutional_family')
         z['scale_policy'] = (geometry or {}).get('scale_policy')
+        z['timing_route'] = (geometry or {}).get('timing_route')
+        z['timing_witness'] = (geometry or {}).get('timing_witness')
         if profile and engine.scanner.structural_pullback(z):
             z['market_pullback_max'] = .15*atr15
         z['id']=engine.ident('ZONE_PLAN_V30',z['kind'],z.get('timeframe'),z['side'],z['low'],z['high'],z['known_ts'])

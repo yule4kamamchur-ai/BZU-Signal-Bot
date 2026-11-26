@@ -2,7 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const OKX = 'https://www.okx.com/api/v5/market';
-const DASHBOARD_RELEASE = 'v14.4.5';
+const DASHBOARD_RELEASE = 'v14.4.6';
 const STATE_MAX_AGE = 27 * 60_000;
 const QUOTE_MAX_AGE = 15_000;
 const chartFrames = { '5m': 300, '15m': 900 };
@@ -157,7 +157,7 @@ function targetRatiosValid(row, rr1, rr2) {
 }
 function marketCandidate(row) {
   return row.order_type === 'MARKET' &&
-    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M15_CONFIRMED_LEVEL_REJECTION','NY_POST_SWEEP','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
+    (['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','ADAPTIVE_CLOSED_RECLAIM','M15_CONFIRMED_LEVEL_REJECTION','NY_POST_SWEEP','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger?.pattern) || (row.trend_rel === 'WITH_TREND' && ['IN_ZONE_TOUCH','POST_TOUCH_REJECTION','BREAKOUT_CONTINUATION'].includes(row.market_trigger?.pattern)) ||
      (row.trend_rel === 'CONFIRMED_REVERSAL' && row.market_trigger?.pattern === 'CONFIRMED_REVERSAL'));
 }
 function marketReference(trigger) {
@@ -180,7 +180,7 @@ function validCandidate(row) {
   const outside=row.entry<row.low || row.entry>row.high;
   const withinZone = marketCandidate(row) ?
     (row.market_trigger.sniper_pullback ? pullbackQuoteAllowed(row, row.entry) :
-    ['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M15_CONFIRMED_LEVEL_REJECTION','NY_POST_SWEEP','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger.pattern) ?
+    ['M15_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','ADAPTIVE_CLOSED_RECLAIM','M15_CONFIRMED_LEVEL_REJECTION','NY_POST_SWEEP','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger.pattern) ?
       Math.abs(row.entry - marketReference(row.market_trigger)) <= (row.market_trigger.max_distance ?? .20*row.market_trigger.initial_risk) + 1e-8 :
       row.market_trigger.pattern === 'CONFIRMED_REVERSAL' ? !outside :
       row.market_trigger.pattern === 'IN_ZONE_TOUCH' ?
@@ -233,7 +233,7 @@ function actionablePlan(row, price, tracking = false) {
   if (marketCandidate(row)) {
     if (row.market_trigger.sniper_pullback)
       return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) && pullbackQuoteAllowed(row, price);
-    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','M15_CONFIRMED_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','NY_POST_SWEEP','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger.pattern))
+    if (['M15_TREND_ZONE','M15_STRUCTURAL_IMPULSE','ADAPTIVE_CLOSED_RECLAIM','M15_CONFIRMED_LEVEL_REJECTION','M15_BREAKDOWN_MOMENTUM','NY_POST_SWEEP','M5_ZONE_ENGULFING','M5_SNIPER_REVERSAL','TREND_CONTINUATION_MARKET'].includes(row.market_trigger.pattern))
       return !['INVALID','EXPIRED','MISSED','EXHAUSTED'].includes(stage) &&
         number(price) && Math.abs(price-marketReference(row.market_trigger)) <= row.market_trigger.max_distance + 1e-8;
     const risk = row.side * (row.entry - row.stop);
@@ -1692,6 +1692,7 @@ function renderTacticalRadar(price, view, pnl, tone) {
       if (number(order.meta_prob)) {
         rd.append(element('span','P='+Math.round(order.meta_prob*100)+'% '+(order.expectancy_status==='VALIDATED'?'Bayes EV':order.meta_prob_calibrated?'Bayes v1':'Score'),'target-r-badge'));
       }
+      if (order.timing_route) rd.append(element('span','Вхід '+order.timing_route,'target-r-badge'));
       if (number(order.expectancy?.expected_net_r)) rd.append(element('span',(order.expectancy_status==='VALIDATED'?'EV ':'EV (monitor) ')+signed(order.expectancy.expected_net_r,'R'),'target-r-badge'));
       sm.append(element('dt','Ставка'),rd);
       metrics.append(sm);
@@ -1772,6 +1773,7 @@ function setBannerMode(mode) {
 function sizingBadgeText(item) {
   if (!item) return '';
   const parts = [];
+  if (item.timing_route) parts.push('Вхід '+item.timing_route);
   if (number(item.risk_multiplier)) parts.push('Ставка ' + Number(item.risk_multiplier).toFixed(2) + '×');
   if (number(item.meta_prob)) {
     parts.push('P=' + Math.round(item.meta_prob * 100) + '% (' + (item.expectancy_status==='VALIDATED'?'Bayes EV':item.meta_prob_calibrated?'Bayes v1':'Score') + ')');
