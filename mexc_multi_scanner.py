@@ -908,6 +908,125 @@ def update_cm_paper_slot(state: dict[str, Any], memory: dict[str, Any], *, now_m
     return update_dual_paper_slots(state, memory, now_ms=now_ms)
 
 
+
+def format_telegram_signal(item: dict[str, Any], btc_macro: dict[str, Any], ranked: list[dict[str, Any]]) -> str:
+    tick = item.get("tick") or 0.01
+    side_emoji = "🟢" if item["side"] == 1 else "🔴"
+    order_ua = "ЛІМІТ (0% Maker)" if item["order_type"] == "LIMIT" else "РИНКОВИЙ (M5)"
+    s = item.get("sizing") or {}
+    entry_s = format_price(item["entry"], tick)
+    stop_s = format_price(item["stop"], tick)
+    tp_s = format_price(item["tp"], tick)
+
+    lines = [
+        f"{side_emoji} <b>BZU MULTI · {item['label']}</b>",
+        f"Кластер: <b>{item['cluster_ua']}</b> · {item['fee_tag']} · Рейтинг: <b>{item['score']}/100</b>",
+        "",
+        f"Напрямок: <b>{item['side_ua']}</b> · Тип: <b>{order_ua}</b>",
+        f"Сетап: {item['setup_ua']}",
+        f"Вхід: <code>{entry_s}</code>",
+        f"Стоп: <code>{stop_s}</code> (−{s.get('sl_pct', 0):.2f}%)",
+        f"Тейк: <code>{tp_s}</code> (+{s.get('tp_pct', 0):.2f}% · <b>R:R {item['rr']:.2f}</b>)",
+        "",
+        f"💼 <b>Розрахунок позиції (депозит ${s.get('deposit_usdt', 100):.0f}, ризик ${s.get('risk_usd', 3):.2f}):</b>",
+        f"• Обсяг позиції: <b>${s.get('position_usdt', 0):.0f}</b> (плече ~{s.get('effective_leverage', 0):.2f}×)",
+        f"• Очікуваний профіт на TP: <b>+${s.get('target_profit_usd', 0):.2f}</b>",
+        "",
+        f"🧭 Макро BTC: <b>{btc_macro['label_ua']}</b> (${btc_macro.get('price', 0):,.0f})",
+    ]
+    top3 = [f"{r['short']} ({r['status_ua']}, {r['score']})" for r in ranked[:3]]
+    lines.append("📊 Топ-3 радара: " + " · ".join(top3))
+    lines.append(f"🔗 <a href=\"{item['mexc_url']}\">Відкрити {item['symbol']} на MEXC</a>")
+    return "\n".join(lines)
+
+
+def send_telegram_message(text: str, token: str, chat_id: str) -> bool:
+    if not token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            return resp.status == 200
+    except urllib.error.URLError:
+        return False
+
+
+def run_scan(
+    *,
+    fetcher=_http_json,
+    now_ms: int | None = None,
+    deposit: float = 100.0,
+    risk_pct: float = 3.0,
+    max_leverage: float = 5.0,
+) -> dict[str, Any]:
+    now = now_ms or int(time.time() * 1000)
+    tickers = fetch_all_tickers(fetcher=fetcher)
+    ticks = fetch_contract_ticks(fetcher=fetcher)
+
+    btc_ticker = tickers.get("BTC_USDT") or {}
+    btc_15m = fetch_klines("BTC_USDT", "Min15", 100, now, fetcher=fetcher)
+    btc_1h = fetch_klines("BTC_USDT", "Min60", 40, now, fetcher=fetcher)
+    btc_price = float(btc_ticker.get("lastPrice") or (btc_15m[-1].close if btc_15m else 0.0))
+    btc_macro = analyze_btc_macro(btc_15m, btc_1h, btc_price)
+
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for spec in INSTRUMENTS:
+        sym = spec["symbol"]
+        try:
+            b5 = fetch_klines(sym, "Min5", 60, now, fetcher=fetcher)
+            b15 = fetch_klines(sym, "Min15", 110, now, fetcher=fetcher)
+            b1h = fetch_klines(sym, "Min60", 45, now, fetcher=fetcher)
+            b4h = fetch_klines(sym, "Hour4", 35, now, fetcher=fetcher)
+            t_row = tickers.get(sym) or {}
+            tick = ticks.get(sym, 0.01 if "OIL" in sym or "XPT" in sym else 0.001)
+            res = analyze_instrument(
+                spec,
+                ticker=t_row,
+                bars_5m=b5,
+                bars_15m=b15,
+                bars_1h=b1h,
+                bars_4h=b4h,
+                tick=tick,
+                btc_macro=btc_macro,
+                now_ms=now,
+                deposit=deposit,
+                risk_pct=risk_pct,
+                max_leverage=max_leverage,
+            )
+            results.append(res)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{sym}: {exc}")
+
+    ranked, top_pick = rank_and_lock_clusters(results)
+    kyiv_str = datetime.fromtimestamp(now / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m.%Y %H:%M")
+
+    return {
+        "version": SCANNER_VERSION,
+        "exchange": "MEXC",
+        "updated_ts": now,
+        "updated_kyiv": kyiv_str,
+        "defaults": {
+            "deposit_usdt": deposit,
+            "risk_pct": risk_pct,
+            "max_leverage": max_leverage,
+        },
+        "btc_macro": btc_macro,
+        "top_pick": top_pick,
+        "instruments": ranked,
+        "ready_count": sum(1 for r in ranked if r["status"] == "READY"),
+        "watch_count": sum(1 for r in ranked if r["status"] == "WATCH"),
+        "errors": errors,
+    }
+
+
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -929,7 +1048,7 @@ def maybe_notify(state: dict[str, Any], memory_path: Path, *, cooldown_sec: int 
     now_sec = state["updated_ts"] // 1000
     notified: list[str] = []
     for item in state["instruments"]:
-        if item["status"] != "READY":
+        if item["status"] not in ("READY", "IN_TRADE"):
             continue
         sig_key = f"{item['symbol']}:{item['side']}:{item['setup']}"
         last_sent = int(sent_map.get(sig_key, 0))
