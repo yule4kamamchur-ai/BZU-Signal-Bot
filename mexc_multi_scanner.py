@@ -43,8 +43,8 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "UKOIL",
         "cluster": "ENERGY",
         "cluster_ua": "НАФТА",
-        "fee_tag": "FEE: EST.",
-        "min_stop_pct": 0.0022,
+        "fee_tag": "0% Maker / 0.02%",
+        "min_stop_pct": 0.0035,
         "max_stop_pct": 0.0095,
         "atr_mult": 1.35,
         "min_rvol": 1.15,
@@ -59,8 +59,8 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "XPT",
         "cluster": "METALS",
         "cluster_ua": "МЕТАЛ",
-        "fee_tag": "FEE: EST.",
-        "min_stop_pct": 0.0030,
+        "fee_tag": "0% FEE",
+        "min_stop_pct": 0.0035,
         "max_stop_pct": 0.0150,
         "atr_mult": 1.40,
         "min_rvol": 1.20,
@@ -75,7 +75,7 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "SOL",
         "cluster": "CRYPTO",
         "cluster_ua": "КРИПТА",
-        "fee_tag": "FEE: EST.",
+        "fee_tag": "0% FEE",
         "min_stop_pct": 0.0045,
         "max_stop_pct": 0.0200,
         "atr_mult": 1.45,
@@ -91,7 +91,7 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "LINK",
         "cluster": "CRYPTO",
         "cluster_ua": "КРИПТА",
-        "fee_tag": "FEE: EST.",
+        "fee_tag": "0% Maker / 0.02%",
         "min_stop_pct": 0.0045,
         "max_stop_pct": 0.0200,
         "atr_mult": 1.45,
@@ -107,7 +107,7 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "LTC",
         "cluster": "CRYPTO",
         "cluster_ua": "КРИПТА",
-        "fee_tag": "FEE: EST.",
+        "fee_tag": "0% Maker / 0.02%",
         "min_stop_pct": 0.0040,
         "max_stop_pct": 0.0180,
         "atr_mult": 1.40,
@@ -123,7 +123,7 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "APT",
         "cluster": "CRYPTO",
         "cluster_ua": "КРИПТА",
-        "fee_tag": "FEE: EST.",
+        "fee_tag": "0% Maker / 0.02%",
         "min_stop_pct": 0.0055,
         "max_stop_pct": 0.0240,
         "atr_mult": 1.55,
@@ -139,7 +139,7 @@ INSTRUMENTS: tuple[dict[str, Any], ...] = (
         "short": "ORDI",
         "cluster": "CRYPTO",
         "cluster_ua": "КРИПТА",
-        "fee_tag": "FEE: EST.",
+        "fee_tag": "0% Maker / 0.02%",
         "min_stop_pct": 0.0055,
         "max_stop_pct": 0.0240,
         "atr_mult": 1.55,
@@ -376,7 +376,7 @@ def compute_sizing(
 
 
 def cost_rates():
-    fee=float(os.getenv("MEXC_TAKER_FEE_RATE","0.0005"))
+    fee=float(os.getenv("MEXC_TAKER_FEE_RATE","0.0002"))
     slip=float(os.getenv("MEXC_SLIPPAGE_RATE","0.0001"))
     if not (math.isfinite(fee) and math.isfinite(slip) and 0<=fee<=.02 and 0<=slip<=.02):
         raise ValueError("Invalid MEXC paper cost assumptions")
@@ -534,7 +534,8 @@ def analyze_instrument(
         btc_opposes=bool(spec["use_btc_filter"] and btc_side==-side)
         fvg=_detect_fvg(bars_15m,side)
         zones=[x for x in (ema20_15,vwap,(sum(fvg)/2 if fvg else None)) if x is not None]
-        windows=[("M1",(bars_1m or [])[:-offset] if offset else (bars_1m or []),60000) for offset in (0,1,2)]
+        allow_m1 = os.getenv("BZU_ALLOW_M1_ENTRY", "true").lower() in ("1", "true", "yes")
+        windows=[("M1",(bars_1m or [])[:-offset] if offset else (bars_1m or []),60000) for offset in (0,1,2)] if allow_m1 else []
         windows.append(("M5",bars_5m,300000))
         for tf, rows, step in windows:
             if len(rows)<22 or not 0<=now_ms-(rows[-1].ts+step)<=(180000 if tf=="M1" else 300000):
@@ -547,11 +548,29 @@ def analyze_instrument(
                 zone=None
             for thesis in detect(rows,side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],trend=trend,zone=zone,timeframe=tf):
                 reversal=thesis["family"] in ("LIQUIDITY_SWEEP","FAILED_BREAKOUT","EXHAUSTION")
+                # Non-blocking adaptive alignment tier (keeps early reversals alive!)
+                if aligned:
+                    align_tier, risk_mult, adapt_trail_r = "ALIGNED", 1.0, 1.25
+                elif (b4==side or b1==side) and b4!=-side:
+                    align_tier, risk_mult, adapt_trail_r = "EARLY_PARTIAL", 0.65, 1.00
+                else:
+                    align_tier, risk_mult, adapt_trail_r = "EARLY_REVERSAL", 0.45, 0.80
+
+                # Non-blocking WR boosters from proven v14.4 setups:
+                # (1) Discount/Premium location preference, (2) VWAP/Sweep reclaim bonus, (3) Consolidation decay
+                in_edge = (range_pos <= 0.35) if side == 1 else (range_pos >= 0.65)
+                in_mid = 0.42 <= range_pos <= 0.58
+                vwap_reclaim = bool(vwap and side * (rows[-1].close - vwap) > 0 and side * (rows[-2].open - vwap) <= 0)
+                churn_bars = sum(1 for b in bars_5m[-12:] if abs(b.close - rows[-1].close) <= max(2 * tick, 0.35 * a5)) if a5 > 0 else 0
+
                 score=thesis["base_score"] + (8 if aligned else 3 if trend else -4 if opposing else 0)
                 score+=4 if b15==side else 0
                 score+=3 if thesis["rvol"]>=spec["min_rvol"]+.25 else 0
                 score+=(-7 if btc_opposes else 3 if spec["use_btc_filter"] and btc_side==side else 0)
                 score+=2 if tf=="M5" else 0
+                score+=4 if (thesis["family"]=="LIQUIDITY_SWEEP" or vwap_reclaim) else 0
+                score+=3 if in_edge else (-4 if in_mid else 0)
+                score-=5 if churn_bars >= 10 else 0
                 score-=min(3,int(max(0,now_ms-thesis["trigger_ts"]-step)//60000))
                 score=max(0,min(99,score))
                 # A confirmed reversal can compete against HTF; no blanket BTC/HTF veto.
@@ -564,10 +583,14 @@ def analyze_instrument(
                 adverse=side*(last_m1.close-last_m1.open)<-.8*max(atr((bars_1m or bars_5m)[:-1]),tick) and side*(last_m1.close-ref)<0
                 route="MARKET"
                 fee,slip=cost_rates()
+                if spec.get("fee_tag") == "0% FEE":
+                    fee = 0.0
                 g=geometry(spec,thesis,entry,side,tick,a5,a15,bars_15m,bars_1h,fee,slip,aligned)
+                g["trail_start_r"] = adapt_trail_r
                 # MARKET first when location and structural payoff are already acceptable.
-                # A wide stop must not make a late/chased entry look acceptable.
-                chase_cap=min(.50*g["risk"],max(2*tick,.80*a5))
+                # Tighter anti-chase cap on MOMENTUM prevents entering at candle extremes.
+                chase_mult = 0.60 if thesis["family"] == "MOMENTUM" else 0.80
+                chase_cap=min(.50*g["risk"],max(2*tick,chase_mult*a5))
                 level=thesis.get("retest_level")
                 if (not g["valid"] or abs(quote-ref)>chase_cap) and level is not None and side*(quote-level)>max(2*tick,.30*aa) and side*(quote-level)<=.8*a5 and not adverse and side*(rows[-1].close-level)>0:
                     limit_entry=round_price(level,tick)
@@ -600,7 +623,8 @@ def analyze_instrument(
                     "order_type":route,"entry":entry,"stop":stop,"tp":tp,"rr":round(rr,2),"net_rr_estimate":round(net_rr,3),
                     "regime":regime,"meta":meta,"btc_aligned":not btc_opposes,"reason_ua":reason,
                     "signal_id":f"{spec['symbol']}:{side}:{thesis['family']}:{tf}:{thesis['trigger_ts']}",
-                    "signal_known_ts":thesis["trigger_ts"]+step,"sizing":compute_sizing(entry,stop,tp,deposit=deposit,risk_pct=risk_pct,max_leverage=max_leverage)})
+                    "signal_known_ts":thesis["trigger_ts"]+step,"alignment_tier":align_tier,"risk_multiplier":risk_mult,
+                    "sizing":compute_sizing(entry,stop,tp,deposit=deposit,risk_pct=risk_pct*risk_mult,max_leverage=max_leverage)})
     if not candidates:
         base_out.update(reason_ua="Немає підтвердженого сетапу",regime=regime)
         return base_out
@@ -931,7 +955,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     if not skipped:
         with ThreadPoolExecutor(max_workers=8) as pool:
             for sym,interval,count in [("BTC_USDT","Min15",100),("BTC_USDT","Min60",40)]+[
-                (spec["symbol"],tf,count) for spec in INSTRUMENTS for tf,count in (("Min1",180),("Min5",130),("Min15",110),("Min60",145),("Hour4",35))]:
+                (spec["symbol"],tf,count) for spec in INSTRUMENTS for tf,count in (("Min1",300),("Min5",130),("Min15",110),("Min60",145),("Hour4",35))]:
                 if interval=="Min1" and sym in active_symbols:
                     # Catch up all unseen minutes across normal outages, up to the API window.
                     a=active_symbols[sym]; cursor=a.get("processed_until_ts",a.get("opened_ts") or a.get("placed_ts") or cut)
