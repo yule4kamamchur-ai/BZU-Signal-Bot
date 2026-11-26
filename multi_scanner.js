@@ -218,26 +218,22 @@
 
     if (entryP !== null) {
       priceLines.push(candleSeries.createPriceLine({
-        price: entryP, color: '#f97316', lineWidth: 1, lineStyle: 0, axisLabelVisible: true,
-        title: item.status === 'READY' ? 'Вхід' : 'Зона',
+        price: entryP, color: 'rgba(249, 115, 22, 0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '',
       }));
     }
     if (stopP !== null) {
       priceLines.push(candleSeries.createPriceLine({
-        price: stopP, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,
-        title: sz ? `SL −${sz.slPct}%` : 'SL',
+        price: stopP, color: 'rgba(239, 68, 68, 0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '',
       }));
     }
     if (tpP !== null) {
       priceLines.push(candleSeries.createPriceLine({
-        price: tpP, color: '#22c55e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true,
-        title: sz ? `TP +${sz.tpPct}%` : 'TP',
+        price: tpP, color: 'rgba(34, 197, 94, 0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '',
       }));
     }
     if (beP !== null) {
       priceLines.push(candleSeries.createPriceLine({
-        price: beP, color: '#eab308', lineWidth: 1, lineStyle: 3, axisLabelVisible: true,
-        title: 'Б/У',
+        price: beP, color: 'rgba(234, 179, 8, 0.45)', lineWidth: 1, lineStyle: 3, axisLabelVisible: true, title: '',
       }));
     }
     chart.timeScale().fitContent();
@@ -395,7 +391,20 @@
     }
     if (!item) return;
     const cell = document.querySelector(`[data-live-price="${sym}"]`);
-    if (cell) cell.textContent = fmtPrice(price, item.tick);
+    if (cell) {
+      const prevTxt = cell.textContent;
+      const nextTxt = fmtPrice(price, item.tick);
+      if (prevTxt !== nextTxt) {
+        const prevVal = parseFloat(prevTxt);
+        cell.textContent = nextTxt;
+        if (Number.isFinite(prevVal)) {
+          const cls = price > prevVal ? 'ms-flash-up' : 'ms-flash-dn';
+          cell.classList.remove('ms-flash-up', 'ms-flash-dn');
+          void cell.offsetWidth;
+          cell.classList.add(cls);
+        }
+      }
+    }
     if (chgPct !== undefined) {
       const chgEl = document.querySelector(`[data-live-chg="${sym}"]`);
       if (chgEl) {
@@ -466,12 +475,14 @@
 
   function wireBannerClick() {
     const banner = $('state-banner');
-    const cockpit = document.querySelector('main.cockpit');
-    if (banner && cockpit) {
+    if (banner) {
       banner.style.cursor = 'pointer';
-      banner.title = 'Натисни, щоб перейти до графіка та деталей активної угоди';
+      banner.title = 'Натисни, щоб відкрити активну угоду по нафті (Brent)';
       banner.addEventListener('click', () => {
-        cockpit.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        selectedSymbol = 'UKOIL_USDT';
+        renderAll(true);
+        const brentPanel = $('chart-title') || document.querySelector('main.cockpit');
+        if (brentPanel) brentPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
   }
