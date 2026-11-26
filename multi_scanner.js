@@ -536,6 +536,116 @@
     }
   }
 
+
+  // === Sound Alerts (Web Audio API) & Slot Blinking ===
+  let soundEnabled = false;
+  let audioCtx = null;
+  let prevSlotState = {
+    oilOpenTs: null,
+    oilClosedTs: null,
+    cmOpenTs: null,
+    cmClosedTs: null,
+    initialized: false,
+  };
+
+  function ensureAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    return audioCtx;
+  }
+
+  function playNotes(notes) {
+    if (!soundEnabled) return;
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    notes.forEach(([freq, delay, dur]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + delay);
+      gain.gain.setValueAtTime(0.001, now + delay);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + delay + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + delay + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + delay);
+      osc.stop(now + delay + dur + 0.02);
+    });
+  }
+
+  function playSound(kind) {
+    if (kind === 'entry') {
+      playNotes([[523.25, 0.0, 0.16], [659.25, 0.14, 0.16], [783.99, 0.28, 0.28]]);
+    } else if (kind === 'win') {
+      playNotes([[783.99, 0.0, 0.16], [1046.5, 0.16, 0.34]]);
+    } else if (kind === 'loss') {
+      playNotes([[329.63, 0.0, 0.18], [261.63, 0.18, 0.30]]);
+    }
+  }
+
+  function triggerBlink(cardId, cls) {
+    const card = $(cardId);
+    if (!card) return;
+    card.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss');
+    void card.offsetWidth;
+    card.classList.add(cls);
+  }
+
+  function checkSlotAlerts(data) {
+    if (!data) return;
+    const oilOpenTs = data.oil_slot?.active?.opened_ts || null;
+    const oilClosedTs = data.oil_slot?.last_closed?.closed_ts || null;
+    const oilClosedR = Number(data.oil_slot?.last_closed?.net_r || 0);
+    const cmOpenTs = data.cm_slot?.active?.opened_ts || null;
+    const cmClosedTs = data.cm_slot?.last_closed?.closed_ts || null;
+    const cmClosedR = Number(data.cm_slot?.last_closed?.net_r || 0);
+
+    if (prevSlotState.initialized) {
+      if (oilOpenTs && oilOpenTs !== prevSlotState.oilOpenTs) {
+        triggerBlink('ms-slot-oil', 'ms-slot-blink-entry');
+        playSound('entry');
+      }
+      if (cmOpenTs && cmOpenTs !== prevSlotState.cmOpenTs) {
+        triggerBlink('ms-slot-cm', 'ms-slot-blink-entry');
+        playSound('entry');
+      }
+      if (oilClosedTs && oilClosedTs !== prevSlotState.oilClosedTs) {
+        triggerBlink('ms-slot-oil', oilClosedR >= 0 ? 'ms-slot-blink-win' : 'ms-slot-blink-loss');
+        playSound(oilClosedR >= 0 ? 'win' : 'loss');
+      }
+      if (cmClosedTs && cmClosedTs !== prevSlotState.cmClosedTs) {
+        triggerBlink('ms-slot-cm', cmClosedR >= 0 ? 'ms-slot-blink-win' : 'ms-slot-blink-loss');
+        playSound(cmClosedR >= 0 ? 'win' : 'loss');
+      }
+    }
+    prevSlotState = { oilOpenTs, oilClosedTs, cmOpenTs, cmClosedTs, initialized: true };
+  }
+
+  function wireSoundButton() {
+    const btn = $('ms-sound-btn');
+    if (!btn) return;
+    try {
+      soundEnabled = localStorage.getItem('bzu_multi_sound') === '1';
+    } catch (_) {}
+    const syncBtn = () => {
+      btn.setAttribute('aria-pressed', soundEnabled ? 'true' : 'false');
+      btn.textContent = soundEnabled ? '🔔 Звук: увімк.' : '🔕 Звук: вимк.';
+    };
+    syncBtn();
+    btn.addEventListener('click', () => {
+      soundEnabled = !soundEnabled;
+      try { localStorage.setItem('bzu_multi_sound', soundEnabled ? '1' : '0'); } catch (_) {}
+      syncBtn();
+      if (soundEnabled) {
+        ensureAudio();
+        playSound('entry');
+      }
+    });
+  }
+
   function renderAll(updateChart = false) {
     if (!latestData) return;
     renderDualSlotsAndDaily();
@@ -555,6 +665,7 @@
       if (r1 && r1.ok) {
         const first = !latestData;
         latestData = await r1.json();
+        checkSlotAlerts(latestData);
         renderAll(first || chartMode === 'levels');
       } else {
         renderDualSlotsAndDaily();
@@ -566,6 +677,7 @@
     const oilCard = $('ms-slot-oil');
     if (oilCard) {
       oilCard.addEventListener('click', () => {
+        oilCard.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss');
         selectedSymbol = 'UKOIL_USDT';
         renderAll(true);
         const sec = $('multi-scanner-section');
@@ -575,6 +687,7 @@
     const cmCard = $('ms-slot-cm');
     if (cmCard) {
       cmCard.addEventListener('click', () => {
+        cmCard.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss');
         const act = latestData && latestData.cm_slot && latestData.cm_slot.active;
         if (act && act.symbol) {
           selectedSymbol = act.symbol;
@@ -588,6 +701,7 @@
 
   function init() {
     wireBannerClick();
+    wireSoundButton();
     if (!$('multi-scanner-section')) return;
     ['ms-deposit', 'ms-risk', 'ms-lev'].forEach((id) => {
       const el = $(id);
