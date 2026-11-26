@@ -267,8 +267,8 @@ def guard(position, ts, *, structural_only=False):
 
 
 TIME_DECAY_STOP_POLICY = 'TIME_DECAY_TRAIL'
-TIME_DECAY_STEP_MS = 3 * 60 * 60_000
-TIME_DECAY_START_R = -.50
+TIME_DECAY_STEP_MS = 2 * 60 * 60_000
+TIME_DECAY_START_R = -.35
 TIME_DECAY_INCREMENT_R = .25
 
 
@@ -298,7 +298,8 @@ def time_decay_stop(position, snapshot, ts, price, cfg, engine):
     if position.get('breakeven_armed') or cost_protected(position,current,cfg,engine):
         return None
     side, entry, risk = position['side'], position['entry'], position['risk']
-    lock = TIME_DECAY_START_R + TIME_DECAY_INCREMENT_R*((ts-deadline)//TIME_DECAY_STEP_MS)
+    _td_start, _td_step = (-.50, 3 * 60 * 60_000) if position.get('adaptive_exit_enabled') else (TIME_DECAY_START_R, TIME_DECAY_STEP_MS)
+    lock = _td_start + TIME_DECAY_INCREMENT_R*((ts-deadline)//_td_step)
     raw = engine.round_tick(round(entry+side*lock*risk,10),cfg.tick,up=side==1)
     levels = [raw]
     if snapshot is not None:
@@ -415,8 +416,8 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 
 
 MFE_STOP_POLICY = 'MFE_PROTECTION'
-MFE_LOCK_STEPS = ((.90, .05), (1.35, .55), (1.75, 1.10))
-LATE_MFE_LOCK_STEPS = ((.80, .05), (1.30, .55), (1.70, 1.10))
+MFE_LOCK_STEPS = ((.60, -.35), (.85, .08), (1.25, .55), (1.65, 1.10))
+LATE_MFE_LOCK_STEPS = ((.60, -.35), (.70, .08), (1.25, .55), (1.65, 1.10))
 TREND_MFE_LOCK_STEPS = ((.95, .05), (1.40, .55), (1.85, 1.15))
 RANGE_MFE_LOCK_STEPS = ((.80, .05), (1.15, .45), (1.50, .90))
 COUNTER_MFE_LOCK_STEPS = ((.75, .05), (1.10, .45), (1.45, .90))

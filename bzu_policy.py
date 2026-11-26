@@ -186,7 +186,8 @@ def protected_targets(context, snapshot, anchor, cfg, engine, entry, stop, side,
             return None, 'BLOCKED_NO_ROOM_TO_STRUCTURE'
         fresh = execution_rules.available_pools(snapshot,levels,cfg.tick)
         _is_asia = execution_rules.asia_session(snapshot.now)
-        _min_r, _max_r = (1.20, 1.40) if _is_asia else (None, None)
+        _is_ny_trend = oil_risk.ny_volatility(snapshot.now) and trend
+        _min_r, _max_r = (1.20, 1.40) if _is_asia else (None, execution_rules.NY_EXPANSION_MAX_R) if _is_ny_trend else (None, None)
         target, source, pool = execution_rules.full_target(
             fresh,entry,risk,side,a15,cfg.tick,engine,min_r=_min_r,max_r=_max_r)
         entry_fee = engine.fee_rate(cfg, 'taker' if active else 'maker')

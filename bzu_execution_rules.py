@@ -9,6 +9,7 @@ import setup_scanner as scanner
 EPS = 1e-8
 FULL_TARGET_MIN_R = oil_risk.ENTRY_TP1_MIN
 FULL_TARGET_MAX_R = 1.88
+NY_EXPANSION_MAX_R = 2.25
 RETEST_TTL_MS = 60 * 60_000
 TREND_RETEST_TTL_MS = 75 * 60_000
 ALIGNED_RETEST_TTL_MS = 90 * 60_000
@@ -16,7 +17,7 @@ EARLY_NY = 'NY_POST_SWEEP'
 
 
 def early_ny(ts):
-    return 13 * oil_risk.H1 <= ts % oil_risk.DAY < (13 * 60 + 105) * 60_000
+    return 13 * oil_risk.H1 <= ts % oil_risk.DAY < (13 * 60 + 45) * 60_000
 
 
 def asia_session(ts):
@@ -109,11 +110,31 @@ def opening_trigger(snapshot, side, zone, entry, risk, cfg, engine, *, allow_lat
         if not late:
             return None
     proof = _sweep(snapshot, rows, side, cfg.tick, engine, zone=zone)
-    if proof is None or side*(last.close-proof['level']) <= 0:
-        return None
-    return {'pattern': EARLY_NY, 'known_ts': known, 'limit_entry': entry, 'initial_risk': risk,
-            'max_distance': maximum, 'reference_close': last.close,
-            'sweep': proof}
+    if proof is not None and side*(last.close-proof['level']) > 0:
+        return {'pattern': EARLY_NY, 'known_ts': known, 'limit_entry': entry, 'initial_risk': risk,
+                'max_distance': maximum, 'reference_close': last.close,
+                'sweep': proof}
+    # Institutional M5 NY-open post-sweep displacement (faster than waiting for 1.2*ATR M15)
+    m5 = scanner.closed_five_minutes(snapshot)
+    if len(m5) >= 16 and atr > 0:
+        bar5 = m5[-1]
+        known5 = bar5.ts + 300_000
+        atr5 = engine.atr(m5[-16:-1])
+        base_vol = sum(c.volume for c in m5[-16:-1]) / 15
+        rvol5 = bar5.volume / base_vol if base_vol > 0 else 0.
+        body5 = side * (bar5.close - bar5.open)
+        prev5_low = min(c.low for c in m5[-7:-1])
+        prev5_high = max(c.high for c in m5[-7:-1])
+        swept5 = (bar5.low <= prev5_low - cfg.tick and bar5.close >= prev5_low + cfg.tick) if side == 1 else (
+            bar5.high >= prev5_high + cfg.tick and bar5.close <= prev5_high - cfg.tick)
+        if (0 <= snapshot.ticker_ts - known5 < 300_000 and bar5.ts >= zone['known_ts']
+                and swept5 and atr5 > 0 and body5 >= max(cfg.tick, .70 * atr5) and rvol5 >= 1.25
+                and abs(quote - bar5.close) <= max(2 * cfg.tick, .45 * atr)
+                and side * (quote - (bar5.open + bar5.close) / 2) >= 0):
+            return {'pattern': 'NY_M5_POST_SWEEP', 'known_ts': known5, 'limit_entry': entry, 'initial_risk': risk,
+                    'max_distance': max(2 * cfg.tick, .45 * atr), 'reference_close': bar5.close,
+                    'confirmation_timeframe': '5m', 'rvol': rvol5, 'sweep': {'name': 'M5_NY_OPEN_SWEEP', 'level': prev5_low if side == 1 else prev5_high, 'sweep_ts': known5}}
+    return None
 
 
 def retest_reason(snapshot, side, quote, trigger, regime, atr, tick, *, sizing=None):
@@ -173,7 +194,7 @@ def available_pools(snapshot, levels, tick):
 
 
 def full_target_ratios_valid(rr1, rr2):
-    return FULL_TARGET_MIN_R-EPS <= rr1 <= FULL_TARGET_MAX_R+EPS and abs(rr1-rr2) <= EPS
+    return FULL_TARGET_MIN_R-EPS <= rr1 <= NY_EXPANSION_MAX_R+EPS and abs(rr1-rr2) <= EPS
 
 
 def full_target(levels, entry, risk, side, atr, tick, engine, *, min_r=None, max_r=None):
