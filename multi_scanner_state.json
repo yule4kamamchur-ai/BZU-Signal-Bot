@@ -1,15 +1,15 @@
 {
   "version": "BZU MULTI v15.1.1 API FIX",
   "exchange": "MEXC",
-  "updated_ts": 1795733751117,
-  "scan_started_ts": 1795733745219,
-  "updated_kyiv": "27.11.2026 00:55",
+  "updated_ts": 1795734089393,
+  "scan_started_ts": 1795734082929,
+  "updated_kyiv": "27.11.2026 01:01",
   "health": {
     "status": "OK",
     "timings": {
-      "candles_s": 5.631,
-      "ticker_s": 0.264,
-      "scan_s": 5.897
+      "candles_s": 5.972,
+      "ticker_s": 0.488,
+      "scan_s": 6.464
     },
     "expected_interval_sec": 300,
     "assets": 7,
@@ -17,7 +17,7 @@
     "recovered": [],
     "derived": [],
     "source": "GITHUB_ACTIONS",
-    "run_id": "45907790593",
+    "run_id": "45908356961",
     "run_attempt": "1",
     "api_base": "https://api.mexc.com",
     "api_http_statuses": {},
@@ -33,10 +33,10 @@
   },
   "btc_macro": {
     "symbol": "BTC_USDT",
-    "price": 60482.7,
-    "bias_1h": 1,
-    "bias_15m": 0,
-    "vwap": 60663.91,
+    "price": 60514.7,
+    "bias_1h": 0,
+    "bias_15m": -1,
+    "vwap": 60665.53,
     "state": "NEUTRAL",
     "side": 0,
     "label_ua": "Нейтральний ↔"
@@ -52,10 +52,10 @@
     "price": 91.79,
     "tick": 0.01,
     "change_24h_pct": 0.03,
-    "volume_24h": 32695590.0,
+    "volume_24h": 32576657.0,
     "bias_4h": 1,
     "bias_1h": 1,
-    "bias_15m": 0,
+    "bias_15m": 1,
     "status": "IN_TRADE",
     "status_ua": "В УГОДІ",
     "score": 89,
@@ -68,10 +68,10 @@
     "stop": 91.52,
     "tp": 92.17,
     "rr": 2.25,
-    "rvol": 0.62,
+    "rvol": 2.5381064367215402,
     "range_pos": 0.805,
     "btc_aligned": true,
-    "reason_ua": "Відкрито 26.11 20:19 · PnL -0.55 R (-0.60$)",
+    "reason_ua": "Відкрито 26.11 20:19 · PnL -0.15 R (-0.16$)",
     "sizing": {
       "deposit_usdt": 100.0,
       "risk_pct": 3.0,
@@ -85,13 +85,6 @@
     },
     "cluster_locked": false,
     "candles_15m": [
-      {
-        "t": 1795661100,
-        "o": 90.85,
-        "h": 90.86,
-        "l": 90.66,
-        "c": 90.85
-      },
       {
         "t": 1795662000,
         "o": 90.85,
@@ -644,16 +637,16 @@
         "h": 91.8,
         "l": 91.7,
         "c": 91.77
+      },
+      {
+        "t": 1795733100,
+        "o": 91.77,
+        "h": 91.81,
+        "l": 91.71,
+        "c": 91.81
       }
     ],
     "candles_5m": [
-      {
-        "t": 1795709700,
-        "o": 91.5,
-        "h": 91.64,
-        "l": 91.47,
-        "c": 91.64
-      },
       {
         "t": 1795710000,
         "o": 91.64,
@@ -1206,21 +1199,83 @@
         "h": 91.79,
         "l": 91.73,
         "c": 91.76
+      },
+      {
+        "t": 1795733700,
+        "o": 91.76,
+        "h": 91.81,
+        "l": 91.73,
+        "c": 91.81
       }
     ],
     "execution_tf": "1m",
-    "bid": 91.72,
-    "ask": 91.8,
+    "bid": 91.8,
+    "ask": 91.81,
     "quote_valid": true,
-    "quote_ts": 1795733748147,
+    "quote_ts": 1795734088022,
     "analysis_fresh": true,
-    "regime": "TREND_UP",
-    "lifecycle_quality": "DATA_GAP",
+    "family": "TREND_PULLBACK",
+    "base_score": 74,
+    "structural_stop": 91.72,
+    "reference": 91.81,
+    "trigger_ts": 1795733700000,
+    "trigger_tf": "M5",
+    "retest_level": 91.75640740504966,
+    "risk": 0.3299999999999983,
+    "net_rr": 0.014890909090916032,
+    "valid": false,
+    "geometry_reason": "NEAR_LIQUIDITY",
     "geometry_policy": "STRUCTURAL_V15_1",
     "target_kind": null,
-    "trail_reason": null,
-    "be_trigger": null,
+    "atr_m5": 0.08142857142857148,
+    "atr_m15": 0.1278571428571443,
+    "structural_anchor": 91.72,
+    "stop_buffer": 0.02035714285714287,
+    "risk_floor": 0.32133500000000004,
+    "risk_ceiling": 0.872195,
+    "min_rr": 1.75,
+    "trail_atr_m5": 0.08142857142857148,
+    "trail_start_r": 1.25,
+    "target_r_preferred": 2.5,
+    "rank_score": 87.03,
+    "net_rr_estimate": 0.015,
+    "regime": "TREND_UP",
+    "meta": {
+      "status": "COLLECTING_MEXC_LABELS",
+      "n": 0,
+      "total_n": 0,
+      "win_rate_estimate": null,
+      "expected_r_estimate": null,
+      "rank_adjustment": 0.0
+    },
     "signal_id": "UKOIL_USDT:1:LIQUIDITY_SWEEP:M1:1795716960000",
+    "signal_known_ts": 1795734000000,
+    "alignment_tier": "ALIGNED",
+    "risk_multiplier": 1.0,
+    "candidate_count": 1,
+    "candidate_diagnostics": [
+      {
+        "setup": "TREND_PULLBACK_FVG_VWAP",
+        "family": "TREND_PULLBACK",
+        "trigger_tf": "M5",
+        "side": 1,
+        "status": "WATCH",
+        "score": 90,
+        "rank_score": 87.03,
+        "meta": {
+          "status": "COLLECTING_MEXC_LABELS",
+          "n": 0,
+          "total_n": 0,
+          "win_rate_estimate": null,
+          "expected_r_estimate": null,
+          "rank_adjustment": 0.0
+        },
+        "reason_ua": "M5 відкат до FVG/EMA/VWAP · TREND_UP · RVOL 2.54x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR"
+      }
+    ],
+    "be_trigger": null,
+    "lifecycle_quality": "DATA_GAP",
+    "trail_reason": null,
     "phase": "OPEN"
   },
   "instruments": [
@@ -1235,10 +1290,10 @@
       "price": 91.79,
       "tick": 0.01,
       "change_24h_pct": 0.03,
-      "volume_24h": 32695590.0,
+      "volume_24h": 32576657.0,
       "bias_4h": 1,
       "bias_1h": 1,
-      "bias_15m": 0,
+      "bias_15m": 1,
       "status": "IN_TRADE",
       "status_ua": "В УГОДІ",
       "score": 89,
@@ -1251,10 +1306,10 @@
       "stop": 91.52,
       "tp": 92.17,
       "rr": 2.25,
-      "rvol": 0.62,
+      "rvol": 2.5381064367215402,
       "range_pos": 0.805,
       "btc_aligned": true,
-      "reason_ua": "Відкрито 26.11 20:19 · PnL -0.55 R (-0.60$)",
+      "reason_ua": "Відкрито 26.11 20:19 · PnL -0.15 R (-0.16$)",
       "sizing": {
         "deposit_usdt": 100.0,
         "risk_pct": 3.0,
@@ -1268,13 +1323,6 @@
       },
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 90.85,
-          "h": 90.86,
-          "l": 90.66,
-          "c": 90.85
-        },
         {
           "t": 1795662000,
           "o": 90.85,
@@ -1827,16 +1875,16 @@
           "h": 91.8,
           "l": 91.7,
           "c": 91.77
+        },
+        {
+          "t": 1795733100,
+          "o": 91.77,
+          "h": 91.81,
+          "l": 91.71,
+          "c": 91.81
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 91.5,
-          "h": 91.64,
-          "l": 91.47,
-          "c": 91.64
-        },
         {
           "t": 1795710000,
           "o": 91.64,
@@ -2389,21 +2437,83 @@
           "h": 91.79,
           "l": 91.73,
           "c": 91.76
+        },
+        {
+          "t": 1795733700,
+          "o": 91.76,
+          "h": 91.81,
+          "l": 91.73,
+          "c": 91.81
         }
       ],
       "execution_tf": "1m",
-      "bid": 91.72,
-      "ask": 91.8,
+      "bid": 91.8,
+      "ask": 91.81,
       "quote_valid": true,
-      "quote_ts": 1795733748147,
+      "quote_ts": 1795734088022,
       "analysis_fresh": true,
-      "regime": "TREND_UP",
-      "lifecycle_quality": "DATA_GAP",
+      "family": "TREND_PULLBACK",
+      "base_score": 74,
+      "structural_stop": 91.72,
+      "reference": 91.81,
+      "trigger_ts": 1795733700000,
+      "trigger_tf": "M5",
+      "retest_level": 91.75640740504966,
+      "risk": 0.3299999999999983,
+      "net_rr": 0.014890909090916032,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
       "geometry_policy": "STRUCTURAL_V15_1",
       "target_kind": null,
-      "trail_reason": null,
-      "be_trigger": null,
+      "atr_m5": 0.08142857142857148,
+      "atr_m15": 0.1278571428571443,
+      "structural_anchor": 91.72,
+      "stop_buffer": 0.02035714285714287,
+      "risk_floor": 0.32133500000000004,
+      "risk_ceiling": 0.872195,
+      "min_rr": 1.75,
+      "trail_atr_m5": 0.08142857142857148,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.5,
+      "rank_score": 87.03,
+      "net_rr_estimate": 0.015,
+      "regime": "TREND_UP",
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 0,
+        "total_n": 0,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
       "signal_id": "UKOIL_USDT:1:LIQUIDITY_SWEEP:M1:1795716960000",
+      "signal_known_ts": 1795734000000,
+      "alignment_tier": "ALIGNED",
+      "risk_multiplier": 1.0,
+      "candidate_count": 1,
+      "candidate_diagnostics": [
+        {
+          "setup": "TREND_PULLBACK_FVG_VWAP",
+          "family": "TREND_PULLBACK",
+          "trigger_tf": "M5",
+          "side": 1,
+          "status": "WATCH",
+          "score": 90,
+          "rank_score": 87.03,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 0,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M5 відкат до FVG/EMA/VWAP · TREND_UP · RVOL 2.54x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR"
+        }
+      ],
+      "be_trigger": null,
+      "lifecycle_quality": "DATA_GAP",
+      "trail_reason": null,
       "phase": "OPEN"
     },
     {
@@ -2414,13 +2524,13 @@
       "cluster_ua": "МЕТАЛ",
       "fee_tag": "0% FEE",
       "mexc_url": "https://www.mexc.com/futures/XPT_USDT",
-      "price": 1302.46,
+      "price": 1292.88,
       "tick": 0.01,
-      "change_24h_pct": 0.07,
-      "volume_24h": 1505105.0,
+      "change_24h_pct": -0.65,
+      "volume_24h": 1311044.0,
       "bias_4h": 0,
       "bias_1h": 1,
-      "bias_15m": 1,
+      "bias_15m": 0,
       "status": "WAIT",
       "status_ua": "НЕМАЄ СИГНАЛУ",
       "score": 0,
@@ -2433,20 +2543,13 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.46,
-      "range_pos": 0.608,
+      "rvol": 0.39,
+      "range_pos": 0.372,
       "btc_aligned": true,
       "reason_ua": "Немає підтвердженого сетапу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 1309.38,
-          "h": 1310.31,
-          "l": 1303.05,
-          "c": 1305.5
-        },
         {
           "t": 1795662000,
           "o": 1305.5,
@@ -2999,16 +3102,16 @@
           "h": 1305.04,
           "l": 1303.21,
           "c": 1303.47
+        },
+        {
+          "t": 1795733100,
+          "o": 1303.47,
+          "h": 1303.5,
+          "l": 1301.38,
+          "c": 1301.55
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 1303.53,
-          "h": 1303.63,
-          "l": 1301.13,
-          "c": 1301.76
-        },
         {
           "t": 1795710000,
           "o": 1301.76,
@@ -3561,13 +3664,20 @@
           "h": 1303.25,
           "l": 1302.59,
           "c": 1302.59
+        },
+        {
+          "t": 1795733700,
+          "o": 1302.59,
+          "h": 1302.59,
+          "l": 1301.38,
+          "c": 1301.55
         }
       ],
       "execution_tf": "1m",
-      "bid": 1300.91,
-      "ask": 1302.48,
+      "bid": 1292.85,
+      "ask": 1293.1,
       "quote_valid": true,
-      "quote_ts": 1795733748465,
+      "quote_ts": 1795734088326,
       "analysis_fresh": true,
       "regime": "RANGE_TRANSITION"
     },
@@ -3579,12 +3689,12 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% FEE",
       "mexc_url": "https://www.mexc.com/futures/SOL_USDT",
-      "price": 70.95,
+      "price": 71.07,
       "tick": 0.01,
-      "change_24h_pct": -0.09,
-      "volume_24h": 56285992.0,
+      "change_24h_pct": 0.07,
+      "volume_24h": 55183872.0,
       "bias_4h": 1,
-      "bias_1h": 1,
+      "bias_1h": 0,
       "bias_15m": 0,
       "status": "WAIT",
       "status_ua": "НЕМАЄ СИГНАЛУ",
@@ -3598,20 +3708,13 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.73,
-      "range_pos": 0.561,
+      "rvol": 1.42,
+      "range_pos": 0.617,
       "btc_aligned": true,
       "reason_ua": "Немає підтвердженого сетапу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 71.32,
-          "h": 71.43,
-          "l": 70.98,
-          "c": 71.12
-        },
         {
           "t": 1795662000,
           "o": 71.12,
@@ -4164,16 +4267,16 @@
           "h": 71.24,
           "l": 71.06,
           "c": 71.24
+        },
+        {
+          "t": 1795733100,
+          "o": 71.24,
+          "h": 71.29,
+          "l": 70.89,
+          "c": 71.02
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 70.92,
-          "h": 71.07,
-          "l": 70.89,
-          "c": 71.05
-        },
         {
           "t": 1795710000,
           "o": 71.05,
@@ -4726,13 +4829,20 @@
           "h": 71.24,
           "l": 71.0,
           "c": 71.07
+        },
+        {
+          "t": 1795733700,
+          "o": 71.07,
+          "h": 71.07,
+          "l": 70.89,
+          "c": 71.02
         }
       ],
       "execution_tf": "1m",
-      "bid": 70.95,
-      "ask": 70.96,
+      "bid": 71.06,
+      "ask": 71.07,
       "quote_valid": true,
-      "quote_ts": 1795733748021,
+      "quote_ts": 1795734087901,
       "analysis_fresh": true,
       "regime": "RANGE_TRANSITION"
     },
@@ -4744,13 +4854,13 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/LINK_USDT",
-      "price": 9.307,
+      "price": 9.3,
       "tick": 0.001,
-      "change_24h_pct": 1.36,
-      "volume_24h": 31911623.0,
+      "change_24h_pct": 1.28,
+      "volume_24h": 31388819.0,
       "bias_4h": 1,
       "bias_1h": 1,
-      "bias_15m": 1,
+      "bias_15m": 0,
       "status": "WAIT",
       "status_ua": "НЕМАЄ СИГНАЛУ",
       "score": 0,
@@ -4763,20 +4873,13 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.41,
-      "range_pos": 0.746,
+      "rvol": 1.27,
+      "range_pos": 0.729,
       "btc_aligned": true,
       "reason_ua": "Немає підтвердженого сетапу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 9.183,
-          "h": 9.189,
-          "l": 9.133,
-          "c": 9.146
-        },
         {
           "t": 1795662000,
           "o": 9.146,
@@ -5329,16 +5432,16 @@
           "h": 9.34,
           "l": 9.317,
           "c": 9.336
+        },
+        {
+          "t": 1795733100,
+          "o": 9.336,
+          "h": 9.345,
+          "l": 9.292,
+          "c": 9.304
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 9.197,
-          "h": 9.205,
-          "l": 9.189,
-          "c": 9.201
-        },
         {
           "t": 1795710000,
           "o": 9.201,
@@ -5891,15 +5994,22 @@
           "h": 9.345,
           "l": 9.311,
           "c": 9.315
+        },
+        {
+          "t": 1795733700,
+          "o": 9.315,
+          "h": 9.315,
+          "l": 9.292,
+          "c": 9.304
         }
       ],
       "execution_tf": "1m",
-      "bid": 9.307,
-      "ask": 9.308,
+      "bid": 9.3,
+      "ask": 9.301,
       "quote_valid": true,
-      "quote_ts": 1795733748042,
+      "quote_ts": 1795734087921,
       "analysis_fresh": true,
-      "regime": "TREND_UP"
+      "regime": "RANGE_TRANSITION"
     },
     {
       "symbol": "LTC_USDT",
@@ -5909,10 +6019,10 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/LTC_USDT",
-      "price": 43.97,
+      "price": 43.98,
       "tick": 0.01,
-      "change_24h_pct": 1.22,
-      "volume_24h": 14370066.0,
+      "change_24h_pct": 1.24,
+      "volume_24h": 14199492.0,
       "bias_4h": 1,
       "bias_1h": 1,
       "bias_15m": 1,
@@ -5928,20 +6038,13 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.09,
-      "range_pos": 0.858,
+      "rvol": 0.53,
+      "range_pos": 0.863,
       "btc_aligned": true,
       "reason_ua": "Немає підтвердженого сетапу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 43.66,
-          "h": 43.67,
-          "l": 43.34,
-          "c": 43.42
-        },
         {
           "t": 1795662000,
           "o": 43.42,
@@ -6494,16 +6597,16 @@
           "h": 44.15,
           "l": 44.01,
           "c": 44.06
+        },
+        {
+          "t": 1795733100,
+          "o": 44.06,
+          "h": 44.17,
+          "l": 43.94,
+          "c": 44.05
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 43.45,
-          "h": 43.51,
-          "l": 43.45,
-          "c": 43.48
-        },
         {
           "t": 1795710000,
           "o": 43.48,
@@ -7056,15 +7159,22 @@
           "h": 44.17,
           "l": 44.03,
           "c": 44.03
+        },
+        {
+          "t": 1795733700,
+          "o": 44.03,
+          "h": 44.05,
+          "l": 43.94,
+          "c": 44.05
         }
       ],
       "execution_tf": "1m",
-      "bid": 43.98,
-      "ask": 43.99,
+      "bid": 43.97,
+      "ask": 43.98,
       "quote_valid": true,
-      "quote_ts": 1795733748059,
+      "quote_ts": 1795734087940,
       "analysis_fresh": true,
-      "regime": "RANGE_TRANSITION"
+      "regime": "TREND_UP"
     },
     {
       "symbol": "APT_USDT",
@@ -7074,13 +7184,13 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/APT_USDT",
-      "price": 0.3848,
+      "price": 0.3842,
       "tick": 0.0001,
-      "change_24h_pct": 0.18,
-      "volume_24h": 48224354.0,
+      "change_24h_pct": 0.02,
+      "volume_24h": 44839242.0,
       "bias_4h": 1,
-      "bias_1h": 1,
-      "bias_15m": 0,
+      "bias_1h": 0,
+      "bias_15m": -1,
       "status": "WAIT",
       "status_ua": "НЕМАЄ СИГНАЛУ",
       "score": 0,
@@ -7093,20 +7203,13 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.08,
-      "range_pos": 0.729,
+      "rvol": 7.54,
+      "range_pos": 0.702,
       "btc_aligned": true,
       "reason_ua": "Немає підтвердженого сетапу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 0.3808,
-          "h": 0.3808,
-          "l": 0.3776,
-          "c": 0.3782
-        },
         {
           "t": 1795662000,
           "o": 0.3782,
@@ -7659,16 +7762,16 @@
           "h": 0.386,
           "l": 0.3849,
           "c": 0.3856
+        },
+        {
+          "t": 1795733100,
+          "o": 0.3856,
+          "h": 0.3862,
+          "l": 0.3836,
+          "c": 0.3845
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 0.3863,
-          "h": 0.3868,
-          "l": 0.386,
-          "c": 0.3863
-        },
         {
           "t": 1795710000,
           "o": 0.3863,
@@ -8221,15 +8324,22 @@
           "h": 0.3862,
           "l": 0.385,
           "c": 0.385
+        },
+        {
+          "t": 1795733700,
+          "o": 0.385,
+          "h": 0.385,
+          "l": 0.3836,
+          "c": 0.3845
         }
       ],
       "execution_tf": "1m",
-      "bid": 0.3846,
-      "ask": 0.3848,
+      "bid": 0.3842,
+      "ask": 0.3843,
       "quote_valid": true,
-      "quote_ts": 1795733748117,
+      "quote_ts": 1795734087990,
       "analysis_fresh": true,
-      "regime": "TREND_UP"
+      "regime": "RANGE_TRANSITION"
     },
     {
       "symbol": "ORDI_USDT",
@@ -8239,12 +8349,12 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/ORDI_USDT",
-      "price": 2.625,
+      "price": 2.626,
       "tick": 0.001,
-      "change_24h_pct": -0.83,
-      "volume_24h": 1616449.0,
+      "change_24h_pct": -0.79,
+      "volume_24h": 1629609.0,
       "bias_4h": 1,
-      "bias_1h": 1,
+      "bias_1h": 0,
       "bias_15m": -1,
       "status": "WAIT",
       "status_ua": "НЕМАЄ СИГНАЛУ",
@@ -8258,20 +8368,13 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.18,
-      "range_pos": 0.595,
+      "rvol": 5.57,
+      "range_pos": 0.604,
       "btc_aligned": true,
       "reason_ua": "Немає підтвердженого сетапу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
-        {
-          "t": 1795661100,
-          "o": 2.63,
-          "h": 2.632,
-          "l": 2.617,
-          "c": 2.622
-        },
         {
           "t": 1795662000,
           "o": 2.622,
@@ -8824,16 +8927,16 @@
           "h": 2.636,
           "l": 2.627,
           "c": 2.629
+        },
+        {
+          "t": 1795733100,
+          "o": 2.629,
+          "h": 2.632,
+          "l": 2.623,
+          "c": 2.628
         }
       ],
       "candles_5m": [
-        {
-          "t": 1795709700,
-          "o": 2.654,
-          "h": 2.658,
-          "l": 2.653,
-          "c": 2.656
-        },
         {
           "t": 1795710000,
           "o": 2.656,
@@ -9386,13 +9489,20 @@
           "h": 2.631,
           "l": 2.627,
           "c": 2.627
+        },
+        {
+          "t": 1795733700,
+          "o": 2.627,
+          "h": 2.628,
+          "l": 2.623,
+          "c": 2.628
         }
       ],
       "execution_tf": "1m",
-      "bid": 2.624,
-      "ask": 2.625,
+      "bid": 2.627,
+      "ask": 2.628,
       "quote_valid": true,
-      "quote_ts": 1795733748218,
+      "quote_ts": 1795734088088,
       "analysis_fresh": true,
       "regime": "RANGE_TRANSITION"
     }
@@ -9405,7 +9515,7 @@
     "active": {
       "phase": "OPEN",
       "placed_ts": 1795717169034,
-      "processed_until_ts": 1795733700000,
+      "processed_until_ts": 1795734060000,
       "expires_ts": 1795717649034,
       "stop_effective_ts": 1795717169034,
       "quality": "DATA_GAP",
@@ -9450,24 +9560,15 @@
       },
       "opened_ts": 1795717169034,
       "opened_kyiv": "26.11 20:19",
-      "current_price": 91.72,
-      "pnl_r": -0.5503,
-      "pnl_usd": -0.6,
+      "current_price": 91.8,
+      "pnl_r": -0.1506,
+      "pnl_usd": -0.16,
       "peak_r": 1.1500000000000035,
       "be_armed": false,
       "partial_entry_bar": true,
       "geometry_policy": "STRUCTURAL_V15_1",
       "trail_start_ts": 1795718531617,
       "trail_m5": [
-        {
-          "bucket": 1795728900000,
-          "last": 1795729200000,
-          "count": 5,
-          "o": 91.84,
-          "h": 91.86,
-          "l": 91.76,
-          "c": 91.82
-        },
         {
           "bucket": 1795729200000,
           "last": 1795729500000,
@@ -9602,9 +9703,27 @@
           "h": 91.79,
           "l": 91.73,
           "c": 91.76
+        },
+        {
+          "bucket": 1795733700000,
+          "last": 1795734000000,
+          "count": 5,
+          "o": 91.76,
+          "h": 91.81,
+          "l": 91.73,
+          "c": 91.81
         }
       ],
-      "data_gap": true
+      "data_gap": true,
+      "trail_partial": {
+        "bucket": 1795734000000,
+        "last": 1795734060000,
+        "count": 1,
+        "o": 91.81,
+        "h": 91.81,
+        "l": 91.76,
+        "c": 91.78
+      }
     },
     "daily": {
       "day": "2026-11-27",
@@ -9671,5 +9790,5 @@
       "closed_kyiv": "27.11 00:55"
     }
   },
-  "last_attempt_ts": 1795733751117
+  "last_attempt_ts": 1795734089393
 }
