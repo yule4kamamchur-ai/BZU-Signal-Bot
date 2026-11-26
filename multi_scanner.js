@@ -88,6 +88,7 @@
   }
 
   function statusClass(status) {
+    if (status === 'IN_TRADE') return 'ms-pill-intrade';
     if (status === 'READY') return 'ms-pill-ready';
     if (status === 'WATCH') return 'ms-pill-watch';
     return 'ms-pill-wait';
@@ -278,9 +279,11 @@
     const price = posNum(livePrices[item.symbol]) ?? item.price;
     const sz = calcSizing(item.entry, item.stop, item.tp);
     const sideCls = item.side === 1 ? 'ms-side-long' : item.side === -1 ? 'ms-side-short' : 'ms-side-flat';
-    const orderLbl = item.status === 'READY'
-      ? (item.order_type === 'LIMIT' ? 'ЛІМІТКА (0% Maker)' : 'РИНКОВИЙ ВХІД (M5)')
-      : 'ЩЕ НЕ ВХОДИМО (ОЧІКУВАННЯ)';
+    const orderLbl = item.status === 'IN_TRADE'
+      ? 'АКТИВНА ПОЗИЦІЯ'
+      : item.status === 'READY'
+        ? (item.order_type === 'LIMIT' ? 'ЛІМІТКА (0% Maker)' : 'РИНКОВИЙ ВХІД (M5)')
+        : 'ЩЕ НЕ ВХОДИМО (ОЧІКУВАННЯ)';
     const badgeText = isTopPick ? '★ №1 НАЙКРАЩИЙ ВИБІР' : 'ВИБРАНИЙ АКТИВ';
 
     card.innerHTML = `
@@ -466,95 +469,69 @@
     return `${n >= 0 ? '+' : ''}${n.toFixed(dec)}`;
   }
 
+  function _renderSlotCard(cardId, badgeId, titleId, subId, slotObj, emptyTitle, emptySub) {
+    const card = $(cardId), badge = $(badgeId), title = $(titleId), sub = $(subId);
+    if (!card || !badge || !title || !sub) return;
+    card.classList.remove('ms-slot-pos', 'ms-slot-neg', 'ms-slot-free');
+    const act = slotObj && slotObj.active;
+    if (act && posNum(act.entry)) {
+      const side = Number(act.side || 1);
+      const sideTxt = side === 1 ? 'LONG' : 'SHORT';
+      const tick = act.tick || 0.01;
+      const entry = Number(act.entry);
+      const stop = posNum(act.stop);
+      const tp = posNum(act.tp);
+      const risk = posNum(act.risk) || (stop ? Math.abs(entry - stop) : 0);
+      const curP = posNum(livePrices[act.symbol]) || posNum(act.current_price) || entry;
+      const pnlR = risk > 0 ? side * (curP - entry) / risk : Number(act.pnl_r || 0);
+      const riskUsd = Number((act.sizing && act.sizing.risk_usd) || 3);
+      const pnlUsd = pnlR * riskUsd;
+      card.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
+      badge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
+      title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} $`;
+      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)} · TP ${fmtPrice(tp, tick)}${act.be_armed ? ' · Б/У' : ''}`;
+    } else {
+      card.classList.add('ms-slot-free');
+      badge.textContent = 'ВІЛЬНО';
+      title.textContent = emptyTitle;
+      sub.textContent = emptySub;
+    }
+  }
+
   function renderDualSlotsAndDaily() {
-    // --- SLOT 1: OIL (from live_state.json) ---
-    const oilCard = $('ms-slot-oil');
-    const oilBadge = $('ms-slot-oil-badge');
-    const oilTitle = $('ms-slot-oil-title');
-    const oilSub = $('ms-slot-oil-sub');
-    const oilOrders = (liveOilState && (liveOilState.orders || liveOilState.active_orders)) || [];
-    const oilActive = oilOrders.find((o) => o && (o.status === 'ACTIVE' || o.status === 'OPEN' || o.filled_ts)) || oilOrders[0] || null;
-    const oilDaily = (liveOilState && liveOilState.daily) || {};
-    const oilDayTrades = Number(oilDaily.entries || oilDaily.trades || 0);
-    const oilDayR = Number(oilDaily.net_r || 0);
-
-    if (oilCard && oilTitle && oilSub && oilBadge) {
-      oilCard.classList.remove('ms-slot-pos', 'ms-slot-neg', 'ms-slot-free');
-      if (oilActive && posNum(oilActive.entry)) {
-        const side = oilActive.side === 1 || oilActive.side === 'LONG' ? 1 : -1;
-        const sideTxt = side === 1 ? 'LONG' : 'SHORT';
-        const entry = Number(oilActive.entry);
-        const stop = posNum(oilActive.stop);
-        const tp = posNum(oilActive.tp || oilActive.tp1);
-        const risk = posNum(oilActive.risk) || (stop ? Math.abs(entry - stop) : 0);
-        const curP = posNum(livePrices.UKOIL_USDT) || posNum(liveOilState && liveOilState.price) || entry;
-        const pnlR = risk > 0 ? side * (curP - entry) / risk : 0;
-        oilCard.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
-        oilBadge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R`;
-        oilTitle.textContent = `В УГОДІ ${sideTxt} @ ${entry.toFixed(2)} $`;
-        oilSub.textContent = `Ціна ${curP.toFixed(2)} · SL ${stop ? stop.toFixed(2) : '—'} · TP ${tp ? tp.toFixed(2) : '—'} · клік → графік`;
-      } else {
-        oilCard.classList.add('ms-slot-free');
-        oilBadge.textContent = 'ВІЛЬНО';
-        oilTitle.textContent = 'Немає відкритої угоди по нафті';
-        oilSub.textContent = 'Слот 1 вільний · очікуємо підтверджений сигнал Brent';
-      }
-    }
-
-    // --- SLOT 2: CRYPTO / METAL (from multi_scanner_state.json -> cm_slot) ---
-    const cmCard = $('ms-slot-cm');
-    const cmBadge = $('ms-slot-cm-badge');
-    const cmTitle = $('ms-slot-cm-title');
-    const cmSub = $('ms-slot-cm-sub');
+    const oilSlot = (latestData && latestData.oil_slot) || {};
     const cmSlot = (latestData && latestData.cm_slot) || {};
-    const cmActive = cmSlot.active || null;
-    const cmDaily = cmSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
 
-    if (cmCard && cmTitle && cmSub && cmBadge) {
-      cmCard.classList.remove('ms-slot-pos', 'ms-slot-neg', 'ms-slot-free');
-      if (cmActive && posNum(cmActive.entry)) {
-        const side = Number(cmActive.side || 1);
-        const sideTxt = side === 1 ? 'LONG' : 'SHORT';
-        const tick = cmActive.tick || 0.001;
-        const entry = Number(cmActive.entry);
-        const stop = posNum(cmActive.stop);
-        const tp = posNum(cmActive.tp);
-        const risk = posNum(cmActive.risk) || (stop ? Math.abs(entry - stop) : 0);
-        const curP = posNum(livePrices[cmActive.symbol]) || posNum(cmActive.current_price) || entry;
-        const pnlR = risk > 0 ? side * (curP - entry) / risk : Number(cmActive.pnl_r || 0);
-        const riskUsd = Number((cmActive.sizing && cmActive.sizing.risk_usd) || 3);
-        const pnlUsd = pnlR * riskUsd;
-        cmCard.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
-        cmBadge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
-        cmTitle.textContent = `${cmActive.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} $`;
-        cmSub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)} · TP ${fmtPrice(tp, tick)}${cmActive.be_armed ? ' · Б/У' : ''}`;
-      } else {
-        cmCard.classList.add('ms-slot-free');
-        cmBadge.textContent = 'ВІЛЬНО';
-        cmTitle.textContent = 'Немає відкритої угоди по крипті / металу';
-        cmSub.textContent = 'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI · XPT';
-      }
-    }
+    _renderSlotCard(
+      'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub',
+      oilSlot,
+      'Немає відкритої угоди по нафті',
+      'Слот 1 вільний · очікуємо A+ сигнал UKOIL на MEXC'
+    );
+    _renderSlotCard(
+      'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub',
+      cmSlot,
+      'Немає відкритої угоди по крипті / металу',
+      'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI · XPT'
+    );
 
-    // --- DAILY RESULTS SUMMARY BAR ---
-    const dOil = $('ms-day-oil');
-    const dCm = $('ms-day-cm');
-    const dTot = $('ms-day-total');
+    const oilD = oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
+    const cmD = cmSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
+    const oilT = Number(oilD.trades || 0), oilR = Number(oilD.net_r || 0), oilU = Number(oilD.net_usd || 0);
+    const cmT = Number(cmD.trades || 0), cmR = Number(cmD.net_r || 0), cmU = Number(cmD.net_usd || 0);
+
+    const dOil = $('ms-day-oil'), dCm = $('ms-day-cm'), dTot = $('ms-day-total');
     if (dOil) {
-      dOil.textContent = `${oilDayTrades} уг. · ${fmtSigned(oilDayR)} R`;
-      dOil.className = oilDayR > 0 ? 'ms-up' : oilDayR < 0 ? 'ms-dn' : '';
+      dOil.textContent = `${oilT} уг. · ${fmtSigned(oilR)} R (${fmtSigned(oilU)}$)`;
+      dOil.className = oilR > 0 ? 'ms-up' : oilR < 0 ? 'ms-dn' : '';
     }
-    const cmTrades = Number(cmDaily.trades || 0);
-    const cmR = Number(cmDaily.net_r || 0);
-    const cmUsd = Number(cmDaily.net_usd || 0);
     if (dCm) {
-      dCm.textContent = `${cmTrades} уг. · ${fmtSigned(cmR)} R (${fmtSigned(cmUsd)}$)`;
+      dCm.textContent = `${cmT} уг. · ${fmtSigned(cmR)} R (${fmtSigned(cmU)}$)`;
       dCm.className = cmR > 0 ? 'ms-up' : cmR < 0 ? 'ms-dn' : '';
     }
     if (dTot) {
-      const totTrades = oilDayTrades + cmTrades;
-      const totR = oilDayR + cmR;
-      dTot.textContent = `${totTrades} уг. · ${fmtSigned(totR)} R`;
+      const totT = oilT + cmT, totR = oilR + cmR, totU = oilU + cmU;
+      dTot.textContent = `${totT} уг. · ${fmtSigned(totR)} R (${fmtSigned(totU)}$)`;
       dTot.className = totR > 0 ? 'ms-up' : totR < 0 ? 'ms-dn' : '';
     }
   }

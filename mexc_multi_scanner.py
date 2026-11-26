@@ -665,12 +665,14 @@ def _slot_group(cluster: str) -> str:
 def rank_and_lock_clusters(
     results: list[dict[str, Any]],
     *,
+    oil_slot_busy: bool = False,
     cm_slot_busy: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Rank all instruments and enforce max 1 READY in OIL and max 1 in CRYPTO+METALS."""
+    """Rank all 7 instruments and enforce max 1 READY in OIL and max 1 in CRYPTO+METALS."""
     ranked = sorted(
         results,
         key=lambda r: (
+            r["status"] == "IN_TRADE",
             r["status"] == "READY",
             r["status"] == "WATCH",
             r["score"],
@@ -678,170 +680,56 @@ def rank_and_lock_clusters(
         ),
         reverse=True,
     )
-    active_groups: set[str] = {"CRYPTO_METAL"} if cm_slot_busy else set()
+    active_groups: set[str] = set()
+    if oil_slot_busy:
+        active_groups.add("OIL")
+    if cm_slot_busy:
+        active_groups.add("CRYPTO_METAL")
+
     for item in ranked:
         if item["status"] == "READY":
             grp = _slot_group(item["cluster"])
             if grp in active_groups:
                 item["status"] = "WATCH"
-                item["status_ua"] = "СЛОТ ЗАЙНЯТО" if (grp == "CRYPTO_METAL" and cm_slot_busy) else "ЗАЙНЯТО В КЛАСТЕРІ"
+                item["status_ua"] = "СЛОТ ЗАЙНЯТО" if ((grp == "OIL" and oil_slot_busy) or (grp == "CRYPTO_METAL" and cm_slot_busy)) else "ЗАЙНЯТО В КЛАСТЕРІ"
                 item["cluster_locked"] = True
                 item["reason_ua"] = (
-                    "Слот Крипта/Метал уже в угоді — чекаємо закриття"
-                    if (grp == "CRYPTO_METAL" and cm_slot_busy)
-                    else "Сильніший сигнал уже активний у групі Крипта/Метал"
+                    "Слот уже в угоді — чекаємо закриття"
+                    if ((grp == "OIL" and oil_slot_busy) or (grp == "CRYPTO_METAL" and cm_slot_busy))
+                    else "Сильніший сигнал уже активний у цій групі"
                 )
             else:
                 active_groups.add(grp)
-    top_pick = ranked[0] if ranked and ranked[0]["status"] in ("READY", "WATCH") else None
+    top_pick = ranked[0] if ranked and ranked[0]["status"] in ("IN_TRADE", "READY", "WATCH") else None
     return ranked, top_pick
-
-
-def format_telegram_signal(item: dict[str, Any], btc_macro: dict[str, Any], ranked: list[dict[str, Any]]) -> str:
-    tick = item.get("tick") or 0.01
-    side_emoji = "🟢" if item["side"] == 1 else "🔴"
-    order_ua = "ЛІМІТ (0% Maker)" if item["order_type"] == "LIMIT" else "РИНКОВИЙ (M5)"
-    s = item.get("sizing") or {}
-    entry_s = format_price(item["entry"], tick)
-    stop_s = format_price(item["stop"], tick)
-    tp_s = format_price(item["tp"], tick)
-
-    lines = [
-        f"{side_emoji} <b>BZU MULTI · {item['label']}</b>",
-        f"Кластер: <b>{item['cluster_ua']}</b> · {item['fee_tag']} · Рейтинг: <b>{item['score']}/100</b>",
-        "",
-        f"Напрямок: <b>{item['side_ua']}</b> · Тип: <b>{order_ua}</b>",
-        f"Сетап: {item['setup_ua']}",
-        f"Вхід: <code>{entry_s}</code>",
-        f"Стоп: <code>{stop_s}</code> (−{s.get('sl_pct', 0):.2f}%)",
-        f"Тейк: <code>{tp_s}</code> (+{s.get('tp_pct', 0):.2f}% · <b>R:R {item['rr']:.2f}</b>)",
-        "",
-        f"💼 <b>Розрахунок позиції (депозит ${s.get('deposit_usdt', 100):.0f}, ризик ${s.get('risk_usd', 3):.2f}):</b>",
-        f"• Обсяг позиції: <b>${s.get('position_usdt', 0):.0f}</b> (плече ~{s.get('effective_leverage', 0):.2f}×)",
-        f"• Очікуваний профіт на TP: <b>+${s.get('target_profit_usd', 0):.2f}</b>",
-        "",
-        f"🧭 Макро BTC: <b>{btc_macro['label_ua']}</b> (${btc_macro.get('price', 0):,.0f})",
-    ]
-    top3 = [
-        f"{r['short']} ({r['status_ua']}, {r['score']})"
-        for r in ranked[:3]
-    ]
-    lines.append("📊 Топ-3 радара: " + " · ".join(top3))
-    lines.append(f"🔗 <a href=\"{item['mexc_url']}\">Відкрити {item['symbol']} на MEXC</a>")
-    return "\n".join(lines)
-
-
-def send_telegram_message(text: str, token: str, chat_id: str) -> bool:
-    if not token or not chat_id:
-        return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": "true",
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
-            return resp.status == 200
-    except urllib.error.URLError:
-        return False
-
-
-def run_scan(
-    *,
-    fetcher=_http_json,
-    now_ms: int | None = None,
-    deposit: float = 100.0,
-    risk_pct: float = 3.0,
-    max_leverage: float = 5.0,
-) -> dict[str, Any]:
-    now = now_ms or int(time.time() * 1000)
-    tickers = fetch_all_tickers(fetcher=fetcher)
-    ticks = fetch_contract_ticks(fetcher=fetcher)
-
-    # 1. Fetch BTC Macro context first
-    btc_ticker = tickers.get("BTC_USDT") or {}
-    btc_15m = fetch_klines("BTC_USDT", "Min15", 100, now, fetcher=fetcher)
-    btc_1h = fetch_klines("BTC_USDT", "Min60", 40, now, fetcher=fetcher)
-    btc_price = float(btc_ticker.get("lastPrice") or (btc_15m[-1].close if btc_15m else 0.0))
-    btc_macro = analyze_btc_macro(btc_15m, btc_1h, btc_price)
-
-    # 2. Scan all 7 basket instruments
-    results: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for spec in INSTRUMENTS:
-        sym = spec["symbol"]
-        try:
-            b5 = fetch_klines(sym, "Min5", 60, now, fetcher=fetcher)
-            b15 = fetch_klines(sym, "Min15", 110, now, fetcher=fetcher)
-            b1h = fetch_klines(sym, "Min60", 45, now, fetcher=fetcher)
-            b4h = fetch_klines(sym, "Hour4", 35, now, fetcher=fetcher)
-            t_row = tickers.get(sym) or {}
-            tick = ticks.get(sym, 0.01 if "OIL" in sym or "XPT" in sym else 0.001)
-            res = analyze_instrument(
-                spec,
-                ticker=t_row,
-                bars_5m=b5,
-                bars_15m=b15,
-                bars_1h=b1h,
-                bars_4h=b4h,
-                tick=tick,
-                btc_macro=btc_macro,
-                now_ms=now,
-                deposit=deposit,
-                risk_pct=risk_pct,
-                max_leverage=max_leverage,
-            )
-            results.append(res)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{sym}: {exc}")
-
-    ranked, top_pick = rank_and_lock_clusters(results)
-    kyiv_str = datetime.fromtimestamp(now / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m.%Y %H:%M")
-
-    return {
-        "version": SCANNER_VERSION,
-        "exchange": "MEXC",
-        "updated_ts": now,
-        "updated_kyiv": kyiv_str,
-        "defaults": {
-            "deposit_usdt": deposit,
-            "risk_pct": risk_pct,
-            "max_leverage": max_leverage,
-        },
-        "btc_macro": btc_macro,
-        "top_pick": top_pick,
-        "instruments": ranked,
-        "ready_count": sum(1 for r in ranked if r["status"] == "READY"),
-        "watch_count": sum(1 for r in ranked if r["status"] == "WATCH"),
-        "errors": errors,
-    }
-
-
 
 
 def _kyiv_day(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%Y-%m-%d")
 
 
-def update_cm_paper_slot(
+def _advance_single_slot(
+    slot_key: str,
+    group_name: str,
     state: dict[str, Any],
     memory: dict[str, Any],
     *,
     now_ms: int,
 ) -> dict[str, Any]:
-    """Maintain 1 independent paper position slot for CRYPTO + METALS and track daily stats."""
+    """Advance 1 paper position slot (either OIL or CRYPTO_METAL) and record daily stats."""
     today = _kyiv_day(now_ms)
-    daily = memory.get("cm_daily") or {}
+    daily_key = f"{slot_key}_daily"
+    active_key = f"{slot_key}_active"
+    hist_key = f"{slot_key}_history"
+
+    daily = memory.get(daily_key) or {}
     if daily.get("day") != today:
         daily = {"day": today, "trades": 0, "wins": 0, "losses": 0, "net_r": 0.0, "net_usd": 0.0}
 
-    active = memory.get("cm_active")
+    active = memory.get(active_key)
     by_sym = {r["symbol"]: r for r in state.get("instruments", [])}
 
-    # 1. Advance existing active CRYPTO/METAL paper position on latest 5m candles & price
+    # 1. Advance existing open trade
     if isinstance(active, dict) and active.get("symbol") in by_sym:
         item = by_sym[active["symbol"]]
         side = int(active["side"])
@@ -858,7 +746,6 @@ def update_cm_paper_slot(
 
         for c in candles:
             hi, lo = float(c["h"]), float(c["l"])
-            # Conservative check: stop before TP
             if (side == 1 and lo <= cur_stop) or (side == -1 and hi >= cur_stop):
                 exit_price = cur_stop
                 closed_reason = "BE_STOP" if active.get("be_armed") else "STOP"
@@ -881,7 +768,6 @@ def update_cm_paper_slot(
                     cur_stop = new_s
                     active["be_armed"] = True
 
-        # Check timeout (18h max hold)
         if closed_reason is None and now_ms - int(active.get("opened_ts", now_ms)) >= 18 * 3_600_000:
             closed_reason = "TIME_EXIT"
             exit_price = float(item.get("price") or entry)
@@ -897,7 +783,7 @@ def update_cm_paper_slot(
                 daily["losses"] += 1
             daily["net_r"] = round(daily["net_r"] + net_r, 2)
             daily["net_usd"] = round(daily["net_usd"] + net_usd, 2)
-            history = memory.get("cm_history") or []
+            history = memory.get(hist_key) or []
             history.append({
                 "symbol": active["symbol"],
                 "label": active["label"],
@@ -912,7 +798,7 @@ def update_cm_paper_slot(
                 "closed_ts": now_ms,
                 "closed_kyiv": datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m %H:%M"),
             })
-            memory["cm_history"] = history[-30:]
+            memory[hist_key] = history[-30:]
             active = None
         else:
             cur_p = float(item.get("price") or entry)
@@ -926,15 +812,15 @@ def update_cm_paper_slot(
                 pnl_usd=round(pnl_r * risk_usd, 2),
             )
 
-    # 2. If Slot 2 (CRYPTO/METAL) is free, open best READY candidate in CRYPTO or METALS
+    # 2. If slot is free, open best READY candidate in this group
     if active is None:
-        cm_ready = [
+        candidates = [
             r for r in state.get("instruments", [])
-            if _slot_group(r["cluster"]) == "CRYPTO_METAL" and r["status"] == "READY"
+            if _slot_group(r["cluster"]) == group_name and r["status"] == "READY"
             and r.get("entry") and r.get("stop") and r.get("tp")
         ]
-        if cm_ready:
-            pick = cm_ready[0]
+        if candidates:
+            pick = candidates[0]
             risk = abs(float(pick["entry"]) - float(pick["stop"]))
             if risk > 0:
                 active = {
@@ -968,21 +854,58 @@ def update_cm_paper_slot(
                     "peak_r": 0.0,
                     "be_armed": False,
                 }
-                # Re-lock other CRYPTO/METAL instruments now that Slot 2 is occupied
-                ranked, top_pick = rank_and_lock_clusters(state["instruments"], cm_slot_busy=True)
-                state["instruments"] = ranked
-                state["top_pick"] = top_pick
-                state["ready_count"] = sum(1 for r in ranked if r["status"] == "READY")
 
-    memory["cm_active"] = active
-    memory["cm_daily"] = daily
-    state["cm_slot"] = {
+    # 3. Project active trade directly onto its instrument row so card & chart ALWAYS show its real levels!
+    if isinstance(active, dict) and active.get("symbol") in by_sym:
+        item = by_sym[active["symbol"]]
+        item.update(
+            status="IN_TRADE",
+            status_ua="В УГОДІ",
+            side=active["side"],
+            side_ua=active["side_ua"],
+            setup=active["setup"],
+            setup_ua=active["setup_ua"],
+            order_type=active["order_type"],
+            entry=active["entry"],
+            stop=active["stop"],
+            tp=active["tp"],
+            be_trigger=active.get("be_trigger"),
+            rr=active["rr"],
+            score=active["score"],
+            sizing=active["sizing"],
+            reason_ua=f"Відкрито {active['opened_kyiv']} · PnL {active['pnl_r']:+.2f} R ({active['pnl_usd']:+.2f}$)" + (" · Б/У активовано" if active.get("be_armed") else ""),
+        )
+
+    memory[active_key] = active
+    memory[daily_key] = daily
+    return {
         "occupied": active is not None,
         "active": active,
         "daily": daily,
-        "last_closed": (memory.get("cm_history") or [])[-1] if memory.get("cm_history") else None,
+        "last_closed": (memory.get(hist_key) or [])[-1] if memory.get(hist_key) else None,
     }
+
+
+def update_dual_paper_slots(state: dict[str, Any], memory: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+    """Maintain BOTH unified MEXC slots: Slot 1 (OIL) and Slot 2 (CRYPTO+METALS)."""
+    oil_slot = _advance_single_slot("oil", "OIL", state, memory, now_ms=now_ms)
+    cm_slot = _advance_single_slot("cm", "CRYPTO_METAL", state, memory, now_ms=now_ms)
+    ranked, top_pick = rank_and_lock_clusters(
+        state["instruments"],
+        oil_slot_busy=oil_slot["occupied"],
+        cm_slot_busy=cm_slot["occupied"],
+    )
+    state["instruments"] = ranked
+    state["top_pick"] = top_pick
+    state["ready_count"] = sum(1 for r in ranked if r["status"] == "READY")
+    state["oil_slot"] = oil_slot
+    state["cm_slot"] = cm_slot
     return state
+
+
+def update_cm_paper_slot(state: dict[str, Any], memory: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+    """Backward-compatible wrapper for Slot 2 tests."""
+    return update_dual_paper_slots(state, memory, now_ms=now_ms)
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
@@ -1042,12 +965,16 @@ def main() -> int:
             mem = {}
 
     state = run_scan(deposit=deposit, risk_pct=risk_pct, max_leverage=max_lev)
-    if mem.get("cm_active"):
-        ranked, top_pick = rank_and_lock_clusters(state["instruments"], cm_slot_busy=True)
+    if mem.get("oil_active") or mem.get("cm_active"):
+        ranked, top_pick = rank_and_lock_clusters(
+            state["instruments"],
+            oil_slot_busy=bool(mem.get("oil_active")),
+            cm_slot_busy=bool(mem.get("cm_active")),
+        )
         state["instruments"] = ranked
         state["top_pick"] = top_pick
         state["ready_count"] = sum(1 for r in ranked if r["status"] == "READY")
-    update_cm_paper_slot(state, mem, now_ms=state["updated_ts"])
+    update_dual_paper_slots(state, mem, now_ms=state["updated_ts"])
     _atomic_write(args.memory, mem)
     _atomic_write(args.output, state)
 

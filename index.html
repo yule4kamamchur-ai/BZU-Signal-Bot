@@ -4,67 +4,54 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
-<title>BZU MULTI · Pro Cockpit</title>
-<link rel="stylesheet" href="./live_terminal.css?v=14.6.0">
+<title>BZU MULTI · MEXC Pro Cockpit</title>
+<link rel="stylesheet" href="./live_terminal.css?v=14.7.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
-<script defer src="./live_terminal.js?v=14.4.7-release-check-1"></script>
-<script defer src="./multi_scanner.js?v=14.6.0"></script>
+<script defer src="./multi_scanner.js?v=14.7.0"></script>
 </head>
-<body>
-<header class="masthead">
-  <div class="brand"><span class="brand-mark">B</span><div><h1>BZU <span>MULTI</span></h1><p class="muted">Multi-Scanner MEXC (UKOIL · XPT · SOL · LINK · LTC · APT · ORDI) · Live Brain</p><p id="server-release" class="muted" role="status">Сервер: версію не підтверджено</p></div></div>
-  <div class="header-tools"><span class="feed-dot" aria-hidden="true"></span><small id="instrument">Очікуємо інструмент</small><button type="button" id="audio" aria-pressed="false">Звук: вимк.</button></div>
+<body class="bzu-multi-clean">
+<header class="masthead ms-masthead">
+  <div class="brand">
+    <span class="brand-mark">B</span>
+    <div>
+      <h1>BZU <span>MULTI</span></h1>
+      <p id="ms-updated" class="muted">MEXC Live · UKOIL · XPT · SOL · LINK · LTC · APT · ORDI</p>
+    </div>
+  </div>
+  <div class="ms-header-right">
+    <span id="ms-btc-pill" class="ms-btc-pill">BTC Макро: очікуємо…</span>
+    <div class="ms-calc-inputs" aria-label="Калькулятор ризику">
+      <label>Депозит $<input id="ms-deposit" type="number" value="100" min="10" step="10"></label>
+      <label>Ризик %<input id="ms-risk" type="number" value="3" min="0.5" max="20" step="0.5"></label>
+      <label>Плече ×<input id="ms-lev" type="number" value="5" min="1" max="50" step="1"></label>
+    </div>
+  </div>
 </header>
+
 <section id="ms-dual-slots" class="ms-dual-slots" aria-label="Активні слоти угод">
   <div id="ms-slot-oil" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
     <div class="ms-slot-top">
-      <span class="ms-slot-label">СЛОТ 1 · НАФТА (BRENT)</span>
+      <span class="ms-slot-label">СЛОТ 1 · НАФТА (UKOIL · MEXC)</span>
       <span id="ms-slot-oil-badge" class="ms-slot-badge">ВІЛЬНО</span>
     </div>
-    <div id="ms-slot-oil-title" class="ms-slot-title">Очікуємо сигнал по нафті…</div>
-    <div id="ms-slot-oil-sub" class="ms-slot-sub">Макс. 1 активна угода · клік відкриває графік UKOIL</div>
+    <div id="ms-slot-oil-title" class="ms-slot-title">Немає відкритої угоди по нафті</div>
+    <div id="ms-slot-oil-sub" class="ms-slot-sub">Макс. 1 активна угода · клік відкриває UKOIL</div>
   </div>
   <div id="ms-slot-cm" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
     <div class="ms-slot-top">
       <span class="ms-slot-label">СЛОТ 2 · КРИПТА / МЕТАЛ (MEXC)</span>
       <span id="ms-slot-cm-badge" class="ms-slot-badge">ВІЛЬНО</span>
     </div>
-    <div id="ms-slot-cm-title" class="ms-slot-title">Очікуємо A+ сигнал (SOL · LINK · LTC · APT · ORDI · XPT)</div>
-    <div id="ms-slot-cm-sub" class="ms-slot-sub">Макс. 1 активна угода · клік відкриває графік токена</div>
+    <div id="ms-slot-cm-title" class="ms-slot-title">Немає відкритої угоди по крипті / металу</div>
+    <div id="ms-slot-cm-sub" class="ms-slot-sub">Макс. 1 активна угода · SOL · LINK · LTC · APT · ORDI · XPT</div>
   </div>
 </section>
 
-<section id="state-banner" class="state-banner banner-waiting" hidden data-mode="WAITING" aria-labelledby="state-title" aria-describedby="state-detail">
-  <div class="state-heading"><div><p id="state-eyebrow" class="eyebrow" hidden></p><h2 id="state-title">Завантажуємо стан бота…</h2></div><span id="state-pill" class="badge"></span></div>
-  <p id="state-detail"></p>
-  <ol class="stepper sr-only" aria-label="Етапи угоди"><li id="step-scan">1 · Пошук</li><li id="step-pending">2 · Лімітка</li><li id="step-active">3 · Супровід</li></ol>
-</section>
-<div class="summary" hidden>
-  <div class="tile"><small>ЦІНА OKX</small><strong id="price">—</strong><small id="quote-status">Очікуємо котирування</small></div>
-  <div class="tile"><small>РЕЖИМ РИНКУ</small><strong id="regime">—</strong><small id="regime-matrix" class="regime-matrix"></small></div>
-  <div class="tile"><small>ЦИКЛ БОТА · КИЇВ</small><strong id="stamp">—</strong><small id="state-status">Очікуємо зліпок</small></div>
-  <div class="tile"><small>СЬОГОДНІ</small><strong id="daily">—</strong><small id="capacity">0/2 місць</small></div>
-</div>
-
-<section id="multi-scanner-section" class="panel ms-panel" aria-labelledby="ms-title">
-  <div class="ms-header">
-    <div>
-      <h2 id="ms-title">BZU MULTI · Найкращий вибір із 7 активів MEXC</h2>
-      <p id="ms-updated" class="muted">Очікуємо дані мультисканера…</p>
-    </div>
-    <div class="ms-header-right">
-      <span id="ms-btc-pill" class="ms-btc-pill">BTC Макро: очікуємо…</span>
-      <div class="ms-calc-inputs" aria-label="Калькулятор ризику">
-        <label>Депозит $<input id="ms-deposit" type="number" value="100" min="10" step="10"></label>
-        <label>Ризик %<input id="ms-risk" type="number" value="3" min="0.5" max="20" step="0.5"></label>
-        <label>Макс. плече ×<input id="ms-lev" type="number" value="5" min="1" max="50" step="1"></label>
-      </div>
-    </div>
-  </div>
+<section id="multi-scanner-section" class="panel ms-panel" aria-label="BZU MULTI Сканер">
   <div class="ms-grid">
     <div class="ms-left-col">
       <article id="ms-highlight" class="ms-highlight">
-        <div class="ms-empty">Завантажуємо топ-сигнал MEXC…</div>
+        <div class="ms-empty">Завантажуємо дані BZU MULTI…</div>
       </article>
       <div class="ms-chart-box">
         <div class="ms-chart-bar">
@@ -86,6 +73,7 @@
         </div>
       </div>
     </div>
+
     <div class="ms-right-col">
       <div class="ms-table-wrap">
         <table class="ms-table">
@@ -101,56 +89,42 @@
             </tr>
           </thead>
           <tbody id="ms-rows">
-            <tr><td colspan="7" class="ms-empty">Очікуємо дані…</td></tr>
+            <tr><td colspan="7" class="ms-empty">Очікуємо дані MEXC…</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="ms-status-help">Статуси: <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал · <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо · <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.</p>
+      <p class="ms-status-help">
+        <strong class="ms-up">В УГОДІ</strong> — відкрита позиція ·
+        <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний A+ сигнал ·
+        <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо ·
+        <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.
+      </p>
     </div>
   </div>
 </section>
-<main class="cockpit">
-  <div class="market-column">
-    <section class="panel chart-panel" aria-labelledby="chart-title">
-      <div class="bar"><div><h2 id="chart-title">Графік Brent</h2></div><div class="chart-tools"><button id="5m" aria-pressed="false">M5</button><button id="15m" aria-pressed="true">M15</button></div></div>
-      <div class="chart-shell"><div id="chart"></div></div>
-      <p id="chart-message" class="muted"></p><div id="chart-levels" class="chart-levels" aria-label="Усі підписані рівні графіка"></div>
-      <div id="chart-legend" class="chart-legend" hidden><span class="entry-legend">● Вхід</span><span class="short">● SL</span><span class="target">● Цілі</span><span class="amber">● Б/У</span><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Lightweight Charts</a></div>
-    </section>
-    <section class="panel activity-panel" aria-labelledby="activity-title"><div class="bar"><h2 id="activity-title">Останні дії</h2><small>За журналом · Київ</small></div><p id="last-event" class="last-event">Очікуємо історію рішень.</p><ol id="events" class="events"></ol></section>
-  </div>
-  <aside class="console" aria-label="Тактичний радар">
-    <section class="panel tactical-panel" aria-labelledby="radar-title">
-      <div class="bar"><h2 id="radar-title">Тактичний радар сетапів</h2><small id="radar-source">За журналом</small></div>
-      <p id="tactical-focus" class="tactical-focus" data-side="range">Очікуємо дані</p>
-      <ul id="radar-watchlist" class="radar-watchlist" aria-label="Рівні спостереження" hidden></ul>
-      <p id="alert" role="status" aria-live="polite"></p>
-      <article id="radar-primary" class="tactical-primary" aria-label="Активна позиція або ордер" hidden></article>
-      <div id="tactical-reserves" hidden>
-        <h3 id="queue-title">Черга сетапів на радарі · Спостереження</h3>
-        <div class="scroll"><table><thead><tr><th>Сетап</th><th>Вхід</th><th>SL</th><th>TP1 / R:R</th><th>Умова входу</th></tr></thead><tbody id="zones"></tbody></table></div>
-      </div>
-    </section>
-  </aside>
-</main>
 
 <section id="ms-daily-summary" class="panel ms-daily-bar" aria-label="Підсумок угод за сьогодні">
   <div class="ms-daily-cell">
-    <small>СЬОГОДНІ · НАФТА (BRENT)</small>
-    <strong id="ms-day-oil">0 уг. · +0.00 R</strong>
-    <small id="ms-day-oil-sub" class="muted">За сервером · Київ</small>
+    <small>СЬОГОДНІ · НАФТА (UKOIL)</small>
+    <strong id="ms-day-oil">0 уг. · +0.00 R ($0.00)</strong>
+    <small id="ms-day-oil-sub" class="muted">Слот 1 · MEXC</small>
   </div>
   <div class="ms-daily-cell">
     <small>СЬОГОДНІ · КРИПТА / МЕТАЛ</small>
     <strong id="ms-day-cm">0 уг. · +0.00 R ($0.00)</strong>
-    <small id="ms-day-cm-sub" class="muted">Паперовий трекер MEXC · Київ</small>
+    <small id="ms-day-cm-sub" class="muted">Слот 2 · MEXC</small>
   </div>
   <div class="ms-daily-cell ms-daily-total">
     <small>РАЗОМ ЗА СЬОГОДНІ</small>
-    <strong id="ms-day-total">0 уг. · +0.00 R</strong>
-    <small id="ms-day-total-sub" class="muted">2 незалежні слоти (1 Нафта + 1 Крипта/Метал)</small>
+    <strong id="ms-day-total">0 уг. · +0.00 R ($0.00)</strong>
+    <small class="muted">2 слоти · 1 Нафта + 1 Крипта/Метал</small>
   </div>
 </section>
-<footer><span>Live Brain · 3 с &nbsp; Серверний журнал окремо</span><span id="copy-status" role="status" aria-live="polite"></span><span>PAPER · SIGNAL LEDGER</span></footer>
+
+<footer>
+  <span>BZU MULTI · MEXC Live WebSocket</span>
+  <span>2 слоти · Авто-ризик</span>
+  <span>PAPER · SIGNAL TERMINAL</span>
+</footer>
 </body>
 </html>
