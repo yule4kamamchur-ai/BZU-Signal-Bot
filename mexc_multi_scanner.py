@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = os.getenv("MEXC_FUTURES_BASE", "https://contract.mexc.com")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "multi-v14.5-mexc"
+SCANNER_VERSION = "BZU MULTI v14.5"
 
 INSTRUMENTS: tuple[dict[str, Any], ...] = (
     {
@@ -409,7 +409,7 @@ def analyze_instrument(
         "bias_1h": 0,
         "bias_15m": 0,
         "status": "WAIT",
-        "status_ua": "Очікування",
+        "status_ua": "НЕМАЄ СИГНАЛУ",
         "score": 0,
         "side": 0,
         "side_ua": "НЕЙТРАЛЬНО",
@@ -606,16 +606,16 @@ def analyze_instrument(
             and rr >= (1.35 if spec["cluster"] == "ENERGY" else spec["min_rr"] - 0.05)
         )
         if is_actionable:
-            status, status_ua = "READY", "ВХІД A+"
+            status, status_ua = "READY", ("ЛІМІТКА ГОТОВА" if order_type == "LIMIT" else "ВХІД ЗАРАЗ (A+)")
             reason_ua = f"{setup_ua} · RVOL {rvol5:.2f}x"
         elif btc_opposes:
             status, status_ua = "WATCH", "ФІЛЬТР BTC"
             reason_ua = f"BTC ({btc_macro['label_ua']}) проти напрямку {'LONG' if side == 1 else 'SHORT'}"
         elif score >= 58:
-            status, status_ua = "WATCH", "РАДАР"
+            status, status_ua = "WATCH", "ОЧІКУЄМО ПІДТВЕРДЖЕННЯ"
             reason_ua = f"{setup_ua} · очікуємо підтвердження M5"
         else:
-            status, status_ua = "WAIT", "ОЧІКУВАННЯ"
+            status, status_ua = "WAIT", "НЕМАЄ СИГНАЛУ"
             reason_ua = "Слабке співпадіння факторів"
 
         candidates.append({
@@ -637,12 +637,25 @@ def analyze_instrument(
             "sizing": sizing,
         })
 
+    def _pack_bars(rows):
+        return [{"t": b.ts // 1000, "o": round_price(b.open, tick), "h": round_price(b.high, tick),
+                 "l": round_price(b.low, tick), "c": round_price(b.close, tick)} for b in rows[-80:]]
+
     if not candidates:
         base_out["reason_ua"] = "Ціна в середині діапазону, немає свіпу чи ретесту"
+        base_out["candles_15m"] = _pack_bars(bars_15m)
+        base_out["candles_5m"] = _pack_bars(bars_5m)
         return base_out
 
     candidates.sort(key=lambda c: (c["status"] == "READY", c["score"], c["rr"] or 0.0), reverse=True)
-    return candidates[0]
+    best = candidates[0]
+    best["candles_15m"] = _pack_bars(bars_15m)
+    best["candles_5m"] = _pack_bars(bars_5m)
+    # Also compute BE+ trigger price (+0.90R) for chart visualization
+    if best.get("entry") and best.get("stop") and best.get("side"):
+        rk = abs(best["entry"] - best["stop"])
+        best["be_trigger"] = round_price(best["entry"] + best["side"] * 0.90 * rk, tick)
+    return best
 
 
 def rank_and_lock_clusters(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -662,7 +675,7 @@ def rank_and_lock_clusters(results: list[dict[str, Any]]) -> tuple[list[dict[str
         if item["status"] == "READY":
             if item["cluster"] in active_clusters:
                 item["status"] = "WATCH"
-                item["status_ua"] = "ЛОК КЛАСТЕРА"
+                item["status_ua"] = "ЗАЙНЯТО В КЛАСТЕРІ"
                 item["cluster_locked"] = True
                 item["reason_ua"] = f"Сильніший сигнал уже активний у кластері {item['cluster_ua']}"
             else:
@@ -681,7 +694,7 @@ def format_telegram_signal(item: dict[str, Any], btc_macro: dict[str, Any], rank
     tp_s = format_price(item["tp"], tick)
 
     lines = [
-        f"{side_emoji} <b>BZU MULTI-SCANNER · {item['label']}</b>",
+        f"{side_emoji} <b>BZU MULTI · {item['label']}</b>",
         f"Кластер: <b>{item['cluster_ua']}</b> · {item['fee_tag']} · Рейтинг: <b>{item['score']}/100</b>",
         "",
         f"Напрямок: <b>{item['side_ua']}</b> · Тип: <b>{order_ua}</b>",

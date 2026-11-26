@@ -1,4 +1,4 @@
-/* BZU Multi-Asset Scanner Cockpit Module (MEXC: UKOIL, XPT, SOL, LINK, LTC, APT, ORDI) */
+/* BZU MULTI · Multi-Asset MEXC Scanner + Live Token Chart & Trade Visualization */
 (function () {
   'use strict';
 
@@ -6,7 +6,11 @@
   const MEXC_TICKER_URL = 'https://contract.mexc.com/api/v1/contract/ticker';
   let latestData = null;
   let selectedSymbol = null;
+  let selectedTf = '15m';
   let livePrices = {};
+  let chart = null;
+  let candleSeries = null;
+  let priceLines = [];
 
   const $ = (id) => document.getElementById(id);
 
@@ -71,17 +75,156 @@
     return 'ms-cl-crypto';
   }
 
+  function ensureChart() {
+    const container = $('ms-chart');
+    if (!container || typeof window.LightweightCharts === 'undefined') return false;
+    if (chart) return true;
+    chart = window.LightweightCharts.createChart(container, {
+      layout: {
+        background: { color: '#0d111a' },
+        textColor: '#94a3b8',
+        fontFamily: 'Inter, system-ui, sans-serif',
+      },
+      grid: {
+        vertLines: { color: 'rgba(148, 163, 184, 0.08)' },
+        horzLines: { color: 'rgba(148, 163, 184, 0.08)' },
+      },
+      crosshair: { mode: 0 },
+      rightPriceScale: { borderColor: 'rgba(148, 163, 184, 0.18)' },
+      timeScale: { borderColor: 'rgba(148, 163, 184, 0.18)', timeVisible: true, secondsVisible: false },
+      height: 310,
+    });
+    if (typeof chart.addSeries === 'function' && window.LightweightCharts.CandlestickSeries) {
+      candleSeries = chart.addSeries(window.LightweightCharts.CandlestickSeries, {
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderUpColor: '#22c55e',
+        borderDownColor: '#ef4444',
+        wickUpColor: '#22c55e',
+        wickDownColor: '#ef4444',
+      });
+    } else if (typeof chart.addCandlestickSeries === 'function') {
+      candleSeries = chart.addCandlestickSeries({
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderUpColor: '#22c55e',
+        borderDownColor: '#ef4444',
+        wickUpColor: '#22c55e',
+        wickDownColor: '#ef4444',
+      });
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => {
+        if (chart && container.clientWidth > 0) {
+          chart.applyOptions({ width: container.clientWidth });
+        }
+      }).observe(container);
+    }
+    return Boolean(candleSeries);
+  }
+
+  function clearPriceLines() {
+    if (!candleSeries) return;
+    for (const pl of priceLines) {
+      try { candleSeries.removePriceLine(pl); } catch (_) {}
+    }
+    priceLines = [];
+  }
+
+  function renderChartFor(item) {
+    const titleEl = $('ms-chart-title');
+    if (titleEl && item) {
+      titleEl.textContent = `Графік ${item.label} (${selectedTf.toUpperCase()})`;
+    }
+    if (!item || !ensureChart()) return;
+
+    const raw = selectedTf === '5m' ? (item.candles_5m || item.candles_15m || []) : (item.candles_15m || item.candles_5m || []);
+    const tick = item.tick || 0.01;
+    const dec = tick > 0 && tick < 1 ? Math.min(6, Math.max(0, Math.round(-Math.log10(tick)))) : 2;
+    candleSeries.applyOptions({
+      priceFormat: { type: 'price', precision: dec, minMove: tick },
+    });
+
+    if (raw.length) {
+      const bars = raw.map((b) => ({
+        time: Number(b.t),
+        open: Number(b.o),
+        high: Number(b.h),
+        low: Number(b.l),
+        close: Number(b.c),
+      }));
+      // Update last candle close with live MEXC price if available
+      const liveP = livePrices[item.symbol];
+      if (Number.isFinite(liveP) && bars.length) {
+        const last = bars[bars.length - 1];
+        last.close = liveP;
+        if (liveP > last.high) last.high = liveP;
+        if (liveP < last.low) last.low = liveP;
+      }
+      candleSeries.setData(bars);
+      chart.timeScale().fitContent();
+    }
+
+    clearPriceLines();
+    const sz = calcSizing(item.entry, item.stop, item.tp);
+
+    if (Number.isFinite(Number(item.entry))) {
+      priceLines.push(candleSeries.createPriceLine({
+        price: Number(item.entry),
+        color: '#f97316',
+        lineWidth: 2,
+        lineStyle: 0,
+        axisLabelVisible: true,
+        title: item.status === 'READY'
+          ? (item.order_type === 'LIMIT' ? `ЛІМІТ ВХІД ${item.side_ua}` : `ВХІД ${item.side_ua}`)
+          : `ЗОНА ВХОДУ ${item.side_ua}`,
+      }));
+    }
+    if (Number.isFinite(Number(item.stop))) {
+      priceLines.push(candleSeries.createPriceLine({
+        price: Number(item.stop),
+        color: '#ef4444',
+        lineWidth: 2,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: sz ? `SL (−${sz.slPct}% · −$${sz.riskUsd})` : 'SL',
+      }));
+    }
+    if (Number.isFinite(Number(item.tp))) {
+      priceLines.push(candleSeries.createPriceLine({
+        price: Number(item.tp),
+        color: '#22c55e',
+        lineWidth: 2,
+        lineStyle: 0,
+        axisLabelVisible: true,
+        title: sz ? `TP (+${sz.tpPct}% · +$${sz.profitUsd})` : 'TP',
+      }));
+    }
+    if (Number.isFinite(Number(item.be_trigger))) {
+      priceLines.push(candleSeries.createPriceLine({
+        price: Number(item.be_trigger),
+        color: '#eab308',
+        lineWidth: 1,
+        lineStyle: 3,
+        axisLabelVisible: true,
+        title: 'Б/У (+0.90R)',
+      }));
+    }
+  }
+
   function renderHighlight(item, isTopPick) {
     const card = $('ms-highlight');
     if (!card) return;
     if (!item) {
-      card.innerHTML = '<div class="ms-empty">Очікуємо перший цикл мультисканера MEXC…</div>';
+      card.innerHTML = '<div class="ms-empty">Очікуємо перший цикл BZU MULTI…</div>';
       return;
     }
     const price = livePrices[item.symbol] ?? item.price;
     const sz = calcSizing(item.entry, item.stop, item.tp);
     const sideCls = item.side === 1 ? 'ms-side-long' : item.side === -1 ? 'ms-side-short' : 'ms-side-flat';
-    const orderLbl = item.order_type === 'LIMIT' ? 'ЛІМІТ (0% Maker)' : item.order_type === 'MARKET' ? 'РИНКОВИЙ (M5)' : 'СПОСТЕРЕЖЕННЯ';
+    const orderLbl = item.status === 'READY'
+      ? (item.order_type === 'LIMIT' ? 'ЛІМІТКА (0% Maker)' : 'РИНКОВИЙ ВХІД (M5)')
+      : 'ЩЕ НЕ ВХОДИМО (ОЧІКУВАННЯ)';
     const badgeText = isTopPick ? '★ №1 НАЙКРАЩИЙ ВИБІР' : 'ВИБРАНИЙ АКТИВ';
 
     card.innerHTML = `
@@ -122,7 +265,7 @@
     if (!tbody) return;
     const list = data.instruments || [];
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="ms-empty">Дані мультисканера ще не згенеровані. Запусти цикл GitHub Actions.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="ms-empty">Дані BZU MULTI ще не згенеровані. Запусти цикл GitHub Actions.</td></tr>';
       return;
     }
 
@@ -167,6 +310,7 @@
 
     const chosen = list.find((x) => x.symbol === selectedSymbol) || list[0];
     renderHighlight(chosen, chosen && chosen.symbol === topSym);
+    renderChartFor(chosen);
   }
 
   function renderMeta(data) {
@@ -179,7 +323,7 @@
     }
     const updEl = $('ms-updated');
     if (updEl) {
-      updEl.textContent = data.updated_kyiv ? `Оновлено: ${data.updated_kyiv} Київ · READY: ${data.ready_count || 0}` : 'Очікуємо зліпок MEXC';
+      updEl.textContent = data.updated_kyiv ? `Оновлено: ${data.updated_kyiv} Київ · Активних входів: ${data.ready_count || 0}` : 'Очікуємо зліпок MEXC';
     }
   }
 
@@ -195,9 +339,7 @@
       if (!res.ok) return;
       latestData = await res.json();
       renderAll();
-    } catch (_) {
-      /* keep previous snapshot if network hiccups */
-    }
+    } catch (_) {}
   }
 
   async function refreshLiveMexcPrices() {
@@ -213,9 +355,7 @@
         }
       }
       renderAll();
-    } catch (_) {
-      /* CORS or offline fallback uses server snapshot prices */
-    }
+    } catch (_) {}
   }
 
   function init() {
@@ -224,6 +364,22 @@
       const el = $(id);
       if (el) el.addEventListener('input', renderAll);
     });
+    const b5 = $('ms-tf-5m');
+    const b15 = $('ms-tf-15m');
+    if (b5 && b15) {
+      b5.addEventListener('click', () => {
+        selectedTf = '5m';
+        b5.setAttribute('aria-pressed', 'true');
+        b15.setAttribute('aria-pressed', 'false');
+        renderAll();
+      });
+      b15.addEventListener('click', () => {
+        selectedTf = '15m';
+        b15.setAttribute('aria-pressed', 'true');
+        b5.setAttribute('aria-pressed', 'false');
+        renderAll();
+      });
+    }
     loadScannerState();
     refreshLiveMexcPrices();
     setInterval(loadScannerState, 15000);

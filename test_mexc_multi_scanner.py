@@ -118,7 +118,7 @@ class MultiScannerTests(unittest.TestCase):
 
         # Telegram formatting includes exact numbers & MEXC link
         msg = ms.format_telegram_signal(state["top_pick"], state["btc_macro"], state["instruments"])
-        self.assertIn("BZU MULTI-SCANNER", msg)
+        self.assertIn("BZU MULTI", msg)
         self.assertIn("Розрахунок позиції", msg)
         self.assertIn("https://www.mexc.com/futures/", msg)
 
