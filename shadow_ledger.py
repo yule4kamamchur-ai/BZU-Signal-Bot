@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
+import expectancy_model as ev
 
 MINUTE = 60_000
 DAY = 1_440 * MINUTE
@@ -45,6 +47,16 @@ def watch(state, plans, snapshot, cfg, engine):
         row.update(id=identity, calibration_id=identity, decision_ts=snapshot.now,
                    next_bar=minute if market else max(minute, plan.get('effective_ts', minute)),
                    filled_ts=snapshot.now if market else None, mfe_r=0., mae_r=0.)
+        if plan.get('expectancy_label_schema') == ev.LABEL_SCHEMA:
+            row.update(expectancy_label_schema=ev.LABEL_SCHEMA,expectancy_context=plan['expectancy_context'],
+                       expectancy_signature=plan.get('expectancy_signature'),
+                       shared_plan=copy.deepcopy(plan))
+            row['shared_plan']['decision_ts']=snapshot.now
+            if market:
+                quote=engine.Candle(snapshot.now,plan['entry'],plan['entry'],plan['entry'],plan['entry'])
+                position=engine.bzu_policy.first_fill(row['shared_plan'],quote,engine,cfg,MINUTE)
+                position.update(last_bar=snapshot.now//MINUTE*MINUTE,last_execution_step_ms=MINUTE)
+                row.update(shared_plan=position,next_bar=position['last_bar']+MINUTE)
         if market:
             row['deadline'] = minute + cfg.max_hold_minutes * MINUTE
         else:
@@ -58,8 +70,8 @@ def watch(state, plans, snapshot, cfg, engine):
 def _outcome(row, ts, reason, exit_price=None, *, ambiguous=False):
     evidence = {k: row[k] for k in ('calibration_id','event_key','setup','side','htf_4h','range_pos',
                'meta_context','meta_heuristic','meta_prob','risk_multiplier','decision_ts','filled_ts',
-               'mfe_r','mae_r','entry','risk','order_type') if k in row}
-    evidence.update(id=row['id'], label_schema=LABEL_SCHEMA, source='SHADOW_PAPER', closed_ts=ts,
+               'mfe_r','mae_r','entry','risk','order_type','expectancy_label_schema','expectancy_context','expectancy_signature') if k in row}
+    evidence.update(id=row['id'], label_schema=row.get('expectancy_label_schema',LABEL_SCHEMA), source='SHADOW_PAPER', closed_ts=ts,
                     close_reason=reason, ambiguous_ohlc=ambiguous, net_r=None, session=row['meta_context'][-1],
                     side_4h=row['meta_context'][1])
     if exit_price is not None:
@@ -98,6 +110,68 @@ def _active_bar(row, bar, *, fill_bar=False):
     return None
 
 
+
+def _shared_outcome(row, trade):
+    result=_outcome(row,trade['closed_ts'],trade['close_reason'])
+    result.update({k:trade[k] for k in ('net_r','exit','mfe_r','mae_r','filled_ts','ambiguous_ohlc') if k in trade})
+    return result
+
+
+def _shared_advance(row, snapshot, cfg, engine, bars, boundary):
+    """Isolated one-slot paper lifecycle, with no portfolio occupancy constraint."""
+    active=row['shared_plan'] if row['filled_ts'] is not None else None
+    pending=None if active else row['shared_plan']
+    book={'active':active,'pending':pending,'orders':[],'trades':[],'events':[],
+          'used_events':{},'pending_orders':[],'reconciliation':None,
+          'pending_policy':engine.PENDING_POLICY}
+    while row['next_bar']<boundary:
+        ts=row['next_bar']; bar=bars.get(ts)
+        if book['pending'] and ts>=row['expires_ts']:
+            return _outcome(row,row['expires_ts'],'LIMIT_TTL')
+        if bar is None:
+            if ts<boundary-MINUTE:
+                return _outcome(row,boundary,'DATA_GAP')
+            break
+        end=ts+MINUTE
+        # Higher timeframes are filtered by the same as-of rules as the portfolio.
+        # The only available quote inside a reconstructed minute is its close.
+        at_close=replace(snapshot,now=end,price=bar.close,bid=bar.close,ask=bar.close,ticker_ts=end)
+        row['next_bar']=end
+        if book['active']:
+            engine.manage_bar(book,bar,cfg,step=MINUTE,snapshot=at_close)
+        else:
+            plan=book['pending']
+            at_open=replace(at_close,now=ts,price=bar.open,bid=bar.open,ask=bar.open,ticker_ts=ts)
+            gate=engine.pending_entry_gate(plan,[],at_open,cfg)
+            if gate:
+                return _outcome(row,ts,'ENTRY_INVALIDATED')
+            held=engine.hold_pending_approach(plan,at_open,cfg)
+            eligible=not held and bool(engine.entry_priority(book,ts,bar.open,cfg,MINUTE,snapshot=at_open))
+            if not held and not eligible and engine.paper_limit_touch(plan,bar,cfg):
+                return _outcome(row,end,'UNARMED_TOUCH',ambiguous=True)
+            engine._advance_slot_lifecycle(book,engine.Snapshot(end,bar.close,{'1m':[bar]}),cfg,
+                                           allow_fill=eligible,entry_gates_checked=True,execution=('1m',MINUTE))
+            if book['active']:
+                row['filled_ts']=book['active']['filled_ts']
+            if book['pending'] and eligible:
+                book['pending']['entry_armed_bar']=ts
+            if not book['active'] and not book['trades'] and not book['pending']:
+                order=book['orders'][-1]
+                reason=order.get('reason')
+                reason=('MISSED_TARGET' if reason==engine.MISSED_TARGET_REASON else
+                        'LIMIT_TTL' if order.get('status')=='EXPIRED' else 'UNRESOLVED_ORDER')
+                return _outcome(row,order['resolved_ts'],reason,ambiguous=bool(book['reconciliation']))
+        if book['trades']:
+            return _shared_outcome(row,book['trades'][0])
+    if book['active'] and row['next_bar']>=boundary:
+        # Same observed-quote protection as the portfolio; never use future ticks.
+        engine.check_quote_exits(book,snapshot,cfg)
+        if book['trades']:
+            return _shared_outcome(row,book['trades'][0])
+    row['shared_plan']=book['active'] or book['pending']
+    return None
+
+
 def advance(state, snapshot, cfg, engine):
     ledger = state.get('shadow_trades')
     if not ledger or not ledger['pending']:
@@ -108,6 +182,12 @@ def advance(state, snapshot, cfg, engine):
             if b.confirmed and earliest <= b.ts < boundary}
     entry_gate = {}
     for identity, row in list(ledger['pending'].items()):
+        if row.get('expectancy_label_schema')==ev.LABEL_SCHEMA:
+            resolution=_shared_advance(row,snapshot,cfg,engine,bars,boundary)
+            if resolution is not None:
+                ledger['outcomes'].append(resolution)
+                del ledger['pending'][identity]
+            continue
         resolution = None
         while row['next_bar'] < boundary:
             ts = row['next_bar']

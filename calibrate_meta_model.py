@@ -16,6 +16,7 @@ import research_validate as research
 import shadow_ledger as shadow
 import signal_quality as quality
 import trade_meta_model as model
+import expectancy_model as ev
 
 INSTRUMENT = 'BZ-USDT-SWAP'
 WARMUP = 11 * shadow.DAY
@@ -99,17 +100,23 @@ def run(data, cfg, *, progress=100):
     end = data['end_ts']
     # Prefer a portfolio outcome when the same episode was actually selected
     # by the replay. Unfilled, incomplete or open episodes carry no label.
-    labels = model.sizing_labels([*ledger['outcomes'],*state['trades']],before=end+1)
-    validation = model.walk_forward_sizing(labels,data['start_ts'],end)
-    artifact = {'schema':model.PRIOR_SCHEMA,'label_schema':shadow.LABEL_SCHEMA,
+    labels = ev.labels([*ledger['outcomes'],*state['trades']],before=end+1)
+    validation = ev.walk_forward(labels,data['start_ts'],end)
+    artifact = {'schema':ev.SCHEMA,'label_schema':ev.LABEL_SCHEMA,
                 'engine_version':engine.VERSION,'instrument':cfg.instrument,
                 'signature':quality.calibration_signature(cfg),'data_start_ts':data['start_ts'],
-                'data_end_ts':end,'source':data['source'],'prior_strength':model.PRIOR_STRENGTH,
+                'data_end_ts':end,'source':data['source'],'prior_strength':ev.SHRINK,
                 'daily_decay':model.DAILY_DECAY,'validation':validation,
-                'counts':model.sizing_counts(labels)}
+                'counts':ev.counts(labels)}
     report = {'observed_range':[engine.iso(data['start_ts']),engine.iso(end)],
               'source':data['source'],'scan_count':scans,'actions':dict(actions),
-              'training_labels':len(labels),'closed_portfolio':len(state['trades']),
+              'training_labels':len(labels),'independent_labels':len(list(ev.independent(labels))),
+              'closed_portfolio':len(state['trades']),
+              'portfolio_statistics':engine.statistics(state['trades']),
+              'risk_weighted_statistics':engine.statistics([{**r,'weighted':r['net_r']*r.get('risk_multiplier',1.)} for r in state['trades']],key='weighted'),
+              'placed_orders':sum(e['kind']=='PLACED' for e in state['events']),
+              'portfolio_open_at_end':len(engine.active_plans(state)),
+              'portfolio_pending_at_end':len(engine.pending_plans(state)),
               'portfolio_censored_by_data_gap':censored,
               'shadow_realized':sum(r.get('net_r') is not None for r in ledger['outcomes']),
               'shadow_open_or_pending':len(ledger['pending']),
@@ -123,15 +130,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive',type=Path,help='Use the repository’s captured candle and quote archive')
     parser.add_argument('--days',type=int,default=180,help='Requested history, up to 365 days')
-    parser.add_argument('--scan-minutes',type=int,choices=(5,15),default=15)
+    parser.add_argument('--scan-minutes',type=int,choices=(3,5,15),default=5)
     parser.add_argument('--end-ms',type=int,help='End timestamp in Unix milliseconds')
+    parser.add_argument('--adaptive-exits', choices=('SHADOW','ACTIVE'), default='SHADOW')
     parser.add_argument('--output',type=Path,default=Path('calibration/meta_priors.json'))
     parser.add_argument('--report',type=Path,default=Path('calibration/report.json'))
     parser.add_argument('--labels',type=Path,help='Optional completed replay labels for inspection')
     args = parser.parse_args()
     if not 1 <= args.days <= 365:
         parser.error('--days must be 1..365')
-    os.environ.update(BZU_ENTRY_MODE='HYBRID',BZU_EDGE_MODE='SHADOW',BZU_ENTRY_PLAYBOOK_MODE='STRICT')
+    os.environ.update(BZU_ENTRY_MODE='HYBRID',BZU_EDGE_MODE='SHADOW',BZU_ENTRY_PLAYBOOK_MODE='STRICT',
+                      BZU_ADAPTIVE_EXITS=args.adaptive_exits,BZU_OKX_EXECUTION='PAPER')
     end = args.end_ms or int(time.time()*1000)
     data = (archive_history(args.archive,args.days,args.scan_minutes,args.end_ms) if args.archive
             else download_history(args.days,end,args.scan_minutes))

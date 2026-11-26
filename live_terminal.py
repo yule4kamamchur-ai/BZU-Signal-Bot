@@ -95,6 +95,8 @@ def build(state, snapshot, result, cfg, engine):
             'post_entry_protected_swing':plan.get('post_entry_protected_swing'),
             'meta_prob':plan.get('meta_prob'), 'meta_prob_calibrated':plan.get('meta_prob_calibrated'),
             'risk_multiplier':plan.get('risk_multiplier',1.), 'range_pos':plan.get('range_pos'),
+            'expectancy':plan.get('expectancy'), 'expectancy_status':plan.get('expectancy_status'),
+            'adaptive_exit_profile':plan.get('adaptive_exit_profile'), 'adaptive_exit_enabled':plan.get('adaptive_exit_enabled'),
             'late_entry':bool(plan.get('late_entry')), 'mfe_lock_steps':position_monitor.mfe_lock_steps(plan,engine),
             'institutional_family': plan.get('institutional_family'), 'tp2': plan.get('tp2'), 'risk': plan['risk'],
             'score': plan.get('score'), 'grade': plan.get('rating'),

@@ -42,7 +42,8 @@ PLAN_DIAGNOSTICS = ('entry', 'stop', 'risk', 'tp', 'tp1', 'tp2', 'entry_zone',
     'zone_origin', 'approach', 'session_gate', 'planning_policy', 'entry_checks',
     'confluence', 'ict_evidence', 'rating', 'grade', 'entry_basis', 'entry_condition',
     'meta_prob', 'meta_prob_calibrated', 'risk_multiplier', 'range_pos', 'late_entry',
-    'entry_confirmation', 'rejection_required')
+    'entry_confirmation', 'rejection_required', 'expectancy_status', 'expectancy',
+    'adaptive_exit_profile', 'adaptive_exit_enabled', 'spread_r')
 
 
 def zone_direction_matches(zone, side):

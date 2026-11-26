@@ -29,8 +29,8 @@ from statistics import mean
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-VERSION = "full-ict-v14.4.4-intraday"
-REPORT_RELEASE = 'v14.4.4'
+VERSION = "full-ict-v14.4.5-intraday"
+REPORT_RELEASE = 'v14.4.5'
 PENDING_POLICY = 'ONE_DIRECTION_ONE_PENDING_MAX'
 LEGACY_PENDING_POLICY = 'ONE_DIRECTION_TWO_PENDING_MAX'
 MISSED_TARGET_REASON = 'CANCEL_TARGET_REACHED_WITHOUT_FILL'
@@ -2436,6 +2436,13 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         front_runs = [candidate for plan in pending_plans(state)
                       if (candidate := strategy_direct_entries.front_run_candidate(plan, s, cfg, sys.modules[__name__]))]
         analysis.setdefault('plans', []).extend(front_runs)
+    # Recompute the execution context for any front-run conversion at this scan.
+    import expectancy_model
+    for candidate in analysis.get('plans',[]):
+        if bzu_policy.full_position(candidate) and candidate.get('meta_context'):
+            if (not candidate.get('expectancy_context') or
+                    candidate['expectancy_context'][2]!=candidate.get('order_type')):
+                expectancy_model.apply(candidate,s,cfg,sys.modules[__name__])
     valid=sorted((p for p in analysis.get('plans',[])
                   if p.get('readiness_pct',100.)>=100.),
                  key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
@@ -2504,7 +2511,10 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             strict = counter_4h or candidate.get('rejection_required')
             if strict:
                 witness = candidate.get('entry_confirmation') or {}
-                if candidate.get('order_type') != 'MARKET' or not witness:
+                confirmed_retest = (candidate.get('order_type')=='LIMIT'
+                                    and candidate.get('entry_retest_reason')=='CONFIRMATION_BODY_RETEST'
+                                    and candidate.get('post_only') is True and not counter_4h)
+                if not witness or (candidate.get('order_type') != 'MARKET' and not confirmed_retest):
                     continue
                 rejection = execution_rules.level_rejection(s,side,zone,witness['limit_entry'],witness['initial_risk'],
                                                                  cfg,sys.modules[__name__],strict=True)

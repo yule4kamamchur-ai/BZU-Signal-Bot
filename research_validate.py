@@ -177,8 +177,8 @@ def snapshots(data: dict):
     if not 0<=delay<engine.TF['15m']:
         raise ValueError('Report delay must be 0..<15 minutes')
     interval=int(data.get('scan_interval_ms',engine.TF['15m']))
-    if interval not in (300_000,engine.TF['15m']):
-        raise ValueError('Research scan interval must be 5 or 15 minutes')
+    if interval not in (180_000,300_000,engine.TF['15m']):
+        raise ValueError('Research scan interval must be 3, 5 or 15 minutes')
     quotes={int(q['now']):q for q in data.get('quotes',[])}
     times=sorted(quotes) if quotes else sorted({((c.ts+engine.TF['3m']+interval-1)//interval)*interval+delay for c in raw['3m']})
     start=int(data['start_ts']);end=int(data['end_ts']);tick=engine.finite(data.get('tick',.001))

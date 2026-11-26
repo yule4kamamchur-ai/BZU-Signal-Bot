@@ -743,7 +743,7 @@ def ranking(plan, price, tick):
     from market_wave import BASE
     if plan.get('trend_rel')=='WITH_TREND' and plan.get('source_strategy') in (BASE,'RECLAIM_BREAKER','SR_FLIP_RECLAIM'):
         score += 4.
-    if (not plan.get('reversal_sweep_override') and decision.get('validated')
+    if (not plan.get('expectancy_context') and not plan.get('reversal_sweep_override') and decision.get('validated')
             and decision.get('expected_net_r') is not None):
         # Once a probability model has cleared chronological holdout, rank
         # competing entries by estimated *net* return, not arbitrary score.
@@ -751,7 +751,8 @@ def ranking(plan, price, tick):
         if isfinite(expected):
             return (100.+max(-50.,min(50.,10.*expected)),score,
                     -distance,str(plan.get('id','')))
-    return (score-min(12.,3.*distance),float(plan.get('net_rr',0)),
+    from expectancy_model import ranking_adjustment
+    return (score-min(12.,3.*distance)+ranking_adjustment(plan),float(plan.get('net_rr',0)),
             -distance,str(plan.get('id','')))
 
 
@@ -766,7 +767,7 @@ def choose(plans, price, tick, margin=8., locked_side=0):
     rival=next((p for p in ranked if p['side']!=winner['side']),None)
     # No compelling directional edge => abstain, not a coin flip.
     # Only the best INDEPENDENT opposing side counts as a rival.
-    proven=bool(rival and winner.get('meta_decision',{}).get('validated')
+    proven=bool(rival and not winner.get('expectancy_context') and not rival.get('expectancy_context') and winner.get('meta_decision',{}).get('validated')
                 and rival.get('meta_decision',{}).get('validated'))
     if proven:
         # Expected-net-R is the first ranking component scaled by ten.

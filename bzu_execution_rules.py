@@ -126,7 +126,13 @@ def retest_reason(snapshot, side, quote, trigger, regime, atr, tick, *, sizing=N
         reference = trigger.get('reference_close', trigger.get('limit_entry', quote))
         if side*(quote-reference) > max(tick, .20*atr):
             return 'GAP_RETEST'
-    if sizing:
+    # Do not route every confirmed market signal to a limit merely because
+    # a sizing dictionary exists. Seek a retest only for a witnessed, material
+    # price improvement. Counter-HTF confirmations remain executable MARKETs.
+    level=trigger.get('limit_entry'); risk=trigger.get('initial_risk')
+    if (sizing and sizing.get('rejection_required') and trigger.get('strict_rejection')
+            and regime.get('side_4h')!=-side and level is not None and risk is not None
+            and risk>0 and side*(quote-level)>=max(2*tick,.15*risk)):
         return 'CONFIRMATION_BODY_RETEST'
     return None
 

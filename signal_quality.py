@@ -261,10 +261,34 @@ def assess(plan, snapshot, context, cfg, engine, rows, settings: Settings=Settin
             'ranking_adjustment':stat['ranking_adjustment']}
 
 
-def calibration_signature(cfg):
+def legacy_calibration_signature(cfg):
     fields = ('instrument','tick','include_commission','maker_fee','taker_fee','slippage_bps',
               'max_hold_minutes','ttl_minutes')
     return digest({name:getattr(cfg,name) for name in fields})
+
+
+def calibration_signature(cfg):
+    # Include every strategy-affecting config, plus source fingerprints.
+    # Scan cadence matters for fills and labels.
+    modules = ("expectancy_model.py", "shadow_ledger.py", "signal_quality.py",
+               "bzu_policy.py", "full_limit_engine.py", "setup_scanner.py",
+               "directional_policy.py", "position_monitor.py", "bzu_execution_rules.py",
+               "portfolio_arbitration.py", "oil_risk.py", "strategy_direct_entries.py",
+               "scenario_planner.py", "market_wave.py", "entry_playbooks.py",
+               "entry_adverse_selection.py", "limit_structure.py", "strategy_organics.py",
+               "trade_dependencies.py", "ict_methodology.py", "trade_meta_model.py",
+               "bot_oneshot.py", "research_validate.py", "calibrate_meta_model.py")
+    return digest({"configuration":signature(cfg), "sources":_strategy_fingerprints(modules),
+                   "entry_mode":os.getenv("BZU_ENTRY_MODE", "HYBRID"),
+                   "edge_mode":os.getenv("BZU_EDGE_MODE", "SHADOW"),
+                   "playbook_mode":os.getenv("BZU_ENTRY_PLAYBOOK_MODE", "STRICT"),
+                   "adaptive_exits":os.getenv("BZU_ADAPTIVE_EXITS", "SHADOW")})
+
+
+@lru_cache(maxsize=1)
+def _strategy_fingerprints(modules):
+    root=Path(__file__).resolve().parent
+    return {name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in modules}
 
 
 @lru_cache(maxsize=4)
@@ -275,18 +299,36 @@ def _read_priors(path, modified, size):
 def prepare_sizing(state, snapshot, cfg, engine):
     """Freeze training and finalized observations once for this whole scan."""
     import trade_meta_model as model
-    from shadow_ledger import LABEL_SCHEMA
+    import expectancy_model as ev
 
     snapshot._execution_calibration = None
+    snapshot._expectancy_calibration = None
+    rows=[*state.get('shadow_trades',{}).get('outcomes',()),*state['trades']]
+    current_signature=calibration_signature(cfg)
+    rows=[r for r in rows if r.get('expectancy_signature')==current_signature]
+    snapshot._expectancy_monitor = ev.counts(ev.labels(rows,snapshot.now),snapshot.now)
     if state.get('calibration_replay'):
         return 'REPLAY_HEURISTIC'
     path = Path(os.environ.get('META_PRIORS_FILE', Path(__file__).with_name('meta_priors.json')))
     try:
         stat = path.stat()
         artifact = _read_priors(path,stat.st_mtime_ns,stat.st_size)
-        if (artifact.get('schema') != model.PRIOR_SCHEMA or artifact.get('label_schema') != LABEL_SCHEMA
-                or artifact.get('engine_version') != engine.VERSION or artifact.get('instrument') != cfg.instrument
-                or artifact.get('signature') != calibration_signature(cfg)):
+        if artifact.get("schema")==ev.SCHEMA:
+            if (artifact.get("label_schema")!=ev.LABEL_SCHEMA or artifact.get("engine_version")!=engine.VERSION
+                    or artifact.get("instrument")!=cfg.instrument or artifact.get("signature")!=calibration_signature(cfg)):
+                return "INCOMPATIBLE_EXPECTANCY_PRIORS"
+            if artifact["validation"]["validated"] is not True or not 0<artifact["data_end_ts"]<snapshot.now:
+                return "UNVALIDATED_EXPECTANCY_PRIORS"
+            if not ev.valid_counts(artifact["counts"]):
+                return "INVALID_EXPECTANCY_PRIORS"
+            recent=ev.labels(rows,snapshot.now,artifact["data_end_ts"])
+            snapshot._expectancy_calibration=(artifact["counts"],ev.counts(recent, snapshot.now))
+            return "EMPIRICAL_EXPECTANCY_V2"
+        # v1 data cannot train the new payoff/fill model. Its posterior is retained
+        # as an explicit transfer estimate, with no claim of v14.4.5 calibration.
+        if (artifact.get('schema') != model.PRIOR_SCHEMA or artifact.get('label_schema') != "bzu-triple-barrier-m1-v1"
+                or artifact.get('engine_version') != 'full-ict-v14.4.4-intraday' or artifact.get('instrument') != cfg.instrument
+                or artifact.get('signature') != legacy_calibration_signature(cfg)):
             return 'INCOMPATIBLE_PRIORS'
         if artifact['validation']['validated'] is not True or not 0 < artifact['data_end_ts'] < snapshot.now:
             return 'UNVALIDATED_PRIORS'
@@ -294,10 +336,11 @@ def prepare_sizing(state, snapshot, cfg, engine):
         if '[]' not in counts or not all(math.isfinite(w) and math.isfinite(n) and 0 <= w <= n
                                         for w,n in counts.values()):
             return 'INVALID_PRIORS'
-        recent = model.sizing_labels([*state.get('shadow_trades',{}).get('outcomes',()), *state['trades']],
+        recent = model.sizing_labels([r for r in [*state.get('shadow_trades',{}).get('outcomes',()), *state['trades']]
+                                     if not r.get('expectancy_label_schema')],
                                      before=snapshot.now, after=artifact['data_end_ts'])
         snapshot._execution_calibration = (counts,model.sizing_counts(recent,as_of=snapshot.now))
-        return 'EMPIRICAL_BAYES'
+        return 'LEGACY_BAYES_TRANSFER'
     except FileNotFoundError:
         return 'NO_PRIORS'
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
@@ -362,21 +405,22 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
         low_prob = probability < .50
         strong_calibrated = False
     poor_location_no_vol = (not premium_discount) and (not factors['confirmation_volume'])
-    risk_mult = min(
-        tier,
+    structural_cap = min(
         .30 if counter_short_sweep else 1.,
         .40 if (counter or h1_against_4h) else 1.,
         .50 if (late or exhausted_wave or pre_lon or poor_location_no_vol) else 1.,
         .60 if ny_session else 1.,
         .50 if (adverse_limit and not strong_calibrated) else 1.,
     )
+    risk_mult = min(tier,structural_cap)
     require_rejection = (
-        counter or (late and not aligned) or low_prob
+        counter or (late and not aligned)
         or ny_session or exhausted_wave or adverse_limit or h1_against_4h
     )
     return {'meta_prob':probability, 'meta_prob_calibrated':calibration is not None, 'meta_factors':factors,
             'meta_context':context,'meta_heuristic':score,'meta_recent_weight':recent,
-            'risk_multiplier':risk_mult,
+            'risk_multiplier':risk_mult, 'structural_risk_cap':structural_cap,
+            'meta_probability_only_gate':False, 'meta_low_probability':low_prob,
             'range_pos':location, 'late_entry':late, 'counter_4h':counter,
             'ny_session':ny_session, 'asia_session':asia, 'pre_london':pre_lon,
             'counter_short_sweep':counter_short_sweep,

@@ -78,7 +78,8 @@ def cluster_rank(plan, snapshot, tick):
     from trade_meta_model import execution_composite
 
     evidence = execution_composite(plan, snapshot.price, tick, snapshot.now)
-    return (evidence['score'], _finite(plan.get('score')), -abs(snapshot.price - plan['entry']),
+    from expectancy_model import ranking_adjustment
+    return (evidence['score']+ranking_adjustment(plan), _finite(plan.get('score')), -abs(snapshot.price - plan['entry']),
             str(plan.get('id', '')))
 
 

@@ -91,18 +91,19 @@ class CalibrationTests(TestCase):
         ]}
         state['trades'] = [{'id':'portfolio','calibration_id':'a','meta_context':self.context,
                             'placed_ts':NOW-4*M1,'closed_ts':NOW-M1,'net_r':1.}]
-        artifact = {'schema':model.PRIOR_SCHEMA,'label_schema':shadow.LABEL_SCHEMA,'engine_version':engine.VERSION,
-                    'instrument':self.cfg.instrument,'signature':quality.calibration_signature(self.cfg),
+        artifact = {'schema':model.PRIOR_SCHEMA,'label_schema':shadow.LABEL_SCHEMA,'engine_version':'full-ict-v14.4.4-intraday',
+                    'instrument':self.cfg.instrument,'signature':quality.legacy_calibration_signature(self.cfg),
                     'data_end_ts':NOW-5*M1,'counts':{'[]':[45,60]},'validation':{'validated':True}}
         with TemporaryDirectory() as directory, patch.dict(os.environ,{'META_PRIORS_FILE':str(Path(directory)/'prior.json')}):
             path = Path(os.environ['META_PRIORS_FILE'])
             path.write_text(json.dumps(artifact))
-            self.assertEqual(quality.prepare_sizing(state,snap,self.cfg,engine),'EMPIRICAL_BAYES')
+            self.assertEqual(quality.prepare_sizing(state,snap,self.cfg,engine),'LEGACY_BAYES_TRANSFER')
             result = quality.execution_sizing(snap,-1,99.99,{'side_4h':-1},
                                               wave_ts=None,rvol=None,room_r=1.5,setup=self.context[0])
             self.assertTrue(result['meta_prob_calibrated'])
             self.assertGreater(result['meta_prob'],.72)
-            self.assertEqual(result['risk_multiplier'],1.)
+            # No premium/discount evidence and no RVOL: preserve the 0.50 structural cap.
+            self.assertEqual(result['risk_multiplier'],.50)
             self.assertAlmostEqual(result['meta_recent_weight'],model.DAILY_DECAY**(M1/model.DAY_MS))
             path.write_text(json.dumps({**artifact,'validation':{'validated':False}}))
             self.assertEqual(quality.prepare_sizing(state,snap,self.cfg,engine),'UNVALIDATED_PRIORS')

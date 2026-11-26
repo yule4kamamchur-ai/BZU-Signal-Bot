@@ -1689,8 +1689,9 @@ function renderTacticalRadar(price, view, pnl, tone) {
       const val=number(order.risk_multiplier)?Number(order.risk_multiplier).toFixed(2)+'×':'1.00×';
       const rd=element('dd',val);
       if (number(order.meta_prob)) {
-        rd.append(element('span','P='+Math.round(order.meta_prob*100)+'% '+(order.meta_prob_calibrated?'Bayes':'Score'),'target-r-badge'));
+        rd.append(element('span','P='+Math.round(order.meta_prob*100)+'% '+(order.expectancy_status==='VALIDATED'?'Bayes EV':order.meta_prob_calibrated?'Bayes v1':'Score'),'target-r-badge'));
       }
+      if (number(order.expectancy?.expected_net_r)) rd.append(element('span',(order.expectancy_status==='VALIDATED'?'EV ':'EV (monitor) ')+signed(order.expectancy.expected_net_r,'R'),'target-r-badge'));
       sm.append(element('dt','Ставка'),rd);
       metrics.append(sm);
     }
@@ -1772,8 +1773,9 @@ function sizingBadgeText(item) {
   const parts = [];
   if (number(item.risk_multiplier)) parts.push('Ставка ' + Number(item.risk_multiplier).toFixed(2) + '×');
   if (number(item.meta_prob)) {
-    parts.push('P=' + Math.round(item.meta_prob * 100) + '% (' + (item.meta_prob_calibrated ? 'Bayes' : 'Score') + ')');
+    parts.push('P=' + Math.round(item.meta_prob * 100) + '% (' + (item.expectancy_status==='VALIDATED'?'Bayes EV':item.meta_prob_calibrated?'Bayes v1':'Score') + ')');
   }
+  if (number(item.expectancy?.expected_net_r)) parts.push((item.expectancy_status==='VALIDATED'?'EV ':'EV (monitor) ')+signed(item.expectancy.expected_net_r,'R'));
   return parts.join(' · ');
 }
 function renderBanner(price, usable, view, pnl, tone) {

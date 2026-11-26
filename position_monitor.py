@@ -417,6 +417,9 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 MFE_STOP_POLICY = 'MFE_PROTECTION'
 MFE_LOCK_STEPS = ((.60, -.35), (.85, .08), (1.25, .55), (1.65, 1.10))
 LATE_MFE_LOCK_STEPS = ((.60, -.35), (.70, .08), (1.25, .55), (1.65, 1.10))
+TREND_MFE_LOCK_STEPS = ((.60, -.35), (.95, .08), (1.40, .50), (1.80, 1.10))
+RANGE_MFE_LOCK_STEPS = ((.55, -.35), (.75, .08), (1.05, .45), (1.45, .90))
+COUNTER_MFE_LOCK_STEPS = ((.50, -.35), (.70, .08), (1.00, .45), (1.40, .90))
 ASIA_MFE_LOCK_STEPS = ((.55, .08), (.90, .45), (1.25, .80))
 LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
 
@@ -430,6 +433,11 @@ def mfe_lock_steps(position, engine):
         return LEGACY_MFE_LOCK_STEPS
     if _opened_in_asia(position):
         return ASIA_MFE_LOCK_STEPS
+    profile=position.get('adaptive_exit_profile')
+    if position.get('adaptive_exit_enabled'):
+        if profile=='TREND': return TREND_MFE_LOCK_STEPS
+        if profile=='RANGE': return RANGE_MFE_LOCK_STEPS
+        if profile=='COUNTER': return COUNTER_MFE_LOCK_STEPS
     return LATE_MFE_LOCK_STEPS if position.get('late_entry') else MFE_LOCK_STEPS
 
 

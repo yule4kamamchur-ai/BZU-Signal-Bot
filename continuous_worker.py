@@ -102,6 +102,12 @@ def main():
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     os.environ.setdefault('LIVE_STATE_FILE', str(state_path.with_name('live_state.json')))
     market_cache = {}
+    if os.getenv('BZU_PUBLIC_WS','false').lower() in ('1','true','yes'):
+        try:
+            from okx_public_feed import PublicTicker
+            market_cache['public_ticker']=PublicTicker(core.OKX_INST_ID).start()
+        except (ImportError,OSError):
+            logging.exception('Public WebSocket unavailable; using REST ticker')
     with engine.locked(Path(str(state_path)+'.worker.lock')):
         port = int(os.getenv('LIVE_HTTP_PORT','0'))
         if port:

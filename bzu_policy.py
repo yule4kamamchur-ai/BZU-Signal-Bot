@@ -617,6 +617,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
                 diag.update(entry=entry, level=entry, stop=stop, risk=risk, organic_risk=organic_risk,
                             entry_basis=entry_basis, retest_from=old_entry)
                 market_trigger = None
+                entry_condition = 'RETEST'
                 distance = abs(snapshot.price-entry)
         error = execution_rules.setup_confirmation(anchor.setup_type,zone,snapshot,side,cfg.tick,engine,
                                                    bool(market_trigger), approach=approach)
@@ -651,7 +652,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
     confirmed_retest = bool(passive and audit['touched'] and
                             (approach.get('confirmation_known_ts') or 0) > audit['touch_ts'])
     can_wait = passive and (not audit['touched'] or confirmed_retest or reaction_only or counter_confirmation or retest_route)
-    can_wait = can_wait and not require_rejection
+    can_wait = can_wait and (not require_rejection or bool(
+        rejection and retest_route=='CONFIRMATION_BODY_RETEST' and not opposing_4h))
     if reaction_only and side * (snapshot.price - entry) < cfg.tick - 1e-8:
         return None, 'ZONE_NOT_AHEAD_OF_PRICE'
     allowed, why = direction.regime_admission(
@@ -774,7 +776,8 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
         if rejection:
             rvol = scanner.event_rvol(snapshot,'15m',rejection['known_ts'])['rvol']
         sizing = engine.quality.execution_sizing(snapshot,side,entry,regime,wave_ts=wave_ts,
-                                                 rvol=rvol,room_r=geometry.get('room_r'),late=late,setup=anchor.setup_type)
+                                                 rvol=rvol,room_r=geometry.get('room_r'),late=late,setup=anchor.setup_type,
+                                                 source_strategy=src_strat)
         if sizing['rejection_required'] and not rejection:
             diag.update(sizing,status='WATCHING')
             return None, 'WAIT_M15_ENTRY_REJECTION'
@@ -864,6 +867,10 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None):
          'score':0., 'probability':None, 'probability_status':'UNVALIDATED_SCORE_NOT_WR',
          'evidence':[anchor.reason], 'candidate':{}, 'parent_keys':[],
          'status':'PENDING', 'last_bar':-1, 'version':engine.VERSION}
+    import expectancy_model
+    if oil:
+        expectancy_model.apply(p,snapshot,cfg,engine,rvol)
+        diag.update({k:p[k] for k in ('expectancy_status','expectancy','risk_multiplier','meta_prob','meta_prob_calibrated') if k in p})
     p['breakeven_price'] = breakeven_price(p, engine.execution_config(p, cfg), engine)
     return p, 'ACCEPTED'
 

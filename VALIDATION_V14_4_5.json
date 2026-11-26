@@ -1,0 +1,227 @@
+{
+  "version": "full-ict-v14.4.5-intraday",
+  "baseline": "full-ict-v14.4.4-intraday",
+  "focused_tests": {
+    "baseline": {
+      "run": 49,
+      "passed": 48,
+      "failures": 1
+    },
+    "updated": {
+      "run": 58,
+      "passed": 58,
+      "failures": 0
+    },
+    "new_tests": 9,
+    "baseline_failed_test": "test_runtime_prior_and_decayed_new_labels_set_risk_without_future_data (assertion expected 1.0, actual structural cap 0.50; fixture corrected in patch)"
+  },
+  "ui_test": {
+    "baseline": "FAIL: PENDING != OPEN, line 155",
+    "updated": "FAIL: PENDING != OPEN, line 155"
+  },
+  "static_checks": {
+    "detectors": 24,
+    "production_modules_compiled": 46,
+    "yaml": "PASS",
+    "entry_contracts": "PASS"
+  },
+  "replay": {
+    "baseline": {
+      "observed_range": [
+        "2026-11-04T04:57:00+00:00",
+        "2026-11-05T18:00:00+00:00"
+      ],
+      "source": "OKX_PUBLIC_RUNTIME_COLLECTOR",
+      "scan_count": 152,
+      "actions": {
+        "DATA_HOLD": 16,
+        "PLACE_LIMIT": 3,
+        "WAIT_LIMIT": 1,
+        "FOLLOW": 14,
+        "WATCH": 118
+      },
+      "training_labels": 3,
+      "closed_portfolio": 1,
+      "portfolio_statistics": {
+        "trades": 1,
+        "wins": 1,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.20654329147389294,
+        "net_r": 1.4328146279411706,
+        "expectancy_r": 1.4328146279411706,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "risk_weighted_statistics": {
+        "trades": 1,
+        "wins": 1,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.20654329147389294,
+        "net_r": 1.4328146279411706,
+        "expectancy_r": 1.4328146279411706,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "placed_orders": 3,
+      "portfolio_open_at_end": 0,
+      "portfolio_pending_at_end": 0,
+      "portfolio_censored_by_data_gap": 0,
+      "shadow_realized": 3,
+      "shadow_open_or_pending": 0,
+      "shadow_outcomes": {
+        "MISSED_TARGET": 4,
+        "TAKE_PROFIT": 3
+      },
+      "data_bars": {
+        "3m": 14087,
+        "15m": 2969,
+        "1H": 912,
+        "4H": 313,
+        "1m": 18019
+      },
+      "limitations": [
+        "Collector attribution, not provider cryptographic attestation",
+        "First-observed candle versions and actual observed quotes only"
+      ],
+      "validation": {
+        "validated": false,
+        "test_labels": 0,
+        "brier": null,
+        "baseline_brier": null,
+        "heuristic_brier": null,
+        "folds": [
+          {
+            "train_labels": 3,
+            "test_labels": 0,
+            "test_start_ts": 1793861586000,
+            "test_end_ts": 1793874924000
+          },
+          {
+            "train_labels": 3,
+            "test_labels": 0,
+            "test_start_ts": 1793874924000,
+            "test_end_ts": 1793888262000
+          },
+          {
+            "train_labels": 3,
+            "test_labels": 0,
+            "test_start_ts": 1793888262000,
+            "test_end_ts": 1793901600000
+          }
+        ],
+        "status": "INSUFFICIENT_HOLDOUT"
+      }
+    },
+    "updated": {
+      "observed_range": [
+        "2026-11-04T04:57:00+00:00",
+        "2026-11-05T18:00:00+00:00"
+      ],
+      "source": "OKX_PUBLIC_RUNTIME_COLLECTOR",
+      "scan_count": 152,
+      "actions": {
+        "DATA_HOLD": 16,
+        "WATCH": 71,
+        "ACTIVE_ENTRY": 3,
+        "FOLLOW": 62
+      },
+      "training_labels": 12,
+      "independent_labels": 6,
+      "closed_portfolio": 3,
+      "portfolio_statistics": {
+        "trades": 3,
+        "wins": 3,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.4384939195509822,
+        "net_r": 3.154010607167568,
+        "expectancy_r": 1.051336869055856,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "risk_weighted_statistics": {
+        "trades": 3,
+        "wins": 3,
+        "losses": 0,
+        "breakeven": 0,
+        "win_rate": 1.0,
+        "wilson_lower_95": 0.4384939195509822,
+        "net_r": 1.4010424908536057,
+        "expectancy_r": 0.46701416361786857,
+        "profit_factor": null,
+        "max_drawdown_r": 0.0
+      },
+      "placed_orders": 3,
+      "portfolio_open_at_end": 0,
+      "portfolio_pending_at_end": 0,
+      "portfolio_censored_by_data_gap": 0,
+      "shadow_realized": 8,
+      "shadow_open_or_pending": 0,
+      "shadow_outcomes": {
+        "MISSED_TARGET": 3,
+        "LIMIT_TTL": 1,
+        "MFE_PROTECTIVE_EXIT": 3,
+        "TAKE_PROFIT": 4,
+        "STOP": 1
+      },
+      "data_bars": {
+        "3m": 14087,
+        "15m": 2969,
+        "1H": 912,
+        "4H": 313,
+        "1m": 18019
+      },
+      "limitations": [
+        "Collector attribution, not provider cryptographic attestation",
+        "First-observed candle versions and actual observed quotes only"
+      ],
+      "validation": {
+        "validated": false,
+        "test_labels": 0,
+        "brier": null,
+        "baseline_brier": null,
+        "ev_mae": null,
+        "baseline_ev_mae": null,
+        "sized_net_r": 0,
+        "constant_risk_net_r": 0,
+        "fill_brier": null,
+        "folds": [
+          {
+            "train_labels": 11,
+            "test_labels": 0,
+            "test_start_ts": 1793861586000,
+            "test_end_ts": 1793874924000
+          },
+          {
+            "train_labels": 11,
+            "test_labels": 0,
+            "test_start_ts": 1793874924000,
+            "test_end_ts": 1793888262000
+          },
+          {
+            "train_labels": 12,
+            "test_labels": 0,
+            "test_start_ts": 1793888262000,
+            "test_end_ts": 1793901600000
+          }
+        ],
+        "status": "INSUFFICIENT_HOLDOUT"
+      }
+    },
+    "scope": "Same captured quotes/candles, 15-minute research config, clean state, no fitted prior (replay heuristic), adaptive exits SHADOW. No live fills. Not a final independent validation of expectancy sizing."
+  },
+  "limitations": [
+    "180-day OKX download unavailable in runtime (DNS/network failure).",
+    "The archived comparison covers 37 hours 3 minutes only.",
+    "New expectancy v2 is not approved for active sizing until an independent holdout passes.",
+    "The adaptive exit profile is optional, not validated on independent history.",
+    "No private OKX order execution, funding reconciliation, live WebSocket or VPS deployment was tested.",
+    "Only focused current regression tests rerun; old suite not certified.",
+    "Profit factor undefined with zero losses."
+  ]
+}

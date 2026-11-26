@@ -85,7 +85,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "full-ict-v14.4.4-intraday"
+BOT_VERSION = "full-ict-v14.4.5-intraday"
 ARCHITECTURE_VERSION = "FULL_ICT_24_LIMIT_V12_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -1306,7 +1306,8 @@ def get_okx_ticker(inst_id: str = "BZ-USDT") -> dict:
         "bid": safe_float(ticker.get("bidPx")),
         "ask": safe_float(ticker.get("askPx")),
         "ts": safe_int(ticker.get("ts")),
-        "source": "OKX",
+        "source": "OKX", "transport": "REST",
+        "bid_size": safe_float(ticker.get("bidSz")), "ask_size": safe_float(ticker.get("askSz")),
     }
 
 
@@ -1421,7 +1422,10 @@ def collect_market_data(cache=None) -> dict[str, Any]:
         f15 = pool.submit(candles, '15m', 15, get_okx_candles, OKX_INST_ID, '15m', CANDLES_15M_LIMIT)
         f1 = pool.submit(candles, '1H', 60, fetch_timeframe, '1H', CANDLES_1H_LIMIT, 60)
         f4 = pool.submit(candles, '4H', 240, fetch_timeframe, '4H', CANDLES_4H_LIMIT, 240)
-        fticker = pool.submit(get_okx_ticker, OKX_INST_ID)
+        def current_ticker():
+            stream=cache.get('public_ticker') if cache is not None else None
+            return (stream.get() if stream else None) or get_okx_ticker(OKX_INST_ID)
+        fticker = pool.submit(current_ticker)
         fsmt = pool.submit(candles, smt_id, 15, get_okx_candles, smt_id, '15m', SMT_CANDLES_15M_LIMIT) if smt_id else None
         cminute = fminute.result()
         c3m = f3.result()
@@ -1466,6 +1470,8 @@ def collect_market_data(cache=None) -> dict[str, Any]:
         "change24h": safe_float(ticker.get("change24h")),
         "volume24h": safe_float(ticker.get("volume24h")),
         "ticker_ts": safe_int(ticker.get("ts")),
+        "ticker_transport": ticker.get("transport", "UNKNOWN"),
+        "top_of_book": {"bid_size":ticker.get("bid_size"),"ask_size":ticker.get("ask_size")},
         "spread": spread,
         "bid": bid,
         "ask": ask,
