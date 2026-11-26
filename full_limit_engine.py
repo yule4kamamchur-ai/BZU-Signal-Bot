@@ -1262,7 +1262,8 @@ def entry_priority(state: dict, now: int, price: float, cfg: Config, step: int =
     # before the next 15m review, even if it shares the same direction.
     new_book=all(bzu_policy.is_new(p) for p in open_plans(state))
     single = state.get('pending_policy') == PENDING_POLICY
-    capacity=0 if active else (max(0, (1 if single else 2)-occupied_slots(state)) if new_book else 1)
+    be_free = len(active) == 1 and bool(active[0].get('breakeven_armed'))
+    capacity=(1 if be_free and occupied_slots(state) < 2 else 0) if active else (max(0, (1 if single else 2)-occupied_slots(state)) if new_book else 1)
     def entry_key(p):
         return execution_atlas.entry_rank(p,price,scanner,cfg.tick)
     ranked=sorted(pending_plans(state),key=entry_key,reverse=True)
@@ -2768,7 +2769,9 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
     pending=pending_plans(state)
     # Legacy fills and uncertain executions retain their slots. Cancel excess
     # waiting orders before admitting a single new thesis.
-    pending_capacity=max(0,order_limit-occupied_slots(state))
+    be_slot_bonus = 1 if (len(active) == 1 and bool(active[0].get('breakeven_armed')) and not unresolved) else 0
+    effective_order_limit = min(2, order_limit + be_slot_bonus)
+    pending_capacity=max(0,effective_order_limit-occupied_slots(state))
     awaiting=[p for p in pending if not p.get('cancel_requested_ts')]
     if len(awaiting)>pending_capacity:
         ranked_legacy=sorted(awaiting, key=lambda p:policy.ranking(p,s.price,cfg.tick),reverse=True)
@@ -2986,7 +2989,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
         'arbitration_decision':arbitration_audit.get('decision'),
         'occupied_slots':occupied_slots(state),
         'reserved_pending':len(pending_plans(state)),
-        'free_slots':max(0,order_limit-occupied_slots(state)-len(pending_plans(state)))}
+        'free_slots':max(0,effective_order_limit-occupied_slots(state)-len(pending_plans(state)))}
     state['portfolio_policy']=state['pending_policy']
     if can_place and selected_side:
         # Only one order may reserve a new entry, including pending cancellation.
@@ -3006,7 +3009,7 @@ def run_cycle(state: dict, s: Snapshot, cfg: Config) -> dict:
             existing=pending_plans(state)
             # Each waiting limit may fill before the next 15m scan. Count it
             # together with already open/uncertain positions, not separately.
-            if occupied_slots(state)+len(existing)>=order_limit:
+            if occupied_slots(state)+len(existing)>=effective_order_limit:
                 break
             if any(p.get('cancel_requested_ts') for p in existing):
                 break

@@ -74,11 +74,13 @@ def early_allowed(snapshot,side,entry,zone,regime,sizing,velocity,tick,engine):
             0<snapshot.bid<=snapshot.ask and atr>0 and snapshot.ask-snapshot.bid<=max(2*tick,.12*atr)):
         return False
     quote=snapshot.ask if side==1 else snapshot.bid
+    micro_rvol = velocity.get('micro_rvol')
+    decelerating = micro_rvol is None or micro_rvol <= 1.35
     return (regime.get('side_4h')==side and regime.get('side_1h') in (0,side) and
             (regime.get('side_1h')==side or regime.get('trend_anchor_side')==side or
              regime.get('side_15m')==side or (regime.get('local_structure') or {}).get('side')==side) and
             not sizing.get('rejection_required') and not sizing.get('late_entry') and
-            velocity.get('calm') is True and 0<=snapshot.now-zone['known_ts']<=8*900000 and
+            velocity.get('calm') is True and decelerating and 0<=snapshot.now-zone['known_ts']<=8*900000 and
             tick<=side*(quote-entry)<=1.2*atr and
             zone.get('execution_low',zone['low'])-tick<=entry<=zone.get('execution_high',zone['high'])+tick)
 

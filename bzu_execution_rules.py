@@ -10,8 +10,8 @@ EPS = 1e-8
 FULL_TARGET_MIN_R = oil_risk.ENTRY_TP1_MIN
 FULL_TARGET_MAX_R = 1.88
 RETEST_TTL_MS = 60 * 60_000
-TREND_RETEST_TTL_MS = 90 * 60_000
-ALIGNED_RETEST_TTL_MS = 120 * 60_000
+TREND_RETEST_TTL_MS = 75 * 60_000
+ALIGNED_RETEST_TTL_MS = 90 * 60_000
 EARLY_NY = 'NY_POST_SWEEP'
 
 
@@ -130,9 +130,11 @@ def retest_reason(snapshot, side, quote, trigger, regime, atr, tick, *, sizing=N
     # a sizing dictionary exists. Seek a retest only for a witnessed, material
     # price improvement. Counter-HTF confirmations remain executable MARKETs.
     level=trigger.get('limit_entry'); risk=trigger.get('initial_risk')
-    if (sizing and sizing.get('rejection_required') and trigger.get('strict_rejection')
-            and regime.get('side_4h')!=-side and level is not None and risk is not None
-            and risk>0 and side*(quote-level)>=max(2*tick,.15*risk)):
+    is_m15 = trigger.get('confirmation_timeframe') in (None, '15m')
+    if (sizing and sizing.get('meta_prob_calibrated') and sizing.get('meta_prob', 1.0) < 0.25):
+        return 'CONFIRMATION_BODY_RETEST'
+    if (is_m15 and trigger.get('strict_rejection') and regime.get('side_4h')!=-side and level is not None and risk is not None and risk>0
+            and side*(quote-level)>=max(2*tick,.10*risk)):
         return 'CONFIRMATION_BODY_RETEST'
     return None
 

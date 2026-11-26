@@ -16,7 +16,7 @@ LABEL_SCHEMA = 'bzu-shared-lifecycle-m1-v3-routes'
 SHARED_LABEL_SCHEMAS = frozenset((LABEL_SCHEMA, 'bzu-shared-lifecycle-m1-v2'))
 DAY = 86_400_000
 MIN_HOLDOUT = 20
-SHRINK = 12.
+SHRINK = 24.
 
 
 def number(x):
@@ -47,9 +47,8 @@ def context(plan, snapshot, cfg, engine, rvol=None):
 def keys(ctx):
     setup, side, order, alignment, regime, location, session, volume, vol, rr, impulse, route = ctx
     return [json.dumps(k,separators=(',',':')) for k in
-            ((),(side,order),(setup,side,order),(setup,side,order,alignment,regime),
-             (setup,side,order,alignment,regime,location,session,volume,vol,rr,impulse),
-             ('ROUTE',route),('ROUTE',route,side,order),('ROUTE',route,setup,side,order))]
+            ((),(side,order),(setup,side,order),(setup,side,order,alignment,session),
+             ('ROUTE',route),('ROUTE',route,order))]
 
 
 def labels(rows, before, after=0):
@@ -122,10 +121,10 @@ def counts(rows, as_of=None):
     # Global estimate excludes experimental alternatives when a primary route
     # exists. No multiple votes from the same overlapping event.
     for r in independent(r for r in rows if not r.get('shadow_timing_only')):
-        accumulate(r,keys(r['expectancy_context'])[:5])
+        accumulate(r,keys(r['expectancy_context'])[:4])
     for route in sorted({r['expectancy_context'][-1] for r in rows}):
         for r in independent(r for r in rows if r['expectancy_context'][-1]==route):
-            accumulate(r,keys(r['expectancy_context'])[5:])
+            accumulate(r,keys(r['expectancy_context'])[4:])
     return out
 
 
@@ -143,14 +142,20 @@ def estimate(prior, recent, ctx):
         attempts,fills,wins,losses,positive,negative=a
         if i==0:
             global_n=fills
-        # Shrink each more-specific context into its parent.
-        p=(wins+SHRINK*p)/(fills+SHRINK)
-        win=(positive+SHRINK*win)/(wins+SHRINK)
-        loss=(negative+SHRINK*loss)/(losses+SHRINK)
-        fill=(fills+SHRINK*fill)/(attempts+SHRINK)
+            s_root=6.
+            p=(wins+s_root*p)/(fills+s_root)
+            win=(positive+s_root*win)/(wins+s_root)
+            loss=(negative+s_root*loss)/(losses+s_root)
+            fill=(fills+s_root*fill)/(attempts+s_root)
+        else:
+            # Shrink each more-specific context into its parent.
+            p=(wins+SHRINK*p)/(fills+SHRINK)
+            win=(positive+SHRINK*win)/(wins+SHRINK)
+            loss=(negative+SHRINK*loss)/(losses+SHRINK)
+            fill=(fills+SHRINK*fill)/(attempts+SHRINK)
         if i>0:
             n=max(n,fills)
-        if i==5:
+        if i==4:
             route_n=fills
     if ctx[2]=='MARKET':
         fill=1.
@@ -214,7 +219,7 @@ def apply(plan, snapshot, cfg, engine, rvol=None):
     if not cal:
         plan.pop('expectancy',None)
         monitor=getattr(snapshot,'_expectancy_monitor',{})
-        if monitor.get('[]',[0,0])[1]>0 or monitor.get(keys(ctx)[5],[0,0])[1]>0:
+        if monitor.get('[]',[0,0])[1]>0 or monitor.get(keys(ctx)[4],[0,0])[1]>0:
             plan.update(expectancy=estimate({},monitor,ctx),expectancy_status='MONITOR_ONLY_ONLINE')
         else:
             plan['expectancy_status']='MONITOR_ONLY_NO_VALIDATED_PRIOR'

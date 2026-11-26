@@ -267,8 +267,8 @@ def guard(position, ts, *, structural_only=False):
 
 
 TIME_DECAY_STOP_POLICY = 'TIME_DECAY_TRAIL'
-TIME_DECAY_STEP_MS = 2 * 60 * 60_000
-TIME_DECAY_START_R = -.35
+TIME_DECAY_STEP_MS = 3 * 60 * 60_000
+TIME_DECAY_START_R = -.50
 TIME_DECAY_INCREMENT_R = .25
 
 
@@ -415,12 +415,12 @@ def bounce_breakeven(position, snapshot, ts, price, tick):
 
 
 MFE_STOP_POLICY = 'MFE_PROTECTION'
-MFE_LOCK_STEPS = ((.60, -.35), (.85, .08), (1.25, .55), (1.65, 1.10))
-LATE_MFE_LOCK_STEPS = ((.60, -.35), (.70, .08), (1.25, .55), (1.65, 1.10))
-TREND_MFE_LOCK_STEPS = ((.60, -.35), (.95, .08), (1.40, .50), (1.80, 1.10))
-RANGE_MFE_LOCK_STEPS = ((.55, -.35), (.75, .08), (1.05, .45), (1.45, .90))
-COUNTER_MFE_LOCK_STEPS = ((.50, -.35), (.70, .08), (1.00, .45), (1.40, .90))
-ASIA_MFE_LOCK_STEPS = ((.55, .08), (.90, .45), (1.25, .80))
+MFE_LOCK_STEPS = ((.90, .05), (1.35, .55), (1.75, 1.10))
+LATE_MFE_LOCK_STEPS = ((.80, .05), (1.30, .55), (1.70, 1.10))
+TREND_MFE_LOCK_STEPS = ((.95, .05), (1.40, .55), (1.85, 1.15))
+RANGE_MFE_LOCK_STEPS = ((.80, .05), (1.15, .45), (1.50, .90))
+COUNTER_MFE_LOCK_STEPS = ((.75, .05), (1.10, .45), (1.45, .90))
+ASIA_MFE_LOCK_STEPS = ((.80, .05), (1.20, .50), (1.55, .95))
 LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
 
 

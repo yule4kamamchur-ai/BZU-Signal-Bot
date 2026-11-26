@@ -587,9 +587,12 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
             first_zone = {**zone, 'low': entry, 'high': entry} if trend else zone
             first_touch = zones.first_test(first_zone,minute,side,entry,risk,snapshot.now)
             early_ok = (not first_touch['touched'] and not first_touch['mitigated'] and
+                        regime.get('side_1h') == side and regime.get('side_15m') == side and
+                        not sizing.get('adverse_limit_guard') and
                         timing.early_allowed(snapshot,side,entry,zone,regime,sizing,approach,cfg.tick,engine))
             micro = {name: proof for name,tf0 in (('M1','1m'),('M3','3m'),('M5','5m'))
-                     if (proof := timing.trigger(snapshot,side,zone,entry,risk,cfg,engine,tf0))}
+                     if (proof := timing.trigger(snapshot,side,zone,entry,risk,cfg,engine,tf0))
+                     and (name != 'M1' or ((proof.get('rvol') or 0) >= 1.5 and regime.get('side_4h') == side and regime.get('side_1h') == side))}
             strict_proof = execution_rules.level_rejection(snapshot,side,zone,entry,risk,cfg,engine,strict=True)
             options = (['EARLY_LIMIT'] if early_ok else []) + list(micro) + (['M15'] if strict_proof else [])
             counter_m5_context = timing.counter_m5_context_allowed(side,regime,sizing,approach)
@@ -607,7 +610,7 @@ def plan(anchor, context, snapshot, cfg, stats, engine, diagnostics=None, *, tim
                 timing_route = 'M5' if counter_m5 else 'M15'
             elif micro:
                 # Fast confirmation in calm aligned trends; M5 in mixed/range conditions.
-                preferred = ('M3','M1','M5') if early_ok or (approach.get('calm') and regime.get('side_4h')==side) else ('M5','M3','M1')
+                preferred = ('M5','M3','M1')
                 timing_route = next((k for k in preferred if k in micro),None)
             if timing_route is None and early_ok:
                 timing_route = 'EARLY_LIMIT'
