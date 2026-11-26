@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
-<title>BZU MULTI · MEXC Pro Cockpit</title>
-<link rel="stylesheet" href="./live_terminal.css?v=14.7.1">
+<title>BZU MULTI · MEXC Hybrid v15.0</title>
+<link rel="stylesheet" href="./live_terminal.css?v=15.0.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
-<script defer src="./multi_scanner.js?v=14.7.1"></script>
+<script defer src="./multi_scanner.js?v=15.0.0"></script>
 </head>
 <body class="bzu-multi-clean">
 <header class="masthead ms-masthead">
@@ -21,7 +21,7 @@
   <div class="ms-header-right">
     <button type="button" id="ms-sound-btn" class="ms-sound-btn" aria-pressed="false">🔕 Звук: вимк.</button>
     <span id="ms-btc-pill" class="ms-btc-pill">BTC Макро: очікуємо…</span>
-    <div class="ms-calc-inputs" aria-label="Калькулятор ризику">
+    <div class="ms-calc-inputs" aria-label="Локальний калькулятор для нових сценаріїв (не змінює серверний журнал)">
       <label>Депозит $<input id="ms-deposit" type="number" value="100" min="10" step="10"></label>
       <label>Ризик %<input id="ms-risk" type="number" value="3" min="0.5" max="20" step="0.5"></label>
       <label>Плече ×<input id="ms-lev" type="number" value="5" min="1" max="50" step="1"></label>
@@ -95,8 +95,8 @@
         </table>
       </div>
       <p class="ms-status-help">
-        <strong class="ms-up">В УГОДІ</strong> — відкрита позиція ·
-        <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний A+ сигнал ·
+        <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — ще не виконана ·
+        <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал (PAPER) ·
         <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо ·
         <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.
       </p>
@@ -124,7 +124,7 @@
 
 <footer>
   <span>BZU MULTI · MEXC Live WebSocket</span>
-  <span>2 слоти · Авто-ризик</span>
+  <span>2 слоти · PnL оцінено після комісій/прослизання, без funding</span>
   <span>PAPER · SIGNAL TERMINAL</span>
 </footer>
 </body>

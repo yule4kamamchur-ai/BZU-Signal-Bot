@@ -3,7 +3,6 @@
   'use strict';
 
   const STATE_URL = './multi_scanner_state.json';
-  const LIVE_STATE_URL = './live_state.json';
   const MEXC_WS_URL = 'wss://contract.mexc.com/edge';
   const SYMBOLS = ['UKOIL_USDT', 'XPT_USDT', 'SOL_USDT', 'LINK_USDT', 'LTC_USDT', 'APT_USDT', 'ORDI_USDT', 'BTC_USDT'];
   const TV_MAP = {
@@ -17,7 +16,8 @@
   };
 
   let latestData = null;
-  let liveOilState = null;
+  let scannerFetchError = false;
+  let scanLoading = false;
   let selectedSymbol = null;
   let selectedTf = '15m';
   let chartMode = 'tv'; // 'tv' | 'levels'
@@ -85,6 +85,14 @@
       slPct: (slPct * 100).toFixed(2),
       tpPct: (tpPct * 100).toFixed(2),
     };
+  }
+
+  function displayedSizing(item) {
+    if (item.status === 'IN_TRADE' && item.sizing) {
+      const a=item.sizing;
+      return {notional:Number(a.position_usdt || 0).toFixed(0),effLev:Number(a.effective_leverage || 0).toFixed(2),riskUsd:Number(a.risk_usd || 0).toFixed(2),profitUsd:Number(a.target_profit_usd || 0).toFixed(2),slPct:Number(a.sl_pct || 0).toFixed(2),tpPct:Number(a.tp_pct || 0).toFixed(2)};
+    }
+    return calcSizing(item.entry,item.stop,item.tp);
   }
 
   function statusClass(status) {
@@ -217,7 +225,7 @@
     const stopP = posNum(item.stop);
     const tpP = posNum(item.tp);
     const beP = posNum(item.be_trigger);
-    const sz = calcSizing(entryP, stopP, tpP);
+    const sz = displayedSizing(item);
 
     if (entryP !== null) {
       priceLines.push(candleSeries.createPriceLine({
@@ -277,12 +285,12 @@
       return;
     }
     const price = posNum(livePrices[item.symbol]) ?? item.price;
-    const sz = calcSizing(item.entry, item.stop, item.tp);
+    const sz = displayedSizing(item);
     const sideCls = item.side === 1 ? 'ms-side-long' : item.side === -1 ? 'ms-side-short' : 'ms-side-flat';
     const orderLbl = item.status === 'IN_TRADE'
-      ? 'АКТИВНА ПОЗИЦІЯ'
+      ? (item.phase === 'PENDING_LIMIT' ? 'ЛІМІТКА ОЧІКУЄ' : 'АКТИВНА ПОЗИЦІЯ')
       : item.status === 'READY'
-        ? (item.order_type === 'LIMIT' ? 'ЛІМІТКА (0% Maker)' : 'РИНКОВИЙ ВХІД (M5)')
+        ? (item.order_type === 'LIMIT' ? 'ЛІМІТКА (PAPER)' : 'РИНКОВИЙ ВХІД (M1/M5)')
         : 'ЩЕ НЕ ВХОДИМО (ОЧІКУВАННЯ)';
     const badgeText = isTopPick ? '★ №1 НАЙКРАЩИЙ ВИБІР' : 'ВИБРАНИЙ АКТИВ';
 
@@ -291,7 +299,7 @@
         <div class="ms-hl-badges">
           <span class="ms-top-tag">${badgeText}</span>
           <span class="ms-cl ${clusterClass(item.cluster)}">${item.cluster_ua}</span>
-          <span class="ms-fee">${item.fee_tag || '0% Maker'}</span>
+          <span class="ms-fee">${item.fee_tag || 'FEE: EST.'}</span>
         </div>
         <span class="ms-pill ${statusClass(item.status)}">${item.status_ua} · ${item.score}/100</span>
       </div>
@@ -304,7 +312,7 @@
       </div>
       <div class="ms-hl-levels">
         <div class="ms-lvl"><small>ВХІД</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
-        <div class="ms-lvl"><small>СТОП-ЛОСС</small><strong class="ms-dn">${fmtPrice(item.stop, item.tick)}${sz ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
+        <div class="ms-lvl"><small>СТОП-ЛОСС</small><strong class="ms-dn">${fmtPrice(item.stop, item.tick)}${sz && item.status !== 'IN_TRADE' ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
         <div class="ms-lvl"><small>ТЕЙК-ПРОФІТ</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
         <div class="ms-lvl"><small>R:R / RVOL</small><strong>${item.rr ? item.rr.toFixed(2) + ' R' : '—'} · ${item.rvol ? item.rvol.toFixed(2) + '×' : '—'}</strong></div>
       </div>
@@ -312,10 +320,10 @@
       <div class="ms-sizing-bar">
         <div><small>ПОЗИЦІЯ</small><strong>$${sz.notional}</strong></div>
         <div><small>ПЛЕЧЕ</small><strong>${sz.effLev}×</strong></div>
-        <div><small>РИЗИК SL</small><strong class="ms-dn">−$${sz.riskUsd}</strong></div>
-        <div><small>ПРОФІТ TP</small><strong class="ms-up">+$${sz.profitUsd}</strong></div>
+        <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−$${sz.riskUsd}</strong></div>
+        <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+$${sz.profitUsd}</strong></div>
       </div>` : ''}
-      <p class="ms-hl-reason">${item.reason_ua || ''}</p>
+      <p class="ms-hl-reason">${item.reason_ua || ''}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
     `;
   }
 
@@ -382,8 +390,17 @@
     }
     const updEl = $('ms-updated');
     if (updEl) {
-      const liveTag = ws && ws.readyState === 1 ? ' · Live WS' : '';
-      updEl.textContent = data.updated_kyiv ? `Оновлено: ${data.updated_kyiv} Київ${liveTag} · Активних входів: ${data.ready_count || 0}` : 'Очікуємо зліпок MEXC';
+      const liveTag = ws && ws.readyState === 1 ? ' · WS: ціни' : '';
+      const health = data.health || {};
+      const age = data.updated_ts ? Math.max(0, Math.floor((Date.now()-Number(data.updated_ts))/1000)) : null;
+      const interval = Number(health.expected_interval_sec || 300);
+      const stale = age === null || age > interval + 60 || scannerFetchError || ['FAILED_DATA','FAILED_CYCLE'].includes(health.status);
+      const ageTag = age === null ? 'немає даних' : `${Math.floor(age/60)} хв ${age%60} с тому`;
+      const perf = health.timings && Number.isFinite(health.timings.scan_s) ? ` · аналіз ${health.timings.scan_s.toFixed(1)} с` : '';
+      updEl.textContent = `${stale ? '⚠ ЗАСТАРІЛИЙ АНАЛІЗ' : health.status === 'DEGRADED' ? '⚠ ЧАСТКОВІ ДАНІ' : 'Аналіз'}: ${data.updated_kyiv || '—'} Київ · ${ageTag} · цикл ${interval/60} хв${perf}${health.errors ? ' · помилок '+health.errors : ''}${scannerFetchError ? ' · помилка завантаження' : ''}${liveTag}`;
+      updEl.classList.toggle('ms-dn',stale);
+      updEl.title = (data.errors || []).join('\n') || health.last_error || '';
+
     }
   }
 
@@ -478,12 +495,19 @@
       const side = Number(act.side || 1);
       const sideTxt = side === 1 ? 'LONG' : 'SHORT';
       const tick = act.tick || 0.01;
+      if (act.phase === 'PENDING_LIMIT') {
+        badge.textContent = 'ЛІМІТКА ОЧІКУЄ';
+        title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(act.entry,tick)} $`;
+        sub.textContent = `SL ${fmtPrice(act.stop,tick)} · TP ${fmtPrice(act.tp,tick)} · PAPER · до 8 хв`;
+        return;
+      }
       const entry = Number(act.entry);
       const stop = posNum(act.stop);
       const tp = posNum(act.tp);
       const risk = posNum(act.risk) || (stop ? Math.abs(entry - stop) : 0);
       const curP = posNum(livePrices[act.symbol]) || posNum(act.current_price) || entry;
-      const pnlR = risk > 0 ? side * (curP - entry) / risk : Number(act.pnl_r || 0);
+      const cost = risk > 0 ? (Number(act.fee_rate || 0)+Number(act.slippage_rate || 0))*(entry+curP)/risk : 0;
+      const pnlR = risk > 0 ? side * (curP - entry) / risk - cost : Number(act.pnl_r || 0);
       const riskUsd = Number((act.sizing && act.sizing.risk_usd) || 3);
       const pnlUsd = pnlR * riskUsd;
       card.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
@@ -654,23 +678,25 @@
   }
 
   async function loadScannerState() {
+    if (scanLoading) return;
+    scanLoading = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
-      const [r1, r2] = await Promise.all([
-        fetch(`${STATE_URL}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null),
-        fetch(`${LIVE_STATE_URL}?t=${Date.now()}`, { cache: 'no-store' }).catch(() => null),
-      ]);
-      if (r2 && r2.ok) {
-        liveOilState = await r2.json();
-      }
-      if (r1 && r1.ok) {
-        const first = !latestData;
-        latestData = await r1.json();
-        checkSlotAlerts(latestData);
-        renderAll(first || chartMode === 'levels');
-      } else {
-        renderDualSlotsAndDaily();
-      }
-    } catch (_) {}
+      const response = await fetch(`${STATE_URL}?t=${Date.now()}`, {cache:'no-store',signal:controller.signal});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!Array.isArray(data.instruments)) throw new Error('Invalid snapshot');
+      scannerFetchError = false;
+      const first = !latestData;
+      if (!latestData || Number(data.updated_ts || 0)>=Number(latestData.updated_ts || 0)) latestData=data;
+      checkSlotAlerts(latestData);
+      renderAll(first || chartMode==='levels');
+    } catch (_) {
+      scannerFetchError = true;
+      if (latestData) renderMeta(latestData);
+      else { const el=$('ms-updated'); if(el) el.textContent='⚠ Немає зліпка MEXC — перевірте сервер / GitHub Actions'; }
+    } finally { clearTimeout(timer); scanLoading=false; }
   }
 
   function wireBannerClick() {
@@ -736,6 +762,7 @@
     loadScannerState();
     connectMexcWebSocket();
     setInterval(loadScannerState, 15000);
+    setInterval(() => { if (latestData) renderMeta(latestData); }, 5000);
   }
 
   if (document.readyState === 'loading') {
