@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
 <title>BZU MULTI · Pro Cockpit</title>
-<link rel="stylesheet" href="./live_terminal.css?v=14.5.2">
+<link rel="stylesheet" href="./live_terminal.css?v=14.5.3">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <script defer src="./live_terminal.js?v=14.4.7-release-check-1"></script>
-<script defer src="./multi_scanner.js?v=14.5.2"></script>
+<script defer src="./multi_scanner.js?v=14.5.3"></script>
 </head>
 <body>
 <header class="masthead">
@@ -43,44 +43,51 @@
     </div>
   </div>
   <div class="ms-grid">
-    <article id="ms-highlight" class="ms-highlight">
-      <div class="ms-empty">Завантажуємо топ-сигнал MEXC…</div>
-    </article>
-    <div class="ms-table-wrap">
-      <table class="ms-table">
-        <thead>
-          <tr>
-            <th>Актив</th>
-            <th class="ms-num">Ціна / 24г</th>
-            <th class="ms-tf">4H·1H·15m</th>
-            <th>Статус</th>
-            <th class="ms-num">Напрям</th>
-            <th class="ms-num">R:R</th>
-            <th class="ms-num">Бал</th>
-          </tr>
-        </thead>
-        <tbody id="ms-rows">
-          <tr><td colspan="7" class="ms-empty">Очікуємо дані…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-  <div class="ms-chart-box">
-    <div class="ms-chart-bar">
-      <strong id="ms-chart-title">Графік вибраного токена (M15)</strong>
-      <div class="ms-chart-legend">
-        <span style="color:#f97316">● Вхід</span>
-        <span style="color:#ef4444">● SL</span>
-        <span style="color:#22c55e">● TP</span>
-        <span style="color:#eab308">● Б/У (+0.90R)</span>
-      </div>
-      <div class="chart-tools">
-        <button type="button" id="ms-tf-5m" aria-pressed="false">M5</button>
-        <button type="button" id="ms-tf-15m" aria-pressed="true">M15</button>
+    <div class="ms-left-col">
+      <article id="ms-highlight" class="ms-highlight">
+        <div class="ms-empty">Завантажуємо топ-сигнал MEXC…</div>
+      </article>
+      <div class="ms-chart-box">
+        <div class="ms-chart-bar">
+          <strong id="ms-chart-title">Графік активу · M15</strong>
+          <div class="chart-tools">
+            <button type="button" id="ms-mode-tv" aria-pressed="true">TradingView</button>
+            <button type="button" id="ms-mode-bzu" aria-pressed="false">Рівні BZU</button>
+            <button type="button" id="ms-tf-5m" aria-pressed="false">M5</button>
+            <button type="button" id="ms-tf-15m" aria-pressed="true">M15</button>
+          </div>
+        </div>
+        <div id="ms-chart-tv" class="ms-chart-canvas"></div>
+        <div id="ms-chart" class="ms-chart-canvas" hidden></div>
+        <div id="ms-chart-legend" class="ms-chart-legend" hidden>
+          <span style="color:#f97316">● Вхід</span>
+          <span style="color:#ef4444">● SL</span>
+          <span style="color:#22c55e">● TP</span>
+          <span style="color:#eab308">● Б/У</span>
+        </div>
       </div>
     </div>
-    <div id="ms-chart" class="ms-chart-canvas"></div>
-    <p class="ms-status-help">Статуси: <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал · <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо · <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.</p>
+    <div class="ms-right-col">
+      <div class="ms-table-wrap">
+        <table class="ms-table">
+          <thead>
+            <tr>
+              <th>Актив</th>
+              <th class="ms-num">Ціна / 24г</th>
+              <th class="ms-tf">4H·1H·15m</th>
+              <th>Статус</th>
+              <th class="ms-num">Напрям</th>
+              <th class="ms-num">R:R</th>
+              <th class="ms-num">Бал</th>
+            </tr>
+          </thead>
+          <tbody id="ms-rows">
+            <tr><td colspan="7" class="ms-empty">Очікуємо дані…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="ms-status-help">Статуси: <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал · <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо · <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.</p>
+    </div>
   </div>
 </section>
 <main class="cockpit">
