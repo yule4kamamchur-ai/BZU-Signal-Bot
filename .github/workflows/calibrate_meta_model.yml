@@ -1,4 +1,4 @@
-name: BZU Meta Calibration v14.4.6
+name: BZU Meta Calibration v14.4.7
 
 on:
   workflow_dispatch:
@@ -16,6 +16,10 @@ on:
         type: choice
         options: ['SHADOW', 'ACTIVE']
         default: 'SHADOW'
+      resume_run_id:
+        description: 'Optional previous v14.4.7 calibration run ID (resume latest saved checkpoint)'
+        type: string
+        default: ''
       publish:
         description: 'Publish only a validated, compatible prior'
         type: boolean
@@ -25,6 +29,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: bzu-meta-calibration
   cancel-in-progress: false
@@ -51,6 +56,8 @@ jobs:
       EXITS: ${{ inputs.adaptive_exits || vars.BZU_ADAPTIVE_EXITS || 'SHADOW' }}
       PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish == true }}
       BRANCH: ${{ github.event.repository.default_branch }}
+      RESUME_RUN_ID: ${{ inputs.resume_run_id || '' }}
+      BZU_REPLAY_SEGMENT_SECONDS: '1800'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -61,16 +68,219 @@ jobs:
       - name: Install requirements
         run: pip install -r requirements.txt
       - name: Run focused regression tests
-        run: python -m unittest test_meta_calibration test_v144_full_execution test_v141_realtime test_v145_expectancy test_v146_adaptive_entry
-      - name: Run causal replay
+        run: python -m unittest test_meta_calibration test_v144_full_execution test_v141_realtime test_v142_organic_execution test_v145_expectancy test_v146_adaptive_entry test_v147_recovery
+      - name: Freeze history window
+        id: window
+        shell: bash
         run: |
-          python calibrate_meta_model.py --days "$DAYS" --scan-minutes "$SCAN" --adaptive-exits "$EXITS" \
-            --output calibration/meta_priors.json --report calibration/report.json --labels calibration/labels.json
+          python - <<'PY'
+          import os,time
+          end=int(time.time()*1000)//14400000*14400000
+          with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'HISTORY_END_MS={end}\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write(f'end={end}\n')
+          rid=os.environ.get('RESUME_RUN_ID','')
+          if rid and not rid.isdecimal(): raise SystemExit('resume_run_id must be a numeric Actions run ID')
+          PY
+      - uses: actions/cache@v4
+        if: env.RESUME_RUN_ID == ''
+        with:
+          path: .bzu-history-cache
+          key: bzu-okx-closed-v1-${{ env.DAYS }}-${{ steps.window.outputs.end }}
+      - name: Download checkpoints from the selected run
+        if: env.RESUME_RUN_ID != ''
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.RESUME_RUN_ID }}
+          pattern: bzu-calibration-resume-*
+          path: resume-download
+      - name: Restore latest completed checkpoint upload
+        if: env.RESUME_RUN_ID != ''
+        run: |
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+          import calibration_storage as storage
+          candidates=[]
+          for cp in Path('resume-download').rglob('checkpoint.json.gz'):
+              history=cp.with_name('history.json.gz')
+              if history.exists():
+                  saved=storage.load(cp)
+                  if saved.get('schema')==storage.SCHEMA:
+                      candidates.append((saved['scans'],cp,history))
+          if not candidates: raise SystemExit('No complete checkpoint/history artifact found')
+          scans,cp,history=max(candidates,key=lambda item:item[0])
+          target=Path('calibration');target.mkdir(exist_ok=True)
+          shutil.copyfile(cp,target/cp.name);shutil.copyfile(history,target/history.name)
+          print(f'Restored {scans} scans; Python will verify strategy, config and exact history')
+          PY
+      - name: Causal replay segment 1
+        id: segment_1
+        env:
+          BZU_REPLAY_SEGMENT_SECONDS: '300'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 1 for future resume
+        if: always() && steps.segment_1.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-1
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 2
+        id: segment_2
+        if: steps.segment_1.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 2 for future resume
+        if: always() && steps.segment_2.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-2
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 3
+        id: segment_3
+        if: steps.segment_2.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 3 for future resume
+        if: always() && steps.segment_3.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-3
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 4
+        id: segment_4
+        if: steps.segment_3.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 4 for future resume
+        if: always() && steps.segment_4.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-4
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 5
+        id: segment_5
+        if: steps.segment_4.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 5 for future resume
+        if: always() && steps.segment_5.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-5
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 6
+        id: segment_6
+        if: steps.segment_5.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 6 for future resume
+        if: always() && steps.segment_6.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-6
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 7
+        id: segment_7
+        if: steps.segment_6.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 7 for future resume
+        if: always() && steps.segment_7.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-7
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 8
+        id: segment_8
+        if: steps.segment_7.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 8 for future resume
+        if: always() && steps.segment_8.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-8
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 9
+        id: segment_9
+        if: steps.segment_8.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 9 for future resume
+        if: always() && steps.segment_9.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-9
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Causal replay segment 10
+        id: segment_10
+        if: steps.segment_9.outputs.paused == 'true'
+        run: bash scripts/run_calibration_segment.sh
+      - name: Save checkpoint 10 for future resume
+        if: always() && steps.segment_10.outcome != 'skipped' && hashFiles('calibration/checkpoint.json.gz') != '' && hashFiles('calibration/history.json.gz') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzu-calibration-resume-${{ github.run_attempt }}-10
+          path: |
+            calibration/checkpoint.json.gz
+            calibration/history.json.gz
+            calibration/status.json
+          compression-level: 0
+          retention-days: 14
+      - name: Show final replay status
+        if: always()
+        shell: bash
+        run: |
+          if [ -f calibration/status.json ]; then cat calibration/status.json; echo; fi
+          echo 'If PAUSED, run again with the same parameters and resume_run_id=${{ github.run_id }}.'
+          echo 'Only uploaded checkpoint artifacts survive removal of a GitHub runner.'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bzu-meta-calibration
-          path: calibration/
+          path: |
+            calibration/meta_priors.json
+            calibration/report.json
+            calibration/labels.json
+            calibration/status.json
           if-no-files-found: warn
       - name: Publish only validated results on unchanged strategy
         if: success() && env.PUBLISH == 'true'
@@ -80,6 +290,11 @@ jobs:
           import json
           from pathlib import Path
           p=Path('calibration/meta_priors.json')
+          status=Path('calibration/status.json')
+          if not p.exists() or not status.exists() or json.loads(status.read_text()).get('status')!='COMPLETE':
+              print('Replay incomplete. Do not publish.')
+              Path('/tmp/bzu_skip_publish').touch()
+              raise SystemExit(0)
           a=json.loads(p.read_text())
           if a['validation']['validated'] is not True:
               print('Holdout not validated. Keep existing prior.')
@@ -89,7 +304,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin "$BRANCH"
-          if ! git diff --quiet HEAD FETCH_HEAD -- '*.py' '.github/workflows/main.yml' 'compose.yaml'; then
+          if ! git diff --quiet HEAD FETCH_HEAD -- '*.py' '.github/workflows/main.yml' '.github/workflows/calibrate_meta_model.yml' 'scripts/run_calibration_segment.sh' 'compose.yaml'; then
             echo 'Strategy changed during replay. Do not publish an incompatible prior.'
             exit 0
           fi
@@ -98,5 +313,5 @@ jobs:
           git add meta_priors.json
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'Calibrate validated BZU expectancy prior'
-          git pull --rebase origin "$BRANCH"
+          git rebase FETCH_HEAD
           git push origin "HEAD:$BRANCH"
