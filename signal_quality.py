@@ -371,7 +371,7 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
         .50 if (adverse_limit and not strong_calibrated) else 1.,
     )
     require_rejection = (
-        counter or late or low_prob
+        counter or (late and not aligned) or low_prob
         or ny_session or exhausted_wave or adverse_limit or h1_against_4h
     )
     return {'meta_prob':probability, 'meta_prob_calibrated':calibration is not None, 'meta_factors':factors,

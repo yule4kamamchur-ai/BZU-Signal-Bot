@@ -515,7 +515,7 @@ const openingNY = ts => ts%86_400_000>=13*3_600_000 && ts%86_400_000<(13*60+105)
 const brain = {series: {}, rows: [], orders: [], endings: [], closed: [], used: new Set(), sourceTs: 0, lastTs: 0, computed: 0};
 const liveBrainEnabled = () => state?.brain_config?.schema === 1;
 const liveBrainFresh = (now = Date.now()) => liveBrainEnabled() && now - brain.computed < QUOTE_MAX_AGE;
-const displayOrders = () => liveBrainEnabled() && brain.sourceTs === state.snapshot_ts ? brain.orders : state.orders;
+const displayOrders = () => state.orders;
 const newYorkClock = new Intl.DateTimeFormat('en-US', {
   timeZone:'America/New_York', weekday:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'
 });
@@ -1749,7 +1749,7 @@ function eventText(event) {
     (event.reason_text ? ' · ' + event.reason_text : '');
 }
 function renderActivity() {
-  const events=[...(state.recent_events??[]), ...(liveBrainEnabled()?brain.endings:[])]
+  const events=[...(state.recent_events??[])]
     .sort((a,b)=>a.ts-b.ts).slice(-5).reverse();
   $('last-event').textContent = events.length ? 'Останнє рішення (' + eventTime(events[0].ts) + '): ' + eventText(events[0]) : 'У журналі ще немає подій.';
   $('events').replaceChildren(...events.map(e => {
@@ -1800,11 +1800,7 @@ function renderBanner(price, usable, view, pnl, tone) {
   } else if (!usable && !liveBrainFresh()) {
     title='ЧЕКАЄМО ОНОВЛЕННЯ ДАНИХ';
     detail='Очікуємо котирування й закриті свічки OKX.';
-  } else if (!plan && liveBrainEnabled() && ['SL','TP1','TP2','CLOSED'].includes(brain.event?.kind) &&
-      Date.now()-brain.event.ts<15*brainMinute) {
-    mode='CLOSED';
-    title='УГОДУ ЗАКРИТО · PAPER';
-    detail=brain.event.detail;
+
   } else if (reference) {
     title+=' · '+(plan?'Найближчий сетап ':'Сетап у формуванні · ')+watchLabel(reference)+' @ '+format(reference.level)+' $';
     detail=(number(price)?'Δ '+signed(reference.level-price,' $')+' · ':'')+reference.reason;
