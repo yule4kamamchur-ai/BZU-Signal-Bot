@@ -15,6 +15,8 @@ import fcntl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from mexc_hybrid import MODEL_SCHEMA, detect, trend_efficiency, meta_estimate
 from mexc_lifecycle import advance
+from mexc_geometry import geometry, POLICY
+from threading import Lock
 import hashlib
 import json
 import math
@@ -32,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = os.getenv("MEXC_FUTURES_BASE", "https://contract.mexc.com")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.0 HYBRID"
+SCANNER_VERSION = "BZU MULTI v15.1 STRUCTURAL"
 
 INSTRUMENTS: tuple[dict[str, Any], ...] = (
     {
@@ -168,13 +170,25 @@ class Bar:
     volume: float
 
 
+_request_lock = Lock()
+_next_request = 0.0
+
+
 def _http_json(url: str, timeout: float = 7.0) -> dict[str, Any]:
+    global _next_request
+    # MEXC kline limit: 20 / 2 s. Pace requests, including retries.
+    with _request_lock:
+        time.sleep(max(0., _next_request-time.monotonic()))
+        _next_request=time.monotonic()+.14
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "BZU-MultiScanner/15.0", "Accept": "application/json"},
+        headers={"User-Agent": "BZU-MultiScanner/15.1", "Accept": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        payload=json.loads(resp.read().decode("utf-8"))
+        if isinstance(payload,dict) and payload.get("success") is False:
+            raise RuntimeError(f"MEXC API code {payload.get('code','unknown')}")
+        return payload
 
 
 def fetch_all_tickers(fetcher=_http_json) -> dict[str, dict[str, Any]]:
@@ -250,6 +264,22 @@ def fetch_klines(symbol: str, interval: str, bars_needed: int, now_ms: int, fetc
     url = f"{MEXC_BASE}/api/v1/contract/kline/{urllib.parse.quote(symbol)}?interval={interval}&start={start_sec}&end={end_sec}"
     payload = fetcher(url)
     return parse_mexc_klines(payload, step, now_ms)
+
+
+def aggregate_bars(rows, source_sec, target_sec, now_ms):
+    step=source_sec*1000; span=target_sec*1000
+    if span%step: raise ValueError("incompatible intervals")
+    buckets={}
+    for b in rows:
+        bucket=b.ts//span*span
+        if bucket+span<=now_ms: buckets.setdefault(bucket,{})[b.ts]=b
+    out=[]
+    for bucket,parts in sorted(buckets.items()):
+        times=list(range(bucket,bucket+span,step))
+        if not all(t in parts for t in times): continue
+        q=[parts[t] for t in times]
+        out.append(Bar(bucket,q[0].open,max(x.high for x in q),min(x.low for x in q),q[-1].close,sum(x.volume for x in q)))
+    return out
 
 
 def ema(values: list[float], period: int) -> float | None:
@@ -453,6 +483,7 @@ def analyze_instrument(
                     quote_ts=int(ticker.get("_observed_ts",now_ms)))
 
     if price <= 0 or len(bars_5m) < 25 or len(bars_15m) < 30 or len(bars_1h) < 25:
+        base_out.update(status="WATCH",status_ua="ДАНІ НЕСВІЖІ",reason_ua="Недостатньо підтверджених свічок; сигнал не оцінено")
         return base_out
 
     b4 = tf_bias(bars_4h)
@@ -491,6 +522,7 @@ def analyze_instrument(
     if not fresh or not base_out["quote_valid"] or not 0<=now_ms-base_out["quote_ts"]<=60000 or not bars_1m or not 0<=now_ms-bars_1m[-1].ts-60000<=120000:
         base_out.update(status="WATCH",status_ua="ДАНІ НЕСВІЖІ",reason_ua="Немає свіжих свічок або виконуваної котировки")
         return base_out
+    base_out["analysis_fresh"]=True
     t1,e1=trend_efficiency(bars_1h); t4,e4=trend_efficiency(bars_4h,8)
     regime="TREND_UP" if t1==1 and t4!=-1 else "TREND_DOWN" if t1==-1 and t4!=1 else "RANGE_TRANSITION"
     candidates=[]
@@ -527,42 +559,42 @@ def analyze_instrument(
                 entry=round_price(quote,tick)
                 ref=thesis["reference"]
                 structural=thesis["structural_stop"]
-                max_stop=entry*spec["max_stop_pct"]; min_stop=entry*spec["min_stop_pct"]
-                if spec["cluster"]=="ENERGY":
-                    min_stop=max(.20,min_stop); max_stop=min(.75,max_stop)
                 # Do not shrink the stop INSIDE invalidation. No chasing or opposite V-candle.
                 last_m1=(bars_1m or bars_5m)[-1]
                 adverse=side*(last_m1.close-last_m1.open)<-.8*max(atr((bars_1m or bars_5m)[:-1]),tick) and side*(last_m1.close-ref)<0
                 route="MARKET"
-                # Retest LIMIT only near the confirmed level, when already moving away in our direction.
-                level=thesis.get("retest_level")
-                if level is not None and side*(quote-level)>max(2*tick,.30*aa) and side*(quote-level)<=.8*a5 and not adverse and side*(rows[-1].close-level)>0:
-                    entry=round_price(level,tick); route="LIMIT"
-                risk=max(min_stop, 1.15*a5, .65*a15, side*(entry-structural)+tick)
-                stop=round_price(entry-side*risk,tick)
-                actual_risk=side*(entry-stop)
-                rr_target=spec["max_rr"] if aligned else spec["min_rr"]
-                tp=round_price(entry+side*rr_target*actual_risk,tick)
-                rr=side*(tp-entry)/actual_risk if actual_risk>0 else 0.
-                spread=ask-bid
                 fee,slip=cost_rates()
-                cost_r=(2*(fee+slip)*entry)/max(actual_risk,tick)
-                net_rr=rr-cost_r
+                g=geometry(spec,thesis,entry,side,tick,a5,a15,bars_15m,bars_1h,fee,slip,aligned)
+                # MARKET first when location and structural payoff are already acceptable.
+                # A wide stop must not make a late/chased entry look acceptable.
+                chase_cap=min(.50*g["risk"],max(2*tick,.80*a5))
+                level=thesis.get("retest_level")
+                if (not g["valid"] or abs(quote-ref)>chase_cap) and level is not None and side*(quote-level)>max(2*tick,.30*aa) and side*(quote-level)<=.8*a5 and not adverse and side*(rows[-1].close-level)>0:
+                    limit_entry=round_price(level,tick)
+                    lg=geometry(spec,thesis,limit_entry,side,tick,a5,a15,bars_15m,bars_1h,fee,slip,aligned)
+                    if lg["valid"]:
+                        entry=limit_entry; route="LIMIT"; g=lg
+                stop,tp,actual_risk,rr,net_rr=(g[k] for k in ("stop","tp","risk","rr","net_rr"))
+                spread=ask-bid
                 # No unsupported probability: rank by evidence + bounded causal estimates.
                 meta=meta_estimate(history or [],{**thesis,"regime":regime},now_ms)
                 rank=score+meta["rank_adjustment"]+min(2.,max(-3.,(net_rr-1.5)*2))
-                valid=(entry>0 and actual_risk>tick and actual_risk<=max_stop+tick/2 and side*(structural-stop)>=-1e-9
+                valid=(entry>0 and g["valid"] and actual_risk>tick and side*(structural-stop)>=-1e-9
                        and side*(quote-structural)>0 and spread<=.20*actual_risk and net_rr>=1.15
-                       and (route=="LIMIT" and side*(quote-entry)>=tick*.5 or route=="MARKET" and abs(quote-ref)<=.50*actual_risk) and not adverse)
+                       and (route=="LIMIT" and side*(quote-entry)>=tick*.5 or route=="MARKET" and abs(quote-ref)<=chase_cap) and not adverse)
                 actionable=valid and score>=76 and (not opposing or reversal) and (not btc_opposes or reversal and score>=79)
                 if spec["use_btc_filter"] and btc_macro.get("state")=="UNKNOWN": actionable=False
                 if tf=="M1" and thesis["family"]=="EXHAUSTION":
                     actionable=actionable and score>=80
                 reason=f"{thesis['setup_ua']} · {regime} · RVOL {thesis['rvol']:.2f}x"
-                if not valid: reason+=" · непридатна ціна/структурний SL/spread/RR"
+                if not valid:
+                    reason+=" · непридатна ціна/SL/spread/RR"
+                    if "NEAR_LIQUIDITY" in g["geometry_reason"]: reason+=" · близький рівень ліквідності: недостатній RR"
+                    if "DISTANT_INVALIDATION" in g["geometry_reason"]: reason+=" · структурний стоп надто далеко від входу"
+                    if "INVALID_STRUCTURE" in g["geometry_reason"]: reason+=" · некоректна геометрія"
                 if btc_opposes: reason+=" · BTC проти"
                 if adverse: reason+=" · зустрічний імпульс"
-                candidates.append({**thesis,"status":"READY" if actionable else "WATCH",
+                candidates.append({**thesis,**g,"status":"READY" if actionable else "WATCH",
                     "status_ua":("ЛІМІТКА ГОТОВА" if route=="LIMIT" else f"ВХІД ЗАРАЗ ({tf})") if actionable else "СПОСТЕРЕЖЕННЯ",
                     "score":score,"rank_score":round(rank,3),"side":side,"side_ua":"LONG ↑" if side==1 else "SHORT ↓",
                     "order_type":route,"entry":entry,"stop":stop,"tp":tp,"rr":round(rr,2),"net_rr_estimate":round(net_rr,3),
@@ -575,7 +607,7 @@ def analyze_instrument(
     candidates.sort(key=lambda c:(c["status"]=="READY",c["rank_score"],c["net_rr_estimate"]),reverse=True)
     best={**base_out,**candidates[0],"candidate_count":len(candidates),
           "candidate_diagnostics":[{k:c[k] for k in ("setup","family","trigger_tf","side","status","score","rank_score","meta","reason_ua")} for c in candidates]}
-    best["be_trigger"]=round_price(best["entry"]+best["side"]*.9*abs(best["entry"]-best["stop"]),tick)
+    best["be_trigger"]=None  # structural trailing has no fixed break-even trigger
     return best
 
 
@@ -675,7 +707,7 @@ def _advance_single_slot(
                 history=memory.setdefault(hist_key,[])
                 history.append({"symbol":active["symbol"],"label":active["label"],"cluster_ua":active["cluster_ua"],
                     "side":side,"side_ua":active["side_ua"],"setup":active["setup"],"family":active.get("family"),"regime":active.get("regime"),
-                    "trade_id":active.get("trade_id"),"model_schema":active.get("model_schema"),"opened_ts":active.get("opened_ts"),"entry":entry,"exit":exit_price,
+                    "trade_id":active.get("trade_id"),"geometry_policy":active.get("geometry_policy"),"model_schema":active.get("model_schema"),"opened_ts":active.get("opened_ts"),"entry":entry,"exit":exit_price,
                     "gross_r":round(gross,4),"cost_r_estimate":round(cost,4),"net_r":net_r,"net_usd":net_usd,"cost_status":"ESTIMATED_EX_FUNDING",
                     "reason":result["reason"],"quality":result["quality"] if not active.get("ambiguous_ohlc") else "AMBIGUOUS_OHLC",
                     "closed_ts":result["closed_ts"],"closed_kyiv":datetime.fromtimestamp(result["closed_ts"]/1000,tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m %H:%M")})
@@ -732,7 +764,10 @@ def _advance_single_slot(
                     "stop": float(pick["stop"]),
                     "initial_stop": float(pick["stop"]),
                     "tp": float(pick["tp"]),
-                    "be_trigger": pick.get("be_trigger"),
+                    "be_trigger": None if pick.get("geometry_policy")==POLICY else pick.get("be_trigger"),
+                    "geometry_policy":pick.get("geometry_policy"),"trail_start_ts":now_ms,
+                    "trail_atr_m5":pick.get("trail_atr_m5"),"trail_start_r":pick.get("trail_start_r",1.25),
+                    "target_kind":pick.get("target_kind"),"structural_anchor":pick.get("structural_anchor"),
                     "risk": risk,
                     "rr": pick["rr"],
                     "score": pick["score"],
@@ -755,6 +790,7 @@ def _advance_single_slot(
             status="IN_TRADE",
             status_ua="ЛІМІТКА ОЧІКУЄ" if active.get("phase")=="PENDING_LIMIT" else "В УГОДІ",
             lifecycle_quality=active.get("quality"),
+            geometry_policy=active.get("geometry_policy"),target_kind=active.get("target_kind"),trail_reason=active.get("trail_reason"),
             side=active["side"],
             side_ua=active["side_ua"],
             setup=active["setup"],
@@ -768,15 +804,20 @@ def _advance_single_slot(
             score=active["score"],
             sizing=active["sizing"],
             signal_id=active.get("signal_id"), phase=active.get("phase","OPEN"),
-            reason_ua=("Лімітка очікує виконання" if active.get("phase")=="PENDING_LIMIT" else f"Відкрито {active['opened_kyiv']} · PnL {active['pnl_r']:+.2f} R ({active['pnl_usd']:+.2f}$)" + (" · Б/У активовано" if active.get("be_armed") else "")),
+            reason_ua=("Лімітка очікує виконання" if active.get("phase")=="PENDING_LIMIT" else f"Відкрито {active['opened_kyiv']} · PnL {active['pnl_r']:+.2f} R ({active['pnl_usd']:+.2f}$)" + (" · Структурний трейлінг" if active.get("trail_reason") else " · Б/У активовано" if active.get("be_armed") else "")),
         )
 
     memory[active_key] = active
     memory[daily_key] = daily
+    # Display all today's resolved trades, including a v15.0 position closed after upgrade.
+    today_rows=[h for h in (memory.get(hist_key) or []) if isinstance(h.get("closed_ts"),int) and _kyiv_day(h["closed_ts"])==today]
+    daily_all={"day":today,"trades":len(today_rows),"wins":sum(h.get("net_r",0)>0 for h in today_rows),
+               "losses":sum(h.get("net_r",0)<0 for h in today_rows),"net_r":round(sum(h.get("net_r",0) for h in today_rows),4),
+               "net_usd":round(sum(h.get("net_usd",0) for h in today_rows),2)}
     return {
         "occupied": active is not None,
         "active": active,
-        "daily": daily,
+        "daily": daily,"daily_all":daily_all,
         "last_closed": (memory.get(hist_key) or [])[-1] if memory.get(hist_key) else None,
     }
 
@@ -866,15 +907,16 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     started=time.monotonic(); cut=now_ms if now_ms is not None else int(time.time()*1000)
     memory=memory or {}; errors=[]; data={}; ticks={}; timings={}
     active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active")) if a}
-    tasks={}
+    tasks={}; counts={}
     with ThreadPoolExecutor(max_workers=8) as pool:
         tasks[pool.submit(fetch_contract_ticks,fetcher)]=("DETAIL","")
         for sym,interval,count in [("BTC_USDT","Min15",100),("BTC_USDT","Min60",40)]+[
-            (spec["symbol"],tf,count) for spec in INSTRUMENTS for tf,count in (("Min1",90),("Min5",60),("Min15",110),("Min60",45),("Hour4",35))]:
+            (spec["symbol"],tf,count) for spec in INSTRUMENTS for tf,count in (("Min1",180),("Min5",130),("Min15",110),("Min60",145),("Hour4",35))]:
             if interval=="Min1" and sym in active_symbols:
                 # Catch up all unseen minutes across normal outages, up to the API window.
                 a=active_symbols[sym]; cursor=a.get("processed_until_ts",a.get("opened_ts") or a.get("placed_ts") or cut)
                 count=max(count,min(1400,(cut-int(cursor))//60000+5))
+            counts[(sym,interval)]=count
             tasks[pool.submit(fetch_klines,sym,interval,count,cut,fetcher)]=(sym,interval)
         for future in as_completed(tasks):
             key=tasks[future]
@@ -884,12 +926,51 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
                 if key[0]=="DETAIL": ticks=value
                 else: data[key]=value
             except Exception as exc:
-                errors.append(f"{key[0]}/{key[1]}: {type(exc).__name__}")
+                errors.append(f"{key[0]}/{key[1]}: {type(exc).__name__} {str(exc)[:100]}")
+    # Retry missing requests once, independently, with pacing in the real HTTP transport.
+    failed=[key for key in tasks.values() if (not ticks if key[0]=="DETAIL" else not data.get(key))]
+    recovered=[]
+    if failed:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            retry={}
+            for sym,tf in failed:
+                if sym=="DETAIL": retry[pool.submit(fetch_contract_ticks,fetcher)]=(sym,tf)
+                else:
+                    count=counts[(sym,tf)]
+                    retry[pool.submit(fetch_klines,sym,tf,count,cut,fetcher)]=(sym,tf)
+            for future in as_completed(retry):
+                sym,tf=key=retry[future]
+                try: value=future.result()
+                except Exception as exc:
+                    errors.append(f"{sym}/{tf}: retry {type(exc).__name__} {str(exc)[:100]}"); continue
+                if value:
+                    if sym=="DETAIL": ticks=value
+                    else: data[key]=value
+                    recovered.append(f"{sym}/{tf}")
+                    errors=[e for e in errors if not e.startswith(f"{sym}/{tf}:")]
+    # Derive only complete contiguous exchange candles; never fill gaps with invented prices.
+    derived=[]
+    for sym in {key[0] for key in counts}:
+        for src,dst in (("Min1","Min5"),("Min5","Min15"),("Min15","Min60"),("Min60","Hour4")):
+            key=(sym,dst)
+            if key not in counts or data.get(key): continue
+            rows=aggregate_bars(data.get((sym,src),[]),TF_SECONDS[src],TF_SECONDS[dst],cut)
+            required={"Min5":25,"Min15":30,"Min60":25,"Hour4":9}[dst]
+            if len(rows)>=required:
+                data[key]=rows; derived.append(f"{sym}/{dst}")
+                errors=[e for e in errors if not e.startswith(f"{sym}/{dst}:")]
     timings["candles_s"]=round(time.monotonic()-started,3)
     quote_start=time.monotonic()
     try: tickers=fetch_all_tickers(fetcher=fetcher)
     except Exception as exc:
         tickers={}; errors.append(f"TICKER: {type(exc).__name__}")
+    if not tickers:
+        try:
+            tickers=fetch_all_tickers(fetcher=fetcher)
+            if tickers:
+                recovered.append("TICKER"); errors=[e for e in errors if not e.startswith("TICKER:")]
+        except Exception as exc:
+            errors.append(f"TICKER: retry {type(exc).__name__}")
     quote_ts=now_ms if now_ms is not None else int(time.time()*1000)
     timings["ticker_s"]=round(time.monotonic()-quote_start,3)
     for sym,ticker in tickers.items():
@@ -924,7 +1005,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     timings["scan_s"]=round(time.monotonic()-started,3)
     return {"version":SCANNER_VERSION,"exchange":"MEXC","updated_ts":now,"scan_started_ts":cut,
         "updated_kyiv":datetime.fromtimestamp(now/1000,tz=timezone.utc).astimezone(KYIV_TZ).strftime("%d.%m.%Y %H:%M"),
-        "health":{"status":"DEGRADED" if errors or any(r.get("status_ua")=="ДАНІ НЕСВІЖІ" or not r.get("candles_1m") for r in results) else "OK","timings":timings,"expected_interval_sec":int(os.getenv("MEXC_SCAN_INTERVAL_SEC","300")),"assets":len(results),"errors":len(errors)},
+        "health":{"status":"DEGRADED" if errors or any(r.get("status_ua")=="ДАНІ НЕСВІЖІ" or not r.get("candles_1m") for r in results) else "OK","timings":timings,"expected_interval_sec":int(os.getenv("MEXC_SCAN_INTERVAL_SEC","300")),"assets":len(results),"errors":len(errors),"recovered":recovered,"derived":derived,"source":"GITHUB_ACTIONS" if os.getenv("GITHUB_RUN_ID") else "WORKER_OR_LOCAL","run_id":os.getenv("GITHUB_RUN_ID"),"run_attempt":os.getenv("GITHUB_RUN_ATTEMPT")},
         "defaults":{"deposit_usdt":deposit,"risk_pct":risk_pct,"max_leverage":max_leverage},
         "btc_macro":btc_macro,"top_pick":top,"instruments":ranked,"ready_count":sum(r["status"]=="READY" for r in ranked),
         "watch_count":sum(r["status"]=="WATCH" for r in ranked),"errors":errors}
@@ -975,6 +1056,10 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         deposit=float(os.getenv("BZU_DEPOSIT_USDT","100")); risk=float(os.getenv("BZU_RISK_PCT","3")); lev=float(os.getenv("BZU_MAX_LEVERAGE","5"))
         if not all(math.isfinite(x) and x>0 for x in (deposit,risk,lev)): raise ValueError("Invalid sizing configuration")
         state=run_scan(fetcher=fetcher,deposit=deposit,risk_pct=risk,max_leverage=lev,memory=mem,apply_locks=False)
+        # Preserve existing entry/initial SL/TP/R. Start new trailing only after migration time.
+        for active in (mem.get("oil_active"),mem.get("cm_active")):
+            if active and active.get("model_schema")=="MEXC_HYBRID_15_0" and not active.get("geometry_policy"):
+                active.update(geometry_policy=POLICY,trail_start_ts=state["updated_ts"],be_trigger=None)
         # Lifecycle still advances whenever M1 data exists, even if other HTF fetches fail.
         update_dual_paper_slots(state,mem,now_ms=state["updated_ts"])
         # Execution bars are internal. Keep the public snapshot small and do not duplicate long catch-up history.
@@ -983,7 +1068,8 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         # An unavailable market must not masquerade as a successful refresh.
         fresh_count=sum(bool(r.get("quote_valid")) and r.get("quote_ts",0)>=state["updated_ts"]-60000 for r in state["instruments"])
         state["health"]["fresh_quotes"]=fresh_count
-        if not fresh_count:
+        state["last_attempt_ts"]=state["updated_ts"]
+        if not fresh_count or not any(r.get("analysis_fresh") for r in state["instruments"]):
             state["health"]["status"]="FAILED_DATA"
             previous=json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
             state["last_attempt_ts"]=state["updated_ts"]

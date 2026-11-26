@@ -3,6 +3,11 @@
   'use strict';
 
   const STATE_URL = './multi_scanner_state.json';
+  // Injected only into the GitHub Pages artifact. Worker stays same-origin.
+  const RAW_STATE_URL = document.querySelector('meta[name="bzu-state-source"]')?.content || '';
+  let snapshotSource = '';
+  let fetchDetails = '';
+  const snapshotClock = d => Math.max(Number(d?.updated_ts || 0), Number(d?.last_attempt_ts || 0));
   const MEXC_WS_URL = 'wss://contract.mexc.com/edge';
   const SYMBOLS = ['UKOIL_USDT', 'XPT_USDT', 'SOL_USDT', 'LINK_USDT', 'LTC_USDT', 'APT_USDT', 'ORDI_USDT', 'BTC_USDT'];
   const TV_MAP = {
@@ -323,7 +328,7 @@
         <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−$${sz.riskUsd}</strong></div>
         <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+$${sz.profitUsd}</strong></div>
       </div>` : ''}
-      <p class="ms-hl-reason">${item.reason_ua || ''}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
+      <p class="ms-hl-reason">${item.reason_ua || ''}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
     `;
   }
 
@@ -396,10 +401,12 @@
       const interval = Number(health.expected_interval_sec || 300);
       const stale = age === null || age > interval + 60 || scannerFetchError || ['FAILED_DATA','FAILED_CYCLE'].includes(health.status);
       const ageTag = age === null ? 'немає даних' : `${Math.floor(age/60)} хв ${age%60} с тому`;
+      const sourceTag = snapshotSource ? ` · ${snapshotSource}` : '';
+      const attempt = data.last_attempt_ts && data.last_attempt_ts > data.updated_ts ? ` · спроба ${new Date(data.last_attempt_ts).toLocaleTimeString('uk-UA',{timeZone:'Europe/Kyiv'})}` : '';
       const perf = health.timings && Number.isFinite(health.timings.scan_s) ? ` · аналіз ${health.timings.scan_s.toFixed(1)} с` : '';
-      updEl.textContent = `${stale ? '⚠ ЗАСТАРІЛИЙ АНАЛІЗ' : health.status === 'DEGRADED' ? '⚠ ЧАСТКОВІ ДАНІ' : 'Аналіз'}: ${data.updated_kyiv || '—'} Київ · ${ageTag} · цикл ${interval/60} хв${perf}${health.errors ? ' · помилок '+health.errors : ''}${scannerFetchError ? ' · помилка завантаження' : ''}${liveTag}`;
+      updEl.textContent = `${stale ? '⚠ ЗАСТАРІЛИЙ АНАЛІЗ' : health.status === 'DEGRADED' ? '⚠ ЧАСТКОВІ ДАНІ' : 'Аналіз'}: ${data.updated_kyiv || '—'} Київ · ${ageTag} · цикл ${interval/60} хв${perf}${health.errors ? ' · помилок '+health.errors : ''}${scannerFetchError ? ' · помилка завантаження' : ''}${attempt}${sourceTag}${liveTag}`;
       updEl.classList.toggle('ms-dn',stale);
-      updEl.title = (data.errors || []).join('\n') || health.last_error || '';
+      updEl.title = [(data.errors || []).join('\n'),health.last_error, health.run_id ? `GitHub run: ${health.run_id}` : '', health.recovered?.length ? `Відновлено: ${health.recovered.join(', ')}` : '', health.derived?.length ? `Агреговано: ${health.derived.join(', ')}` : '',fetchDetails].filter(Boolean).join('\n');
 
     }
   }
@@ -513,7 +520,7 @@
       card.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
       badge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
       title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} $`;
-      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)} · TP ${fmtPrice(tp, tick)}${act.be_armed ? ' · Б/У' : ''}`;
+      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)} · TP ${fmtPrice(tp, tick)}${act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
     } else {
       card.classList.add('ms-slot-free');
       badge.textContent = 'ВІЛЬНО';
@@ -539,8 +546,8 @@
       'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI · XPT'
     );
 
-    const oilD = oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
-    const cmD = cmSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
+    const oilD = oilSlot.daily_all || oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
+    const cmD = cmSlot.daily_all || cmSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
     const oilT = Number(oilD.trades || 0), oilR = Number(oilD.net_r || 0), oilU = Number(oilD.net_usd || 0);
     const cmT = Number(cmD.trades || 0), cmR = Number(cmD.net_r || 0), cmU = Number(cmD.net_usd || 0);
 
@@ -680,23 +687,35 @@
   async function loadScannerState() {
     if (scanLoading) return;
     scanLoading = true;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
+    const endpoints = [{url:STATE_URL,label:'Pages / worker'}];
+    // Public repository snapshot, bypassing the Pages deployment queue. Never send credentials.
+    if (/^https:\/\/raw\.githubusercontent\.com\//.test(RAW_STATE_URL)) endpoints.push({url:RAW_STATE_URL,label:'GitHub state'});
+    let success = 0; const failures=[];
+    async function poll({url,label}) {
+      const controller = new AbortController();
+      const timer=setTimeout(()=>controller.abort(),6000);
+      try {
+        const response=await fetch(`${url}${url.includes('?')?'&':'?'}t=${Math.floor(Date.now()/15000)}`, {cache:'no-store',signal:controller.signal,credentials:'omit'});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data=await response.json();
+        if (!Array.isArray(data.instruments) || !Number.isFinite(snapshotClock(data)) || snapshotClock(data)<=0) throw new Error('Invalid snapshot');
+        success++;
+        const first=!latestData;
+        // Failed-cycle heartbeat can be newer than the last successful analysis.
+        if (!latestData || snapshotClock(data)>snapshotClock(latestData) || (snapshotClock(data)===snapshotClock(latestData) && Number(data.updated_ts||0)>Number(latestData.updated_ts||0))) {
+          latestData=data; snapshotSource=label; scannerFetchError=false;
+          checkSlotAlerts(latestData); renderAll(first || chartMode==='levels');
+        }
+      } catch (e) { failures.push(`${label}: ${e.name==='AbortError'?'timeout':e.message}`); }
+      finally { clearTimeout(timer); }
+    }
     try {
-      const response = await fetch(`${STATE_URL}?t=${Date.now()}`, {cache:'no-store',signal:controller.signal});
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      if (!Array.isArray(data.instruments)) throw new Error('Invalid snapshot');
-      scannerFetchError = false;
-      const first = !latestData;
-      if (!latestData || Number(data.updated_ts || 0)>=Number(latestData.updated_ts || 0)) latestData=data;
-      checkSlotAlerts(latestData);
-      renderAll(first || chartMode==='levels');
-    } catch (_) {
-      scannerFetchError = true;
-      if (latestData) renderMeta(latestData);
-      else { const el=$('ms-updated'); if(el) el.textContent='⚠ Немає зліпка MEXC — перевірте сервер / GitHub Actions'; }
-    } finally { clearTimeout(timer); scanLoading=false; }
+      await Promise.all(endpoints.map(poll));
+      scannerFetchError=success===0;
+      fetchDetails=failures.join('\n');
+      if(latestData) renderMeta(latestData);
+      else {const el=$('ms-updated'); if(el) el.textContent='⚠ Немає зліпка MEXC — перевірте worker / GitHub Actions';}
+    } finally { scanLoading=false; }
   }
 
   function wireBannerClick() {

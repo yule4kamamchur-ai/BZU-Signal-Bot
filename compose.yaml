@@ -13,9 +13,16 @@ services:
     environment:
       MEXC_DATA_DIR: /app/data
       MEXC_SCAN_INTERVAL_SEC: "180"
+      MEXC_CYCLE_TIMEOUT_SEC: "150"
       LIVE_HTTP_BIND: 0.0.0.0
       LIVE_HTTP_PORT: "8080"
     ports:
       - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 210s
     volumes:
       - ./data:/app/data

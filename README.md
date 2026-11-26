@@ -1,4 +1,4 @@
-> **Поточна версія MEXC: v15.0 HYBRID.** Почніть з [README_HYBRID_V15_UA.md](README_HYBRID_V15_UA.md). Нижче — історична документація старого OKX-ядра.
+> **Поточна версія MEXC: v15.1 STRUCTURAL.** Почніть з [README_STRUCTURAL_V151_UA.md](README_STRUCTURAL_V151_UA.md). Нижче — історична документація старого OKX-ядра.
 
 # BZU · v12.39 Єдиний структурний орієнтир
 

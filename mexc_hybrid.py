@@ -7,7 +7,7 @@ import math
 from collections import defaultdict
 from statistics import mean
 
-MODEL_SCHEMA = 'MEXC_HYBRID_15_0'
+MODEL_SCHEMA = 'MEXC_HYBRID_15_1'
 FAMILIES = {
     'M5_LIQUIDITY_SWEEP_RECLAIM': 'LIQUIDITY_SWEEP',
     'TREND_PULLBACK_FVG_VWAP': 'TREND_PULLBACK',
@@ -55,7 +55,7 @@ def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe):
     swept = (c.low < lo-tick and c.close > lo+tick) if side==1 else (c.high > hi+tick and c.close < hi-tick)
     reject = wick/width >= .32 and body > 0 and close_strength >= .10
     if swept and body>=.35*atr and rv>=min_rvol and close_strength>=.10:
-        add('M5_LIQUIDITY_SWEEP_RECLAIM',f'{timeframe} свіп + реклайм',76,stop)
+        add('M5_LIQUIDITY_SWEEP_RECLAIM',f'{timeframe} свіп + реклайм',76,stop,retest=lo if side==1 else hi)
     if trend and zone is not None and (c.low <= zone+.4*atr and c.high>=zone-.4*atr) and side*(c.close-zone)>=0 and (reject or body>=.45*atr) and rv>=.85:
         anchor=min(c.low,p.low,zone)-tick if side==1 else max(c.high,p.high,zone)+tick
         add('TREND_PULLBACK_FVG_VWAP',f'{timeframe} відкат до FVG/EMA/VWAP',74,anchor,retest=zone)
@@ -78,7 +78,7 @@ def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe):
     level=min(x.low for x in pre) if side==1 else max(x.high for x in pre)
     if side*(p.close-level)<-.10*atr and side*(c.close-level)>.10*atr and body>=.45*atr and rv>=.95:
         anchor=min(p.low,c.low)-tick if side==1 else max(p.high,c.high)+tick
-        add('FAILED_BREAKOUT_TRAP',f'{timeframe} хибний пробій / пастка',77,anchor)
+        add('FAILED_BREAKOUT_TRAP',f'{timeframe} хибний пробій / пастка',77,anchor,retest=level)
     prior_move=side*(p.close-rows[-7].open)
     if prior_move <= -2.0*atr and reject and rv>=min_rvol and side*(c.close-p.open)>=.05*atr:
         anchor=min(x.low for x in rows[-4:])-tick if side==1 else max(x.high for x in rows[-4:])+tick

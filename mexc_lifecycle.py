@@ -3,6 +3,7 @@ M1 OHLC cannot reveal intraminute order; partial bars use only post-entry close.
 """
 from __future__ import annotations
 import math
+from mexc_geometry import POLICY, structural_trail
 
 
 def advance(active, item, now, *, round_price, legacy_cursor=0):
@@ -83,11 +84,16 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
         if end>=start+18*3600000: return finish("TIME_EXIT",cl,end)
         peak=max(peak,(h-entry)/risk if side==1 else (entry-l)/risk)
         # This update is at bar close and can only affect later bars/quotes.
-        lock=.55 if peak>=1.40 else .05 if peak>=.90 else None
-        if lock is not None:
-            new=round_price(entry+side*lock*risk,tick)
-            if side*(new-stop)>0:
-                stop=new; active.update(be_armed=True,stop_effective_ts=end)
+        if active.get('geometry_policy')==POLICY:
+            if not partial:
+                stop=structural_trail(active,(o,h,l,cl),stop,peak,end,tick,step)
+        else:
+            # Compatibility only for pre-v15 synthetic/legacy records.
+            lock=.55 if peak>=1.40 else .05 if peak>=.90 else None
+            if lock is not None:
+                new=round_price(entry+side*lock*risk,tick)
+                if side*(new-stop)>0:
+                    stop=new; active.update(be_armed=True,stop_effective_ts=end)
     if now-cursor>step*2:
         quality='DATA_GAP'; active['data_gap']=True
     if pending:
