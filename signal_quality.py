@@ -410,6 +410,7 @@ def execution_sizing(snapshot, side, entry, regime, *, wave_ts, rvol, room_r,
     structural_cap = min(
         .30 if counter_short_sweep else 1.,
         .40 if (counter or h1_against_4h) else 1.,
+        .50 if (asia and (not premium_discount or not aligned)) else 1.,
         .50 if (late or exhausted_wave or pre_lon or poor_location_no_vol) else 1.,
         .60 if (ny_session and not aligned) else (.85 if (ny_session and regime.get('side_1h') != side) else 1.),
         .50 if (adverse_limit and not strong_calibrated) else 1.,

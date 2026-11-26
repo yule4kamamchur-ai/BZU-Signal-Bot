@@ -347,7 +347,7 @@ def evaluate_active_trade_lifecycle(position, ts, price, cfg, engine, *, snapsho
         tod = ts % oil_risk.DAY
         if (decision['stop'] is None and _opened_in_asia(position)
                 and (6 * 60 + 45) * 60_000 <= tod < (7 * 60 + 15) * 60_000):
-            target_r = .05 if (rr >= .30 - EPS or peak >= .40 - EPS) else -.45
+            target_r = .05 if (rr >= .50 - EPS or peak >= .60 - EPS) else -.45
             pl_stop = engine.round_tick(round(entry + side * target_r * risk, 10), cfg.tick, up=side == 1)
             if target_r >= 0:
                 cost_stop = engine.bzu_policy.breakeven_price(position, engine.execution_config(position, cfg), engine)
@@ -421,7 +421,7 @@ LATE_MFE_LOCK_STEPS = ((.60, -.35), (.70, .08), (1.25, .55), (1.65, 1.10))
 TREND_MFE_LOCK_STEPS = ((.95, .05), (1.40, .55), (1.85, 1.15))
 RANGE_MFE_LOCK_STEPS = ((.80, .05), (1.15, .45), (1.50, .90))
 COUNTER_MFE_LOCK_STEPS = ((.75, .05), (1.10, .45), (1.45, .90))
-ASIA_MFE_LOCK_STEPS = ((.80, .05), (1.20, .50), (1.55, .95))
+ASIA_MFE_LOCK_STEPS = ((.85, .05), (1.15, .50), (1.40, .85))
 LEGACY_MFE_LOCK_STEPS = ((1.25, .35),)
 
 

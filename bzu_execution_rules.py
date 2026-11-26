@@ -154,8 +154,9 @@ def retest_reason(snapshot, side, quote, trigger, regime, atr, tick, *, sizing=N
     is_m15 = trigger.get('confirmation_timeframe') in (None, '15m')
     if (sizing and sizing.get('meta_prob_calibrated') and sizing.get('meta_prob', 1.0) < 0.25):
         return 'CONFIRMATION_BODY_RETEST'
+    _ret_frac = .06 if asia_session(snapshot.now) else .10
     if (is_m15 and trigger.get('strict_rejection') and regime.get('side_4h')!=-side and level is not None and risk is not None and risk>0
-            and side*(quote-level)>=max(2*tick,.10*risk)):
+            and side*(quote-level)>=max(2*tick,_ret_frac*risk)):
         return 'CONFIRMATION_BODY_RETEST'
     return None
 
