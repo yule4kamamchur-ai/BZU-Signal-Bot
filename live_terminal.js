@@ -2,6 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const OKX = 'https://www.okx.com/api/v5/market';
+const DASHBOARD_RELEASE = 'v14.4.5';
 const STATE_MAX_AGE = 27 * 60_000;
 const QUOTE_MAX_AGE = 15_000;
 const chartFrames = { '5m': 300, '15m': 900 };
@@ -1844,7 +1845,26 @@ function renderRegimeMatrix(priority, usable, fresh) {
     element('span','Пріоритет: '+(priority?sideLabel(priority):'Діапазон')));
 }
 
+// UI release and server snapshot release are different facts. Never infer one from the other.
+function renderReleaseStatus(now = Date.now()) {
+  const node = $('server-release');
+  if (!node) return;
+  const release = typeof state?.version === 'string' && /^v\d+\.\d+\.\d+$/.test(state.version)
+    ? state.version : null;
+  if (!release || !number(state?.snapshot_ts) || state.snapshot_ts <= 0) {
+    node.textContent = 'Сервер: версію не підтверджено';
+    node.title = 'Немає зліпка з версією серверного бота';
+    return;
+  }
+  const stale = stateError || state.snapshot_ts > now + 5_000 || now - state.snapshot_ts >= STATE_MAX_AGE;
+  const mismatch = release !== DASHBOARD_RELEASE;
+  node.textContent = 'Сервер: ' + release + (mismatch ? ' · версії не збігаються' : '') +
+    (stale ? ' · зліпок застарілий або недоступний' : ' · зліпок отримано');
+  node.title = 'Версія з live_state.json. Зліпок: ' + eventTime(state.snapshot_ts) + ' (Київ).';
+}
+
 function render() {
+  renderReleaseStatus();
   if (!state) return;
   const focusId=document.activeElement?.dataset.focus;
   const now=Date.now(), live=quote && quote.ts<=now+3000 && now-quote.ts<=QUOTE_MAX_AGE;
@@ -2136,7 +2156,7 @@ async function pollState() {
         !number(next.snapshot_ts) || !number(next.price) || next.price<=0 || !/^[A-Z0-9-]{3,35}$/.test(next.instrument)) throw new Error('Invalid terminal snapshot');
     if (state && next.snapshot_ts < state.snapshot_ts) return;
     stateError = false;
-    if (state && next.snapshot_ts === state.snapshot_ts) {
+    if (state && next.snapshot_ts === state.snapshot_ts && next.version === state.version) {
       render();
       return;
     }
