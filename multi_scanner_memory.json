@@ -1,6 +1,5 @@
 {
   "sent": {
-    "LINK_USDT:1:MOMENTUM:M5:1795720500000:OPEN": 1795720857,
     "LINK_USDT:1:BREAKOUT_RETEST:M5:1795727700000:OPEN": 1795728061,
     "LINK_USDT:1:BREAKOUT_RETEST:M5:1795738200000:OPEN": 1795738557,
     "LTC_USDT:1:BREAKOUT_RETEST:M5:1795746000000:OPEN": 1795746351,
@@ -11,9 +10,10 @@
     "APT_USDT:-1:EARLY_STRUCTURE_SHIFT:M5:1795791000000:OPEN": 1795791359,
     "UKOIL_USDT:-1:MOMENTUM:M5:1795791600000:OPEN": 1795791948,
     "UKOIL_USDT:-1:EARLY_STRUCTURE_SHIFT:M5:1795794600000:OPEN": 1795794953,
-    "UKOIL_USDT:1:BREAKOUT_RETEST:M5:1795806600000:PENDING_LIMIT": 1795806958
+    "UKOIL_USDT:1:BREAKOUT_RETEST:M5:1795806600000:PENDING_LIMIT": 1795806958,
+    "UKOIL_USDT:1:BREAKOUT_RETEST:M5:1795806600000:OPEN": 1795807263
   },
-  "last_run_ts": 1795806958232,
+  "last_run_ts": 1795807263955,
   "cm_active": null,
   "cm_daily": {
     "day": "2026-11-27",
@@ -25,12 +25,12 @@
     "net_usd": 0.52
   },
   "oil_active": {
-    "phase": "PENDING_LIMIT",
+    "phase": "OPEN",
     "placed_ts": 1795806958232,
-    "processed_until_ts": 1795806958232,
+    "processed_until_ts": 1795807200000,
     "expires_ts": 1795807858232,
     "stop_effective_ts": 1795806958232,
-    "quality": "OBSERVED_M1",
+    "quality": "PARTIAL_ENTRY_BAR",
     "alignment_tier": "EARLY_REVERSAL",
     "risk_multiplier": 0.575,
     "funding_rate": 0.0,
@@ -100,13 +100,14 @@
       "portfolio_reserved_risk_usd": 0.845897,
       "portfolio_capped": true
     },
-    "opened_ts": null,
-    "opened_kyiv": null,
-    "current_price": 90.7,
-    "pnl_r": 0.0,
-    "pnl_usd": 0.0,
-    "peak_r": 0.0,
-    "be_armed": false
+    "opened_ts": 1795807140000,
+    "opened_kyiv": "27.11 21:19",
+    "current_price": 90.66,
+    "pnl_r": 0.0652,
+    "pnl_usd": 0.06,
+    "peak_r": 0.04347826086958805,
+    "be_armed": false,
+    "partial_entry_bar": true
   },
   "oil_daily": {
     "day": "2026-11-27",
@@ -118,13 +119,11 @@
     "net_usd": -0.5
   },
   "consumed_signals": {
-    "LINK_USDT:1:MOMENTUM:M5:1795720500000": 1795720857949,
     "LINK_USDT:1:BREAKOUT_RETEST:M5:1795727700000": 1795728061107,
     "LINK_USDT:1:BREAKOUT_RETEST:M5:1795738200000": 1795738557379,
     "LTC_USDT:1:BREAKOUT_RETEST:M5:1795746000000": 1795746351821,
     "UKOIL_USDT:1:MOMENTUM:M5:1795756500000": 1795756864421,
     "LINK_USDT:1:FAILED_BREAKOUT:M5:1795763400000": 1795763758421,
-    "LINK_USDT:1:EVENT:5985735": 1795720857949,
     "LINK_USDT:1:EVENT:5985759": 1795728061107,
     "LINK_USDT:1:EVENT:5985794": 1795738557379,
     "LTC_USDT:1:EVENT:5985820": 1795746351821,
@@ -538,7 +537,7 @@
   "metal_active": {
     "phase": "OPEN",
     "placed_ts": 1795788666313,
-    "processed_until_ts": 1795806900000,
+    "processed_until_ts": 1795807200000,
     "expires_ts": 1795789146313,
     "stop_effective_ts": 1795788666313,
     "quality": "OBSERVED_M1",
@@ -613,22 +612,13 @@
     },
     "opened_ts": 1795788666313,
     "opened_kyiv": "27.11 16:11",
-    "current_price": 1328.06,
-    "pnl_r": -0.0929,
-    "pnl_usd": -0.09,
+    "current_price": 1327.77,
+    "pnl_r": -0.0689,
+    "pnl_usd": -0.07,
     "peak_r": 0.6914191419142066,
     "be_armed": false,
     "partial_entry_bar": true,
     "trail_m5": [
-      {
-        "bucket": 1795802100000,
-        "last": 1795802400000,
-        "count": 5,
-        "o": 1321.73,
-        "h": 1329.17,
-        "l": 1321.73,
-        "c": 1328.88
-      },
       {
         "bucket": 1795802400000,
         "last": 1795802700000,
@@ -763,6 +753,15 @@
         "h": 1328.16,
         "l": 1327.76,
         "c": 1327.83
+      },
+      {
+        "bucket": 1795806900000,
+        "last": 1795807200000,
+        "count": 5,
+        "o": 1327.83,
+        "h": 1328.66,
+        "l": 1327.83,
+        "c": 1327.96
       }
     ]
   },
