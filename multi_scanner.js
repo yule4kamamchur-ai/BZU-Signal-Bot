@@ -416,7 +416,7 @@
       const b = data.btc_macro;
       const cls = b.side === 1 ? 'ms-up' : b.side === -1 ? 'ms-dn' : 'ms-flat';
       const p = posNum(livePrices.BTC_USDT) ?? b.price;
-      btcEl.innerHTML = `BTC Макро: <strong class="${cls}">${b.label_ua}</strong> · ${p ? Number(p).toLocaleString('en-US', { maximumFractionDigits: 0 } USDT) : '—'}`;
+      btcEl.innerHTML = `BTC Макро: <strong class="${cls}">${b.label_ua}</strong> · ${p ? Number(p).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' USDT' : '—'}`;
     }
     const updEl = $('ms-updated');
     if (updEl) {
