@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
-<title>BZU MULTI · MEXC Institutional v15.2.2</title>
+<title>BZU MULTI · MEXC Institutional v15.2.3</title>
 <link rel="stylesheet" href="./live_terminal.css?v=15.2.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <meta name="bzu-state-source" content="">
@@ -23,7 +23,7 @@
     <button type="button" id="ms-sound-btn" class="ms-sound-btn" aria-pressed="false">🔕 Звук: вимк.</button>
     <span id="ms-btc-pill" class="ms-btc-pill">BTC Макро: очікуємо…</span>
     <div class="ms-calc-inputs" aria-label="Локальний калькулятор для нових сценаріїв (не змінює серверний журнал)">
-      <label>Депозит $<input id="ms-deposit" type="number" value="100" min="10" step="10"></label>
+      <label>Депозит USDT<input id="ms-deposit" type="number" value="100" min="10" step="10"></label>
       <label>Ризик %<input id="ms-risk" type="number" value="3" min="0.5" max="20" step="0.5"></label>
       <label>Плече ×<input id="ms-lev" type="number" value="5" min="1" max="50" step="1"></label>
     </div>
@@ -111,17 +111,17 @@
 <section id="ms-daily-summary" class="panel ms-daily-bar" aria-label="Підсумок угод за сьогодні (клік — історія угод)">
   <div id="ms-daily-oil-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="OIL" title="Натисніть, щоб відкрити історію угод по нафті">
     <small>СЬОГОДНІ · НАФТА (UKOIL) <span class="ms-hist-link">Історія ↗</span></small>
-    <strong id="ms-day-oil">0 уг. · +0.00 R ($0.00)</strong>
-    <small id="ms-day-oil-sub" class="muted">Слот 1 · MEXC · колір по $</small>
+    <strong id="ms-day-oil">0 уг. · +0.00 R (0.00 USDT)</strong>
+    <small id="ms-day-oil-sub" class="muted">Слот 1 · MEXC · колір по USDT</small>
   </div>
   <div id="ms-daily-cm-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="CRYPTO_METAL" title="Натисніть, щоб відкрити історію угод по крипті та металу">
     <small>СЬОГОДНІ · КРИПТА / МЕТАЛ <span class="ms-hist-link">Історія ↗</span></small>
-    <strong id="ms-day-cm">0 уг. · +0.00 R ($0.00)</strong>
-    <small id="ms-day-cm-sub" class="muted">Слот 2 · MEXC · колір по $</small>
+    <strong id="ms-day-cm">0 уг. · +0.00 R (0.00 USDT)</strong>
+    <small id="ms-day-cm-sub" class="muted">Слот 2 · MEXC · колір по USDT</small>
   </div>
   <div id="ms-daily-total-btn" class="ms-daily-cell ms-daily-total ms-daily-clickable" role="button" tabindex="0" data-slot-filter="ALL" title="Натисніть, щоб відкрити повну історію закритих угод">
     <small>РАЗОМ ЗА СЬОГОДНІ <span class="ms-hist-link">Усі угоди ↗</span></small>
-    <strong id="ms-day-total">0 уг. · +0.00 R ($0.00)</strong>
+    <strong id="ms-day-total">0 уг. · +0.00 R (0.00 USDT)</strong>
     <small class="muted">Клік → деталі кожної угоди та причина закриття</small>
   </div>
 </section>
@@ -131,7 +131,7 @@
     <div class="ms-modal-head">
       <div>
         <h2 id="ms-history-title">Історія закритих угод · BZU MULTI</h2>
-        <p class="muted" id="ms-history-subtitle">Детальний журнал результатів ($) та причин закриття</p>
+        <p class="muted" id="ms-history-subtitle">Детальний журнал результатів (USDT) та причин закриття</p>
       </div>
       <button type="button" id="ms-history-close" class="ms-modal-close" aria-label="Закрити історію">✕</button>
     </div>
@@ -167,7 +167,7 @@
 </div>
 
 <footer>
-  <span>BZU MULTI v15.2.2 · MEXC Live WebSocket</span>
+  <span>BZU MULTI v15.2.3 · MEXC Live WebSocket</span>
   <span>TP1 50% + Runner · Smart Maker · Alpha-Decay · Funding Conviction</span>
   <span>PAPER · SIGNAL TERMINAL</span>
 </footer>

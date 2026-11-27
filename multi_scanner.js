@@ -334,7 +334,7 @@
       </div>
       <div class="ms-hl-title-row">
         <div>
-          <h3 class="ms-hl-sym">${item.label} <span class="ms-hl-price" id="ms-hl-live-price">${fmtPrice(price, item.tick)} $</span></h3>
+          <h3 class="ms-hl-sym">${item.label} <span class="ms-hl-price" id="ms-hl-live-price">${fmtPrice(price, item.tick)} USDT</span></h3>
           <p class="ms-hl-sub">${item.setup_ua || 'Аналіз структури'} · <strong class="${sideCls}">${item.side_ua}</strong> · ${orderLbl}</p>
         </div>
         <a class="ms-mexc-btn" href="${item.mexc_url || 'https://www.mexc.com/futures/' + item.symbol}" target="_blank" rel="noopener">MEXC ↗</a>
@@ -348,10 +348,10 @@
       </div>
       ${sz ? `
       <div class="ms-sizing-bar">
-        <div><small>ПОЗИЦІЯ</small><strong>$${sz.notional}</strong></div>
+        <div><small>ПОЗИЦІЯ</small><strong>${sz.notional} USDT</strong></div>
         <div><small>ПЛЕЧЕ</small><strong>${sz.effLev}×</strong></div>
-        <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−$${sz.riskUsd}</strong></div>
-        <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+$${sz.profitUsd}</strong></div>
+        <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−${sz.riskUsd} USDT</strong></div>
+        <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+${sz.profitUsd} USDT</strong></div>
       </div>` : ''}
       <p class="ms-hl-reason">${item.reason_ua || ''}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
     `;
@@ -416,7 +416,7 @@
       const b = data.btc_macro;
       const cls = b.side === 1 ? 'ms-up' : b.side === -1 ? 'ms-dn' : 'ms-flat';
       const p = posNum(livePrices.BTC_USDT) ?? b.price;
-      btcEl.innerHTML = `BTC Макро: <strong class="${cls}">${b.label_ua}</strong> · $${p ? Number(p).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'}`;
+      btcEl.innerHTML = `BTC Макро: <strong class="${cls}">${b.label_ua}</strong> · ${p ? Number(p).toLocaleString('en-US', { maximumFractionDigits: 0 } USDT) : '—'}`;
     }
     const updEl = $('ms-updated');
     if (updEl) {
@@ -470,7 +470,7 @@
     }
     if (sym === selectedSymbol) {
       const hl = $('ms-hl-live-price');
-      if (hl) hl.textContent = `${fmtPrice(price, item.tick)} $`;
+      if (hl) hl.textContent = `${fmtPrice(price, item.tick)} USDT`;
       tickChartPrice(sym, price);
     }
     renderDualSlotsAndDaily();
@@ -564,7 +564,7 @@
       const tick = act.tick || 0.01;
       if (act.phase === 'PENDING_LIMIT') {
         badge.textContent = act.maker_pullback ? 'MAKER ЛІМІТКА (0%)' : 'ЛІМІТКА ОЧІКУЄ';
-        title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(act.entry, tick)} $`;
+        title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(act.entry, tick)} USDT`;
         sub.textContent = `SL ${fmtPrice(act.stop, tick)} · TP1 ${fmtPrice(act.tp1 || act.tp, tick)} · TP2 ${fmtPrice(act.tp, tick)} · до ${act.maker_pullback ? '15' : '8'} хв`;
         _renderSlotActionBanner(alertEl, act);
         return;
@@ -589,8 +589,8 @@
       const riskUsd = Number((act.sizing && act.sizing.risk_usd) || 3);
       const pnlUsd = pnlR * riskUsd;
       card.classList.add(pnlUsd >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
-      badge.textContent = `${act.tp1_hit ? 'TP1 50% ✓ · ' : 'В УГОДІ · '}${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
-      title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} $`;
+      badge.textContent = `${act.tp1_hit ? 'TP1 50% ✓ · ' : 'В УГОДІ · '}${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)} USDT)`;
+      title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} USDT`;
       sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)}${act.tp1 && !act.tp1_hit ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP2 ${fmtPrice(tp, tick)}${act.tp1_hit ? ' · Б/У + Runner 50%' : act.stale_tightened ? ' · Тайм-стоп SL' : act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
       _renderSlotActionBanner(alertEl, act);
     } else {
@@ -626,16 +626,16 @@
 
     const dOil = $('ms-day-oil'), dCm = $('ms-day-cm'), dTot = $('ms-day-total');
     if (dOil) {
-      dOil.textContent = `${oilT} уг. · ${fmtSigned(oilR)} R (${fmtSigned(oilU)}$)`;
+      dOil.textContent = `${oilT} уг. · ${fmtSigned(oilR)} R (${fmtSigned(oilU)} USDT)`;
       dOil.className = oilU > 0 ? 'ms-up' : oilU < 0 ? 'ms-dn' : '';
     }
     if (dCm) {
-      dCm.textContent = `${cmT} уг. · ${fmtSigned(cmR)} R (${fmtSigned(cmU)}$)`;
+      dCm.textContent = `${cmT} уг. · ${fmtSigned(cmR)} R (${fmtSigned(cmU)} USDT)`;
       dCm.className = cmU > 0 ? 'ms-up' : cmU < 0 ? 'ms-dn' : '';
     }
     if (dTot) {
       const totT = oilT + cmT, totR = oilR + cmR, totU = oilU + cmU;
-      dTot.textContent = `${totT} уг. · ${fmtSigned(totR)} R (${fmtSigned(totU)}$)`;
+      dTot.textContent = `${totT} уг. · ${fmtSigned(totR)} R (${fmtSigned(totU)} USDT)`;
       dTot.className = totU > 0 ? 'ms-up' : totU < 0 ? 'ms-dn' : '';
     }
     if (historyModalOpen) renderHistoryModal();
@@ -829,9 +829,9 @@
 
     kpis.innerHTML = `
       <div class="ms-hkpi"><small>ЗАКРИТО УГОД</small><strong>${total} (${wins}W / ${losses}L)</strong></div>
-      <div class="ms-hkpi"><small>ВІНРЕЙТ (ПО $)</small><strong>${wr}%</strong></div>
+      <div class="ms-hkpi"><small>ВІНРЕЙТ (ПО USDT)</small><strong>${wr}%</strong></div>
       <div class="ms-hkpi"><small>ЧИСТИЙ R</small><strong>${fmtSigned(sumR)} R</strong></div>
-      <div class="ms-hkpi"><small>РЕАЛЬНИЙ ПІДСУМОК ($)</small><strong class="${uCls}">${fmtSigned(sumU)}$</strong></div>
+      <div class="ms-hkpi"><small>РЕАЛЬНИЙ ПІДСУМОК (USDT)</small><strong class="${uCls}">${fmtSigned(sumU)} USDT</strong></div>
     `;
 
     if (!rows.length) {
@@ -858,7 +858,7 @@
           <td><strong>${r.closed_kyiv || '—'}</strong>${r.opened_kyiv ? `<small>відкр. ${r.opened_kyiv}</small>` : ''}</td>
           <td><strong>${r.label || r.symbol}</strong> · <span class="${sideCls}">${r.side_ua || (r.side === 1 ? 'LONG ↑' : 'SHORT ↓')}</span><small>${setupTxt}${r.tp1_hit ? ' · ⚡ TP1 50%' : ''}</small></td>
           <td class="ms-num">${fmtPrice(r.entry, tick)} → ${fmtPrice(r.exit, tick)}</td>
-          <td class="ms-num ${resCls}"><strong>${fmtSigned(usd)}$</strong><small>${fmtSigned(nr)} R</small></td>
+          <td class="ms-num ${resCls}"><strong>${fmtSigned(usd)} USDT</strong><small>${fmtSigned(nr)} R</small></td>
           <td><span class="ms-reason-pill ${pillCls}">${reasonTxt}</span></td>
         </tr>
       `;
