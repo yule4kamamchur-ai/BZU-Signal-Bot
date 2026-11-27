@@ -12,7 +12,7 @@
     "UKOIL_USDT:-1:MOMENTUM:M5:1795791600000:OPEN": 1795791948,
     "UKOIL_USDT:-1:EARLY_STRUCTURE_SHIFT:M5:1795794600000:OPEN": 1795794953
   },
-  "last_run_ts": 1795803667894,
+  "last_run_ts": 1795803950515,
   "cm_active": null,
   "cm_daily": {
     "day": "2026-11-27",
@@ -26,9 +26,9 @@
   "oil_active": {
     "phase": "OPEN",
     "placed_ts": 1795794953962,
-    "processed_until_ts": 1795803660000,
+    "processed_until_ts": 1795803900000,
     "expires_ts": 1795795433962,
-    "stop_effective_ts": 1795794953962,
+    "stop_effective_ts": 1795803900000,
     "quality": "OBSERVED_M1",
     "alignment_tier": "EARLY_REVERSAL",
     "risk_multiplier": 0.325,
@@ -47,7 +47,13 @@
     "stale_tighten_min": 120,
     "stale_exit_min": 180,
     "stale_tightened": false,
-    "action_alert": null,
+    "action_alert": {
+      "code": "STRUCTURAL_TRAIL",
+      "level": "success",
+      "ts": 1795803900000,
+      "title_ua": "🛡 УВАГА: СТОП ПЕРЕНЕСЕНО ЗА M5-СТРУКТУРОЮ (90.66)",
+      "detail_ua": "Підтверджено структурний M5-свінг. Новий стоп: 90.66."
+    },
     "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
     "trade_id": "UKOIL_USDT:-1:EARLY_STRUCTURE_SHIFT:M5:1795794600000",
     "signal_id": "UKOIL_USDT:-1:EARLY_STRUCTURE_SHIFT:M5:1795794600000",
@@ -73,7 +79,7 @@
     "setup_ua": "M5 рання зміна структури",
     "order_type": "MARKET",
     "entry": 90.81,
-    "stop": 91.28,
+    "stop": 90.66,
     "initial_stop": 91.28,
     "tp": 89.96,
     "be_trigger": null,
@@ -101,22 +107,13 @@
     },
     "opened_ts": 1795794953962,
     "opened_kyiv": "27.11 17:55",
-    "current_price": 90.46,
-    "pnl_r": 0.629,
-    "pnl_usd": 0.54,
+    "current_price": 90.42,
+    "pnl_r": 0.7141,
+    "pnl_usd": 0.62,
     "peak_r": 1.702127659574466,
-    "be_armed": false,
+    "be_armed": true,
     "partial_entry_bar": true,
     "trail_m5": [
-      {
-        "bucket": 1795798800000,
-        "last": 1795799100000,
-        "count": 5,
-        "o": 90.22,
-        "h": 90.25,
-        "l": 90.12,
-        "c": 90.23
-      },
       {
         "bucket": 1795799100000,
         "last": 1795799400000,
@@ -251,17 +248,19 @@
         "h": 90.59,
         "l": 90.49,
         "c": 90.51
+      },
+      {
+        "bucket": 1795803600000,
+        "last": 1795803900000,
+        "count": 5,
+        "o": 90.51,
+        "h": 90.52,
+        "l": 90.42,
+        "c": 90.42
       }
     ],
-    "trail_partial": {
-      "bucket": 1795803600000,
-      "last": 1795803660000,
-      "count": 1,
-      "o": 90.51,
-      "h": 90.52,
-      "l": 90.44,
-      "c": 90.47
-    }
+    "trail_reason": "CONFIRMED_M5_SWING",
+    "trail_anchor": 90.59
   },
   "oil_daily": {
     "day": "2026-11-27",
@@ -654,7 +653,7 @@
   "metal_active": {
     "phase": "OPEN",
     "placed_ts": 1795788666313,
-    "processed_until_ts": 1795803660000,
+    "processed_until_ts": 1795803900000,
     "expires_ts": 1795789146313,
     "stop_effective_ts": 1795788666313,
     "quality": "OBSERVED_M1",
@@ -729,22 +728,13 @@
     },
     "opened_ts": 1795788666313,
     "opened_kyiv": "27.11 16:11",
-    "current_price": 1329.74,
-    "pnl_r": -0.2315,
-    "pnl_usd": -0.23,
+    "current_price": 1328.56,
+    "pnl_r": -0.1341,
+    "pnl_usd": -0.13,
     "peak_r": 0.6914191419142066,
     "be_armed": false,
     "partial_entry_bar": true,
     "trail_m5": [
-      {
-        "bucket": 1795798800000,
-        "last": 1795799100000,
-        "count": 5,
-        "o": 1324.94,
-        "h": 1327.32,
-        "l": 1324.49,
-        "c": 1325.64
-      },
       {
         "bucket": 1795799100000,
         "last": 1795799400000,
@@ -879,17 +869,17 @@
         "h": 1330.44,
         "l": 1329.25,
         "c": 1329.81
+      },
+      {
+        "bucket": 1795803600000,
+        "last": 1795803900000,
+        "count": 5,
+        "o": 1329.81,
+        "h": 1329.88,
+        "l": 1328.07,
+        "c": 1328.1
       }
-    ],
-    "trail_partial": {
-      "bucket": 1795803600000,
-      "last": 1795803660000,
-      "count": 1,
-      "o": 1329.81,
-      "h": 1329.88,
-      "l": 1329.72,
-      "c": 1329.72
-    }
+    ]
   },
   "metal_daily": {
     "day": "2026-11-27",
