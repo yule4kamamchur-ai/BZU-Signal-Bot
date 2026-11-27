@@ -758,14 +758,43 @@
     TIME_EXIT: 'Закриття за часом (18 год)',
   };
 
+  let fallbackMemoryHistory = [];
+  let memoryFallbackLoaded = false;
+
+  async function loadMemoryHistoryFallback() {
+    if (memoryFallbackLoaded) return;
+    memoryFallbackLoaded = true;
+    const memUrls = ['./multi_scanner_memory.json'];
+    if (/^https:\/\/raw\.githubusercontent\.com\//.test(RAW_STATE_URL)) {
+      memUrls.push(RAW_STATE_URL.replace(/multi_scanner_state\.json$/, 'multi_scanner_memory.json'));
+    }
+    for (const u of memUrls) {
+      try {
+        const resp = await fetch(`${u}${u.includes('?') ? '&' : '?'}t=${Math.floor(Date.now() / 15000)}`, { cache: 'no-store', credentials: 'omit' });
+        if (!resp.ok) continue;
+        const mem = await resp.json();
+        const oilH = (mem.oil_history || []).map((h) => ({ ...h, slot: h.slot || 'OIL' }));
+        const cmH = (mem.cm_history || []).map((h) => ({ ...h, slot: h.slot || 'CRYPTO_METAL' }));
+        const merged = [...oilH, ...cmH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
+        if (merged.length) {
+          fallbackMemoryHistory = merged;
+          if (historyModalOpen) renderHistoryModal();
+          return;
+        }
+      } catch (_) {}
+    }
+  }
+
   function getClosedHistoryRows() {
-    if (!latestData) return [];
-    if (Array.isArray(latestData.closed_history) && latestData.closed_history.length) {
+    if (latestData && Array.isArray(latestData.closed_history) && latestData.closed_history.length) {
       return latestData.closed_history;
     }
-    const oilH = (latestData.oil_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'OIL' }));
-    const cmH = (latestData.cm_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'CRYPTO_METAL' }));
-    return [...oilH, ...cmH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
+    const oilH = (latestData?.oil_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'OIL' }));
+    const cmH = (latestData?.cm_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'CRYPTO_METAL' }));
+    const combined = [...oilH, ...cmH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
+    if (combined.length) return combined;
+    if (!memoryFallbackLoaded) loadMemoryHistoryFallback();
+    return fallbackMemoryHistory;
   }
 
   function _todayPrefixKyiv() {
@@ -846,6 +875,7 @@
     document.querySelectorAll('[data-hslot]').forEach((b) => {
       b.setAttribute('aria-pressed', b.getAttribute('data-hslot') === historySlotFilter ? 'true' : 'false');
     });
+    if (!getClosedHistoryRows().length) { memoryFallbackLoaded = false; loadMemoryHistoryFallback(); }
     renderHistoryModal();
   }
 

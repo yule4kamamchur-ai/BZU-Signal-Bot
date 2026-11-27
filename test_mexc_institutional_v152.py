@@ -184,6 +184,7 @@ class InstitutionalV152Tests(unittest.TestCase):
                     "cluster": "CRYPTO",
                     "status": "NO_SETUP",
                     "score": 0,
+                    "rr": 0.0,
                     "tick": 0.001,
                     "price": 10.0,
                     "quote_ts": t0 + 120_000,

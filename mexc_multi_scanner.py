@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.2 INSTITUTIONAL"
+SCANNER_VERSION = "BZU MULTI v15.2.1 INSTITUTIONAL"
 
 CLOSE_REASON_UA = {
     "TAKE_PROFIT": "Тейк-профіт (TP)",
@@ -849,8 +849,8 @@ def _advance_single_slot(
                     "open_interest":pick.get("open_interest",0.0),"funding_regime":pick.get("funding_regime","NEUTRAL"),
                     "early_close_hint_ua":pick.get("early_close_hint_ua"),
                     "maker_pullback":bool(pick.get("maker_pullback",False)),
-                    "tp1_enabled":True,"tp1_hit":False,"tp1":pick.get("tp1"),"tp1_r":pick.get("tp1_r",1.0),"partial_pct":pick.get("partial_pct",0.50),
-                    "time_stop_enabled":True,"stale_tighten_min":45,"stale_exit_min":60,"stale_tightened":False,
+                    "tp1_enabled":pick.get("funding_regime")=="CROWDED_WITH_US","tp1_hit":False,"tp1":pick.get("tp1"),"tp1_r":pick.get("tp1_r",1.0),"partial_pct":pick.get("partial_pct",0.50),
+                    "time_stop_enabled":True,"stale_tighten_min":120,"stale_exit_min":180,"stale_tightened":False,
                     "action_alert":init_alert,
                     "model_schema":MODEL_SCHEMA,"trade_id":pick.get("signal_id",f"{pick['symbol']}:{now_ms}"),
                     "signal_id":pick.get("signal_id"),"family":pick.get("family"),"regime":pick.get("regime"),
