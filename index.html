@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
-<title>BZU MULTI · MEXC Institutional v15.2.4</title>
-<link rel="stylesheet" href="./live_terminal.css?v=15.2.0">
+<title>BZU MULTI · MEXC Institutional v15.3 Adaptive Direction</title>
+<link rel="stylesheet" href="./live_terminal.css?v=15.3.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <meta name="bzu-state-source" content="">
-<script defer src="./multi_scanner.js?v=15.2.0"></script>
+<script defer src="./multi_scanner.js?v=15.3.0"></script>
 </head>
 <body class="bzu-multi-clean">
 <header class="masthead ms-masthead">
@@ -42,14 +42,21 @@
   </div>
   <div id="ms-slot-cm" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
     <div class="ms-slot-top">
-      <span class="ms-slot-label">СЛОТ 2 · КРИПТА / МЕТАЛ (MEXC)</span>
+      <span class="ms-slot-label">СЛОТ 2 · КРИПТА (MEXC)</span>
       <span id="ms-slot-cm-badge" class="ms-slot-badge">ВІЛЬНО</span>
     </div>
-    <div id="ms-slot-cm-title" class="ms-slot-title">Немає відкритої угоди по крипті / металу</div>
-    <div id="ms-slot-cm-sub" class="ms-slot-sub">Макс. 1 активна угода · SOL · LINK · LTC · APT · ORDI · XPT</div>
+    <div id="ms-slot-cm-title" class="ms-slot-title">Немає відкритої угоди по крипті</div>
+    <div id="ms-slot-cm-sub" class="ms-slot-sub">Макс. 1 активна угода · SOL · LINK · LTC · APT · ORDI</div>
     <div id="ms-slot-cm-alert" class="ms-action-banner" hidden></div>
   </div>
+  <div id="ms-slot-metal" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
+    <div class="ms-slot-top"><span class="ms-slot-label">СЛОТ 3 · МЕТАЛ (XPT · MEXC)</span><span id="ms-slot-metal-badge" class="ms-slot-badge">ВІЛЬНО</span></div>
+    <div id="ms-slot-metal-title" class="ms-slot-title">Немає відкритої угоди по металу</div>
+    <div id="ms-slot-metal-sub" class="ms-slot-sub">Незалежний XPT · спільний бюджет</div>
+    <div id="ms-slot-metal-alert" class="ms-action-banner" hidden></div>
+  </div>
 </section>
+<p id="ms-portfolio" class="ms-portfolio" aria-live="polite">Портфель: очікуємо серверний бюджет…</p>
 
 <section id="multi-scanner-section" class="panel ms-panel" aria-label="BZU MULTI Сканер">
   <div class="ms-grid">
@@ -102,7 +109,7 @@
         <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — Smart Maker лімітка (0% fee) ·
         <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал ·
         <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо ·
-        <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.
+        <strong>ХВИЛЯ</strong> — напрямок розпізнано, але це не дозвіл на вхід · <strong>НЕМАЄ СИГНАЛУ</strong> — тригера не підтверджено. Клік по активу показує LONG/SHORT діагностику.
       </p>
     </div>
   </div>
@@ -114,10 +121,14 @@
     <strong id="ms-day-oil">0 уг. · +0.00 R (0.00 USDT)</strong>
     <small id="ms-day-oil-sub" class="muted">Слот 1 · MEXC · колір по USDT</small>
   </div>
-  <div id="ms-daily-cm-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="CRYPTO_METAL" title="Натисніть, щоб відкрити історію угод по крипті та металу">
-    <small>СЬОГОДНІ · КРИПТА / МЕТАЛ <span class="ms-hist-link">Історія ↗</span></small>
+  <div id="ms-daily-cm-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="CRYPTO" title="Натисніть, щоб відкрити історію угод по крипті">
+    <small>СЬОГОДНІ · КРИПТА <span class="ms-hist-link">Історія ↗</span></small>
     <strong id="ms-day-cm">0 уг. · +0.00 R (0.00 USDT)</strong>
     <small id="ms-day-cm-sub" class="muted">Слот 2 · MEXC · колір по USDT</small>
+  </div>
+  <div id="ms-daily-metal-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="METAL" title="Історія металу">
+    <small>СЬОГОДНІ · МЕТАЛ (XPT) <span class="ms-hist-link">Історія ↗</span></small>
+    <strong id="ms-day-metal">0 уг. · +0.00 R (0.00 USDT)</strong><small class="muted">Слот 3 · MEXC · колір по USDT</small>
   </div>
   <div id="ms-daily-total-btn" class="ms-daily-cell ms-daily-total ms-daily-clickable" role="button" tabindex="0" data-slot-filter="ALL" title="Натисніть, щоб відкрити повну історію закритих угод">
     <small>РАЗОМ ЗА СЬОГОДНІ <span class="ms-hist-link">Усі угоди ↗</span></small>
@@ -139,7 +150,8 @@
       <div class="ms-filter-group" role="group" aria-label="Фільтр по слоту">
         <button type="button" class="ms-filter-btn" data-hslot="ALL" aria-pressed="true">Усі слоти</button>
         <button type="button" class="ms-filter-btn" data-hslot="OIL" aria-pressed="false">Нафта (UKOIL)</button>
-        <button type="button" class="ms-filter-btn" data-hslot="CRYPTO_METAL" aria-pressed="false">Крипта / Метал</button>
+        <button type="button" class="ms-filter-btn" data-hslot="CRYPTO" aria-pressed="false">Крипта</button>
+        <button type="button" class="ms-filter-btn" data-hslot="METAL" aria-pressed="false">Метал</button>
       </div>
       <div class="ms-filter-group" role="group" aria-label="Фільтр по періоду">
         <button type="button" class="ms-filter-btn" data-hperiod="TODAY" aria-pressed="true">Сьогодні</button>
@@ -167,8 +179,8 @@
 </div>
 
 <footer>
-  <span>BZU MULTI v15.2.4 · MEXC Live WebSocket</span>
-  <span>TP1 50% + Runner · Smart Maker · Alpha-Decay · Funding Conviction</span>
+  <span>BZU MULTI v15.3 Adaptive Direction · MEXC Live WebSocket</span>
+  <span>LONG / SHORT · M5 × 2 · Local transition · Portfolio risk</span>
   <span>PAPER · SIGNAL TERMINAL</span>
 </footer>
 </body>

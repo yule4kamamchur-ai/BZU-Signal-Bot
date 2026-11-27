@@ -3,8 +3,8 @@
 
 Scans UKOIL_USDT, XPT_USDT (Platinum), SOL_USDT, LINK_USDT, LTC_USDT, APT_USDT,
 and ORDI_USDT using MEXC public futures REST API (no API keys required), applies
-a BTC_USDT macro regime filter, cluster correlation locks (max 1 Energy, 1 Metal,
-1 Crypto), universal ATR/percentage risk geometry, fixed-dollar position sizing,
+independent LONG/SHORT local transitions, BTC as soft relative-strength context,
+three cluster slots with a shared risk and notional budget, structural ATR geometry,
 and sends deduplicated Ukrainian Telegram alerts for A+ setups.
 """
 from __future__ import annotations
@@ -15,6 +15,8 @@ import fcntl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from mexc_hybrid import MODEL_SCHEMA, detect, trend_efficiency, meta_estimate
 from mexc_lifecycle import advance
+from mexc_direction import (context as direction_context, relative_strength, detect_transitions,
+    closed_prefix, contiguous, trigger_age_limit, signal_event_key, delayed_guard)
 from mexc_geometry import geometry, POLICY
 from threading import Lock
 import hashlib
@@ -34,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.2.2 QUANT PROFIT"
+SCANNER_VERSION = "BZU MULTI v15.3 Adaptive Direction"
 
 FAMILY_RISK_MULT = {
     "FAILED_BREAKOUT": 1.25,
@@ -43,6 +45,9 @@ FAMILY_RISK_MULT = {
     "EXHAUSTION": 1.00,
     "TREND_PULLBACK": 0.75,
     "MOMENTUM": 0.30,
+    "EARLY_STRUCTURE_SHIFT": 0.65,
+    "COUNTERTREND_WAVE": 0.55,
+    "STRUCTURE_CONTINUATION": 0.75,
 }
 
 CLOSE_REASON_UA = {
@@ -450,6 +455,8 @@ def analyze_instrument(
     bars_4h: list[Bar],
     bars_1m: list[Bar] | None = None,
     history: list[dict[str, Any]] | None = None,
+    btc_bars_15m: list[Bar] | None = None,
+    consumed_signals: dict[str, int] | None = None,
     tick: float,
     btc_macro: dict[str, Any],
     now_ms: int,
@@ -457,6 +464,12 @@ def analyze_instrument(
     risk_pct: float = 3.0,
     max_leverage: float = 5.0,
 ) -> dict[str, Any]:
+    bars_1m = closed_prefix(bars_1m or [],60000,now_ms)
+    bars_5m = closed_prefix(bars_5m,300000,now_ms)
+    bars_15m = closed_prefix(bars_15m,900000,now_ms)
+    bars_1h = closed_prefix(bars_1h,3600000,now_ms)
+    bars_4h = closed_prefix(bars_4h,14400000,now_ms)
+    btc_bars_15m = closed_prefix(btc_bars_15m or [],900000,now_ms)
     price = float(ticker.get("lastPrice") or (bars_5m[-1].close if bars_5m else 0.0))
     bid = float(ticker.get("bid1") or price)
     ask = float(ticker.get("ask1") or price)
@@ -522,9 +535,6 @@ def analyze_instrument(
     b15 = tf_bias(bars_15m)
     a15 = atr(bars_15m, 14)
     a5 = atr(bars_5m, 14)
-    vwap = session_vwap(bars_15m)
-    ema20_15 = ema([b.close for b in bars_15m], 20)
-
     recent_24h = bars_15m[-96:]
     r_low = min(b.low for b in recent_24h)
     r_high = max(b.high for b in recent_24h)
@@ -534,10 +544,6 @@ def analyze_instrument(
     prev5_slice = bars_5m[-16:-1]
     avg_vol5 = sum(b.volume for b in prev5_slice) / max(1, len(prev5_slice))
     rvol5 = (last5.volume / avg_vol5) if avg_vol5 > 0 else 1.0
-
-    prev_swings = bars_5m[-10:-1]
-    swing_low = min(b.low for b in prev_swings)
-    swing_high = max(b.high for b in prev_swings)
 
     base_out.update(
         bias_4h=b4,
@@ -555,53 +561,90 @@ def analyze_instrument(
         return base_out
     base_out["analysis_fresh"]=True
     t1,e1=trend_efficiency(bars_1h); t4,e4=trend_efficiency(bars_4h,8)
-    regime="TREND_UP" if t1==1 and t4!=-1 else "TREND_DOWN" if t1==-1 and t4!=1 else "RANGE_TRANSITION"
+    htf_regime="TREND_UP" if t1==1 and t4!=-1 else "TREND_DOWN" if t1==-1 and t4!=1 else "RANGE_TRANSITION"
+    local=direction_context(bars_5m,bars_15m)
+    relative=relative_strength(bars_15m,btc_bars_15m) if spec["use_btc_filter"] else {"available":False,"side":0}
+    wave_side=local["side"]
+    htf_side=t1 or b1 or b4
+    regime=("TRANSITION_UP" if wave_side==1 else "TRANSITION_DOWN") if wave_side and htf_side==-wave_side else ("LOCAL_UP" if wave_side==1 else "LOCAL_DOWN") if wave_side and htf_regime=="RANGE_TRANSITION" else htf_regime
+    base_out.update(htf_regime=htf_regime,regime=regime,local_wave=local,relative_strength=relative,
+                    wave_side=wave_side,observed_wave_side=wave_side or local["m15"]["side"],model_schema=MODEL_SCHEMA)
     candidates=[]
+    diagnostics={str(side):{"side":side,"local_support":wave_side==side,"windows_checked":[],"detected":0,"ready":0,"rejections":[]} for side in (1,-1)}
+    allow_m1 = os.getenv("BZU_ALLOW_M1_ENTRY", "true").lower() in ("1", "true", "yes")
+    windows=[("M1",bars_1m[:-offset] if offset else bars_1m,60000,offset) for offset in (0,1,2)] if allow_m1 else []
+    windows += [("M5",bars_5m[:-offset] if offset else bars_5m,300000,offset) for offset in (0,1)]
     for side in (1,-1):
-        aligned=b1==side and b4==side
-        opposing=b1==-side and b4==-side
-        trend=(b1==side or t1==side) and not opposing
-        btc_side=btc_macro.get("side",0)
-        btc_opposes=bool(spec["use_btc_filter"] and btc_side==-side)
-        fvg=_detect_fvg(bars_15m,side)
-        zones=[x for x in (ema20_15,vwap,(sum(fvg)/2 if fvg else None)) if x is not None]
-        allow_m1 = os.getenv("BZU_ALLOW_M1_ENTRY", "true").lower() in ("1", "true", "yes")
-        windows=[("M1",(bars_1m or [])[:-offset] if offset else (bars_1m or []),60000) for offset in (0,1,2)] if allow_m1 else []
-        windows.append(("M5",bars_5m,300000))
-        for tf, rows, step in windows:
-            if len(rows)<22 or not 0<=now_ms-(rows[-1].ts+step)<=(180000 if tf=="M1" else 300000):
+        diag=diagnostics[str(side)]
+        for tf, rows, step, offset in windows:
+            if not rows or not 0<=now_ms-(rows[-1].ts+step)<trigger_age_limit(tf) or not contiguous(rows,step,22):
                 continue
-            if any(b.ts-a.ts!=step for a,b in zip(rows[-22:],rows[-21:])):
-                continue
+            known=rows[-1].ts+step
+            # Offset is calendar-relative, not merely array-relative (missing latest bar).
+            offset=(now_ms-known)//step
+            diag["windows_checked"].append({"tf":tf,"offset":offset,"known_ts":known})
+            # Trigger evidence and zones are evaluated as they existed when the bar CLOSED.
+            m5_at=closed_prefix(bars_5m,300000,known)
+            m15_at=closed_prefix(bars_15m,900000,known)
+            h1_at=closed_prefix(bars_1h,3600000,known)
+            h4_at=closed_prefix(bars_4h,14400000,known)
+            if len(m5_at)<22 or len(m15_at)<25 or len(h1_at)<24: continue
+            local_at=direction_context(m5_at,m15_at)
+            b1_at,b4_at,b15_at=tf_bias(h1_at),tf_bias(h4_at),tf_bias(m15_at)
+            t1_at,_=trend_efficiency(h1_at)
+            t4_at,_=trend_efficiency(h4_at,8)
+            aligned=b1_at==side and b4_at==side
+            opposing=b1_at==-side and b4_at==-side
+            higher_opposes=any(x==-side for x in (b1_at,b4_at,t1_at,t4_at))
+            local_support=local_at["side"]==side
+            trend=((b1_at==side or t1_at==side) and not opposing) or local_support
+            btc_side=btc_macro.get("side",0)  # current macro is a ranking factor, never a trigger
+            btc_opposes=bool(spec["use_btc_filter"] and btc_side==-side)
+            rel_support=bool(relative.get("available") and relative.get("side")==side)
+            fvg=_detect_fvg(m15_at,side)
+            vwap_at=session_vwap(m15_at)
+            zones=[x for x in (ema([b.close for b in m15_at],20),vwap_at,(sum(fvg)/2 if fvg else None)) if x is not None]
             aa=atr(rows[:-1],14)
+            if aa>0:
+                prior=rows[-7:-1]; c=rows[-1]; level=max(b.high for b in prior) if side==1 else min(b.low for b in prior)
+                vol=sum(b.volume for b in rows[-21:-1])/20
+                diag["windows_checked"][-1].update(body_atr=round(side*(c.close-c.open)/aa,3),
+                    break_distance_atr=round(side*(c.close-level)/aa,3),rvol=round(c.volume/vol,3) if vol else None,
+                    local_support=local_support,higher_opposes=higher_opposes)
             zone=min(zones,key=lambda x:abs(x-rows[-1].close)) if zones else None
-            if zone is not None and abs(zone-rows[-1].close)>.65*a15:
-                zone=None
-            for thesis in detect(rows,side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],trend=trend,zone=zone,timeframe=tf):
+            if zone is not None and abs(zone-rows[-1].close)>.65*atr(m15_at): zone=None
+            theses=detect(rows,side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],trend=trend,zone=zone,timeframe=tf)
+            theses+=detect_transitions(rows,side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],context_now=local_at,higher_opposes=higher_opposes,timeframe=tf)
+            for thesis in theses:
                 reversal=thesis["family"] in ("LIQUIDITY_SWEEP","FAILED_BREAKOUT","EXHAUSTION")
+                transition=bool(thesis.get("transition_evidence"))
+                diag["detected"]+=1
                 # Non-blocking adaptive alignment tier (keeps early reversals alive!)
                 if aligned:
                     align_tier, risk_mult, adapt_trail_r = "ALIGNED", 1.0, 1.25
-                elif (b4==side or b1==side) and b4!=-side:
+                elif (b4_at==side or b1_at==side) and b4_at!=-side:
                     align_tier, risk_mult, adapt_trail_r = "EARLY_PARTIAL", 0.35, 1.25
                 else:
-                    align_tier, risk_mult, adapt_trail_r = "EARLY_REVERSAL", 1.0, 1.25
+                    align_tier, risk_mult, adapt_trail_r = "EARLY_REVERSAL", 0.50, 1.25
 
                 # Non-blocking WR boosters from proven v14.4 setups:
                 # (1) Discount/Premium location preference, (2) VWAP/Sweep reclaim bonus, (3) Consolidation decay
                 in_edge = (range_pos <= 0.35) if side == 1 else (range_pos >= 0.65)
                 in_mid = 0.42 <= range_pos <= 0.58
-                vwap_reclaim = bool(vwap and side * (rows[-1].close - vwap) > 0 and side * (rows[-2].open - vwap) <= 0)
-                churn_bars = sum(1 for b in bars_5m[-12:] if abs(b.close - rows[-1].close) <= max(2 * tick, 0.35 * a5)) if a5 > 0 else 0
+                vwap_reclaim = bool(vwap_at and side * (rows[-1].close - vwap_at) > 0 and side * (rows[-2].open - vwap_at) <= 0)
+                churn_bars = sum(1 for b in m5_at[-12:] if abs(b.close - rows[-1].close) <= max(2 * tick, 0.35 * a5)) if a5 > 0 else 0
 
                 score=thesis["base_score"] + (8 if aligned else 3 if trend else -4 if opposing else 0)
-                score+=4 if b15==side else 0
+                score+=4 if b15_at==side else 0
                 score+=3 if thesis["rvol"]>=spec["min_rvol"]+.25 else 0
-                score+=(-7 if btc_opposes else 3 if spec["use_btc_filter"] and btc_side==side else 0)
+                score+=5 if local_support else 0
+                score+=3 if transition else 0
+                score+=(-3 if btc_opposes and rel_support else -6 if btc_opposes else 2 if spec["use_btc_filter"] and btc_side==side else 0)
+                score+=(4 if rel_support else -3 if relative.get("available") and relative.get("side")==-side else 0)
                 score+=2 if tf=="M5" else 0
                 score+=4 if (thesis["family"]=="LIQUIDITY_SWEEP" or vwap_reclaim) else 0
                 score+=3 if in_edge else (-4 if in_mid else 0)
-                score-=5 if churn_bars >= 10 else 0
+                score-=5 if churn_bars >= 10 and thesis["family"] not in ("MOMENTUM","BREAKOUT_RETEST","STRUCTURE_CONTINUATION") else 0
                 score-=min(3,int(max(0,now_ms-thesis["trigger_ts"]-step)//60000))
                 # Non-blocking Funding Rate + Open Interest conviction (MEXC perpetuals microstructure)
                 side_fund = side * funding_rate
@@ -636,58 +679,161 @@ def analyze_instrument(
                 g=geometry(spec,thesis,entry,side,tick,a5,a15,bars_15m,bars_1h,fee,slip,aligned,runner_boost=runner_boost,tp1_r=tp1_r)
                 g["trail_start_r"] = adapt_trail_r
                 # Tighter anti-chase cap on MOMENTUM prevents entering at candle extremes.
-                chase_mult = 0.60 if thesis["family"] == "MOMENTUM" else 0.80
-                chase_cap=min(.50*g["risk"],max(2*tick,chase_mult*a5))
+                chase_mult = 0.60 if thesis["family"] in ("MOMENTUM","EARLY_STRUCTURE_SHIFT","COUNTERTREND_WAVE","STRUCTURE_CONTINUATION") else 0.80
+                if tf=="M5" and offset: chase_mult=min(chase_mult,.50)
+                chase_atr=min(a5,atr(m5_at[:-1])) if tf=="M5" and offset else a5
+                chase_cap=min(.50*g["risk"],max(2*tick,chase_mult*chase_atr))
                 level=thesis.get("retest_level")
-                if (not g["valid"] or abs(quote-ref)>chase_cap) and level is not None and side*(quote-level)>max(2*tick,.30*aa) and side*(quote-level)<=.8*a5 and not adverse and side*(rows[-1].close-level)>0:
+                if (not g["valid"] or abs(quote-ref)>chase_cap) and (not offset or tf!="M5" or abs(quote-ref)<=chase_cap) and level is not None and side*(quote-level)>max(2*tick,.30*aa) and side*(quote-level)<=.8*a5 and not adverse and side*(rows[-1].close-level)>0:
                     limit_entry=round_price(level,tick)
                     lg=geometry(spec,thesis,limit_entry,side,tick,a5,a15,bars_15m,bars_1h,0.0,0.0,aligned,runner_boost=runner_boost,tp1_r=tp1_r)
                     if lg["valid"]:
                         entry=limit_entry; route="LIMIT"; g=lg; g["trail_start_r"]=adapt_trail_r; maker_pullback=True; limit_ttl_min=15
-                # Keep proven v15.1.1 direct market execution (avoids adverse selection on strong impulses).
+                # Keep existing direct market execution (avoids adverse selection on strong impulses).
                 stop,tp,actual_risk,rr,net_rr=(g[k] for k in ("stop","tp","risk","rr","net_rr"))
+                if tf=="M5" and offset: chase_cap=min(chase_cap,.50*actual_risk)
                 spread=ask-bid
                 # No unsupported probability: rank by evidence + bounded causal estimates.
-                meta=meta_estimate(history or [],{**thesis,"regime":regime},now_ms)
+                meta=meta_estimate(history or [],{**thesis,"regime":regime,"side":side},now_ms)
                 rank=score+meta["rank_adjustment"]+min(2.,max(-3.,(net_rr-1.5)*2))
                 valid=(entry>0 and g["valid"] and actual_risk>tick and side*(structural-stop)>=-1e-9
                        and side*(quote-structural)>0 and spread<=.20*actual_risk and net_rr>=1.15
                        and (route=="LIMIT" and side*(quote-entry)>=tick*.5 or route=="MARKET" and abs(quote-ref)<=chase_cap) and not adverse)
-                actionable=valid and score>=76 and (not opposing or reversal) and (not btc_opposes or reversal and score>=79)
-                if spec["use_btc_filter"] and btc_macro.get("state")=="UNKNOWN": actionable=False
-                if tf=="M1" and thesis["family"]=="EXHAUSTION":
-                    actionable=actionable and score>=80
+                event_key=signal_event_key(spec["symbol"],side,known)
+                signal_id=f"{spec['symbol']}:{side}:{thesis['family']}:{tf}:{thesis['trigger_ts']}"
+                after_reason=delayed_guard(thesis,side,known,bars_1m,bars_5m,now_ms,chase_atr,tick)
+                reasons=[]
+                if not valid: reasons.append("GEOMETRY_OR_EXECUTION")
+                if g["geometry_reason"]: reasons.extend(g["geometry_reason"].split(","))
+                if spread>.20*actual_risk: reasons.append("WIDE_SPREAD")
+                if abs(quote-ref)>chase_cap and (route=="MARKET" or tf=="M5" and offset): reasons.append("CHASE_DISTANCE")
+                if adverse: reasons.append("OPPOSITE_IMPULSE")
+                if after_reason: reasons.append(after_reason)
+                if score<76: reasons.append("LOW_EVIDENCE_SCORE")
+                # Opposed higher timeframes are context, not the trade direction. Require actual local evidence.
+                if opposing and not (reversal or transition or local_support): reasons.append("NO_LOCAL_SHIFT_EVIDENCE")
+                if wave_side==-side and not (reversal and offset==0 and score>=82): reasons.append("CURRENT_WAVE_OPPOSES")
+                if tf=="M1" and not (aligned or local_support or (local_at["m5"]["side"]==side and reversal and score>=82)):
+                    reasons.append("M1_NO_M5_CONTEXT")
+                if tf=="M1" and thesis["family"]=="EXHAUSTION" and score<80: reasons.append("M1_WEAK_REVERSAL")
+                used=consumed_signals or {}
+                if signal_id in used or event_key in used: reasons.append("SIGNAL_CONSUMED")
+                if known<=max((h.get("closed_ts",0) for h in (history or []) if h.get("symbol")==spec["symbol"]),default=0):
+                    reasons.append("SIGNAL_BEFORE_LAST_EXIT")
+                actionable=not reasons
+                if actionable: diag["ready"]+=1
+                else: diag["rejections"].extend(reasons)
                 reason=f"{thesis['setup_ua']} · {regime} · RVOL {thesis['rvol']:.2f}x"
                 if not valid:
                     reason+=" · непридатна ціна/SL/spread/RR"
                     if "NEAR_LIQUIDITY" in g["geometry_reason"]: reason+=" · близький рівень ліквідності: недостатній RR"
                     if "DISTANT_INVALIDATION" in g["geometry_reason"]: reason+=" · структурний стоп надто далеко від входу"
                     if "INVALID_STRUCTURE" in g["geometry_reason"]: reason+=" · некоректна геометрія"
-                if btc_opposes: reason+=" · BTC проти"
+                if btc_opposes: reason+=" · BTC проти (вага, не блок)"
+                if rel_support: reason+=" · відносна сила/слабкість підтверджує"
+                if transition: reason+=" · підтверджений локальний перехід"
+                if tf=="M5" and offset: reason+=" · попередня M5, повторна перевірка ціни"
+                if reasons: reason+=" · "+", ".join(dict.fromkeys(reasons))
                 if adverse: reason+=" · зустрічний імпульс"
                 candidates.append({**thesis,**g,"status":"READY" if actionable else "WATCH",
                     "status_ua":("ЛІМІТКА ГОТОВА" if route=="LIMIT" else f"ВХІД ЗАРАЗ ({tf})") if actionable else "СПОСТЕРЕЖЕННЯ",
                     "score":score,"rank_score":round(rank,3),"side":side,"side_ua":"LONG ↑" if side==1 else "SHORT ↓",
                     "order_type":route,"entry":entry,"stop":stop,"tp":tp,"rr":round(rr,2),"net_rr_estimate":round(net_rr,3),
                     "regime":regime,"meta":meta,"btc_aligned":not btc_opposes,"reason_ua":reason,
-                    "signal_id":f"{spec['symbol']}:{side}:{thesis['family']}:{tf}:{thesis['trigger_ts']}",
-                    "signal_known_ts":thesis["trigger_ts"]+step,"alignment_tier":align_tier,"risk_multiplier":total_risk_mult,
+                    "signal_id":signal_id,"signal_event_key":event_key,"rejection_codes":list(dict.fromkeys(reasons)),
+                    "signal_known_ts":known,"trigger_offset":offset,"signal_age_sec":round((now_ms-known)/1000,1),
+                    "local_support":local_support,"relative_support":rel_support,"chase_cap":round(chase_cap,8),
+                    "alignment_tier":align_tier,"risk_multiplier":total_risk_mult,
                     "funding_rate":funding_rate,"funding_pct":funding_pct,"open_interest":round(open_interest,2),
                     "funding_regime":funding_regime,"funding_risk_mult":funding_risk_mult,"early_close_hint_ua":early_close_hint_ua,
                     "maker_pullback":maker_pullback,"limit_ttl_min":limit_ttl_min,"partial_pct":0.50,
+                    "fee_rate":0.0 if maker_pullback else fee,"slippage_rate":0.0 if maker_pullback else slip,
                     "sizing":compute_sizing(entry,stop,tp,deposit=deposit,risk_pct=risk_pct*total_risk_mult,max_leverage=max_leverage)})
+    for d in diagnostics.values():
+        d["rejections"]=list(dict.fromkeys(d["rejections"]))
+    base_out["direction_diagnostics"]=diagnostics
     if not candidates:
-        base_out.update(reason_ua="Немає підтвердженого сетапу",regime=regime)
+        if base_out["observed_wave_side"]:
+            base_out.update(status="WATCH",status_ua="ХВИЛЯ · ЧЕКАЄМО ТРИГЕР",
+                reason_ua=("Локальна висхідна хвиля" if base_out["observed_wave_side"]==1 else "Локальна низхідна хвиля")+" · немає підтвердженого входу"+(" · M5 пауза" if not wave_side else ""))
+        else: base_out.update(reason_ua="LONG та SHORT перевірено; немає підтвердженого тригера")
         return base_out
     candidates.sort(key=lambda c:(c["status"]=="READY",c["rank_score"],c["net_rr_estimate"]),reverse=True)
     best={**base_out,**candidates[0],"candidate_count":len(candidates),
-          "candidate_diagnostics":[{k:c[k] for k in ("setup","family","trigger_tf","side","status","score","rank_score","meta","reason_ua")} for c in candidates]}
+          "candidate_diagnostics":[{k:c[k] for k in ("setup","family","trigger_tf","trigger_offset","signal_age_sec","side","status","score","rank_score","meta","reason_ua","rejection_codes")} for c in candidates]}
     best["be_trigger"]=None  # structural trailing has no fixed break-even trigger
     return best
 
 
-def _slot_group(cluster: str) -> str:
-    return "OIL" if cluster == "ENERGY" else "CRYPTO_METAL"
+def _slot_group(cluster: str, split_metal=True) -> str:
+    return "OIL" if cluster=="ENERGY" else "METAL" if cluster=="METALS" and split_metal else "CRYPTO" if split_metal else "CRYPTO_METAL"
+
+
+def migrate_metal_slot(memory):
+    """Lossless migration; keep original entry/stop/R/model_id and old daily archive."""
+    cm=memory.get("cm_active")
+    if cm and (cm.get("cluster")=="METALS" or cm.get("symbol")=="XPT_USDT"):
+        if memory.get("metal_active"):
+            raise RuntimeError("Conflicting metal positions; manual ledger reconciliation required")
+        memory["metal_active"]=cm; memory["cm_active"]=None
+    old=memory.get("cm_history") or []
+    moved=[h for h in old if h.get("symbol")=="XPT_USDT"]
+    if moved:
+        memory["metal_history"]=sorted((memory.get("metal_history") or [])+moved,key=lambda h:h.get("closed_ts",0))
+        memory["cm_history"]=[h for h in old if h.get("symbol")!="XPT_USDT"]
+    # Upgrade the old per-family identities so a second family cannot reopen the same bar.
+    consumed=memory.get("consumed_signals",{})
+    for key,value in list(consumed.items()):
+        try:
+            sym,side,_,tf,ts=key.split(":")
+            if tf not in ("M1","M5"): continue
+            event=signal_event_key(sym,int(side),int(ts)+(60000 if tf=="M1" else 300000))
+            consumed[event]=max(value,consumed.get(event,0))
+        except (ValueError,TypeError): continue
+
+
+def _portfolio_limits(state):
+    defaults=state.get("defaults")
+    if not defaults: return None  # backwards-compatible unit/legacy fixtures; production always provides defaults
+    deposit=float(defaults["deposit_usdt"]); lev=float(defaults["max_leverage"])
+    risk_pct=float(os.getenv("BZU_PORTFOLIO_RISK_PCT",str(defaults["risk_pct"])))
+    if not math.isfinite(risk_pct) or not 0<risk_pct<=100: raise ValueError("Invalid portfolio risk budget")
+    return {"risk_usd":deposit*risk_pct/100,"notional_usd":deposit*lev,"deposit_usdt":deposit,"risk_pct":risk_pct}
+
+
+def _reserved(memory):
+    risk=notional=0.
+    for key in ("oil_active","cm_active","metal_active"):
+        a=memory.get(key)
+        if not a: continue
+        size=a.get("sizing") or {}; entry=float(a.get("entry") or 0); dist=float(a.get("risk") or 0)
+        nominal=float(size.get("position_usdt") or 0)
+        if not nominal and entry>0 and dist>0: nominal=float(size.get("risk_usd") or 0)*entry/dist
+        if not all(math.isfinite(v) and v>0 for v in (entry,dist,nominal)):
+            return math.inf,math.inf
+        # Reserve initial stop risk and estimated round-trip costs even for pending orders / trailed positions.
+        notional+=nominal
+        risk+=nominal*(dist/entry+(float(a.get("fee_rate",0))+float(a.get("slippage_rate",0)))*(2+dist/entry))
+    return risk,notional
+
+
+def _cap_sizing(pick,memory,budget):
+    if budget is None: return pick.get("sizing")
+    used_risk,used_notional=_reserved(memory)
+    if not (math.isfinite(used_risk) and math.isfinite(used_notional)): return None
+    size=pick.get("sizing") or {}; old=float(size.get("position_usdt") or 0)
+    entry=float(pick["entry"]); dist=abs(entry-float(pick["stop"]))
+    fee=float(pick.get("fee_rate",0)); slip=float(pick.get("slippage_rate",0))
+    sl_pct=dist/entry; cost_pct=(fee+slip)*(2+sl_pct)
+    # Reserve room for each of three independent clusters. Never increase requested sizing.
+    cap_risk=min(budget["risk_usd"]/3,budget["risk_usd"]-used_risk)
+    cap_nominal=min(budget["notional_usd"]/3,budget["notional_usd"]-used_notional)
+    nominal=math.floor(max(0,min(old,cap_nominal,cap_risk/(sl_pct+cost_pct)))*100)/100
+    if nominal<1 or sl_pct<=0: return None
+    return {**size,"position_usdt":nominal,"effective_leverage":round(nominal/budget["deposit_usdt"],2),
+            "risk_usd":round(nominal*sl_pct,4),"target_profit_usd":round(nominal*abs(float(pick["tp"])-entry)/entry,4),
+            "portfolio_reserved_risk_usd":round(nominal*(sl_pct+cost_pct),6),"portfolio_capped":nominal+0.005<old}
+
 
 
 def rank_and_lock_clusters(
@@ -695,8 +841,10 @@ def rank_and_lock_clusters(
     *,
     oil_slot_busy: bool = False,
     cm_slot_busy: bool = False,
+    metal_slot_busy: bool = False,
+    split_metal: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Rank all 7 instruments and enforce max 1 READY in OIL and max 1 in CRYPTO+METALS."""
+    """Rank independently; max one ready per cluster."""
     ranked = sorted(
         results,
         key=lambda r: (
@@ -712,20 +860,24 @@ def rank_and_lock_clusters(
     if oil_slot_busy:
         active_groups.add("OIL")
     if cm_slot_busy:
-        active_groups.add("CRYPTO_METAL")
+        active_groups.add("CRYPTO" if split_metal else "CRYPTO_METAL")
+    if metal_slot_busy:
+        active_groups.add("METAL")
+    occupied_groups=set(active_groups)
 
     for item in ranked:
         if item["status"] == "READY":
-            grp = _slot_group(item["cluster"])
+            grp = _slot_group(item["cluster"],split_metal)
             if grp in active_groups:
                 item["status"] = "WATCH"
-                item["status_ua"] = "СЛОТ ЗАЙНЯТО" if ((grp == "OIL" and oil_slot_busy) or (grp == "CRYPTO_METAL" and cm_slot_busy)) else "ЗАЙНЯТО В КЛАСТЕРІ"
+                item["status_ua"] = "СЛОТ ЗАЙНЯТО" if (grp in occupied_groups) else "ЗАЙНЯТО В КЛАСТЕРІ"
                 item["cluster_locked"] = True
-                item["reason_ua"] = (
+                item["reason_ua"] = item.get("reason_ua", "")+" · "+(
                     "Слот уже в угоді — чекаємо закриття"
-                    if ((grp == "OIL" and oil_slot_busy) or (grp == "CRYPTO_METAL" and cm_slot_busy))
+                    if (grp in occupied_groups)
                     else "Сильніший сигнал уже активний у цій групі"
                 )
+                item.setdefault("rejection_codes",[]).append("CLUSTER_BUSY")
             else:
                 active_groups.add(grp)
     top_pick = ranked[0] if ranked and ranked[0]["status"] in ("IN_TRADE", "READY", "WATCH") else None
@@ -743,8 +895,10 @@ def _advance_single_slot(
     memory: dict[str, Any],
     *,
     now_ms: int,
+    split_metal: bool = True,
+    budget: dict | None = None,
 ) -> dict[str, Any]:
-    """Advance 1 paper position slot (either OIL or CRYPTO_METAL) and record daily stats."""
+    """Advance one paper slot, then admit a new candidate within shared budget."""
     today = _kyiv_day(now_ms)
     daily_key = f"{slot_key}_daily"
     active_key = f"{slot_key}_active"
@@ -789,6 +943,7 @@ def _advance_single_slot(
                 history.append({"symbol":active["symbol"],"label":active["label"],"cluster_ua":active["cluster_ua"],
                     "side":side,"side_ua":active["side_ua"],"setup":active["setup"],"setup_ua":active.get("setup_ua"),"family":active.get("family"),"regime":active.get("regime"),
                     "trade_id":active.get("trade_id"),"geometry_policy":active.get("geometry_policy"),"model_schema":active.get("model_schema"),
+                    "trigger_tf":active.get("trigger_tf"),"trigger_offset":active.get("trigger_offset"),"signal_known_ts":active.get("signal_known_ts"),
                     "opened_ts":active.get("opened_ts"),"opened_kyiv":active.get("opened_kyiv"),"entry":entry,"exit":exit_price,
                     "tp1_hit":bool(active.get("tp1_hit")),"tp1_fill_price":active.get("tp1_fill_price"),
                     "alignment_tier":active.get("alignment_tier"),"risk_multiplier":active.get("risk_multiplier"),
@@ -820,19 +975,29 @@ def _advance_single_slot(
     if active is None and not closed_this_cycle:
         candidates = [
             r for r in state.get("instruments", [])
-            if _slot_group(r["cluster"]) == group_name and r["status"] == "READY"
+            if _slot_group(r["cluster"],split_metal) == group_name and r["status"] == "READY"
             and r.get("entry") and r.get("stop") and r.get("tp")
             and (not r.get("signal_id") or r["signal_id"] not in memory.get("consumed_signals",{}))
+            and (not r.get("signal_event_key") or r["signal_event_key"] not in memory.get("consumed_signals",{}))
             and (not r.get("quote_ts") or 0<=now_ms-r["quote_ts"]<=60000)
-            and (not r.get("signal_known_ts") or now_ms-r["signal_known_ts"]<=(180000 if r.get("trigger_tf")=="M1" else 300000))
+            and (not r.get("signal_known_ts") or 0<=now_ms-r["signal_known_ts"]<trigger_age_limit(r.get("trigger_tf")))
             and (not r.get("signal_known_ts") or r["signal_known_ts"]>max((h.get("closed_ts",0) for h in (memory.get(hist_key) or []) if h.get("symbol")==r["symbol"]),default=0))
         ]
-        if candidates:
-            pick = max(candidates,key=lambda r:(r.get("rank_score",r["score"]),r.get("rr") or 0))
+        eligible=[]
+        for candidate in sorted(candidates,key=lambda r:(r.get("rank_score",r["score"]),r.get("rr") or 0),reverse=True):
+            size=_cap_sizing(candidate,memory,budget)
+            if budget is not None and size is None:
+                candidate.update(status="WATCH",status_ua="ЛІМІТ ПОРТФЕЛЯ",reason_ua=candidate.get("reason_ua","")+" · вичерпано спільний бюджет ризику/маржі")
+                candidate.setdefault("rejection_codes",[]).append("PORTFOLIO_BUDGET")
+                continue
+            if size is not None: candidate["sizing"]=size
+            eligible.append(candidate); break
+        if eligible:
+            pick=eligible[0]
             risk = abs(float(pick["entry"]) - float(pick["stop"]))
             if risk > 0:
                 pending=pick["order_type"]=="LIMIT"
-                fee,slip=(0.,0.) if (pick.get("maker_pullback") or pick.get("fee_tag")=="0% FEE") else (cost_rates() if pick.get("signal_id") else (0.,0.))
+                fee,slip=(pick["fee_rate"],pick["slippage_rate"]) if "fee_rate" in pick and "slippage_rate" in pick else ((0.,0.) if (pick.get("maker_pullback") or pick.get("fee_tag")=="0% FEE") else (cost_rates() if pick.get("signal_id") else (0.,0.)))
                 init_alert = None
                 if pick.get("funding_regime") == "CROWDED_WITH_US":
                     init_alert = {
@@ -855,7 +1020,8 @@ def _advance_single_slot(
                     "time_stop_enabled":False,"stale_tighten_min":120,"stale_exit_min":180,"stale_tightened":False,
                     "action_alert":init_alert,
                     "model_schema":MODEL_SCHEMA,"trade_id":pick.get("signal_id",f"{pick['symbol']}:{now_ms}"),
-                    "signal_id":pick.get("signal_id"),"family":pick.get("family"),"regime":pick.get("regime"),
+                    "signal_id":pick.get("signal_id"),"signal_event_key":pick.get("signal_event_key"),"family":pick.get("family"),"regime":pick.get("regime"),
+                    "trigger_tf":pick.get("trigger_tf"),"trigger_offset":pick.get("trigger_offset"),"signal_known_ts":pick.get("signal_known_ts"),
                     "fee_rate":fee,"slippage_rate":slip,
                     "symbol": pick["symbol"],
                     "short": pick["short"],
@@ -892,6 +1058,14 @@ def _advance_single_slot(
                 }
                 if pick.get("signal_id"):
                     memory.setdefault("consumed_signals",{})[pick["signal_id"]]=now_ms
+                if pick.get("signal_event_key"):
+                    memory.setdefault("consumed_signals",{})[pick["signal_event_key"]]=now_ms
+
+    if closed_this_cycle:
+        for row in state.get("instruments",[]):
+            if row.get("status")=="READY" and _slot_group(row["cluster"],split_metal)==group_name:
+                row.update(status="WATCH",status_ua="НОВИЙ ЦИКЛ ПІСЛЯ ВИХОДУ",reason_ua=row.get("reason_ua","")+" · очікуємо наступний цикл після закриття")
+                row.setdefault("rejection_codes",[]).append("CYCLE_AFTER_CLOSE")
 
     # 3. Project active trade directly onto its instrument row so card & chart ALWAYS show its real levels!
     if isinstance(active, dict) and active.get("symbol") in by_sym:
@@ -924,7 +1098,8 @@ def _advance_single_slot(
             open_interest=active.get("open_interest", 0.0), funding_regime=active.get("funding_regime", "NEUTRAL"),
             early_close_hint_ua=active.get("early_close_hint_ua"), maker_pullback=bool(active.get("maker_pullback")),
             opened_ts=active.get("opened_ts"), opened_kyiv=active.get("opened_kyiv"),
-            signal_id=active.get("signal_id"), phase=active.get("phase","OPEN"),
+            signal_id=active.get("signal_id"),signal_event_key=active.get("signal_event_key"), phase=active.get("phase","OPEN"),
+            model_schema=active.get("model_schema"),trigger_tf=active.get("trigger_tf"),trigger_offset=active.get("trigger_offset"),
             reason_ua=(
                 ("Smart Maker лімітка (0% fee) очікує відкату" if active.get("maker_pullback") else "Лімітка очікує виконання")
                 if active.get("phase")=="PENDING_LIMIT"
@@ -953,39 +1128,44 @@ def _advance_single_slot(
     }
 
 
-def update_dual_paper_slots(state: dict[str, Any], memory: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
-    """Maintain BOTH unified MEXC slots: Slot 1 (OIL) and Slot 2 (CRYPTO+METALS)."""
+def update_dual_paper_slots(state: dict[str, Any], memory: dict[str, Any], *, now_ms: int, split_metal=True) -> dict[str, Any]:
+    """Retained public function name; v15.3 runs independent oil, crypto and metal slots."""
     memory["consumed_signals"]={k:v for k,v in memory.get("consumed_signals",{}).items() if now_ms-v<86400000}
-    oil_slot = _advance_single_slot("oil", "OIL", state, memory, now_ms=now_ms)
-    cm_slot = _advance_single_slot("cm", "CRYPTO_METAL", state, memory, now_ms=now_ms)
+    if split_metal: migrate_metal_slot(memory)
+    budget=_portfolio_limits(state) if split_metal else None
+    groups=[("oil","OIL"),("cm","CRYPTO" if split_metal else "CRYPTO_METAL")]
+    if split_metal: groups.append(("metal","METAL"))
+    def group_order(pair):
+        key,group=pair
+        best=max((r.get("rank_score",r.get("score",0)) for r in state["instruments"] if r.get("status")=="READY" and _slot_group(r["cluster"],split_metal)==group),default=-1)
+        return bool(memory.get(key+"_active")),best
+    slots={}
+    # Existing positions are advanced before new entries, then free slots by candidate rank.
+    for key,group in sorted(groups,key=group_order,reverse=True):
+        slots[key]=_advance_single_slot(key,group,state,memory,now_ms=now_ms,split_metal=split_metal,budget=budget)
     for row in state["instruments"]:
-        if row.get("status")=="READY" and row.get("signal_id") in memory["consumed_signals"]:
+        if row.get("status")=="READY" and (row.get("signal_id") in memory["consumed_signals"] or row.get("signal_event_key") in memory["consumed_signals"]):
             row.update(status="WATCH",status_ua="СИГНАЛ ВЖЕ ВИКОРИСТАНО")
-    ranked, top_pick = rank_and_lock_clusters(
-        state["instruments"],
-        oil_slot_busy=oil_slot["occupied"],
-        cm_slot_busy=cm_slot["occupied"],
-    )
-    state["instruments"] = ranked
-    state["top_pick"] = top_pick
-    state["ready_count"] = sum(1 for r in ranked if r["status"] == "READY")
-    state["watch_count"] = sum(1 for r in ranked if r["status"] == "WATCH")
-    state["oil_slot"] = oil_slot
-    state["cm_slot"] = cm_slot
-    combined_hist = sorted(
-        (oil_slot.get("history") or []) + (cm_slot.get("history") or []),
-        key=lambda h: int(h.get("closed_ts") or 0),
-        reverse=True,
-    )[:80]
-    state["closed_history"] = combined_hist
+    ranked, top_pick = rank_and_lock_clusters(state["instruments"],oil_slot_busy=slots["oil"]["occupied"],
+        cm_slot_busy=slots["cm"]["occupied"],metal_slot_busy=slots.get("metal",{}).get("occupied",False),split_metal=split_metal)
+    state.update(instruments=ranked,top_pick=top_pick,ready_count=sum(r["status"]=="READY" for r in ranked),
+        watch_count=sum(r["status"]=="WATCH" for r in ranked),oil_slot=slots["oil"],cm_slot=slots["cm"],
+        slot_layout="THREE_CLUSTERS" if split_metal else "LEGACY_TWO")
+    if split_metal: state["metal_slot"]=slots["metal"]
+    if budget:
+        used_r,used_n=_reserved(memory)
+        state["portfolio"]={**budget,"used_risk_usd":round(used_r,4) if math.isfinite(used_r) else None,
+                            "used_notional_usd":round(used_n,2) if math.isfinite(used_n) else None,
+                            "status":"OK" if used_r<=budget["risk_usd"]+1e-6 and used_n<=budget["notional_usd"]+1e-6 else "LEGACY_EXCEEDS_BUDGET",
+                            "per_slot_notional_cap":round(budget["notional_usd"]/3,2),"per_slot_risk_cap":round(budget["risk_usd"]/3,4)}
+    state["closed_history"]=sorted([h for slot in slots.values() for h in slot.get("history",[])],key=lambda h:int(h.get("closed_ts") or 0),reverse=True)[:120]
     memory["last_run_ts"]=now_ms
     return state
 
 
 def update_cm_paper_slot(state: dict[str, Any], memory: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
-    """Backward-compatible wrapper for Slot 2 tests."""
-    return update_dual_paper_slots(state, memory, now_ms=now_ms)
-
+    """Compatibility for original two-slot integrations only; production uses three slots."""
+    return update_dual_paper_slots(state,memory,now_ms=now_ms,split_metal=False)
 
 
 def format_telegram_signal(item: dict[str, Any], btc_macro: dict[str, Any], ranked: list[dict[str, Any]]) -> str:
@@ -1043,7 +1223,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     """Bounded parallel data collection, independent failures, quote fetched last."""
     started=time.monotonic(); cut=now_ms if now_ms is not None else int(time.time()*1000)
     memory=memory or {}; errors=[]; data={}; ticks={}; timings={}
-    active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active")) if a}
+    active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active"),memory.get("metal_active")) if a}
     tasks={}; counts={}; denied=set(); http_statuses={}; skipped=False
     def record_error(key, exc, retry=False):
         code=getattr(exc,"code",None)
@@ -1143,7 +1323,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     btc_macro=analyze_btc_macro(btc15,btc1,btc_price)
     btc_fresh=all(rows and 0<=quote_ts-rows[-1].ts-step<=step*2 for rows,step in ((btc15,900000),(btc1,3600000)))
     if not btc_fresh: btc_macro.update(side=0,state="UNKNOWN",label_ua="Дані BTC недоступні")
-    history=(memory.get("oil_history") or [])+(memory.get("cm_history") or [])
+    history=(memory.get("oil_history") or [])+(memory.get("cm_history") or [])+(memory.get("metal_history") or [])
     results=[]
     for spec in INSTRUMENTS:
         sym=spec["symbol"]
@@ -1151,6 +1331,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
             res=analyze_instrument(spec,ticker=tickers.get(sym) or {},bars_1m=data.get((sym,"Min1"),[]),bars_5m=data.get((sym,"Min5"),[]),
                 bars_15m=data.get((sym,"Min15"),[]),bars_1h=data.get((sym,"Min60"),[]),bars_4h=data.get((sym,"Hour4"),[]),
                 tick=ticks.get(sym,.01 if "OIL" in sym or "XPT" in sym else .001),btc_macro=btc_macro,history=history,
+                btc_bars_15m=btc15 if btc_fresh else [],consumed_signals=memory.get("consumed_signals",{}),
                 now_ms=quote_ts,deposit=deposit,risk_pct=risk_pct,max_leverage=max_leverage)
             if sym not in ticks and res["status"]=="READY":
                 res.update(status="WATCH",status_ua="НЕМає TICK",reason_ua="Не отримано крок ціни контракту")
@@ -1213,9 +1394,10 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         mem=json.loads(memory_path.read_text(encoding="utf-8")) if memory_path.exists() else {}
         deposit=float(os.getenv("BZU_DEPOSIT_USDT","100")); risk=float(os.getenv("BZU_RISK_PCT","3")); lev=float(os.getenv("BZU_MAX_LEVERAGE","5"))
         if not all(math.isfinite(x) and x>0 for x in (deposit,risk,lev)): raise ValueError("Invalid sizing configuration")
+        migrate_metal_slot(mem)
         state=run_scan(fetcher=fetcher,deposit=deposit,risk_pct=risk,max_leverage=lev,memory=mem,apply_locks=False)
         # Preserve existing entry/initial SL/TP/R. Start new trailing only after migration time.
-        for active in (mem.get("oil_active"),mem.get("cm_active")):
+        for active in (mem.get("oil_active"),mem.get("cm_active"),mem.get("metal_active")):
             if active and active.get("model_schema")=="MEXC_HYBRID_15_0" and not active.get("geometry_policy"):
                 active.update(geometry_policy=POLICY,trail_start_ts=state["updated_ts"],be_trigger=None)
         # Lifecycle still advances whenever M1 data exists, even if other HTF fetches fail.

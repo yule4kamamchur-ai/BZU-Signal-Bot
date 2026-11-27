@@ -1,4 +1,4 @@
-> **Поточна версія MEXC: v15.1 STRUCTURAL.** Почніть з [README_STRUCTURAL_V151_UA.md](README_STRUCTURAL_V151_UA.md). Нижче — історична документація старого OKX-ядра.
+> **Поточна версія MEXC: v15.3 Adaptive Direction.** Почніть з [README_ADAPTIVE_DIRECTION_V153_UA.md](README_ADAPTIVE_DIRECTION_V153_UA.md). Нижче — історична документація старого OKX-ядра.
 
 # BZU · v12.39 Єдиний структурний орієнтир
 

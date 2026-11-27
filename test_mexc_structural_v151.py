@@ -48,7 +48,7 @@ class GeometryTests(unittest.TestCase):
     def test_old_geometry_does_not_train_new_meta(self):
         history=[{'trade_id':str(i),'model_schema':'MEXC_HYBRID_15_0','quality':'OBSERVED_M1','net_r':2,'opened_ts':T-100000,'closed_ts':T-1000,'family':'LIQUIDITY_SWEEP','regime':'RANGE'} for i in range(60)]
         meta=meta_estimate(history,{'family':'LIQUIDITY_SWEEP','regime':'RANGE'},T)
-        self.assertEqual(meta['total_n'],0); self.assertEqual(MODEL_SCHEMA,'MEXC_HYBRID_15_1')
+        self.assertEqual(meta['total_n'],0); self.assertEqual(MODEL_SCHEMA,'MEXC_ADAPTIVE_DIRECTION_15_3')
 
 class TrailTests(unittest.TestCase):
     def test_no_fixed_early_be(self):

@@ -58,6 +58,28 @@
     return num.toFixed(dec);
   }
 
+  const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const dirText = (n) => n === 1 ? 'LONG ↑' : n === -1 ? 'SHORT ↓' : 'нейтрально';
+  const rejectUa = {
+    GEOMETRY_OR_EXECUTION:'непридатна геометрія / ціна', INVALID_STRUCTURE:'некоректний SL', DISTANT_INVALIDATION:'надто далекий SL', NEAR_LIQUIDITY:'близька ліквідність / RR', WIDE_SPREAD:'широкий спред', CHASE_DISTANCE:'ціна вже відійшла', OPPOSITE_IMPULSE:'зустрічний імпульс', DELAYED_DATA_GAP:'пропуск M1 після тригера', INVALIDATED_AFTER_TRIGGER:'структуру зламано після тригера', DELAYED_WAVE_SPENT:'хвиля вже пройдена', LOW_EVIDENCE_SCORE:'недостатньо доказів', NO_LOCAL_SHIFT_EVIDENCE:'немає локальної зміни структури', CURRENT_WAVE_OPPOSES:'поточна хвиля проти', M1_NO_M5_CONTEXT:'M1 без контексту M5', M1_WEAK_REVERSAL:'слабкий розворот M1', SIGNAL_CONSUMED:'сигнал використано', SIGNAL_BEFORE_LAST_EXIT:'тригер до останнього виходу', PORTFOLIO_BUDGET:'спільний бюджет вичерпано', CYCLE_AFTER_CLOSE:'новий цикл після закриття', CLUSTER_BUSY:'слот зайнято'
+  };
+  function directionPanel(item) {
+    const d=item.direction_diagnostics;
+    if (!d) return '';
+    const w=item.local_wave || {}, rel=item.relative_strength || {};
+    const rows=[1,-1].map(side=>{
+      const x=d[String(side)] || {}; const m5=(x.windows_checked||[]).filter(y=>y.tf==='M5').length;
+      const codes=[...(x.rejections||[]),...(item.side===side?(item.rejection_codes||[]):[])];
+      const reasons=[...new Set(codes)].map(k=>rejectUa[k]||k).join(' · ');
+      const last=(x.windows_checked||[]).find(y=>y.tf==='M5'&&y.offset===0);
+      const evidence=last&&Number.isFinite(last.body_atr)?` · тіло ${last.body_atr.toFixed(2)} ATR · RVOL ${last.rvol??'—'}`:'';
+      return `<div class="ms-dir-row"><strong class="${side===1?'ms-up':'ms-dn'}">${dirText(side)}</strong><span>M5 ${m5}/2 · кандидатів ${Number(x.detected||0)} · пройшли ${Number(x.ready||0)}${evidence}</span><small>${escapeHtml(reasons || (x.detected?'Геометрію перевірено':'Немає підтвердженого тригера'))}</small></div>`;
+    }).join('');
+    const relText=rel.available ? ` · vs BTC ${Number(rel.relative_atr).toFixed(2)} ATR (${dirText(rel.side)})` : '';
+    const trigger=item.trigger_tf ? ` · тригер ${escapeHtml(item.trigger_tf)}${item.trigger_offset===1?' (попередня)':''}${Number.isFinite(item.signal_age_sec)&&item.status!=='IN_TRADE'?' · '+Math.round(item.signal_age_sec)+' с':''}` : '';
+    return `<div class="ms-direction-panel"><small>АНАЛІЗ ОБОХ НАПРЯМКІВ · НЕ ЙМОВІРНІСТЬ</small><p>${escapeHtml(item.regime||'')} · M5 ${dirText(w.m5?.side)} · M15 ${dirText(w.m15?.side)}${escapeHtml(relText)}${trigger}</p>${rows}</div>`;
+  }
+
   function arrow(bias) {
     if (bias === 1) return '<span class="ms-up">↑</span>';
     if (bias === -1) return '<span class="ms-dn">↓</span>';
@@ -93,7 +115,7 @@
   }
 
   function displayedSizing(item) {
-    if (item.status === 'IN_TRADE' && item.sizing) {
+    if ((item.status === 'IN_TRADE' || item.status === 'READY') && item.sizing) {
       const a=item.sizing;
       return {notional:Number(a.position_usdt || 0).toFixed(0),effLev:Number(a.effective_leverage || 0).toFixed(2),riskUsd:Number(a.risk_usd || 0).toFixed(2),profitUsd:Number(a.target_profit_usd || 0).toFixed(2),slPct:Number(a.sl_pct || 0).toFixed(2),tpPct:Number(a.tp_pct || 0).toFixed(2)};
     }
@@ -353,7 +375,8 @@
         <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−${sz.riskUsd} USDT</strong></div>
         <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+${sz.profitUsd} USDT</strong></div>
       </div>` : ''}
-      <p class="ms-hl-reason">${item.reason_ua || ''}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
+      <p class="ms-hl-reason">${escapeHtml(item.reason_ua || '')}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
+      ${directionPanel(item)}
     `;
   }
 
@@ -391,7 +414,7 @@
           </td>
           <td class="ms-tf">${arrow(item.bias_4h)} ${arrow(item.bias_1h)} ${arrow(item.bias_15m)}</td>
           <td><span class="ms-pill ${statusClass(item.status)}">${item.status_ua}</span></td>
-          <td class="ms-num ${item.side === 1 ? 'ms-up' : item.side === -1 ? 'ms-dn' : ''}">${item.side === 1 ? 'LONG' : item.side === -1 ? 'SHORT' : '—'}</td>
+          <td class="ms-num ${item.side === 1 ? 'ms-up' : item.side === -1 ? 'ms-dn' : ''}">${item.side === 1 ? 'LONG' : item.side === -1 ? 'SHORT' : '—'}${item.observed_wave_side ? `<small class="${item.observed_wave_side===1?'ms-up':'ms-dn'}">хвиля ${item.observed_wave_side===1?'↑':'↓'}</small>` : ''}</td>
           <td class="ms-num">${item.rr ? item.rr.toFixed(2) : '—'}</td>
           <td class="ms-num"><strong>${item.score}</strong></td>
         </tr>
@@ -605,6 +628,8 @@
   function renderDualSlotsAndDaily() {
     const oilSlot = (latestData && latestData.oil_slot) || {};
     const cmSlot = (latestData && latestData.cm_slot) || {};
+    const metalSlot = latestData?.metal_slot || {};
+    const metalCard=$('ms-slot-metal'); if(metalCard) metalCard.hidden=!latestData?.metal_slot;
 
     _renderSlotCard(
       'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub', 'ms-slot-oil-alert',
@@ -615,15 +640,25 @@
     _renderSlotCard(
       'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub', 'ms-slot-cm-alert',
       cmSlot,
-      'Немає відкритої угоди по крипті / металу',
-      'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI · XPT'
+      'Немає відкритої угоди по крипті',
+      'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI'
     );
 
+    _renderSlotCard('ms-slot-metal','ms-slot-metal-badge','ms-slot-metal-title','ms-slot-metal-sub','ms-slot-metal-alert',metalSlot,
+      'Немає відкритої угоди по металу','Слот 3 вільний · XPT · спільний бюджет');
+    const port=$('ms-portfolio'), budget=latestData?.portfolio;
+    if(port) {
+      port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.3';
+      port.classList.toggle('ms-dn',budget?.status==='LEGACY_EXCEEDS_BUDGET');
+    }
     const oilD = oilSlot.daily_all || oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
     const cmD = cmSlot.daily_all || cmSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
     const oilT = Number(oilD.trades || 0), oilR = Number(oilD.net_r || 0), oilU = Number(oilD.net_usd || 0);
     const cmT = Number(cmD.trades || 0), cmR = Number(cmD.net_r || 0), cmU = Number(cmD.net_usd || 0);
 
+    const metalD=metalSlot.daily_all || metalSlot.daily || {};
+    const metalT=Number(metalD.trades||0),metalR=Number(metalD.net_r||0),metalU=Number(metalD.net_usd||0);
+    const dMetal=$('ms-day-metal'); if(dMetal){dMetal.textContent=`${metalT} уг. · ${fmtSigned(metalR)} R (${fmtSigned(metalU)} USDT)`;dMetal.className=metalU>0?'ms-up':metalU<0?'ms-dn':'';}
     const dOil = $('ms-day-oil'), dCm = $('ms-day-cm'), dTot = $('ms-day-total');
     if (dOil) {
       dOil.textContent = `${oilT} уг. · ${fmtSigned(oilR)} R (${fmtSigned(oilU)} USDT)`;
@@ -634,7 +669,7 @@
       dCm.className = cmU > 0 ? 'ms-up' : cmU < 0 ? 'ms-dn' : '';
     }
     if (dTot) {
-      const totT = oilT + cmT, totR = oilR + cmR, totU = oilU + cmU;
+      const totT = oilT + cmT + metalT, totR = oilR + cmR + metalR, totU = oilU + cmU + metalU;
       dTot.textContent = `${totT} уг. · ${fmtSigned(totR)} R (${fmtSigned(totU)} USDT)`;
       dTot.className = totU > 0 ? 'ms-up' : totU < 0 ? 'ms-dn' : '';
     }
@@ -714,7 +749,12 @@
     const cmClosedUsd = Number(data.cm_slot?.last_closed?.net_usd ?? data.cm_slot?.last_closed?.net_r ?? 0);
     const cmAlertTs = data.cm_slot?.active?.action_alert?.ts || null;
 
+    const metalOpenTs=data.metal_slot?.active?.opened_ts||null,metalClosedTs=data.metal_slot?.last_closed?.closed_ts||null,metalAlertTs=data.metal_slot?.active?.action_alert?.ts||null;
+    const metalClosedUsd=Number(data.metal_slot?.last_closed?.net_usd??0);
     if (prevSlotState.initialized) {
+      if(metalOpenTs&&metalOpenTs!==prevSlotState.metalOpenTs){triggerBlink('ms-slot-metal','ms-slot-blink-entry');playSound('entry');}
+      if(metalAlertTs&&metalAlertTs!==prevSlotState.metalAlertTs){triggerBlink('ms-slot-metal','ms-slot-blink-action');playSound('action');}
+      if(metalClosedTs&&metalClosedTs!==prevSlotState.metalClosedTs){triggerBlink('ms-slot-metal',metalClosedUsd>=0?'ms-slot-blink-win':'ms-slot-blink-loss');playSound(metalClosedUsd>=0?'win':'loss');}
       if (oilOpenTs && oilOpenTs !== prevSlotState.oilOpenTs) {
         triggerBlink('ms-slot-oil', 'ms-slot-blink-entry');
         playSound('entry');
@@ -740,7 +780,7 @@
         playSound(cmClosedUsd >= 0 ? 'win' : 'loss');
       }
     }
-    prevSlotState = { oilOpenTs, oilClosedTs, oilAlertTs, cmOpenTs, cmClosedTs, cmAlertTs, initialized: true };
+    prevSlotState = { oilOpenTs, oilClosedTs, oilAlertTs, cmOpenTs, cmClosedTs, cmAlertTs, metalOpenTs,metalClosedTs,metalAlertTs, initialized: true };
   }
 
   // === Interactive Trade History Modal ===
@@ -775,7 +815,8 @@
         const mem = await resp.json();
         const oilH = (mem.oil_history || []).map((h) => ({ ...h, slot: h.slot || 'OIL' }));
         const cmH = (mem.cm_history || []).map((h) => ({ ...h, slot: h.slot || 'CRYPTO_METAL' }));
-        const merged = [...oilH, ...cmH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
+        const metalH=(mem.metal_history||[]).map(h=>({...h,slot:"METAL"}));
+        const merged = [...oilH, ...cmH,...metalH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
         if (merged.length) {
           fallbackMemoryHistory = merged;
           if (historyModalOpen) renderHistoryModal();
@@ -791,7 +832,8 @@
     }
     const oilH = (latestData?.oil_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'OIL' }));
     const cmH = (latestData?.cm_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'CRYPTO_METAL' }));
-    const combined = [...oilH, ...cmH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
+    const metalH=(latestData?.metal_slot?.history||[]).map(h=>({...h,slot:"METAL"}));
+    const combined = [...oilH, ...cmH,...metalH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
     if (combined.length) return combined;
     if (!memoryFallbackLoaded) loadMemoryHistoryFallback();
     return fallbackMemoryHistory;
@@ -812,7 +854,7 @@
     if (!tbody || !kpis) return;
     let rows = getClosedHistoryRows();
     if (historySlotFilter !== 'ALL') {
-      rows = rows.filter((r) => (r.slot || (r.symbol === 'UKOIL_USDT' ? 'OIL' : 'CRYPTO_METAL')) === historySlotFilter);
+      rows = rows.filter((r) => (r.symbol==='UKOIL_USDT'?'OIL':r.symbol==='XPT_USDT'?'METAL':'CRYPTO') === historySlotFilter);
     }
     const todayPref = _todayPrefixKyiv();
     if (historyPeriodFilter === 'TODAY' && todayPref) {
@@ -979,6 +1021,7 @@
   }
 
   function wireBannerClick() {
+    const metalCard=$('ms-slot-metal'); if(metalCard) metalCard.addEventListener('click',()=>{metalCard.classList.remove('ms-slot-blink-entry','ms-slot-blink-win','ms-slot-blink-loss','ms-slot-blink-action');selectedSymbol='XPT_USDT';renderAll(true);$('multi-scanner-section')?.scrollIntoView({behavior:'smooth',block:'start'});});
     const oilCard = $('ms-slot-oil');
     if (oilCard) {
       oilCard.addEventListener('click', () => {

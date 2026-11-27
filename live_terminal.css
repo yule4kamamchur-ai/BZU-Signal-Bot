@@ -1440,7 +1440,7 @@ footer {
 /* === Dual-Slot Top Banners & Daily Results Bar === */
 .ms-dual-slots {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin: 0 0 16px;
 }
@@ -1496,7 +1496,7 @@ footer {
 }
 .ms-daily-bar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin: 16px 0;
   padding: 14px 18px;
@@ -1745,3 +1745,13 @@ footer {
 @media (max-width: 720px) {
   .ms-history-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* v15.3 diagnostic radar */
+.ms-portfolio { font-size:.79rem; color:#94a3b8; margin:-6px 0 15px; overflow-wrap:anywhere; }
+.ms-direction-panel { border-top:1px solid rgba(148,163,184,.22); margin-top:12px; padding-top:10px; font-size:.78rem; color:#cbd5e1; }
+.ms-direction-panel > small { font-weight:700; color:#94a3b8; letter-spacing:.03em; }
+.ms-direction-panel p { margin:5px 0; overflow-wrap:anywhere; }
+.ms-dir-row { display:grid; grid-template-columns:80px minmax(0,1fr); gap:3px 10px; padding:6px 0; border-top:1px solid rgba(148,163,184,.10); }
+.ms-dir-row small { grid-column:2; color:#a5b4c7; overflow-wrap:anywhere; }
+.ms-num small { display:block; }
+@media (max-width:1100px) and (min-width:861px) { .ms-dual-slots{grid-template-columns:repeat(2,minmax(0,1fr));} .ms-daily-bar{grid-template-columns:repeat(2,minmax(0,1fr));} }

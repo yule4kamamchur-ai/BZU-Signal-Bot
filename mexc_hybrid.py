@@ -7,7 +7,7 @@ import math
 from collections import defaultdict
 from statistics import mean
 
-MODEL_SCHEMA = 'MEXC_HYBRID_15_1'
+MODEL_SCHEMA = 'MEXC_ADAPTIVE_DIRECTION_15_3'
 FAMILIES = {
     'M5_LIQUIDITY_SWEEP_RECLAIM': 'LIQUIDITY_SWEEP',
     'TREND_PULLBACK_FVG_VWAP': 'TREND_PULLBACK',
@@ -15,6 +15,10 @@ FAMILIES = {
     'MOMENTUM_NO_PULLBACK_CONTINUATION': 'MOMENTUM',
     'FAILED_BREAKOUT_TRAP': 'FAILED_BREAKOUT',
     'EXHAUSTION_REVERSAL': 'EXHAUSTION',
+    'EARLY_STRUCTURE_SHIFT': 'EARLY_STRUCTURE_SHIFT',
+    'COUNTERTREND_WAVE': 'COUNTERTREND_WAVE',
+    'BREAKDOWN_CONTINUATION': 'STRUCTURE_CONTINUATION',
+    'BREAKUP_CONTINUATION': 'STRUCTURE_CONTINUATION',
 }
 
 
@@ -97,7 +101,8 @@ def meta_estimate(history, candidate, as_of):
             or not isinstance(v,(int,float)) or not math.isfinite(v) or not isinstance(end,int) or not isinstance(start,int) or not start<end<as_of):
             continue
         seen.add(ident); rows.append(r)
-    local=[r for r in rows if r.get('family')==candidate['family'] and r.get('regime')==candidate['regime']]
+    local=[r for r in rows if r.get('family')==candidate['family'] and r.get('regime')==candidate['regime']
+           and (candidate.get('side') is None or r.get('side')==candidate['side'])]
     n=len(local)
     result={'status':'COLLECTING_MEXC_LABELS','n':n,'total_n':len(rows),'win_rate_estimate':None,'expected_r_estimate':None,'rank_adjustment':0.}
     if len(rows)<40 or n<12:

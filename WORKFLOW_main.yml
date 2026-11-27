@@ -1,7 +1,5 @@
-name: BZU MULTI v15.1 — MEXC scanner
+name: BZU MULTI v15.3 Adaptive Direction — MEXC scanner
 on:
-  schedule:
-    - cron: '1-59/5 * * * *'
   workflow_dispatch:
 permissions:
   contents: write
@@ -15,12 +13,17 @@ jobs:
     timeout-minutes: 4
     env:
       PYTHONUNBUFFERED: '1'
-      MEXC_SCAN_INTERVAL_SEC: '300'
-      MEXC_TAKER_FEE_RATE: ${{ vars.MEXC_TAKER_FEE_RATE || '0.0005' }}
+      MEXC_SCAN_INTERVAL_SEC: ${{ vars.MEXC_SCAN_INTERVAL_SEC || '300' }}
+      MEXC_FUTURES_BASE: 'https://api.mexc.com'
+      BZU_ALLOW_M1_ENTRY: ${{ vars.BZU_ALLOW_M1_ENTRY || 'true' }}
+      BZU_PORTFOLIO_RISK_PCT: ${{ vars.BZU_PORTFOLIO_RISK_PCT || vars.BZU_RISK_PCT || '3' }}
+      MEXC_TAKER_FEE_RATE: ${{ vars.MEXC_TAKER_FEE_RATE || '0.0002' }}
       MEXC_SLIPPAGE_RATE: ${{ vars.MEXC_SLIPPAGE_RATE || '0.0001' }}
       BZU_DEPOSIT_USDT: ${{ vars.BZU_DEPOSIT_USDT || '100' }}
       BZU_RISK_PCT: ${{ vars.BZU_RISK_PCT || '3' }}
       BZU_MAX_LEVERAGE: ${{ vars.BZU_MAX_LEVERAGE || '5' }}
+    outputs:
+      data_status: ${{ steps.scan.outputs.data_status }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,8 +38,17 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -m py_compile mexc_multi_scanner.py mexc_hybrid.py mexc_lifecycle.py mexc_geometry.py
+          python -m py_compile mexc_multi_scanner.py mexc_hybrid.py mexc_lifecycle.py mexc_geometry.py mexc_direction.py
           python mexc_multi_scanner.py --notify
+          python - <<'PYCODE'
+          import json, os
+          h=json.load(open('multi_scanner_state.json'))['health']
+          status=h['status']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write(f'data_status={status}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(f"### MEXC data: {status}\nAPI: {h.get('api_base')} · fresh quotes: {h.get('fresh_quotes',0)}/7 · analysed: {h.get('fresh_analysis_count',0)}/7\nHTTP errors: {h.get('api_http_statuses',{})}\n")
+          if status=='FAILED_DATA': print('::warning::Market data unavailable. Publishing failure heartbeat before marking run failed.')
+          PYCODE
       - name: Persist small MEXC state only
         id: persist
         if: ${{ steps.scan.outcome == 'success' }}
@@ -113,3 +125,12 @@ jobs:
       - name: Publish dashboard
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify market data after publication
+        env:
+          DATA_STATUS: ${{ needs.scan.outputs.data_status }}
+        run: |
+          case "$DATA_STATUS" in
+            OK) echo 'Market data OK' ;;
+            DEGRADED) echo '::warning::Partial market data; inspect scan summary' ;;
+            *) echo '::error::Market data unavailable; dashboard diagnostics published. Inspect scan summary.'; exit 1 ;;
+          esac
