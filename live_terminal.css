@@ -1550,3 +1550,198 @@ footer {
 .ms-slot-blink-entry { animation: msBlinkEntry 0.9s ease-in-out 14; }
 .ms-slot-blink-win { animation: msBlinkWin 0.9s ease-in-out 14; }
 .ms-slot-blink-loss { animation: msBlinkLoss 0.9s ease-in-out 14; }
+
+/* === BZU MULTI v15.2 Institutional Action Banners & Trade History Modal === */
+.ms-action-banner {
+  margin-top: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  font-weight: 600;
+  border: 1px solid rgba(250, 204, 21, 0.55);
+  background: rgba(250, 204, 21, 0.14);
+  color: #fef08a;
+}
+.ms-action-banner small {
+  display: block;
+  margin-top: 3px;
+  font-weight: 400;
+  font-size: 0.76rem;
+  color: #e2e8f0;
+  opacity: 0.92;
+}
+.ms-action-banner.ms-alert-success {
+  border-color: rgba(34, 197, 94, 0.72);
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+  box-shadow: 0 0 14px rgba(34, 197, 94, 0.22);
+}
+.ms-action-banner.ms-alert-warn {
+  border-color: rgba(245, 158, 11, 0.78);
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.22);
+}
+.ms-hl-action-banner {
+  margin: 10px 0 10px;
+}
+@keyframes msBlinkAction {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.0); border-color: rgba(250, 204, 21, 0.55); }
+  50% { box-shadow: 0 0 24px 5px rgba(250, 204, 21, 0.78); border-color: #facc15; }
+}
+.ms-slot-blink-action { animation: msBlinkAction 0.85s ease-in-out 14; }
+
+.ms-daily-clickable {
+  cursor: pointer;
+  border-radius: 9px;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+.ms-daily-clickable:hover,
+.ms-daily-clickable:focus-visible {
+  background: rgba(56, 189, 248, 0.10);
+  outline: 1px solid rgba(56, 189, 248, 0.35);
+}
+.ms-hist-link {
+  float: right;
+  color: #38bdf8;
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+
+.ms-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(5, 8, 16, 0.78);
+  backdrop-filter: blur(5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.ms-modal-backdrop[hidden] { display: none !important; }
+.ms-modal {
+  width: min(980px, 100%);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: #0f1523;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+.ms-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+.ms-modal-head h2 {
+  margin: 0;
+  font-size: 1.08rem;
+  color: #f8fafc;
+}
+.ms-modal-head p {
+  margin: 3px 0 0;
+  font-size: 0.8rem;
+}
+.ms-modal-close {
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: #e2e8f0;
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.ms-modal-close:hover { background: rgba(239, 68, 68, 0.25); border-color: rgba(239, 68, 68, 0.5); }
+
+.ms-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+.ms-filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.ms-filter-btn {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.75);
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ms-filter-btn[aria-pressed="true"] {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: rgba(56, 189, 248, 0.65);
+  color: #7dd3fc;
+}
+
+.ms-history-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 20px;
+  background: rgba(15, 23, 42, 0.65);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+.ms-hkpi {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+.ms-hkpi small { display: block; font-size: 0.7rem; color: #94a3b8; }
+.ms-hkpi strong { display: block; font-size: 0.98rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+.ms-history-table-wrap {
+  overflow: auto;
+  padding: 0 20px 18px;
+}
+.ms-hist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.ms-hist-table th {
+  position: sticky;
+  top: 0;
+  background: #0f1523;
+  text-align: left;
+  padding: 10px 8px;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+.ms-hist-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  color: #e2e8f0;
+  vertical-align: middle;
+}
+.ms-hist-table td small { display: block; color: #94a3b8; font-size: 0.73rem; margin-top: 2px; }
+.ms-reason-pill {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ms-reason-win { background: rgba(34, 197, 94, 0.18); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.45); }
+.ms-reason-warn { background: rgba(245, 158, 11, 0.18); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.45); }
+.ms-reason-loss { background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); }
+@media (max-width: 720px) {
+  .ms-history-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

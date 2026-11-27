@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
-<title>BZU MULTI · MEXC Structural v15.1.1</title>
-<link rel="stylesheet" href="./live_terminal.css?v=15.1.0">
+<title>BZU MULTI · MEXC Institutional v15.2</title>
+<link rel="stylesheet" href="./live_terminal.css?v=15.2.0">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <meta name="bzu-state-source" content="">
-<script defer src="./multi_scanner.js?v=15.1.1"></script>
+<script defer src="./multi_scanner.js?v=15.2.0"></script>
 </head>
 <body class="bzu-multi-clean">
 <header class="masthead ms-masthead">
@@ -38,6 +38,7 @@
     </div>
     <div id="ms-slot-oil-title" class="ms-slot-title">Немає відкритої угоди по нафті</div>
     <div id="ms-slot-oil-sub" class="ms-slot-sub">Макс. 1 активна угода · клік відкриває UKOIL</div>
+    <div id="ms-slot-oil-alert" class="ms-action-banner" hidden></div>
   </div>
   <div id="ms-slot-cm" class="ms-slot-card ms-slot-free" role="button" tabindex="0">
     <div class="ms-slot-top">
@@ -46,6 +47,7 @@
     </div>
     <div id="ms-slot-cm-title" class="ms-slot-title">Немає відкритої угоди по крипті / металу</div>
     <div id="ms-slot-cm-sub" class="ms-slot-sub">Макс. 1 активна угода · SOL · LINK · LTC · APT · ORDI · XPT</div>
+    <div id="ms-slot-cm-alert" class="ms-action-banner" hidden></div>
   </div>
 </section>
 
@@ -70,7 +72,8 @@
         <div id="ms-chart-legend" class="ms-chart-legend" hidden>
           <span style="color:#f97316">● Вхід</span>
           <span style="color:#ef4444">● SL</span>
-          <span style="color:#22c55e">● TP</span>
+          <span style="color:#38bdf8">● TP1 (50%)</span>
+          <span style="color:#22c55e">● TP2 (Runner)</span>
           <span style="color:#eab308">● Б/У</span>
         </div>
       </div>
@@ -96,8 +99,8 @@
         </table>
       </div>
       <p class="ms-status-help">
-        <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — ще не виконана ·
-        <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал (PAPER) ·
+        <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — Smart Maker лімітка (0% fee) ·
+        <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал ·
         <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо ·
         <strong>НЕМАЄ СИГНАЛУ</strong> — ринок у середині діапазону.
       </p>
@@ -105,27 +108,67 @@
   </div>
 </section>
 
-<section id="ms-daily-summary" class="panel ms-daily-bar" aria-label="Підсумок угод за сьогодні">
-  <div class="ms-daily-cell">
-    <small>СЬОГОДНІ · НАФТА (UKOIL)</small>
+<section id="ms-daily-summary" class="panel ms-daily-bar" aria-label="Підсумок угод за сьогодні (клік — історія угод)">
+  <div id="ms-daily-oil-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="OIL" title="Натисніть, щоб відкрити історію угод по нафті">
+    <small>СЬОГОДНІ · НАФТА (UKOIL) <span class="ms-hist-link">Історія ↗</span></small>
     <strong id="ms-day-oil">0 уг. · +0.00 R ($0.00)</strong>
-    <small id="ms-day-oil-sub" class="muted">Слот 1 · MEXC</small>
+    <small id="ms-day-oil-sub" class="muted">Слот 1 · MEXC · колір по $</small>
   </div>
-  <div class="ms-daily-cell">
-    <small>СЬОГОДНІ · КРИПТА / МЕТАЛ</small>
+  <div id="ms-daily-cm-btn" class="ms-daily-cell ms-daily-clickable" role="button" tabindex="0" data-slot-filter="CRYPTO_METAL" title="Натисніть, щоб відкрити історію угод по крипті та металу">
+    <small>СЬОГОДНІ · КРИПТА / МЕТАЛ <span class="ms-hist-link">Історія ↗</span></small>
     <strong id="ms-day-cm">0 уг. · +0.00 R ($0.00)</strong>
-    <small id="ms-day-cm-sub" class="muted">Слот 2 · MEXC</small>
+    <small id="ms-day-cm-sub" class="muted">Слот 2 · MEXC · колір по $</small>
   </div>
-  <div class="ms-daily-cell ms-daily-total">
-    <small>РАЗОМ ЗА СЬОГОДНІ</small>
+  <div id="ms-daily-total-btn" class="ms-daily-cell ms-daily-total ms-daily-clickable" role="button" tabindex="0" data-slot-filter="ALL" title="Натисніть, щоб відкрити повну історію закритих угод">
+    <small>РАЗОМ ЗА СЬОГОДНІ <span class="ms-hist-link">Усі угоди ↗</span></small>
     <strong id="ms-day-total">0 уг. · +0.00 R ($0.00)</strong>
-    <small class="muted">2 слоти · 1 Нафта + 1 Крипта/Метал</small>
+    <small class="muted">Клік → деталі кожної угоди та причина закриття</small>
   </div>
 </section>
 
+<div id="ms-history-modal" class="ms-modal-backdrop" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="ms-history-title">
+  <div class="ms-modal">
+    <div class="ms-modal-head">
+      <div>
+        <h2 id="ms-history-title">Історія закритих угод · BZU MULTI</h2>
+        <p class="muted" id="ms-history-subtitle">Детальний журнал результатів ($) та причин закриття</p>
+      </div>
+      <button type="button" id="ms-history-close" class="ms-modal-close" aria-label="Закрити історію">✕</button>
+    </div>
+    <div class="ms-history-toolbar">
+      <div class="ms-filter-group" role="group" aria-label="Фільтр по слоту">
+        <button type="button" class="ms-filter-btn" data-hslot="ALL" aria-pressed="true">Усі слоти</button>
+        <button type="button" class="ms-filter-btn" data-hslot="OIL" aria-pressed="false">Нафта (UKOIL)</button>
+        <button type="button" class="ms-filter-btn" data-hslot="CRYPTO_METAL" aria-pressed="false">Крипта / Метал</button>
+      </div>
+      <div class="ms-filter-group" role="group" aria-label="Фільтр по періоду">
+        <button type="button" class="ms-filter-btn" data-hperiod="TODAY" aria-pressed="true">Сьогодні</button>
+        <button type="button" class="ms-filter-btn" data-hperiod="ALL" aria-pressed="false">Уся історія</button>
+      </div>
+    </div>
+    <div id="ms-history-kpis" class="ms-history-kpis"></div>
+    <div class="ms-history-table-wrap">
+      <table class="ms-hist-table">
+        <thead>
+          <tr>
+            <th>Закрито (Київ)</th>
+            <th>Актив / Сетап</th>
+            <th class="ms-num">Вхід → Вихід</th>
+            <th class="ms-num">Результат</th>
+            <th>Причина закриття</th>
+          </tr>
+        </thead>
+        <tbody id="ms-history-rows">
+          <tr><td colspan="5" class="ms-empty">Немає закритих угод за вибраний період.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <footer>
-  <span>BZU MULTI · MEXC Live WebSocket</span>
-  <span>2 слоти · PnL оцінено після комісій/прослизання, без funding</span>
+  <span>BZU MULTI v15.2 · MEXC Live WebSocket</span>
+  <span>TP1 50% + Runner · Smart Maker · Alpha-Decay · Funding Conviction</span>
   <span>PAPER · SIGNAL TERMINAL</span>
 </footer>
 </body>

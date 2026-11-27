@@ -292,6 +292,30 @@
     const price = posNum(livePrices[item.symbol]) ?? item.price;
     const sz = displayedSizing(item);
     const sideCls = item.side === 1 ? 'ms-side-long' : item.side === -1 ? 'ms-side-short' : 'ms-side-flat';
+    function buildActionBannerHtml(obj) {
+      if (!obj) return '';
+      const alert = obj.action_alert;
+      if (alert && alert.title_ua) {
+        const cls = alert.level === 'success' ? 'ms-alert-success' : 'ms-alert-warn';
+        return `<div class="ms-action-banner ms-hl-action-banner ${cls}">${alert.title_ua}${alert.detail_ua ? `<small>${alert.detail_ua}</small>` : ''}</div>`;
+      }
+      if (obj.tp1_hit) {
+        return `<div class="ms-action-banner ms-hl-action-banner ms-alert-success">⚡ УВАГА: ФІКСУЄМО 50% (TP1) · СТОП ПЕРЕНЕСЕНО В Б/У (${fmtPrice(obj.stop, obj.tick)})<small>Решта 50% іде як Runner до TP ${fmtPrice(obj.tp, obj.tick)}.</small></div>`;
+      }
+      if (obj.stale_tightened) {
+        const rem = obj.time_stop_countdown_min ? ` · закриття через ~${obj.time_stop_countdown_min} хв` : '';
+        return `<div class="ms-action-banner ms-hl-action-banner ms-alert-warn">⏱ УВАГА: СТОП ПЕРЕНЕСЕНО (ТАЙМ-СТОП)${rem}<small>Угода без імпульсу (Alpha Decay). Новий стоп: ${fmtPrice(obj.stop, obj.tick)}.</small></div>`;
+      }
+      if (obj.time_stop_countdown_min) {
+        return `<div class="ms-action-banner ms-hl-action-banner ms-alert-warn">⏱ УВАГА: УГОДА БУДЕ ЗАКРИТА ЧЕРЕЗ ~${obj.time_stop_countdown_min} ХВ (НЕМАЄ ІМПУЛЬСУ)<small>Alpha-Decay Time-Stop: якщо ціна не дасть розвитку, закриваємо достроково.</small></div>`;
+      }
+      if (obj.funding_regime === 'CROWDED_WITH_US') {
+        return `<div class="ms-action-banner ms-hl-action-banner ms-alert-warn">⚠ ПЕРЕГРІТИЙ FUNDING (${Number(obj.funding_pct || 0).toFixed(3)}%) · ДОСТРОКОВА ФІКСАЦІЯ TP1 (+${Number(obj.tp1_r || 0.85).toFixed(2)} R)<small>Ризик знижено (×0.75). При досягненні TP1 фіксуємо 50% і переводимо в Б/У.</small></div>`;
+      }
+      return '';
+    }
+    const hlBannerHtml = item.status === 'IN_TRADE' || item.funding_regime === 'CROWDED_WITH_US' ? buildActionBannerHtml(item) : '';
+    const tp1Txt = item.tp1 ? `TP1 (50%): ${fmtPrice(item.tp1, item.tick)}` : '';
     const orderLbl = item.status === 'IN_TRADE'
       ? (item.phase === 'PENDING_LIMIT' ? 'ЛІМІТКА ОЧІКУЄ' : 'АКТИВНА ПОЗИЦІЯ')
       : item.status === 'READY'
@@ -315,11 +339,12 @@
         </div>
         <a class="ms-mexc-btn" href="${item.mexc_url || 'https://www.mexc.com/futures/' + item.symbol}" target="_blank" rel="noopener">MEXC ↗</a>
       </div>
+      ${hlBannerHtml}
       <div class="ms-hl-levels">
-        <div class="ms-lvl"><small>ВХІД</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
-        <div class="ms-lvl"><small>СТОП-ЛОСС</small><strong class="ms-dn">${fmtPrice(item.stop, item.tick)}${sz && item.status !== 'IN_TRADE' ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
-        <div class="ms-lvl"><small>ТЕЙК-ПРОФІТ</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
-        <div class="ms-lvl"><small>R:R / RVOL</small><strong>${item.rr ? item.rr.toFixed(2) + ' R' : '—'} · ${item.rvol ? item.rvol.toFixed(2) + '×' : '—'}</strong></div>
+        <div class="ms-lvl"><small>ВХІД${item.maker_pullback ? ' · MAKER 0%' : ''}</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
+        <div class="ms-lvl"><small>СТОП-ЛОСС${item.be_armed ? ' (Б/У)' : item.stale_tightened ? ' (ТАЙМ-СТОП)' : ''}</small><strong class="${item.be_armed ? 'ms-up' : 'ms-dn'}">${fmtPrice(item.stop, item.tick)}${sz && item.status !== 'IN_TRADE' ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
+        <div class="ms-lvl"><small>TP2 (RUNNER)${tp1Txt ? ' · ' + tp1Txt : ''}</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
+        <div class="ms-lvl"><small>R:R / RVOL${item.funding_pct ? ' · FR ' + Number(item.funding_pct).toFixed(3) + '%' : ''}</small><strong>${item.rr ? item.rr.toFixed(2) + ' R' : '—'} · ${item.rvol ? item.rvol.toFixed(2) + '×' : '—'}</strong></div>
       </div>
       ${sz ? `
       <div class="ms-sizing-bar">
@@ -495,8 +520,41 @@
     return `${n >= 0 ? '+' : ''}${n.toFixed(dec)}`;
   }
 
-  function _renderSlotCard(cardId, badgeId, titleId, subId, slotObj, emptyTitle, emptySub) {
-    const card = $(cardId), badge = $(badgeId), title = $(titleId), sub = $(subId);
+  function _renderSlotActionBanner(alertEl, act) {
+    if (!alertEl) return;
+    if (!act) { alertEl.hidden = true; alertEl.innerHTML = ''; return; }
+    const tick = act.tick || 0.01;
+    let title = '', detail = '', level = 'warn';
+    if (act.action_alert && act.action_alert.title_ua) {
+      title = act.action_alert.title_ua;
+      detail = act.action_alert.detail_ua || '';
+      level = act.action_alert.level === 'success' ? 'success' : 'warn';
+    } else if (act.tp1_hit) {
+      title = `⚡ УВАГА: ФІКСУЄМО 50% (TP1) · СТОП ПЕРЕНЕСЕНО В Б/У (${fmtPrice(act.stop, tick)})`;
+      detail = `Решта 50% іде як Runner до TP ${fmtPrice(act.tp, tick)}.`;
+      level = 'success';
+    } else if (act.stale_tightened) {
+      const rem = act.time_stop_countdown_min ? ` · закриття через ~${act.time_stop_countdown_min} хв` : '';
+      title = `⏱ УВАГА: СТОП ПЕРЕНЕСЕНО (ТАЙМ-СТОП)${rem}`;
+      detail = `Немає імпульсу (Alpha Decay). Стоп підтягнуто до ${fmtPrice(act.stop, tick)}.`;
+      level = 'warn';
+    } else if (act.time_stop_countdown_min) {
+      title = `⏱ УВАГА: УГОДА БУДЕ ЗАКРИТА ЧЕРЕЗ ~${act.time_stop_countdown_min} ХВ (НЕМАЄ ІМПУЛЬСУ)`;
+      detail = 'Alpha-Decay Time-Stop: дострокове закриття при відсутності розвитку.';
+      level = 'warn';
+    } else if (act.funding_regime === 'CROWDED_WITH_US') {
+      title = `⚠ ПЕРЕГРІТИЙ FUNDING · ДОСТРОКОВА ФІКСАЦІЯ TP1 (+${Number(act.tp1_r || 0.85).toFixed(2)} R)`;
+      detail = 'Ризик знижено (×0.75) · фіксуємо 50% раніше та переводимо в Б/У.';
+      level = 'warn';
+    }
+    if (!title) { alertEl.hidden = true; alertEl.innerHTML = ''; return; }
+    alertEl.hidden = false;
+    alertEl.className = `ms-action-banner ${level === 'success' ? 'ms-alert-success' : 'ms-alert-warn'}`;
+    alertEl.innerHTML = `${title}${detail ? `<small>${detail}</small>` : ''}`;
+  }
+
+  function _renderSlotCard(cardId, badgeId, titleId, subId, alertId, slotObj, emptyTitle, emptySub) {
+    const card = $(cardId), badge = $(badgeId), title = $(titleId), sub = $(subId), alertEl = $(alertId);
     if (!card || !badge || !title || !sub) return;
     card.classList.remove('ms-slot-pos', 'ms-slot-neg', 'ms-slot-free');
     const act = slotObj && slotObj.active;
@@ -505,9 +563,10 @@
       const sideTxt = side === 1 ? 'LONG' : 'SHORT';
       const tick = act.tick || 0.01;
       if (act.phase === 'PENDING_LIMIT') {
-        badge.textContent = 'ЛІМІТКА ОЧІКУЄ';
-        title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(act.entry,tick)} $`;
-        sub.textContent = `SL ${fmtPrice(act.stop,tick)} · TP ${fmtPrice(act.tp,tick)} · PAPER · до 8 хв`;
+        badge.textContent = act.maker_pullback ? 'MAKER ЛІМІТКА (0%)' : 'ЛІМІТКА ОЧІКУЄ';
+        title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(act.entry, tick)} $`;
+        sub.textContent = `SL ${fmtPrice(act.stop, tick)} · TP1 ${fmtPrice(act.tp1 || act.tp, tick)} · TP2 ${fmtPrice(act.tp, tick)} · до ${act.maker_pullback ? '15' : '8'} хв`;
+        _renderSlotActionBanner(alertEl, act);
         return;
       }
       const entry = Number(act.entry);
@@ -515,19 +574,31 @@
       const tp = posNum(act.tp);
       const risk = posNum(act.risk) || (stop ? Math.abs(entry - stop) : 0);
       const curP = posNum(livePrices[act.symbol]) || posNum(act.current_price) || entry;
-      const cost = risk > 0 ? (Number(act.fee_rate || 0)+Number(act.slippage_rate || 0))*(entry+curP)/risk : 0;
-      const pnlR = risk > 0 ? side * (curP - entry) / risk - cost : Number(act.pnl_r || 0);
+      const cost = risk > 0 ? (Number(act.fee_rate || 0) + Number(act.slippage_rate || 0)) * (entry + curP) / risk : 0;
+      let pnlR = Number(act.pnl_r || 0);
+      if (risk > 0) {
+        if (act.tp1_hit && posNum(act.tp1_fill_price)) {
+          const pp = Number(act.partial_pct || 0.5);
+          const g1 = side * (Number(act.tp1_fill_price) - entry) / risk;
+          const g2 = side * (curP - entry) / risk;
+          pnlR = pp * g1 + (1 - pp) * g2 - cost;
+        } else {
+          pnlR = side * (curP - entry) / risk - cost;
+        }
+      }
       const riskUsd = Number((act.sizing && act.sizing.risk_usd) || 3);
       const pnlUsd = pnlR * riskUsd;
-      card.classList.add(pnlR >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
-      badge.textContent = `В УГОДІ · ${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
+      card.classList.add(pnlUsd >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
+      badge.textContent = `${act.tp1_hit ? 'TP1 50% ✓ · ' : 'В УГОДІ · '}${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)}$)`;
       title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} $`;
-      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)} · TP ${fmtPrice(tp, tick)}${act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
+      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)}${act.tp1 && !act.tp1_hit ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP2 ${fmtPrice(tp, tick)}${act.tp1_hit ? ' · Б/У + Runner 50%' : act.stale_tightened ? ' · Тайм-стоп SL' : act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
+      _renderSlotActionBanner(alertEl, act);
     } else {
       card.classList.add('ms-slot-free');
       badge.textContent = 'ВІЛЬНО';
       title.textContent = emptyTitle;
       sub.textContent = emptySub;
+      _renderSlotActionBanner(alertEl, null);
     }
   }
 
@@ -536,13 +607,13 @@
     const cmSlot = (latestData && latestData.cm_slot) || {};
 
     _renderSlotCard(
-      'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub',
+      'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub', 'ms-slot-oil-alert',
       oilSlot,
       'Немає відкритої угоди по нафті',
       'Слот 1 вільний · очікуємо A+ сигнал UKOIL на MEXC'
     );
     _renderSlotCard(
-      'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub',
+      'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub', 'ms-slot-cm-alert',
       cmSlot,
       'Немає відкритої угоди по крипті / металу',
       'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI · XPT'
@@ -556,17 +627,18 @@
     const dOil = $('ms-day-oil'), dCm = $('ms-day-cm'), dTot = $('ms-day-total');
     if (dOil) {
       dOil.textContent = `${oilT} уг. · ${fmtSigned(oilR)} R (${fmtSigned(oilU)}$)`;
-      dOil.className = oilR > 0 ? 'ms-up' : oilR < 0 ? 'ms-dn' : '';
+      dOil.className = oilU > 0 ? 'ms-up' : oilU < 0 ? 'ms-dn' : '';
     }
     if (dCm) {
       dCm.textContent = `${cmT} уг. · ${fmtSigned(cmR)} R (${fmtSigned(cmU)}$)`;
-      dCm.className = cmR > 0 ? 'ms-up' : cmR < 0 ? 'ms-dn' : '';
+      dCm.className = cmU > 0 ? 'ms-up' : cmU < 0 ? 'ms-dn' : '';
     }
     if (dTot) {
       const totT = oilT + cmT, totR = oilR + cmR, totU = oilU + cmU;
       dTot.textContent = `${totT} уг. · ${fmtSigned(totR)} R (${fmtSigned(totU)}$)`;
-      dTot.className = totR > 0 ? 'ms-up' : totR < 0 ? 'ms-dn' : '';
+      dTot.className = totU > 0 ? 'ms-up' : totU < 0 ? 'ms-dn' : '';
     }
+    if (historyModalOpen) renderHistoryModal();
   }
 
 
@@ -576,8 +648,10 @@
   let prevSlotState = {
     oilOpenTs: null,
     oilClosedTs: null,
+    oilAlertTs: null,
     cmOpenTs: null,
     cmClosedTs: null,
+    cmAlertTs: null,
     initialized: false,
   };
 
@@ -616,13 +690,15 @@
       playNotes([[783.99, 0.0, 0.16], [1046.5, 0.16, 0.34]]);
     } else if (kind === 'loss') {
       playNotes([[329.63, 0.0, 0.18], [261.63, 0.18, 0.30]]);
+    } else if (kind === 'action') {
+      playNotes([[659.25, 0.0, 0.14], [880.0, 0.14, 0.16], [987.77, 0.30, 0.24]]);
     }
   }
 
   function triggerBlink(cardId, cls) {
     const card = $(cardId);
     if (!card) return;
-    card.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss');
+    card.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss', 'ms-slot-blink-action');
     void card.offsetWidth;
     card.classList.add(cls);
   }
@@ -631,10 +707,12 @@
     if (!data) return;
     const oilOpenTs = data.oil_slot?.active?.opened_ts || null;
     const oilClosedTs = data.oil_slot?.last_closed?.closed_ts || null;
-    const oilClosedR = Number(data.oil_slot?.last_closed?.net_r || 0);
+    const oilClosedUsd = Number(data.oil_slot?.last_closed?.net_usd ?? data.oil_slot?.last_closed?.net_r ?? 0);
+    const oilAlertTs = data.oil_slot?.active?.action_alert?.ts || null;
     const cmOpenTs = data.cm_slot?.active?.opened_ts || null;
     const cmClosedTs = data.cm_slot?.last_closed?.closed_ts || null;
-    const cmClosedR = Number(data.cm_slot?.last_closed?.net_r || 0);
+    const cmClosedUsd = Number(data.cm_slot?.last_closed?.net_usd ?? data.cm_slot?.last_closed?.net_r ?? 0);
+    const cmAlertTs = data.cm_slot?.active?.action_alert?.ts || null;
 
     if (prevSlotState.initialized) {
       if (oilOpenTs && oilOpenTs !== prevSlotState.oilOpenTs) {
@@ -645,16 +723,166 @@
         triggerBlink('ms-slot-cm', 'ms-slot-blink-entry');
         playSound('entry');
       }
+      if (oilAlertTs && oilAlertTs !== prevSlotState.oilAlertTs) {
+        triggerBlink('ms-slot-oil', 'ms-slot-blink-action');
+        playSound('action');
+      }
+      if (cmAlertTs && cmAlertTs !== prevSlotState.cmAlertTs) {
+        triggerBlink('ms-slot-cm', 'ms-slot-blink-action');
+        playSound('action');
+      }
       if (oilClosedTs && oilClosedTs !== prevSlotState.oilClosedTs) {
-        triggerBlink('ms-slot-oil', oilClosedR >= 0 ? 'ms-slot-blink-win' : 'ms-slot-blink-loss');
-        playSound(oilClosedR >= 0 ? 'win' : 'loss');
+        triggerBlink('ms-slot-oil', oilClosedUsd >= 0 ? 'ms-slot-blink-win' : 'ms-slot-blink-loss');
+        playSound(oilClosedUsd >= 0 ? 'win' : 'loss');
       }
       if (cmClosedTs && cmClosedTs !== prevSlotState.cmClosedTs) {
-        triggerBlink('ms-slot-cm', cmClosedR >= 0 ? 'ms-slot-blink-win' : 'ms-slot-blink-loss');
-        playSound(cmClosedR >= 0 ? 'win' : 'loss');
+        triggerBlink('ms-slot-cm', cmClosedUsd >= 0 ? 'ms-slot-blink-win' : 'ms-slot-blink-loss');
+        playSound(cmClosedUsd >= 0 ? 'win' : 'loss');
       }
     }
-    prevSlotState = { oilOpenTs, oilClosedTs, cmOpenTs, cmClosedTs, initialized: true };
+    prevSlotState = { oilOpenTs, oilClosedTs, oilAlertTs, cmOpenTs, cmClosedTs, cmAlertTs, initialized: true };
+  }
+
+  // === Interactive Trade History Modal ===
+  let historyModalOpen = false;
+  let historySlotFilter = 'ALL';
+  let historyPeriodFilter = 'TODAY';
+
+  const REASON_UA_MAP = {
+    TAKE_PROFIT: 'Тейк-профіт (TP)',
+    TP1_RUNNER_TP: 'TP1 (50%) + Runner TP',
+    TP1_BE_STOP: 'TP1 (50%) + Б/У залишку',
+    BE_STOP: 'Беззбиток / Структурний трейлінг',
+    STOP: 'Стоп-лосс',
+    STALE_EXIT: 'Дострокове закриття (Тайм-стоп)',
+    TIME_EXIT: 'Закриття за часом (18 год)',
+  };
+
+  function getClosedHistoryRows() {
+    if (!latestData) return [];
+    if (Array.isArray(latestData.closed_history) && latestData.closed_history.length) {
+      return latestData.closed_history;
+    }
+    const oilH = (latestData.oil_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'OIL' }));
+    const cmH = (latestData.cm_slot?.history || []).map((h) => ({ ...h, slot: h.slot || 'CRYPTO_METAL' }));
+    return [...oilH, ...cmH].sort((a, b) => Number(b.closed_ts || 0) - Number(a.closed_ts || 0));
+  }
+
+  function _todayPrefixKyiv() {
+    const dayStr = latestData?.oil_slot?.daily_all?.day || latestData?.cm_slot?.daily_all?.day || '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dayStr)) {
+      const [, m, d] = dayStr.split('-');
+      return `${d}.${m}`;
+    }
+    return '';
+  }
+
+  function renderHistoryModal() {
+    const tbody = $('ms-history-rows');
+    const kpis = $('ms-history-kpis');
+    if (!tbody || !kpis) return;
+    let rows = getClosedHistoryRows();
+    if (historySlotFilter !== 'ALL') {
+      rows = rows.filter((r) => (r.slot || (r.symbol === 'UKOIL_USDT' ? 'OIL' : 'CRYPTO_METAL')) === historySlotFilter);
+    }
+    const todayPref = _todayPrefixKyiv();
+    if (historyPeriodFilter === 'TODAY' && todayPref) {
+      rows = rows.filter((r) => String(r.closed_kyiv || '').startsWith(todayPref));
+    }
+
+    const total = rows.length;
+    const wins = rows.filter((r) => Number(r.net_usd || 0) > 0).length;
+    const losses = rows.filter((r) => Number(r.net_usd || 0) < 0).length;
+    const wr = total > 0 ? Math.round((wins / total) * 100) : 0;
+    const sumR = rows.reduce((acc, r) => acc + Number(r.net_r || 0), 0);
+    const sumU = rows.reduce((acc, r) => acc + Number(r.net_usd || 0), 0);
+    const uCls = sumU > 0 ? 'ms-up' : sumU < 0 ? 'ms-dn' : '';
+
+    kpis.innerHTML = `
+      <div class="ms-hkpi"><small>ЗАКРИТО УГОД</small><strong>${total} (${wins}W / ${losses}L)</strong></div>
+      <div class="ms-hkpi"><small>ВІНРЕЙТ (ПО $)</small><strong>${wr}%</strong></div>
+      <div class="ms-hkpi"><small>ЧИСТИЙ R</small><strong>${fmtSigned(sumR)} R</strong></div>
+      <div class="ms-hkpi"><small>РЕАЛЬНИЙ ПІДСУМОК ($)</small><strong class="${uCls}">${fmtSigned(sumU)}$</strong></div>
+    `;
+
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="ms-empty">Немає закритих угод за вибраний період.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map((r) => {
+      const tick = r.symbol && (r.symbol.includes('OIL') || r.symbol.includes('XPT')) ? 0.01 : 0.001;
+      const usd = Number(r.net_usd || 0);
+      const nr = Number(r.net_r || 0);
+      const resCls = usd > 0 ? 'ms-up' : usd < 0 ? 'ms-dn' : '';
+      const reasonCode = String(r.reason || '');
+      const reasonTxt = r.reason_ua || REASON_UA_MAP[reasonCode] || reasonCode || '—';
+      const pillCls = (reasonCode === 'TAKE_PROFIT' || reasonCode === 'TP1_RUNNER_TP' || usd > 0)
+        ? 'ms-reason-win'
+        : (reasonCode === 'STALE_EXIT' || reasonCode === 'BE_STOP' || reasonCode === 'TP1_BE_STOP' || reasonCode === 'TIME_EXIT')
+          ? 'ms-reason-warn'
+          : 'ms-reason-loss';
+      const sideCls = Number(r.side || 1) === 1 ? 'ms-up' : 'ms-dn';
+      const setupTxt = r.setup_ua || r.setup || '—';
+      return `
+        <tr>
+          <td><strong>${r.closed_kyiv || '—'}</strong>${r.opened_kyiv ? `<small>відкр. ${r.opened_kyiv}</small>` : ''}</td>
+          <td><strong>${r.label || r.symbol}</strong> · <span class="${sideCls}">${r.side_ua || (r.side === 1 ? 'LONG ↑' : 'SHORT ↓')}</span><small>${setupTxt}${r.tp1_hit ? ' · ⚡ TP1 50%' : ''}</small></td>
+          <td class="ms-num">${fmtPrice(r.entry, tick)} → ${fmtPrice(r.exit, tick)}</td>
+          <td class="ms-num ${resCls}"><strong>${fmtSigned(usd)}$</strong><small>${fmtSigned(nr)} R</small></td>
+          <td><span class="ms-reason-pill ${pillCls}">${reasonTxt}</span></td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function openHistoryModal(slotFilter = 'ALL') {
+    const modal = $('ms-history-modal');
+    if (!modal) return;
+    historySlotFilter = slotFilter || 'ALL';
+    historyModalOpen = true;
+    modal.hidden = false;
+    modal.setAttribute('aria-hidden', 'false');
+    document.querySelectorAll('[data-hslot]').forEach((b) => {
+      b.setAttribute('aria-pressed', b.getAttribute('data-hslot') === historySlotFilter ? 'true' : 'false');
+    });
+    renderHistoryModal();
+  }
+
+  function closeHistoryModal() {
+    const modal = $('ms-history-modal');
+    if (!modal) return;
+    historyModalOpen = false;
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  function wireHistoryModal() {
+    const modal = $('ms-history-modal');
+    if (!modal) return;
+    document.querySelectorAll('.ms-daily-clickable').forEach((el) => {
+      const open = () => openHistoryModal(el.getAttribute('data-slot-filter') || 'ALL');
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+    const closeBtn = $('ms-history-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeHistoryModal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeHistoryModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && historyModalOpen) closeHistoryModal(); });
+    document.querySelectorAll('[data-hslot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        historySlotFilter = btn.getAttribute('data-hslot') || 'ALL';
+        document.querySelectorAll('[data-hslot]').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+        renderHistoryModal();
+      });
+    });
+    document.querySelectorAll('[data-hperiod]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        historyPeriodFilter = btn.getAttribute('data-hperiod') || 'TODAY';
+        document.querySelectorAll('[data-hperiod]').forEach((b) => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+        renderHistoryModal();
+      });
+    });
   }
 
   function wireSoundButton() {
@@ -724,7 +952,7 @@
     const oilCard = $('ms-slot-oil');
     if (oilCard) {
       oilCard.addEventListener('click', () => {
-        oilCard.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss');
+        oilCard.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss', 'ms-slot-blink-action');
         selectedSymbol = 'UKOIL_USDT';
         renderAll(true);
         const sec = $('multi-scanner-section');
@@ -734,7 +962,7 @@
     const cmCard = $('ms-slot-cm');
     if (cmCard) {
       cmCard.addEventListener('click', () => {
-        cmCard.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss');
+        cmCard.classList.remove('ms-slot-blink-entry', 'ms-slot-blink-win', 'ms-slot-blink-loss', 'ms-slot-blink-action');
         const act = latestData && latestData.cm_slot && latestData.cm_slot.active;
         if (act && act.symbol) {
           selectedSymbol = act.symbol;
@@ -749,6 +977,7 @@
   function init() {
     wireBannerClick();
     wireSoundButton();
+    wireHistoryModal();
     if (!$('multi-scanner-section')) return;
     ['ms-deposit', 'ms-risk', 'ms-lev'].forEach((id) => {
       const el = $(id);
