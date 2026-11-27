@@ -34,7 +34,16 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.2.1 INSTITUTIONAL"
+SCANNER_VERSION = "BZU MULTI v15.2.2 QUANT PROFIT"
+
+FAMILY_RISK_MULT = {
+    "FAILED_BREAKOUT": 1.25,
+    "LIQUIDITY_SWEEP": 1.15,
+    "BREAKOUT_RETEST": 1.15,
+    "EXHAUSTION": 1.00,
+    "TREND_PULLBACK": 0.75,
+    "MOMENTUM": 0.30,
+}
 
 CLOSE_REASON_UA = {
     "TAKE_PROFIT": "Тейк-профіт (TP)",
@@ -574,9 +583,9 @@ def analyze_instrument(
                 if aligned:
                     align_tier, risk_mult, adapt_trail_r = "ALIGNED", 1.0, 1.25
                 elif (b4==side or b1==side) and b4!=-side:
-                    align_tier, risk_mult, adapt_trail_r = "EARLY_PARTIAL", 0.65, 1.00
+                    align_tier, risk_mult, adapt_trail_r = "EARLY_PARTIAL", 0.35, 1.25
                 else:
-                    align_tier, risk_mult, adapt_trail_r = "EARLY_REVERSAL", 0.45, 0.80
+                    align_tier, risk_mult, adapt_trail_r = "EARLY_REVERSAL", 1.0, 1.25
 
                 # Non-blocking WR boosters from proven v14.4 setups:
                 # (1) Discount/Premium location preference, (2) VWAP/Sweep reclaim bonus, (3) Consolidation decay
@@ -606,7 +615,8 @@ def analyze_instrument(
                 else:
                     funding_regime, funding_risk_mult, tp1_r, runner_boost = "NEUTRAL", 1.0, 1.0, 1.0
                     early_close_hint_ua = None
-                total_risk_mult = round(risk_mult * funding_risk_mult, 3)
+                fam_mult = FAMILY_RISK_MULT.get(thesis["family"], 1.0)
+                total_risk_mult = round(max(0.20, min(1.35, risk_mult * fam_mult * funding_risk_mult)), 3)
 
                 score=max(0,min(99,score))
                 # A confirmed reversal can compete against HTF; no blanket BTC/HTF veto.
@@ -634,15 +644,7 @@ def analyze_instrument(
                     lg=geometry(spec,thesis,limit_entry,side,tick,a5,a15,bars_15m,bars_1h,0.0,0.0,aligned,runner_boost=runner_boost,tp1_r=tp1_r)
                     if lg["valid"]:
                         entry=limit_entry; route="LIMIT"; g=lg; g["trail_start_r"]=adapt_trail_r; maker_pullback=True; limit_ttl_min=15
-                # Smart Maker Pullback Entry: on extended M5 impulse/MOMENTUM candles, rest a 0% Maker limit
-                # at 30% retracement of the M5 bar (2-3 M5 bars TTL) instead of chasing the candle extreme.
-                bar_body = abs(rows[-1].close - rows[-1].open)
-                if route == "MARKET" and tf == "M5" and not adverse and (thesis["family"] == "MOMENTUM" or bar_body >= 0.85 * max(a5, tick)):
-                    pb_price = round_price(rows[-1].close - side * 0.30 * bar_body, tick)
-                    if side * (quote - pb_price) >= max(tick, 0.15 * a5) and side * (quote - pb_price) <= 0.75 * a5:
-                        lg = geometry(spec,thesis,pb_price,side,tick,a5,a15,bars_15m,bars_1h,0.0,0.0,aligned,runner_boost=runner_boost,tp1_r=tp1_r)
-                        if lg["valid"]:
-                            entry=pb_price; route="LIMIT"; g=lg; g["trail_start_r"]=adapt_trail_r; maker_pullback=True; limit_ttl_min=15
+                # Keep proven v15.1.1 direct market execution (avoids adverse selection on strong impulses).
                 stop,tp,actual_risk,rr,net_rr=(g[k] for k in ("stop","tp","risk","rr","net_rr"))
                 spread=ask-bid
                 # No unsupported probability: rank by evidence + bounded causal estimates.
@@ -850,7 +852,7 @@ def _advance_single_slot(
                     "early_close_hint_ua":pick.get("early_close_hint_ua"),
                     "maker_pullback":bool(pick.get("maker_pullback",False)),
                     "tp1_enabled":pick.get("funding_regime")=="CROWDED_WITH_US","tp1_hit":False,"tp1":pick.get("tp1"),"tp1_r":pick.get("tp1_r",1.0),"partial_pct":pick.get("partial_pct",0.50),
-                    "time_stop_enabled":True,"stale_tighten_min":120,"stale_exit_min":180,"stale_tightened":False,
+                    "time_stop_enabled":False,"stale_tighten_min":120,"stale_exit_min":180,"stale_tightened":False,
                     "action_alert":init_alert,
                     "model_schema":MODEL_SCHEMA,"trade_id":pick.get("signal_id",f"{pick['symbol']}:{now_ms}"),
                     "signal_id":pick.get("signal_id"),"family":pick.get("family"),"regime":pick.get("regime"),
