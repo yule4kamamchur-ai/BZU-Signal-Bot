@@ -1,0 +1,6 @@
+const vm=require('node:vm'),fs=require('node:fs'),assert=require('node:assert/strict');
+const source=fs.readFileSync('multi_scanner.js','utf8').replace(/\}\)\(\);\s*$/,`globalThis.__test={renderDualSlotsAndDaily,setData:(d)=>{latestData=d}}; })();`);
+const els={};const node=()=>({textContent:'',children:[],hidden:false,className:'',classList:{toggle(){},add(){},remove(){}},appendChild(x){this.children.push(x)}});const el=id=>els[id]||(els[id]=node());
+const ctx={document:{readyState:'loading',addEventListener(){},querySelector(){return null},getElementById:el,createElement:node},console,Date};vm.createContext(ctx);vm.runInContext(source,ctx);let t=ctx.__test;
+const snap={mode:'PAPER_SEPARATE_ACCOUNT',initial_deposit:100,equity_usdt:101,realised_usdt:1,trades:1,pf:1.2,scan_mdd_usdt:2,reserved_usdt:1,risk_budget_usdt:3,open_count:1,assets:[{symbol:'XPT_USDT',strategy:'RANGE_M15',status:'OPEN',side:-1,entry:100,stop:102,tp:94,net_usd:.1}]};
+t.setData({portfolio_research:{CLOSE_PRIOR:{mode:'ERROR'},MIXED_PEAK_RANGE:snap}});t.renderDualSlotsAndDaily();const rows=el('ms-research-portfolios').children.map(x=>x.textContent).join('\n');assert.match(rows,/помилка/);assert.match(rows,/спільний бюджет/);assert.match(rows,/ОКРЕМИЙ PAPER 100/);assert.match(rows,/RANGE_M15.*SHORT.*TP 94/);console.log('4 v15.8 research dashboard assertions passed');

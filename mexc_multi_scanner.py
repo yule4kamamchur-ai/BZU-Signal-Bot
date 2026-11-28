@@ -17,6 +17,9 @@ from mexc_hybrid import detect, trend_efficiency
 from mexc_opportunity import MODEL_SCHEMA, PREVIOUS_SCHEMA, market_state, beta_relative, rates, cost_r, estimate, objective, policy, shadow_step, register, SOFT, break_memory, memory_retest, funding_accrual
 from mexc_lifecycle import advance
 from mexc_evidence import SHADOW_FAMILIES, active_estimate, exit_policies, tag_experiment
+import mexc_h1_trend
+import mexc_geometry_research
+from copy import deepcopy
 from mexc_direction import (context as direction_context, relative_strength, detect_transitions,
     closed_prefix, contiguous, trigger_age_limit, signal_event_key, delayed_guard)
 from mexc_geometry import geometry, POLICY
@@ -38,7 +41,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.5 Evidence-Based Adaptive Quant"
+SCANNER_VERSION = "BZU MULTI v15.8 Adaptive Trend Portfolio Research"
 SHADOW_IN_ACTIVE_HISTORY = False
 
 FAMILY_RISK_MULT = {
@@ -1283,6 +1286,17 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     started=time.monotonic(); cut=now_ms if now_ms is not None else int(time.time()*1000)
     memory=memory or {}; errors=[]; data={}; ticks={}; timings={}
     active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active"),memory.get("metal_active")) if a}
+    trend_positions={}
+    research_positions=[]
+    for key in ("h1_trend_book","h1_close_book","mixed_trend_range_book"):
+        for sym,p in memory.get(key,{}).get("positions",{}).items():
+            research_positions.append(p)
+            old=trend_positions.get(sym)
+            if old is None or p.get("processed_until_ts",cut)<old.get("processed_until_ts",cut): trend_positions[sym]=p
+    # Extend the existing M1 catch-up window to the oldest cursor; no extra candle calls.
+    for sym,p in trend_positions.items():
+        prior=active_symbols.get(sym)
+        if not prior or p.get("processed_until_ts",cut)<prior.get("processed_until_ts",cut): active_symbols[sym]=p
     tasks={}; counts={}; denied=set(); http_statuses={}; skipped=False
     def record_error(key, exc, retry=False):
         code=getattr(exc,"code",None)
@@ -1395,13 +1409,16 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
             if sym not in ticks and res["status"]=="READY":
                 res.update(status="WATCH",status_ua="НЕМає TICK",reason_ua="Не отримано крок ціни контракту")
                 for d in res.get("candidate_diagnostics",[]): d.setdefault("rejection_codes",[]).append("MISSING_TICK")
-            if sym in active_symbols and active_symbols[sym].get("model_schema") in (MODEL_SCHEMA,PREVIOUS_SCHEMA) and active_symbols[sym].get("opened_ts") is not None and not denied:
+            res["_trend_h1"]=mexc_h1_trend.pack(data.get((sym,"Min60"),[]))
+            res["trend_tick_valid"]=sym in ticks
+            fund_positions=[a for a in (memory.get("oil_active"),memory.get("cm_active"),memory.get("metal_active"),*research_positions) if a and a.get("symbol")==sym and a.get("opened_ts") is not None and a.get("model_schema") in (MODEL_SCHEMA,PREVIOUS_SCHEMA,mexc_h1_trend.SCHEMA)]
+            if fund_positions and not denied:
                 try:
                     url=f"{MEXC_BASE}/api/v1/contract/funding_rate/history?symbol={sym}&page_num=1&page_size=40"
                     funding=fetcher(url).get("data",{}); raw=funding.get("resultList")
                     if not isinstance(raw,list): raise ValueError("invalid funding history")
                     res["funding_events"]=[{"settleTime":int(e["settleTime"]),"fundingRate":float(e["fundingRate"])} for e in raw if e.get("symbol",sym)==sym and math.isfinite(float(e["fundingRate"])) and int(e["settleTime"])<=quote_ts]
-                    res["funding_history_incomplete"]=bool(funding.get("totalCount",0)>len(raw) and (not raw or min(int(e["settleTime"]) for e in raw)>active_symbols[sym]["opened_ts"]))
+                    res["funding_history_incomplete"]=bool(funding.get("totalCount",0)>len(raw) and (not raw or min(int(e["settleTime"]) for e in raw)>min(a["opened_ts"] for a in fund_positions)))
                 except Exception as exc:
                     res["funding_data_status"]="UNAVAILABLE"; errors.append(f"{sym}/FUNDING: {type(exc).__name__}")
             results.append(res)
@@ -1480,9 +1497,39 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         for row in state["instruments"]:
             if row.get("candidate_count"):
                 mem["opportunity_ledger"]["observations"].append({"ts":state["last_attempt_ts"] if "last_attempt_ts" in state else state["updated_ts"],"symbol":row["symbol"],"kind":"FINAL_DISPOSITION","status":row["status"],"rejections":row.get("rejection_codes",[]),"signal_id":row.get("signal_id")})
+        # Matched-entry geometry research cannot write back to the active slots or learner.
+        try:
+            geometry_book=deepcopy(mem.get("geometry_research_book",{}))
+            state["geometry_research"]=mexc_geometry_research.update(geometry_book,state["instruments"],(mem.get("oil_active"),mem.get("cm_active"),mem.get("metal_active")),state["updated_ts"])
+            mem["geometry_research_book"]=geometry_book
+        except Exception as exc:
+            logging.exception("Matched geometry research failed")
+            state["geometry_research"]={"mode":"ERROR","error":type(exc).__name__}
+        # H1 is a separate hypothetical PAPER account: never writes M1/M5 slots or training labels.
+        # Transactional copy: a failure cannot partially mutate the trend book or stop the legacy scanner.
+        try:
+            trend_book=deepcopy(mem.get("h1_trend_book",{}))
+            trend_deposit=float(os.getenv("BZU_H1_DEPOSIT_USDT","100"))
+            fee,slip=cost_rates()
+            state["h1_trend"]=mexc_h1_trend.update(trend_book,state["instruments"],state["updated_ts"],deposit=trend_deposit,risk_pct=min(3.,float(os.getenv("BZU_H1_RISK_PCT","3"))),max_leverage=min(5.,lev),fee=fee,slip=slip)
+            mem["h1_trend_book"]=trend_book
+        except Exception as exc:
+            logging.exception("H1 separate PAPER update failed")
+            state["h1_trend"]={"mode":"ERROR","error":type(exc).__name__,"asof_ts":state["updated_ts"]}
+        # Independent control accounts. Each uses its own hypothetical deposit; only MIXED
+        # shares a portfolio across H1 and M15, never adds risk to the M1/M5 book.
+        state["portfolio_research"]={}
+        for key,profile in (("h1_close_book","CLOSE_PRIOR"),("mixed_trend_range_book","MIXED_PEAK_RANGE")):
+            try:
+                book=deepcopy(mem.get(key,{})); fee,slip=cost_rates()
+                result=mexc_h1_trend.update(book,state["instruments"],state["updated_ts"],deposit=float(os.getenv("BZU_H1_DEPOSIT_USDT","100")),risk_pct=min(3.,float(os.getenv("BZU_H1_RISK_PCT","3"))),max_leverage=min(5.,lev),fee=fee,slip=slip,profile=profile)
+                state["portfolio_research"][profile]=result; mem[key]=book
+            except Exception as exc:
+                logging.exception("Independent portfolio research failed: %s",profile)
+                state["portfolio_research"][profile]={"mode":"ERROR","error":type(exc).__name__}
         # Execution bars are internal. Keep the public snapshot small and do not duplicate long catch-up history.
         for r in state["instruments"]:
-            r.pop("candles_1m",None); r.pop("funding_events",None)
+            r.pop("candles_1m",None); r.pop("funding_events",None); r.pop("_trend_h1",None)
         # An unavailable market must not masquerade as a successful refresh.
         fresh_count=sum(bool(r.get("quote_valid")) and r.get("quote_ts",0)>=state["updated_ts"]-60000 for r in state["instruments"])
         state["health"]["fresh_quotes"]=fresh_count
