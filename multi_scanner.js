@@ -129,6 +129,67 @@
     return 'ms-pill-wait';
   }
 
+  // Presentation only: the server status, not the score, determines the displayed action.
+  function isSnapshotStale(data) {
+    if (!data) return true;
+    const ts = Number(data.updated_ts || 0), interval = Number(data.health?.expected_interval_sec || 300);
+    return !ts || Date.now() - ts > (interval + 60) * 1000 || scannerFetchError || ['FAILED_DATA','FAILED_CYCLE'].includes(data.health?.status);
+  }
+
+  const simpleReasons = {
+    PORTFOLIO_BUDGET:'Вичерпано бюджет ризику', CLUSTER_BUSY:'Торговий слот зайнятий',
+    CYCLE_AFTER_CLOSE:'Чекаємо наступний цикл', SIGNAL_CONSUMED:'Сигнал уже використано',
+    SIGNAL_BEFORE_LAST_EXIT:'Сигнал виник до закриття угоди', RESEARCH_ONLY:'Лише експериментальний сценарій',
+    MISSING_TICK:'Немає даних про крок ціни', NEAR_LIQUIDITY:'Тейк надто близько',
+    CHASE_DISTANCE:'Ціна вже відійшла від входу', OPPOSITE_IMPULSE:'Зустрічний імпульс',
+    INVALIDATED_AFTER_TRIGGER:'Сценарій втратив актуальність', DELAYED_WAVE_SPENT:'Рух уже відбувся',
+    DELAYED_DATA_GAP:'Бракує даних після сигналу', WIDE_SPREAD:'Завеликий спред',
+    DISTANT_INVALIDATION:'Стоп надто далеко', INVALID_STRUCTURE:'Некоректні рівні входу',
+    CURRENT_WAVE_OPPOSES:'Ринок рухається проти сценарію', NO_LOCAL_SHIFT_EVIDENCE:'Зміна напрямку не підтверджена',
+    M1_NO_M5_CONTEXT:'Ранній сигнал ще не підтверджений', M1_WEAK_REVERSAL:'Слабкий сигнал розвороту',
+    LOW_EVIDENCE_SCORE:'Недостатньо ознак для входу', GEOMETRY_OR_EXECUTION:'Непридатні умови входу',
+  };
+  function decisionView(item, stale = false) {
+    item = item || {};
+    const status = item.status, side = Number(item.side || 0), wave = Number(item.observed_wave_side || item.wave_side || 0);
+    const sideLabel = side === 1 ? 'LONG' : side === -1 ? 'SHORT' : '';
+    const marketLabel = wave === -1 ? 'Спад ↓' : wave === 1 ? 'Ріст ↑' : 'Нейтрально';
+    const fresh = !stale && item.analysis_fresh !== false && item.quote_valid !== false && !/ДАНІ НЕСВІЖІ/i.test(item.status_ua || '');
+    const usableLevels = posNum(item.entry) !== null && posNum(item.stop) !== null && posNum(item.tp) !== null;
+    if (status === 'IN_TRADE') {
+      const pending = item.phase === 'PENDING_LIMIT';
+      return {label:pending?'ЛІМІТКА ОЧІКУЄ':'В УГОДІ',cls:pending?'ms-pill-watch':'ms-pill-intrade',
+        direction:sideLabel||'—',directionSide:side,actionable:true,showLevels:usableLevels,
+        reason:!fresh?(pending?'Заявка в журналі · дані несвіжі':'Позиція в журналі · дані несвіжі'):pending?'Лімітна заявка ще не виконана':'Позиція відкрита в PAPER',extra:''};
+    }
+    if (!fresh) return {label:'ДАНІ НЕСВІЖІ',cls:'ms-pill-wait',direction:'—',directionSide:0,actionable:false,showLevels:false,reason:'Чекаємо актуальний аналіз',extra:''};
+    if (status === 'READY' && usableLevels && sideLabel && item.valid !== false && !item.research_variant) {
+      const limit = item.order_type === 'LIMIT';
+      return {label:limit?'ЛІМІТКА ГОТОВА':'ВХІД ГОТОВИЙ',cls:'ms-pill-ready',direction:sideLabel,directionSide:side,actionable:true,showLevels:true,
+        reason:limit?'Підтверджена лімітна ціна':'Підтверджений ринковий сигнал',extra:''};
+    }
+    const codes = new Set(item.rejection_codes || []);
+    for (const k of String(item.geometry_reason || '').split(',')) if(k) codes.add(k.trim());
+    const serverLabel = String(item.status_ua || '');
+    if (/СЛОТ ЗАЙНЯТО|ЗАЙНЯТО В КЛАСТЕРІ/i.test(serverLabel)) codes.add('CLUSTER_BUSY');
+    if (/ЛІМІТ ПОРТФЕЛЯ/i.test(serverLabel)) codes.add('PORTFOLIO_BUDGET');
+    if (/НОВИЙ ЦИКЛ ПІСЛЯ ВИХОДУ/i.test(serverLabel)) codes.add('CYCLE_AFTER_CLOSE');
+    if (/СИГНАЛ ВЖЕ ВИКОРИСТАНО/i.test(serverLabel)) codes.add('SIGNAL_CONSUMED');
+    if (/ЛИШЕ SHADOW/i.test(serverLabel) || item.research_variant) codes.add('RESEARCH_ONLY');
+    if (/НЕМАЄ TICK/i.test(serverLabel)) codes.add('MISSING_TICK');
+    const rr = item.rr != null && Number.isFinite(Number(item.rr)) ? Number(item.rr) : null;
+    const minRr = posNum(item.min_rr);
+    const rrReason = rr !== null && minRr !== null ? `Малий потенціал: R:R ${rr.toFixed(2).replace('.', ',')} / ${minRr.toFixed(2).replace('.', ',')}` : 'Тейк надто близько';
+    const ordered = Object.keys(simpleReasons).filter(k=>codes.has(k));
+    const specific = ordered.filter(k=>k!=='GEOMETRY_OR_EXECUTION');
+    const reasons = (specific.length?specific:ordered).map(k=>k==='NEAR_LIQUIDITY'?rrReason:simpleReasons[k]);
+    const candidate = !!(item.setup || item.family || item.candidate_count || sideLabel || reasons.length || status==='READY');
+    return {label:candidate?'НЕ ВХОДИМО':'ЧЕКАЄМО',cls:candidate?'ms-pill-watch':'ms-pill-wait',
+      direction:sideLabel?`${sideLabel} · ідея`:marketLabel,directionSide:0,actionable:false,showLevels:false,
+      reason:reasons[0] || (candidate?'Умови входу не виконано':'Немає підтвердженого входу'),
+      extra:reasons.slice(1,3).join(' · ')};
+  }
+
   function clusterClass(cluster) {
     if (cluster === 'ENERGY') return 'ms-cl-energy';
     if (cluster === 'METALS') return 'ms-cl-metals';
@@ -248,11 +309,12 @@
     candleSeries.setData(bars);
 
     // Draw thin, clean 1px lines ONLY when real positive entry/SL/TP exist (never 0.00!)
-    const entryP = posNum(item.entry);
-    const stopP = posNum(item.stop);
-    const tpP = posNum(item.tp);
-    const beP = posNum(item.be_trigger);
-    const sz = displayedSizing(item);
+    const showLevels = decisionView(item, isSnapshotStale(latestData)).showLevels;
+    const entryP = showLevels ? posNum(item.entry) : null;
+    const stopP = showLevels ? posNum(item.stop) : null;
+    const tpP = showLevels ? posNum(item.tp) : null;
+    const beP = showLevels ? posNum(item.be_trigger) : null;
+    if (legend) legend.hidden = !showLevels;
 
     if (entryP !== null) {
       priceLines.push(candleSeries.createPriceLine({
@@ -264,7 +326,7 @@
         price: stopP, color: 'rgba(239, 68, 68, 0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '',
       }));
     }
-    const tp1P = item.tp1_enabled || item.tp1_hit ? posNum(item.tp1) : null;
+    const tp1P = showLevels && (item.tp1_enabled || item.tp1_hit) ? posNum(item.tp1) : null;
     const tp1Legend = $('ms-legend-tp1');
     if (tp1Legend) {
       tp1Legend.hidden = tp1P === null;
@@ -313,7 +375,7 @@
     }
   }
 
-  function renderHighlight(item, isTopPick) {
+  function renderHighlight(item, decision = decisionView(item, isSnapshotStale(latestData))) {
     const card = $('ms-highlight');
     if (!card) return;
     if (!item) {
@@ -321,7 +383,7 @@
       return;
     }
     const price = posNum(livePrices[item.symbol]) ?? item.price;
-    const sz = displayedSizing(item);
+    const sz = decision.showLevels ? displayedSizing(item) : null;
     const sideCls = item.side === 1 ? 'ms-side-long' : item.side === -1 ? 'ms-side-short' : 'ms-side-flat';
     function buildActionBannerHtml(obj) {
       if (!obj) return '';
@@ -347,36 +409,28 @@
     }
     const hlBannerHtml = item.status === 'IN_TRADE' || item.funding_regime === 'CROWDED_WITH_US' ? buildActionBannerHtml(item) : '';
     const tp1Txt = item.tp1 && (item.tp1_enabled || item.tp1_hit) ? `TP1 (${Math.round(100*Number(item.partial_pct || .5))}%): ${fmtPrice(item.tp1, item.tick)}` : '';
-    const orderLbl = item.status === 'IN_TRADE'
-      ? (item.phase === 'PENDING_LIMIT' ? 'ЛІМІТКА ОЧІКУЄ' : 'АКТИВНА ПОЗИЦІЯ')
-      : item.status === 'READY'
-        ? (item.order_type === 'LIMIT' ? 'ЛІМІТКА (PAPER)' : 'РИНКОВИЙ ВХІД (M1/M5)')
-        : 'ЩЕ НЕ ВХОДИМО (ОЧІКУВАННЯ)';
-    const badgeText = isTopPick ? '★ №1 НАЙКРАЩИЙ ВИБІР' : 'ВИБРАНИЙ АКТИВ';
-
+    const setup = decision.actionable && item.setup_ua ? ` · ${escapeHtml(item.setup_ua)}` : '';
     card.innerHTML = `
-      <div class="ms-hl-top">
-        <div class="ms-hl-badges">
-          <span class="ms-top-tag">${badgeText}</span>
-          <span class="ms-cl ${clusterClass(item.cluster)}">${item.cluster_ua}</span>
-          <span class="ms-fee">${item.fee_tag || 'FEE: EST.'}</span>
-        </div>
-        <span class="ms-pill ${statusClass(item.status)}">${item.status_ua} · ${item.score}/100</span>
-      </div>
       <div class="ms-hl-title-row">
         <div>
-          <h3 class="ms-hl-sym">${item.label} <span class="ms-hl-price" id="ms-hl-live-price">${fmtPrice(price, item.tick)} USDT</span></h3>
-          <p class="ms-hl-sub">${item.setup_ua || 'Аналіз структури'} · <strong class="${sideCls}">${item.side_ua}</strong> · ${orderLbl}</p>
+          <h3 class="ms-hl-sym">${escapeHtml(item.label)} <span class="ms-hl-price" id="ms-hl-live-price">${fmtPrice(price, item.tick)} USDT</span></h3>
+          <p class="ms-hl-sub">${escapeHtml(item.cluster_ua || '')} · <strong class="${decision.actionable?sideCls:'ms-flat'}">${escapeHtml(decision.direction)}</strong>${setup}</p>
         </div>
-        <a class="ms-mexc-btn" href="${item.mexc_url || 'https://www.mexc.com/futures/' + item.symbol}" target="_blank" rel="noopener">MEXC ↗</a>
+        <a class="ms-mexc-btn" href="${escapeHtml(item.mexc_url || 'https://www.mexc.com/futures/' + item.symbol)}" target="_blank" rel="noopener">MEXC ↗</a>
       </div>
-      ${hlBannerHtml}
+      <div class="ms-decision ${decision.actionable?'ms-decision-active':''}">
+        <span class="ms-pill ${decision.cls}">${decision.label}</span>
+        <strong>${escapeHtml(decision.reason)}</strong>
+        ${decision.extra?`<small>${escapeHtml(decision.extra)}</small>`:''}
+      </div>
+      ${decision.actionable ? hlBannerHtml : ''}
+      ${decision.showLevels ? `
       <div class="ms-hl-levels">
-        <div class="ms-lvl"><small>ВХІД${item.maker_pullback ? ' · MAKER (FEE EST.)' : ''}</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
-        <div class="ms-lvl"><small>СТОП-ЛОСС${item.be_armed ? ' (Б/У)' : item.stale_tightened ? ' (ТАЙМ-СТОП)' : ''}</small><strong class="${item.be_armed ? 'ms-up' : 'ms-dn'}">${fmtPrice(item.stop, item.tick)}${sz && item.status !== 'IN_TRADE' ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
-        <div class="ms-lvl"><small>${tp1Txt ? 'TP2 (RUNNER) · ' + tp1Txt : 'TP'}</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
-        <div class="ms-lvl"><small>R:R / RVOL${item.funding_pct ? ' · FR ' + Number(item.funding_pct).toFixed(3) + '%' : ''}</small><strong>${item.rr ? item.rr.toFixed(2) + ' R' : '—'} · ${item.rvol ? item.rvol.toFixed(2) + '×' : '—'}</strong></div>
-      </div>
+        <div class="ms-lvl"><small>ВХІД</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
+        <div class="ms-lvl"><small>СТОП-ЛОСС${item.be_armed ? ' (Б/У)' : item.stale_tightened ? ' (ТАЙМ-СТОП)' : ''}</small><strong class="${item.be_armed ? 'ms-up' : 'ms-dn'}">${fmtPrice(item.stop, item.tick)}</strong></div>
+        <div class="ms-lvl"><small>${tp1Txt ? 'TP2 · ' + tp1Txt : 'ТЕЙК-ПРОФІТ'}</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}</strong></div>
+        <div class="ms-lvl"><small>R:R</small><strong>${item.rr != null && Number.isFinite(Number(item.rr)) ? Number(item.rr).toFixed(2) : '—'}</strong></div>
+      </div>` : ''}
       ${sz ? `
       <div class="ms-sizing-bar">
         <div><small>ПОЗИЦІЯ</small><strong>${sz.notional} USDT</strong></div>
@@ -384,8 +438,6 @@
         <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−${sz.riskUsd} USDT</strong></div>
         <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+${sz.profitUsd} USDT</strong></div>
       </div>` : ''}
-      <p class="ms-hl-reason">${escapeHtml(item.reason_ua || '')}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ` · E[R] ${Number(item.meta.expected_r_estimate||0).toFixed(3)} (невалідовано; еф. n=${item.meta.effective_n??'—'})`}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
-      ${directionPanel(item)}
     `;
   }
 
@@ -394,7 +446,7 @@
     if (!tbody) return;
     const list = data.instruments || [];
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="ms-empty">Дані BZU MULTI ще не згенеровані.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" class="ms-empty">Дані BZU MULTI ще не згенеровані.</td></tr>';
       return;
     }
 
@@ -403,42 +455,49 @@
       selectedSymbol = topSym;
     }
 
+    const stale = isSnapshotStale(data);
+    const decisions = new Map(list.map(item=>[item.symbol, decisionView(item, stale)]));
+    const summary = $('ms-signal-summary');
+    if (summary) {
+      const ready = list.filter(i=>i.status==='READY' && decisions.get(i.symbol).actionable).length;
+      const open = list.filter(i=>i.status==='IN_TRADE' && i.phase!=='PENDING_LIMIT').length;
+      const pending = list.filter(i=>i.status==='IN_TRADE' && i.phase==='PENDING_LIMIT').length;
+      summary.textContent = `${ready?'Готових входів: '+ready:'Готових входів немає'} · В угоді: ${open}${pending?' · Ліміток: '+pending:''}`;
+    }
     tbody.innerHTML = list.map((item) => {
       const price = posNum(livePrices[item.symbol]) ?? item.price;
       const chg = liveChanges[item.symbol] !== undefined ? liveChanges[item.symbol] : Number(item.change_24h_pct || 0);
       const chgCls = chg > 0 ? 'ms-up' : chg < 0 ? 'ms-dn' : 'ms-flat';
       const activeCls = item.symbol === selectedSymbol ? 'ms-row-selected' : '';
-      const isTop = item.symbol === topSym;
+      const decision = decisions.get(item.symbol);
       return `
-        <tr class="ms-row ${activeCls}" data-symbol="${item.symbol}">
+        <tr class="ms-row ${activeCls}" data-symbol="${escapeHtml(item.symbol)}" tabindex="0" aria-selected="${item.symbol === selectedSymbol}">
           <td>
             <div class="ms-sym-cell">
-              <strong>${isTop ? '★ ' : ''}${item.short}</strong>
-              <span class="ms-cl ${clusterClass(item.cluster)}">${item.cluster_ua}</span>
+              <strong>${escapeHtml(item.short)}</strong>
+              <small class="ms-asset-kind">${escapeHtml(item.cluster_ua || '')}</small>
             </div>
           </td>
           <td class="ms-num">
             <div data-live-price="${item.symbol}">${fmtPrice(price, item.tick)}</div>
             <small class="${chgCls}" data-live-chg="${item.symbol}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</small>
           </td>
-          <td class="ms-tf">${arrow(item.bias_4h)} ${arrow(item.bias_1h)} ${arrow(item.bias_15m)}</td>
-          <td><span class="ms-pill ${statusClass(item.status)}">${item.status_ua}</span></td>
-          <td class="ms-num ${item.side === 1 ? 'ms-up' : item.side === -1 ? 'ms-dn' : ''}">${item.side === 1 ? 'LONG' : item.side === -1 ? 'SHORT' : '—'}${item.observed_wave_side ? `<small class="${item.observed_wave_side===1?'ms-up':'ms-dn'}">хвиля ${item.observed_wave_side===1?'↑':'↓'}</small>` : ''}</td>
-          <td class="ms-num">${item.rr ? item.rr.toFixed(2) : '—'}</td>
-          <td class="ms-num"><strong>${item.score}</strong></td>
+          <td class="ms-direction-cell ${decision.directionSide===1?'ms-up':decision.directionSide===-1?'ms-dn':'ms-flat'}">${escapeHtml(decision.direction)}</td>
+          <td class="ms-decision-cell"><span class="ms-pill ${decision.cls}">${decision.label}</span><small>${escapeHtml(decision.reason)}</small></td>
         </tr>
       `;
     }).join('');
 
     tbody.querySelectorAll('tr.ms-row').forEach((tr) => {
-      tr.addEventListener('click', () => {
-        selectedSymbol = tr.getAttribute('data-symbol');
-        renderAll(true);
-      });
+      const choose = () => { selectedSymbol = tr.getAttribute('data-symbol'); renderAll(true); };
+      tr.addEventListener('click', choose);
+      tr.addEventListener('keydown', e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}});
     });
 
     const chosen = list.find((x) => x.symbol === selectedSymbol) || list[0];
-    renderHighlight(chosen, chosen && chosen.symbol === topSym);
+    renderHighlight(chosen, decisions.get(chosen.symbol));
+    const debug = $('ms-signal-debug');
+    if (debug) debug.innerHTML = `<p class="ms-portfolio">${escapeHtml(chosen.label)} · внутрішній бал ${escapeHtml(chosen.score ?? '—')}/100 (не ймовірність)</p><p class="ms-portfolio">${escapeHtml(chosen.reason_ua || '')}</p>${directionPanel(chosen)}`;
     if (updateChart) renderChartFor(chosen);
   }
 
@@ -695,21 +754,21 @@
       'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub', 'ms-slot-oil-alert',
       oilSlot,
       'Немає відкритої угоди по нафті',
-      'Слот 1 вільний · очікуємо A+ сигнал UKOIL на MEXC'
+      'Очікуємо сигнал на нафті'
     );
     _renderSlotCard(
       'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub', 'ms-slot-cm-alert',
       cmSlot,
       'Немає відкритої угоди по крипті',
-      'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI'
+      'Очікуємо сигнал на крипті'
     );
 
     _renderSlotCard('ms-slot-metal','ms-slot-metal-badge','ms-slot-metal-title','ms-slot-metal-sub','ms-slot-metal-alert',metalSlot,
-      'Немає відкритої угоди по металу','Слот 3 вільний · XPT · спільний бюджет');
+      'Немає відкритої угоди по металу','Очікуємо сигнал на металі');
     if (includeResearch) renderResearch();
     const port=$('ms-portfolio'), budget=latestData?.portfolio;
     if(port) {
-      port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.5';
+      port.textContent=budget ? `Ризик портфеля: ${budget.used_risk_usd==null?'—':Number(budget.used_risk_usd).toFixed(2)} / ${Number(budget.risk_usd).toFixed(2)} USDT · Номінал: ${budget.used_notional_usd==null?'—':Number(budget.used_notional_usd).toFixed(2)} / ${Number(budget.notional_usd).toFixed(2)} USDT${budget.status==='OK'?'':' · Бюджет перевищено, нові позиції обмежено'}` : 'Очікуємо актуальний портфель v15.5';
       port.classList.toggle('ms-dn',budget?.status==='LEGACY_EXCEEDS_BUDGET');
     }
     const oilD = oilSlot.daily_all || oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };
@@ -1040,10 +1099,19 @@
     });
   }
 
+  let lastDecisionStale = null;
+  function refreshDecisionStatus() {
+    if (!latestData) return;
+    renderMeta(latestData);
+    const stale = isSnapshotStale(latestData);
+    if (lastDecisionStale !== stale) { lastDecisionStale = stale; renderTable(latestData, chartMode === 'levels'); }
+  }
+
   function renderAll(updateChart = false) {
     if (!latestData) return;
     renderDualSlotsAndDaily();
     renderMeta(latestData);
+    lastDecisionStale = isSnapshotStale(latestData);
     renderTable(latestData, updateChart);
   }
 
@@ -1076,7 +1144,7 @@
       await Promise.all(endpoints.map(poll));
       scannerFetchError=success===0;
       fetchDetails=failures.join('\n');
-      if(latestData) renderMeta(latestData);
+      if(latestData) refreshDecisionStatus();
       else {const el=$('ms-updated'); if(el) el.textContent='⚠ Немає зліпка MEXC — перевірте worker / GitHub Actions';}
     } finally { scanLoading=false; }
   }
@@ -1148,7 +1216,7 @@
     loadScannerState();
     connectMexcWebSocket();
     setInterval(loadScannerState, 15000);
-    setInterval(() => { if (latestData) renderMeta(latestData); }, 5000);
+    setInterval(refreshDecisionStatus, 5000);
   }
 
   if (document.readyState === 'loading') {

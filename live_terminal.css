@@ -1789,3 +1789,32 @@ body.bzu-multi-clean { display:block; height:auto; min-height:100dvh; }
   .bzu-multi-clean .ms-header-right { width:100%; }
   .bzu-multi-clean .ms-daily-bar { margin:12px 0; }
 }
+
+/* v15.8.3 decision-first presentation, trading logic unchanged. */
+.ms-scanner-heading { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; margin:2px 0 12px; }
+.ms-scanner-heading h2 { margin:0; color:#f1f5f9; font-size:1.02rem; }
+#ms-signal-summary { color:#a8b3c5; font-size:.78rem; }
+.ms-paper-tag { color:#a8b3c5; font-size:.76rem; white-space:nowrap; }
+.ms-decision { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:13px 14px; background:rgba(148,163,184,.07); border:1px solid rgba(148,163,184,.15); border-radius:10px; margin-bottom:2px; }
+.ms-decision strong { font-size:.94rem; font-weight:600; color:#e2e8f0; overflow-wrap:anywhere; }
+.ms-decision small { font-size:.79rem; line-height:1.5; color:#a8b3c5; overflow-wrap:anywhere; }
+.ms-decision-active { background:rgba(34,197,94,.055); border-color:rgba(34,197,94,.2); }
+.ms-hl-levels { margin-top:12px; }
+.ms-table .ms-decision-cell { min-width:0; }
+.ms-decision-cell small { display:block; color:#a8b3c5; font-size:.74rem; line-height:1.35; margin-top:5px; overflow-wrap:anywhere; }
+.ms-table .ms-sym-cell { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+.ms-asset-kind { color:#94a3b8; font-size:.69rem; font-weight:400; }
+.ms-direction-cell { font-size:.83rem; font-weight:600; white-space:nowrap; }
+.ms-table .ms-pill { font-size:.72rem; }
+.ms-row:focus-visible { outline:2px solid #fb923c; outline-offset:-2px; }
+.ms-research-details:not([open]) > :not(summary) { display:none; }
+.ms-research-details > summary { font-size:.84rem; }
+@media (max-width:600px) {
+  .ms-table th,.ms-table td { padding:8px 5px; }
+  .ms-table .ms-pill { white-space:normal; border-radius:6px; padding:3px 5px; }
+  .ms-direction-cell { white-space:normal; font-size:.76rem; }
+  .ms-decision-cell small { font-size:.70rem; }
+  .ms-table .ms-sym-cell { white-space:normal; }
+  .ms-table th { white-space:normal; font-size:.70rem; }
+  .ms-scanner-heading { align-items:flex-start; }
+}

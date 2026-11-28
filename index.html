@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
-<title>BZU MULTI · MEXC v15.8 Adaptive Trend Portfolio Research</title>
-<link rel="stylesheet" href="./live_terminal.css?v=15.8.1">
+<title>BZU MULTI · MEXC v15.8.3 — Торговий термінал</title>
+<link rel="stylesheet" href="./live_terminal.css?v=15.8.3">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <meta name="bzu-state-source" content="">
-<script defer src="./multi_scanner.js?v=15.8.1"></script>
+<script defer src="./multi_scanner.js?v=15.8.3"></script>
 </head>
 <body class="bzu-multi-clean">
 <header class="masthead ms-masthead">
@@ -58,7 +58,7 @@
 </section>
 <div class="ms-main-status">
   <p id="ms-portfolio" class="ms-portfolio" aria-live="polite">Портфель: очікуємо серверний бюджет…</p>
-  <a class="ms-research-link" href="#ms-research-details" id="ms-research-jump">Дослідження H1 / M15 / Shadow ↓</a>
+  <span class="ms-paper-tag">PAPER · навчальна торгівля</span>
 </div>
 
 <section id="multi-scanner-section" class="panel ms-panel" aria-label="BZU MULTI Сканер">
@@ -90,30 +90,23 @@
     </div>
 
     <div class="ms-right-col">
+      <div class="ms-scanner-heading"><h2>Ринкові сигнали</h2><span id="ms-signal-summary" aria-live="polite">Очікуємо аналіз</span></div>
       <div class="ms-table-wrap">
         <table class="ms-table">
           <thead>
             <tr>
               <th>Актив</th>
               <th class="ms-num">Ціна / 24г</th>
-              <th class="ms-tf">4H·1H·15m</th>
-              <th>Статус</th>
-              <th class="ms-num">Напрям</th>
-              <th class="ms-num">R:R</th>
-              <th class="ms-num">Бал</th>
+              <th>Напрямок</th>
+              <th>Рішення бота</th>
             </tr>
           </thead>
           <tbody id="ms-rows">
-            <tr><td colspan="7" class="ms-empty">Очікуємо дані MEXC…</td></tr>
+            <tr><td colspan="4" class="ms-empty">Очікуємо дані MEXC…</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="ms-status-help">
-        <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — лімітна PAPER-заявка (витрати оцінені) ·
-        <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал ·
-        <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо ·
-        <strong>ХВИЛЯ</strong> — напрямок розпізнано, але це не дозвіл на вхід · <strong>НЕМАЄ СИГНАЛУ</strong> — тригера не підтверджено. Клік по активу показує LONG/SHORT діагностику.
-      </p>
+      <p class="ms-status-help">Оберіть актив для перегляду графіка. Ціна входу, SL і TP показуються лише для підтвердженого сигналу або відкритої PAPER-позиції.</p>
     </div>
   </div>
 </section>
@@ -142,13 +135,15 @@
 
 <details id="ms-research-details" class="panel ms-research-details">
   <summary>
-    <span class="ms-research-title">Дослідницькі рахунки H1 / M15 та Shadow</span>
-    <span id="ms-research-summary" class="ms-research-summary">Окремі PAPER-рахунки · очікуємо дані</span>
+    <span class="ms-research-title">Дослідження та технічна статистика (не сигнали)</span>
+    
   </summary>
   <p class="ms-research-note">Експериментальні результати не додаються до основного M1/M5 рахунку. Показники оновлюються за серверними сканами.</p>
+  <p id="ms-research-summary" class="ms-research-summary">Окремі PAPER-рахунки · очікуємо дані</p>
   <div class="ms-research-grid">
-    <section class="ms-research-card" aria-label="Shadow research"><h3>Shadow · альтернативні сценарії</h3>
-      <p id="ms-opportunity" class="ms-portfolio" aria-live="polite">Opportunity Intelligence: очікуємо статистику…</p>
+    <section class="ms-research-card ms-research-wide"><h3>Технічні дані вибраного активу</h3><div id="ms-signal-debug"></div></section>
+    <section class="ms-research-card" aria-label="Shadow research"><h3>Shadow · альтернативні модельні угоди</h3>
+      <p class="ms-research-note">Фонове тестування альтернативних входів та виходів. Не займає торгових слотів, не змінює основний баланс.</p><p id="ms-opportunity" class="ms-portfolio" aria-live="polite">Opportunity Intelligence: очікуємо статистику…</p>
       <p id="ms-geometry-research" class="ms-portfolio" aria-live="polite">SHADOW геометрія: очікуємо нові MARKET-входи…</p>
     </section>
     <section class="ms-research-card" aria-label="H1 Trend separate PAPER"><h3>H1 Donchian Trend · незалежний дослідницький PAPER</h3><p id="ms-h1-summary" class="ms-portfolio" aria-live="polite">Очікуємо H1…</p><div id="ms-h1-rows"></div><p class="ms-portfolio">30 закритих H1 · SL 2.5 ATR · трейл 3.5 ATR · без фіксованого TP. Окремий гіпотетичний рахунок, не підсумовується з M1/M5. Витрати оцінені, funding може бути неповним.</p></section>
