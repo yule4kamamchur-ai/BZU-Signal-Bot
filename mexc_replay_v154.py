@@ -55,7 +55,7 @@ def metrics(rows):
     vals=[float(r['net_r']) for r in rows]; n=len(vals); wins=sum(x>0 for x in vals); gains=sum(x for x in vals if x>0);loss=-sum(x for x in vals if x<0)
     usd=[float(r['net_usd']) for r in rows];equity=peak=dd=0.
     for v in usd: equity+=v;peak=max(peak,equity);dd=max(dd,peak-equity)
-    return {'trades':n,'wins':wins,'win_rate':wins/n if n else None,'net_r':round(sum(vals),4),'mean_r':sum(vals)/n if n else None,'profit_factor':gains/loss if loss else None,'net_usdt':round(sum(usd),2),'max_closed_equity_drawdown_usdt':round(dd,2)}
+    return {'trades':n,'wins':wins,'win_rate':wins/n if n else None,'net_r':round(sum(vals),4),'mean_r':sum(vals)/n if n else None,'profit_factor':gains/loss if loss else None,'profit_factor_usdt':sum(v for v in usd if v>0)/(-sum(v for v in usd if v<0)) if any(v<0 for v in usd) else None,'net_usdt':round(sum(usd),2),'max_closed_equity_drawdown_usdt':round(dd,2)}
 
 
 def replay(engine,path,start,split,end,interval,spread_bps,export_prior=None):
@@ -81,7 +81,7 @@ def replay(engine,path,start,split,end,interval,spread_bps,export_prior=None):
         b15=closed('BTC_USDT',900,t,110);b1=closed('BTC_USDT',3600,t,145);bq=quote('BTC_USDT',t)
         macro=engine.analyze_btc_macro(b15,b1,bq.get('lastPrice',b15[-1].close if b15 else 0.))
         hist=sum([memory.get(k,[]) for k in ('oil_history','cm_history','metal_history')],[])
-        if new:hist+=memory.get('opportunity_ledger',{}).get('resolved',[])
+        if new and getattr(engine,'SHADOW_IN_ACTIVE_HISTORY',True):hist+=memory.get('opportunity_ledger',{}).get('resolved',[])
         items=[]
         for spec in engine.INSTRUMENTS:
             sym=spec['symbol']; extra={'prior_breaks':memory.get('opportunity_breaks',{}).get(sym,[])} if new else {}
@@ -93,10 +93,11 @@ def replay(engine,path,start,split,end,interval,spread_bps,export_prior=None):
             for item in items:
                 if item.get('analysis_fresh'):memory.setdefault('opportunity_breaks',{})[item['symbol']]=item.get('opportunity_breaks',[])
         engine.update_dual_paper_slots(state,memory,now_ms=t);cycles+=1
+        if cycles%300==0: print(f'Replay {cycles}/{math.ceil((end-start)/(interval*1000))} cycles; {datetime.datetime.fromtimestamp(t/1000,datetime.timezone.utc).isoformat()}',flush=True)
     hist=sorted(sum([memory.get(k,[]) for k in ('oil_history','cm_history','metal_history')],[]),key=lambda r:r['closed_ts'])
     train=[r for r in hist if r['closed_ts']<split];test=[r for r in hist if r['opened_ts']>=split and r['closed_ts']<end]
     if export_prior is not None:
-        if not new: raise ValueError('Prior export is only for v15.4')
+        if not new: raise ValueError('Prior export requires opportunity engine')
         # Separate historical source, no holdout outcome imported, no automatic validation.
         rows=[{**r,'source':'HISTORICAL_REPLAY'} for r in train if r.get('quality')=='OBSERVED_M1']
         rows += [{**r,'source':'HISTORICAL_SHADOW'} for r in memory.get('opportunity_ledger',{}).get('resolved',[]) if r.get('quality')=='SHADOW_M1_MODEL' and r.get('net_r') is not None and r['closed_ts']<split]
@@ -109,7 +110,7 @@ def replay(engine,path,start,split,end,interval,spread_bps,export_prior=None):
     for t in range(split,end,7*86400000):
         stop=min(end,t+7*86400000); label=datetime.datetime.fromtimestamp(t/1000,datetime.timezone.utc).date().isoformat()
         met=metrics([r for r in test if t<=r['closed_ts']<stop]); seven_day[label]={**met,'days':(stop-t)/86400000,'target_20_met':met['net_usdt']>=20 if stop-t==7*86400000 else None}
-    return {'seven_day_holdout':seven_day,'version':engine.SCANNER_VERSION,'status':'HISTORICAL_REPLAY_ASSUMPTIONS_NOT_LIVE_VALIDATION','coverage':coverage,'cycles':cycles,'fresh_cycles_by_symbol':dict(valid_counts),'interval_seconds':interval,'assumed_spread_bps':spread_bps,'funding':'NOT_AVAILABLE_IN_CSV_REPLAY','train':metrics(train),'holdout':metrics(test),'weekly':{k:metrics(v) for k,v in weekly.items()},'by_family_side_regime':{k:metrics(v) for k,v in families.items()},'open_at_end':sum(bool(memory.get(k)) for k in ('oil_active','cm_active','metal_active')),'shadow_summary':{k:len(memory.get('opportunity_ledger',{}).get(k,[])) for k in ('resolved','pending','observations')},'notes':'Prequential: past resolved labels only. Positions opened before holdout excluded from holdout. Weekly buckets may be partial; no forced liquidation at end. Static account $100; no compounding. Funding not included; spread/slippage/fee assumptions not true fills.'}
+    return {'seven_day_holdout':seven_day,'version':engine.SCANNER_VERSION,'status':'HISTORICAL_REPLAY_ASSUMPTIONS_NOT_LIVE_VALIDATION','coverage':coverage,'cycles':cycles,'fresh_cycles_by_symbol':dict(valid_counts),'interval_seconds':interval,'assumed_spread_bps':spread_bps,'funding':'NOT_AVAILABLE_IN_CSV_REPLAY','train':metrics(train),'holdout':metrics(test),'weekly':{k:metrics(v) for k,v in weekly.items()},'by_family_side_regime':{k:metrics(v) for k,v in families.items()},'open_at_end':sum(bool(memory.get(k)) for k in ('oil_active','cm_active','metal_active')),'shadow_summary':{k:len(memory.get('opportunity_ledger',{}).get(k,[])) for k in ('resolved','pending','observations')},'paper_trades':hist,'shadow_trades':memory.get('opportunity_ledger',{}).get('resolved',[]),'notes':'Prequential: past resolved labels only. Positions opened before holdout excluded from holdout. Weekly buckets may be partial; no forced liquidation at end. Static account $100; no compounding. Funding not included; spread/slippage/fee assumptions not true fills.'}
 
 
 def main():

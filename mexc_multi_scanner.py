@@ -14,8 +14,9 @@ import logging
 import fcntl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from mexc_hybrid import detect, trend_efficiency
-from mexc_opportunity import MODEL_SCHEMA, market_state, beta_relative, rates, cost_r, estimate, objective, policy, shadow_step, register, SOFT, break_memory, memory_retest, funding_accrual
+from mexc_opportunity import MODEL_SCHEMA, PREVIOUS_SCHEMA, market_state, beta_relative, rates, cost_r, estimate, objective, policy, shadow_step, register, SOFT, break_memory, memory_retest, funding_accrual
 from mexc_lifecycle import advance
+from mexc_evidence import SHADOW_FAMILIES, active_estimate, exit_policies, tag_experiment
 from mexc_direction import (context as direction_context, relative_strength, detect_transitions,
     closed_prefix, contiguous, trigger_age_limit, signal_event_key, delayed_guard)
 from mexc_geometry import geometry, POLICY
@@ -37,7 +38,8 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.4 Adaptive Opportunity"
+SCANNER_VERSION = "BZU MULTI v15.5 Evidence-Based Adaptive Quant"
+SHADOW_IN_ACTIVE_HISTORY = False
 
 FAMILY_RISK_MULT = {
     "FAILED_BREAKOUT": 1.25,
@@ -467,6 +469,7 @@ def analyze_instrument(
     risk_pct: float = 3.0,
     max_leverage: float = 5.0,
 ) -> dict[str, Any]:
+    history=[r for r in (history or []) if r.get("source","PAPER")=="PAPER" and isinstance(r.get("closed_ts"),int) and r["closed_ts"]<now_ms]
     bars_1m = closed_prefix(bars_1m or [],60000,now_ms)
     bars_5m = closed_prefix(bars_5m,300000,now_ms)
     bars_15m = closed_prefix(bars_15m,900000,now_ms)
@@ -618,12 +621,18 @@ def analyze_instrument(
                     local_support=local_support,higher_opposes=higher_opposes)
             zone=min(zones,key=lambda x:abs(x-rows[-1].close)) if zones else None
             if zone is not None and abs(zone-rows[-1].close)>.65*atr(m15_at): zone=None
-            theses=detect(rows,side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],trend=trend,zone=zone,timeframe=tf)
+            args=dict(side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],trend=trend,zone=zone,timeframe=tf)
+            theses=detect(rows,**args,retest_window=4)
             theses+=detect_transitions(rows,side=side,atr=aa,tick=tick,min_rvol=spec["min_rvol"],context_now=local_at,higher_opposes=higher_opposes,timeframe=tf)
+            theses=[tag_experiment(t) for t in theses]
+            # Keep long-window and memory variants independent; never replace the active short retest.
+            short=[t for t in theses if t["family"]=="BREAKOUT_RETEST"]
+            for t in detect(rows,**args,retest_window=12):
+                if t["family"]=="BREAKOUT_RETEST" and not any(t.get("retest_level")==x.get("retest_level") and t.get("structural_stop")==x.get("structural_stop") for x in short):
+                    theses.append({**t,"research_variant":"RETEST_12"})
             if tf=="M5":
-                theses+=memory_retest(rows,break_memory(rows,prior_breaks,known,tick),side,aa,tick,tf)
-            # Keep the latest candidate per family for this trigger.
-            theses=list({t["family"]:t for t in theses}.values())
+                theses += [{**t,"research_variant":"MEMORY_RETEST"} for t in memory_retest(rows,break_memory(rows,prior_breaks,known,tick),side,aa,tick,tf)]
+            theses=list({(t["family"],t.get("research_variant")):t for t in theses}.values())
             for thesis in theses:
                 reversal=thesis["family"] in ("LIQUIDITY_SWEEP","FAILED_BREAKOUT","EXHAUSTION")
                 transition=bool(thesis.get("transition_evidence"))
@@ -659,7 +668,7 @@ def analyze_instrument(
                 side_fund = side * funding_rate
                 if side_fund >= 0.0004:
                     funding_regime, funding_risk_mult, tp1_r, runner_boost = "CROWDED_WITH_US", 0.75, 0.85, 1.0
-                    early_close_hint_ua = f"⚠ Перегрітий Funding ({funding_pct:+.3f}%) · ризик ×0.75 · достроковий TP1 (+0.85 R)"
+                    early_close_hint_ua = f"⚠ Перегрітий Funding ({funding_pct:+.3f}%) · ризик ×0.75 · TP1 лише в Shadow"
                 elif side_fund <= -0.0002:
                     funding_regime, funding_risk_mult, tp1_r, runner_boost = "SQUEEZE_TAILWIND", 1.0, 1.0, 1.15
                     score += 3
@@ -705,9 +714,9 @@ def analyze_instrument(
                 if tf=="M5" and offset: chase_cap=min(chase_cap,.50*actual_risk)
                 spread=ask-bid
                 # No unsupported probability: rank by evidence + bounded causal estimates.
-                meta=estimate(history or [],{**thesis,"regime":regime,"side":side,"symbol":spec["symbol"],"order_type":route},now_ms)
+                meta=active_estimate(history or [],{**thesis,"regime":regime,"side":side,"symbol":spec["symbol"],"order_type":route},now_ms)
                 rank=objective(meta,score,net_rr,route,thesis["rvol"],ms["phase"],side)
-                exit_policy=policy(thesis["family"],ms["phase"],rr,funding_regime)
+                exit_policy,shadow_exit_policy=exit_policies(thesis["family"],ms["phase"],rr,funding_regime)
                 # Funding-aware TP1 geometry is recomputed consistently with selected route.
                 g["tp1_r"]=exit_policy["tp1_r"]
                 from mexc_geometry import compute_tp1_price
@@ -717,6 +726,7 @@ def analyze_instrument(
                        and (route=="LIMIT" and side*(quote-entry)>=tick*.5 or route=="MARKET" and abs(quote-ref)<=chase_cap) and not adverse)
                 event_key=signal_event_key(spec["symbol"],side,known)
                 signal_id=f"{spec['symbol']}:{side}:{thesis['family']}:{tf}:{thesis['trigger_ts']}"
+                if thesis.get("research_variant"): signal_id+=":"+thesis["research_variant"]
                 after_reason=delayed_guard(thesis,side,known,bars_1m,bars_5m,now_ms,chase_atr,tick)
                 reasons=[]
                 if not valid: reasons.append("GEOMETRY_OR_EXECUTION")
@@ -736,6 +746,7 @@ def analyze_instrument(
                 if signal_id in used or event_key in used: reasons.append("SIGNAL_CONSUMED")
                 if known<=max((h.get("closed_ts",0) for h in (history or []) if h.get("symbol")==spec["symbol"]),default=0):
                     reasons.append("SIGNAL_BEFORE_LAST_EXIT")
+                if thesis.get("research_variant"): reasons.append("RESEARCH_ONLY")
                 actionable=not reasons
                 if actionable: diag["ready"]+=1
                 else: diag["rejections"].extend(reasons)
@@ -752,7 +763,7 @@ def analyze_instrument(
                 if reasons: reason+=" · "+", ".join(dict.fromkeys(reasons))
                 if adverse: reason+=" · зустрічний імпульс"
                 candidates.append({**thesis,**g,"status":"READY" if actionable else "WATCH",
-                    "status_ua":("ЛІМІТКА ГОТОВА" if route=="LIMIT" else f"ВХІД ЗАРАЗ ({tf})") if actionable else "СПОСТЕРЕЖЕННЯ",
+                    "status_ua":("ЛІМІТКА ГОТОВА" if route=="LIMIT" else f"ВХІД ЗАРАЗ ({tf})") if actionable else "ЛИШЕ SHADOW" if thesis.get("research_variant") else "СПОСТЕРЕЖЕННЯ",
                     "score":score,"rank_score":round(rank,3),"side":side,"side_ua":"LONG ↑" if side==1 else "SHORT ↓",
                     "order_type":route,"entry":entry,"stop":stop,"tp":tp,"rr":round(rr,2),"net_rr_estimate":round(net_rr,3),
                     "regime":regime,"meta":meta,"btc_aligned":not btc_opposes,"reason_ua":reason,
@@ -763,6 +774,7 @@ def analyze_instrument(
                     "funding_rate":funding_rate,"funding_pct":funding_pct,"open_interest":round(open_interest,2),
                     "funding_regime":funding_regime,"funding_risk_mult":funding_risk_mult,"early_close_hint_ua":early_close_hint_ua,
                     "maker_pullback":maker_pullback,"limit_ttl_min":limit_ttl_min,**exit_policy,**costs,
+                    "shadow_exit_policy":shadow_exit_policy,
                     "fee_rate":fee,"slippage_rate":slip,"tick":tick,"spread_cost_rate":max(0.,spread/(2*entry)) if entry>0 else 0.,
                     "sizing":compute_sizing(entry,stop,tp,deposit=deposit,risk_pct=risk_pct*total_risk_mult,max_leverage=max_leverage)})
     # Compare a genuinely executable passive retest with a market entry; use same structural geometry and costs.
@@ -774,11 +786,14 @@ def analyze_instrument(
         lc=rates(spec["symbol"],"LIMIT"); lf=(lc["entry_fee_rate"]+lc["exit_fee_rate"])/2; ls=(lc["entry_slip_rate"]+lc["exit_slip_rate"])/2
         lg=geometry(spec,c,level,side,tick,a5,a15,bars_15m,bars_1h,lf,ls,c.get("alignment_tier")=="ALIGNED",tp1_r=c["tp1_r"])
         if not lg["valid"] or lg["net_rr"]<1.15 or ask-bid>.20*lg["risk"]: continue
-        meta=estimate(history or [],{**c,"symbol":spec["symbol"],"order_type":"LIMIT"},now_ms)
+        meta=active_estimate(history or [],{**c,"symbol":spec["symbol"],"order_type":"LIMIT"},now_ms)
         # Pending fill probability is not calibrated. Conservative opportunity-cost penalty, not fake fill-rate.
         rank=objective(meta,c["score"],lg["net_rr"],"LIMIT",c["rvol"],ms["phase"],side)-.04-distance/max(a5,tick)*.04
         c2={**c,**lg,**lc,"entry":level,"order_type":"LIMIT","maker_pullback":True,"limit_ttl_min":15,"fee_rate":lf,"slippage_rate":ls,"rank_score":round(rank,4),"net_rr_estimate":lg["net_rr"],"meta":meta,"status_ua":"ЛІМІТКА ГОТОВА","reason_ua":c["reason_ua"]+" · альтернативний ретест LIMIT","sizing":compute_sizing(level,lg["stop"],lg["tp"],deposit=deposit,risk_pct=risk_pct*c["risk_multiplier"],max_leverage=max_leverage)}
         c2["trail_start_r"]=c["trail_start_r"]
+        active_policy,trial=exit_policies(c2["family"],ms["phase"],lg["rr"],c2["funding_regime"])
+        c2.update(active_policy,shadow_exit_policy=trial,rr=round(lg["rr"],2))
+        c2["tp1"]=compute_tp1_price(level,lg["risk"],side,tick,trial["tp1_r"])
         candidates.append(c2)
     for d in diagnostics.values():
         d["rejections"]=list(dict.fromkeys(d["rejections"]))
@@ -793,7 +808,8 @@ def analyze_instrument(
         return base_out
     candidates.sort(key=lambda c:(c["status"]=="READY",c["rank_score"],c["net_rr_estimate"]),reverse=True)
     best={**base_out,**candidates[0],"candidate_count":len(candidates),
-          "candidate_diagnostics":[{k:c.get(k) for k in ("setup","family","trigger_tf","trigger_offset","signal_age_sec","side","status","score","rank_score","meta","reason_ua","rejection_codes","signal_id","signal_event_key","signal_known_ts","entry","stop","tp","risk","tick","order_type","valid","regime","limit_ttl_min","entry_fee_rate","exit_fee_rate","entry_slip_rate","exit_slip_rate","spread_cost_rate","retest_level","reference")} for c in candidates]}
+          "candidate_diagnostics":[{k:c.get(k) for k in ("setup","family","trigger_tf","trigger_offset","signal_age_sec","side","status","score","rank_score","meta","reason_ua","rejection_codes","signal_id","signal_event_key","signal_known_ts","entry","stop","tp","risk","tick","order_type","valid","regime","limit_ttl_min","entry_fee_rate","exit_fee_rate","entry_slip_rate","exit_slip_rate","spread_cost_rate","retest_level","reference","research_variant","shadow_exit_policy","geometry_policy","trail_atr_m5","trail_start_r","fee_rate","slippage_rate","tp1")} for c in candidates]}
+    best["tp1"]=None if not best.get("tp1_enabled") else best.get("tp1")
     best["be_trigger"]=None  # structural trailing has no fixed break-even trigger
     return best
 
@@ -880,6 +896,10 @@ def rank_and_lock_clusters(
     split_metal: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Rank independently; max one ready per cluster."""
+    for r in results:
+        if r.get("status")=="READY" and (r.get("research_variant") or r.get("family") in SHADOW_FAMILIES):
+            r.update(status="WATCH",status_ua="ЛИШЕ SHADOW")
+            r.setdefault("rejection_codes",[]).append("RESEARCH_ONLY")
     ranked = sorted(
         results,
         key=lambda r: (
@@ -971,7 +991,7 @@ def _advance_single_slot(
                 fee,slip=active.get("fee_rate",0.),active.get("slippage_rate",0.)
                 cost=cost_r(active,exit_price)
                 # Funding is not observed. Keep this explicitly an estimated net paper result.
-                fund_r,fund_status=funding_accrual(active,item,result["closed_ts"]) if active.get("model_schema")==MODEL_SCHEMA else (0.,"ESTIMATED_EX_FUNDING")
+                fund_r,fund_status=funding_accrual(active,item,result["closed_ts"]) if active.get("model_schema") in (MODEL_SCHEMA,PREVIOUS_SCHEMA) else (0.,"ESTIMATED_EX_FUNDING")
                 net_r=round(gross-cost-fund_r,4); risk_usd=float((active.get("sizing") or {}).get("risk_usd") or 3.)
                 net_usd=round(net_r*risk_usd,2)
                 close_day=_kyiv_day(result["closed_ts"])
@@ -1003,7 +1023,7 @@ def _advance_single_slot(
                 pnl=round(pp*g1+(1.0-pp)*g2-cost,4)
             else:
                 pnl=round(int(active["side"])*(cur-entry)/risk-cost,4)
-            if active.get("model_schema")==MODEL_SCHEMA and active.get("phase")!="PENDING_LIMIT":
+            if active.get("model_schema") in (MODEL_SCHEMA,PREVIOUS_SCHEMA) and active.get("phase")!="PENDING_LIMIT":
                 fund_r,fund_status=funding_accrual(active,item,now_ms); pnl=round(pnl-fund_r,4); active["funding_status"]=fund_status
             active.update(pnl_r=pnl,pnl_usd=round(pnl*float((active.get("sizing") or {}).get("risk_usd") or 3.),2))
     elif isinstance(active,dict):
@@ -1014,6 +1034,7 @@ def _advance_single_slot(
         candidates = [
             r for r in state.get("instruments", [])
             if _slot_group(r["cluster"],split_metal) == group_name and r["status"] == "READY"
+            and not r.get("research_variant") and r.get("family") not in SHADOW_FAMILIES
             and r.get("entry") and r.get("stop") and r.get("tp")
             and (not r.get("signal_id") or r["signal_id"] not in memory.get("consumed_signals",{}))
             and (not r.get("signal_event_key") or r["signal_event_key"] not in memory.get("consumed_signals",{}))
@@ -1037,7 +1058,7 @@ def _advance_single_slot(
                 pending=pick["order_type"]=="LIMIT"
                 fee,slip=(pick["fee_rate"],pick["slippage_rate"]) if "fee_rate" in pick and "slippage_rate" in pick else ((0.,0.) if (pick.get("maker_pullback") or pick.get("fee_tag")=="0% FEE") else (cost_rates() if pick.get("signal_id") else (0.,0.)))
                 init_alert = None
-                if pick.get("funding_regime") == "CROWDED_WITH_US":
+                if pick.get("funding_regime") == "CROWDED_WITH_US" and pick.get("tp1_enabled",False):
                     init_alert = {
                         "code": "FUNDING_EARLY_TP1",
                         "level": "warn",
@@ -1054,8 +1075,8 @@ def _advance_single_slot(
                     "open_interest":pick.get("open_interest",0.0),"funding_regime":pick.get("funding_regime","NEUTRAL"),
                     "early_close_hint_ua":pick.get("early_close_hint_ua"),
                     "maker_pullback":bool(pick.get("maker_pullback",False)),
-                    "tp1_enabled":pick.get("tp1_enabled",pick.get("funding_regime")=="CROWDED_WITH_US"),"tp1_hit":False,"tp1":pick.get("tp1"),"tp1_r":pick.get("tp1_r",1.0),"partial_pct":pick.get("partial_pct",0.50),
-                    "time_stop_enabled":pick.get("time_stop_enabled",False),"idea_review_enabled":pick.get("idea_review_enabled",False),"stale_tighten_min":pick.get("stale_tighten_min",120),"stale_exit_min":pick.get("stale_exit_min",180),"stale_tightened":False,
+                    "tp1_enabled":False if pick.get("model_schema")==MODEL_SCHEMA else pick.get("tp1_enabled",False),"tp1_hit":False,"tp1":pick.get("tp1"),"tp1_r":pick.get("tp1_r",1.0),"partial_pct":pick.get("partial_pct",0.50),
+                    "time_stop_enabled":False if pick.get("model_schema")==MODEL_SCHEMA else pick.get("time_stop_enabled",False),"idea_review_enabled":False if pick.get("model_schema")==MODEL_SCHEMA else pick.get("idea_review_enabled",False),"stale_tighten_min":pick.get("stale_tighten_min",120),"stale_exit_min":pick.get("stale_exit_min",180),"stale_tightened":False,
                     "action_alert":init_alert,
                     "model_schema":MODEL_SCHEMA,"trade_id":pick.get("signal_id",f"{pick['symbol']}:{now_ms}"),
                     "signal_id":pick.get("signal_id"),"signal_event_key":pick.get("signal_event_key"),"family":pick.get("family"),"regime":pick.get("regime"),
@@ -1126,7 +1147,7 @@ def _advance_single_slot(
             score=active["score"],
             sizing=active["sizing"],
             initial_stop=active.get("initial_stop"),
-            tp1=active.get("tp1"), tp1_r=active.get("tp1_r", 1.0), tp1_hit=bool(active.get("tp1_hit")),
+            tp1=active.get("tp1") if active.get("tp1_enabled") or active.get("tp1_hit") else None, tp1_enabled=active.get("tp1_enabled",False), tp1_r=active.get("tp1_r", 1.0), tp1_hit=bool(active.get("tp1_hit")),
             tp1_fill_price=active.get("tp1_fill_price"), partial_pct=active.get("partial_pct", 0.50),
             be_armed=bool(active.get("be_armed")), stale_tightened=bool(active.get("stale_tightened")),
             time_stop_countdown_min=active.get("time_stop_countdown_min"),
@@ -1361,7 +1382,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     btc_macro=analyze_btc_macro(btc15,btc1,btc_price)
     btc_fresh=all(rows and 0<=quote_ts-rows[-1].ts-step<=step*2 for rows,step in ((btc15,900000),(btc1,3600000)))
     if not btc_fresh: btc_macro.update(side=0,state="UNKNOWN",label_ua="Дані BTC недоступні")
-    history=(memory.get("calibration_rows") or [])+(memory.get("oil_history") or [])+(memory.get("cm_history") or [])+(memory.get("metal_history") or [])+(memory.get("opportunity_ledger",{}).get("resolved") or [])
+    history=(memory.get("oil_history") or [])+(memory.get("cm_history") or [])+(memory.get("metal_history") or [])
     results=[]
     for spec in INSTRUMENTS:
         sym=spec["symbol"]
@@ -1374,7 +1395,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
             if sym not in ticks and res["status"]=="READY":
                 res.update(status="WATCH",status_ua="НЕМає TICK",reason_ua="Не отримано крок ціни контракту")
                 for d in res.get("candidate_diagnostics",[]): d.setdefault("rejection_codes",[]).append("MISSING_TICK")
-            if sym in active_symbols and active_symbols[sym].get("model_schema")==MODEL_SCHEMA and active_symbols[sym].get("opened_ts") is not None and not denied:
+            if sym in active_symbols and active_symbols[sym].get("model_schema") in (MODEL_SCHEMA,PREVIOUS_SCHEMA) and active_symbols[sym].get("opened_ts") is not None and not denied:
                 try:
                     url=f"{MEXC_BASE}/api/v1/contract/funding_rate/history?symbol={sym}&page_num=1&page_size=40"
                     funding=fetcher(url).get("data",{}); raw=funding.get("resultList")
@@ -1443,13 +1464,7 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         deposit=float(os.getenv("BZU_DEPOSIT_USDT","100")); risk=float(os.getenv("BZU_RISK_PCT","3")); lev=float(os.getenv("BZU_MAX_LEVERAGE","5"))
         if not all(math.isfinite(x) and x>0 for x in (deposit,risk,lev)): raise ValueError("Invalid sizing configuration")
         migrate_metal_slot(mem)
-        prior=Path(os.getenv("BZU_MEXC_CALIBRATION_FILE","mexc_calibration_v154.json"))
-        if prior.exists():
-            try:
-                data=json.loads(prior.read_text()); rows=data.get("rows",[])
-                if data.get("schema")==MODEL_SCHEMA and data.get("status")=="HISTORICAL_REPLAY_UNVALIDATED" and isinstance(rows,list):
-                    mem["calibration_rows"]=[r for r in rows[-1500:] if r.get("model_schema")==MODEL_SCHEMA and r.get("source") in ("HISTORICAL_REPLAY","HISTORICAL_SHADOW")]
-            except (OSError,ValueError,AttributeError): logging.warning("Calibration file invalid; retaining previous rows")
+        # v15.5 uses rolling same-schema PAPER labels only; calibration artifacts are research-only.
         state=run_scan(fetcher=fetcher,deposit=deposit,risk_pct=risk,max_leverage=lev,memory=mem,apply_locks=False)
         # Preserve existing entry/initial SL/TP/R. Start new trailing only after migration time.
         for active in (mem.get("oil_active"),mem.get("cm_active"),mem.get("metal_active")):

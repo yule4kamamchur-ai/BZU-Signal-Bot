@@ -331,13 +331,13 @@
       if (obj.time_stop_countdown_min) {
         return `<div class="ms-action-banner ms-hl-action-banner ms-alert-warn">⏱ УВАГА: УГОДА БУДЕ ЗАКРИТА ЧЕРЕЗ ~${obj.time_stop_countdown_min} ХВ (НЕМАЄ ІМПУЛЬСУ)<small>Alpha-Decay Time-Stop: якщо ціна не дасть розвитку, закриваємо достроково.</small></div>`;
       }
-      if (obj.funding_regime === 'CROWDED_WITH_US') {
+      if (obj.funding_regime === 'CROWDED_WITH_US' && obj.tp1_enabled) {
         return `<div class="ms-action-banner ms-hl-action-banner ms-alert-warn">⚠ ПЕРЕГРІТИЙ FUNDING (${Number(obj.funding_pct || 0).toFixed(3)}%) · ДОСТРОКОВА ФІКСАЦІЯ TP1 (+${Number(obj.tp1_r || 0.85).toFixed(2)} R)<small>Ризик знижено (×0.75). При досягненні TP1 фіксуємо 50% і переводимо в Б/У.</small></div>`;
       }
       return '';
     }
     const hlBannerHtml = item.status === 'IN_TRADE' || item.funding_regime === 'CROWDED_WITH_US' ? buildActionBannerHtml(item) : '';
-    const tp1Txt = item.tp1 ? `TP1 (50%): ${fmtPrice(item.tp1, item.tick)}` : '';
+    const tp1Txt = item.tp1 && (item.tp1_enabled || item.tp1_hit) ? `TP1 (${Math.round(100*Number(item.partial_pct || .5))}%): ${fmtPrice(item.tp1, item.tick)}` : '';
     const orderLbl = item.status === 'IN_TRADE'
       ? (item.phase === 'PENDING_LIMIT' ? 'ЛІМІТКА ОЧІКУЄ' : 'АКТИВНА ПОЗИЦІЯ')
       : item.status === 'READY'
@@ -365,7 +365,7 @@
       <div class="ms-hl-levels">
         <div class="ms-lvl"><small>ВХІД${item.maker_pullback ? ' · MAKER 0%' : ''}</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
         <div class="ms-lvl"><small>СТОП-ЛОСС${item.be_armed ? ' (Б/У)' : item.stale_tightened ? ' (ТАЙМ-СТОП)' : ''}</small><strong class="${item.be_armed ? 'ms-up' : 'ms-dn'}">${fmtPrice(item.stop, item.tick)}${sz && item.status !== 'IN_TRADE' ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
-        <div class="ms-lvl"><small>TP2 (RUNNER)${tp1Txt ? ' · ' + tp1Txt : ''}</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
+        <div class="ms-lvl"><small>${tp1Txt ? 'TP2 (RUNNER) · ' + tp1Txt : 'TP'}</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
         <div class="ms-lvl"><small>R:R / RVOL${item.funding_pct ? ' · FR ' + Number(item.funding_pct).toFixed(3) + '%' : ''}</small><strong>${item.rr ? item.rr.toFixed(2) + ' R' : '—'} · ${item.rvol ? item.rvol.toFixed(2) + '×' : '—'}</strong></div>
       </div>
       ${sz ? `
@@ -565,7 +565,7 @@
       title = `⏱ УВАГА: УГОДА БУДЕ ЗАКРИТА ЧЕРЕЗ ~${act.time_stop_countdown_min} ХВ (НЕМАЄ ІМПУЛЬСУ)`;
       detail = 'Alpha-Decay Time-Stop: дострокове закриття при відсутності розвитку.';
       level = 'warn';
-    } else if (act.funding_regime === 'CROWDED_WITH_US') {
+    } else if (act.funding_regime === 'CROWDED_WITH_US' && act.tp1_enabled) {
       title = `⚠ ПЕРЕГРІТИЙ FUNDING · ДОСТРОКОВА ФІКСАЦІЯ TP1 (+${Number(act.tp1_r || 0.85).toFixed(2)} R)`;
       detail = 'Ризик знижено (×0.75) · фіксуємо 50% раніше та переводимо в Б/У.';
       level = 'warn';
@@ -586,9 +586,9 @@
       const sideTxt = side === 1 ? 'LONG' : 'SHORT';
       const tick = act.tick || 0.01;
       if (act.phase === 'PENDING_LIMIT') {
-        badge.textContent = act.maker_pullback ? 'MAKER ЛІМІТКА (0%)' : 'ЛІМІТКА ОЧІКУЄ';
+        badge.textContent = act.maker_pullback ? 'MAKER ЛІМІТКА (FEE EST.)' : 'ЛІМІТКА ОЧІКУЄ';
         title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(act.entry, tick)} USDT`;
-        sub.textContent = `SL ${fmtPrice(act.stop, tick)} · TP1 ${fmtPrice(act.tp1 || act.tp, tick)} · TP2 ${fmtPrice(act.tp, tick)} · до ${act.maker_pullback ? '15' : '8'} хв`;
+        sub.textContent = `SL ${fmtPrice(act.stop, tick)}${act.tp1_enabled && act.tp1 ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP ${fmtPrice(act.tp, tick)} · до ${act.maker_pullback ? '15' : '8'} хв`;
         _renderSlotActionBanner(alertEl, act);
         return;
       }
@@ -597,7 +597,11 @@
       const tp = posNum(act.tp);
       const risk = posNum(act.risk) || (stop ? Math.abs(entry - stop) : 0);
       const curP = posNum(livePrices[act.symbol]) || posNum(act.current_price) || entry;
-      const cost = risk > 0 ? (Number(act.fee_rate || 0) + Number(act.slippage_rate || 0)) * (entry + curP) / risk : 0;
+      const inRate=Number(act.entry_fee_rate ?? act.fee_rate ?? 0)+Number(act.entry_slip_rate ?? act.slippage_rate ?? 0);
+      const outRate=Number(act.exit_fee_rate ?? act.fee_rate ?? 0)+Number(act.exit_slip_rate ?? act.slippage_rate ?? 0)+Number(act.spread_cost_rate || 0);
+      const fraction=act.tp1_hit && posNum(act.tp1_fill_price) ? Number(act.partial_pct || .5) : 0;
+      const exitWeight=fraction*Number(act.tp1_fill_price || curP)+(1-fraction)*curP;
+      const cost = risk > 0 ? (inRate*entry+outRate*exitWeight)/risk + Number(act.funding_r || 0) : 0;
       let pnlR = Number(act.pnl_r || 0);
       if (risk > 0) {
         if (act.tp1_hit && posNum(act.tp1_fill_price)) {
@@ -614,7 +618,7 @@
       card.classList.add(pnlUsd >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
       badge.textContent = `${act.tp1_hit ? 'TP1 50% ✓ · ' : 'В УГОДІ · '}${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)} USDT)`;
       title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} USDT`;
-      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)}${act.tp1 && !act.tp1_hit ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP2 ${fmtPrice(tp, tick)}${act.tp1_hit ? ' · Б/У + Runner 50%' : act.stale_tightened ? ' · Тайм-стоп SL' : act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
+      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)}${act.tp1_enabled && act.tp1 && !act.tp1_hit ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP ${fmtPrice(tp, tick)}${act.tp1_hit ? ' · Б/У + Runner 50%' : act.stale_tightened ? ' · Тайм-стоп SL' : act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
       _renderSlotActionBanner(alertEl, act);
     } else {
       card.classList.add('ms-slot-free');
@@ -647,10 +651,10 @@
     _renderSlotCard('ms-slot-metal','ms-slot-metal-badge','ms-slot-metal-title','ms-slot-metal-sub','ms-slot-metal-alert',metalSlot,
       'Немає відкритої угоди по металу','Слот 3 вільний · XPT · спільний бюджет');
     const opp=$('ms-opportunity'), intel=latestData?.opportunity_intelligence;
-    if(opp) opp.textContent=intel ? `SHADOW · спостережень ${intel.observations} · відкритих моделей ${intel.pending} · завершених ${intel.resolved} · придатних ${intel.usable_labels} · НЕ фактичні угоди` : 'Opportunity Intelligence: очікуємо v15.4';
+    if(opp) opp.textContent=intel ? `SHADOW · спостережень ${intel.observations} · відкритих моделей ${intel.pending} · завершених ${intel.resolved} · придатних ${intel.usable_labels} · НЕ фактичні угоди · навчання Active: ${intel.active_learning==='PAPER_ONLY'?'лише PAPER':'—'}` : 'Evidence Engine: очікуємо v15.5';
     const port=$('ms-portfolio'), budget=latestData?.portfolio;
     if(port) {
-      port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.4';
+      port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.5';
       port.classList.toggle('ms-dn',budget?.status==='LEGACY_EXCEEDS_BUDGET');
     }
     const oilD = oilSlot.daily_all || oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };

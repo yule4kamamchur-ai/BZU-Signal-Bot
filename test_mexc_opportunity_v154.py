@@ -56,7 +56,7 @@ class OpportunityTests(unittest.TestCase):
                 r=ms.analyze_instrument(**fixture(side,'LINK_USDT'))
             self.assertEqual(r['status'],'READY',r['reason_ua']);self.assertEqual(r['side'],side);self.assertEqual(r['model_schema'],MODEL_SCHEMA);self.assertIn('market_state',r)
             m={};s={'instruments':[r],'defaults':{'deposit_usdt':100,'risk_pct':3,'max_leverage':5}}
-            ms.update_dual_paper_slots(s,m,now_ms=r['quote_ts']);a=m['cm_active'];self.assertTrue(a['idea_review_enabled']);self.assertTrue(a['time_stop_enabled']);self.assertLessEqual(s['portfolio']['used_risk_usd'],3.)
+            ms.update_dual_paper_slots(s,m,now_ms=r['quote_ts']);a=m['cm_active'];self.assertFalse(a['idea_review_enabled']);self.assertFalse(a['time_stop_enabled']);self.assertFalse(a['tp1_enabled']);self.assertLessEqual(s['portfolio']['used_risk_usd'],3.)
     def test_memory_retest_of_older_break(self):
         rows=[ms.Bar(T+i*300000,100,100.1,99.9,100,100) for i in range(35)]
         rows[23]=ms.Bar(rows[23].ts,100.,101.2,99.99,101.1,200)

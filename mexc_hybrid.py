@@ -35,7 +35,7 @@ def trend_efficiency(rows, n=12):
     return side, efficiency
 
 
-def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe):
+def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe, retest_window=4):
     """All six families independently. Confirmation is a closed M1 or M5 bar.
     Return structural invalidation, event identity, and evidence; no look-ahead.
     """
@@ -64,7 +64,7 @@ def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe):
         anchor=min(c.low,p.low,zone)-tick if side==1 else max(c.high,p.high,zone)+tick
         add('TREND_PULLBACK_FVG_VWAP',f'{timeframe} відкат до FVG/EMA/VWAP',74,anchor,retest=zone)
     # Break from a range that existed BEFORE the breakout, followed by a separate retest.
-    for i in range(max(10,len(rows)-12),len(rows)-1):
+    for i in range(max(10,len(rows)-max(2,int(retest_window))),len(rows)-1):
         br=rows[i]; pre=rows[i-10:i]
         level=max(x.high for x in pre) if side==1 else min(x.low for x in pre)
         if side*(br.close-level)<.12*atr or side*(br.close-br.open)<.4*atr:

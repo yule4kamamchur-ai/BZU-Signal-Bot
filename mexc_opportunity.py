@@ -4,7 +4,8 @@ import math, os
 from statistics import mean
 from mexc_direction import scale, contiguous
 
-MODEL_SCHEMA='MEXC_OPPORTUNITY_15_4'
+MODEL_SCHEMA='MEXC_EVIDENCE_15_5'
+PREVIOUS_SCHEMA='MEXC_OPPORTUNITY_15_4'
 OLD_SCHEMA='MEXC_ADAPTIVE_DIRECTION_15_3'
 SOFT={'LOW_EVIDENCE_SCORE','NO_LOCAL_SHIFT_EVIDENCE','CURRENT_WAVE_OPPOSES','M1_NO_M5_CONTEXT','M1_WEAK_REVERSAL'}
 
@@ -95,6 +96,74 @@ def policy(family,phase,rr,funding_regime):
                 stale_tighten_min=45 if fast else 90,stale_exit_min=75 if fast else 150,idea_review_enabled=True)
 
 
+def _advance_shadow_pair(a,item,now):
+    """Use the same causal lifecycle as PAPER, on an independent copy.
+    No slot, balance, alert dispatch, or consumed-signal mutation.
+    Funding is recorded when supplied; missing history remains explicit.
+    """
+    from mexc_lifecycle import advance
+    from decimal import Decimal
+    def round_price(price,tick):
+        return round(round(price/tick)*tick,max(0,min(12,-Decimal(str(tick)).normalize().as_tuple().exponent))) if tick>0 else round(price,4)
+    if not item:
+        if now-a['created_ts']>20*3600000:
+            return {**a,'closed_ts':now,'reason':'UNOBSERVED_EXPIRED','net_r':None,'quality':'SHADOW_DATA_GAP','source':'SHADOW'}
+        return None
+    result=advance(a,item,now,round_price=round_price)
+    if a.get('opened_ts') is not None:
+        fund,status=funding_accrual(a,item,result['closed_ts'] if result else now)
+    else: fund,status=0.,'NOT_OPEN'
+    if not result:
+        if now-a['created_ts']<=20*3600000: return None
+        return {**a,'closed_ts':now,'reason':'UNOBSERVED_EXPIRED','net_r':None,'quality':'SHADOW_DATA_GAP','source':'SHADOW','cost_status':status}
+    why=result['reason']; px=result['exit']; net=gross=cost=None
+    if not why.startswith('LIMIT_'):
+        pp=float(a.get('partial_pct',0.)) if a.get('tp1_hit') and a.get('tp1_fill_price') is not None else 0.
+        gross=(a['side']*(px-a['entry'])/a['risk'])*(1-pp)
+        if pp: gross+=pp*a['side']*(a['tp1_fill_price']-a['entry'])/a['risk']
+        cost=cost_r(a,px); net=round(gross-cost-fund,4)
+    quality='AMBIGUOUS_OHLC' if a.get('ambiguous_ohlc') else result['quality']
+    return {**a,'closed_ts':result['closed_ts'],'exit':px,'reason':why,'net_r':net,'gross_r':gross,'cost_r_estimate':cost,'funding_r':fund,'cost_status':status,'quality':quality,'source':'SHADOW','route':a['order_type']}
+
+
+def _register_pair(pending,seen,key,d,symbol,now):
+    # Both exit policies start at exactly the same decision time and geometry.
+    # Keep a pair atomic; never fabricate the missing arm when capacity is exhausted.
+    ids=[key+':'+v for v in ('CONTROL_EXIT','V154_EXIT')]
+    if any(i in seen or i in pending for i in ids) or len(pending)>498: return
+    common={k:d[k] for k in ('family','regime','side','entry','stop','tp','risk','tick','order_type','signal_event_key','signal_known_ts','entry_fee_rate','exit_fee_rate','entry_slip_rate','exit_slip_rate','spread_cost_rate','geometry_policy','trail_atr_m5','trail_start_r','fee_rate','slippage_rate','tp1') if d.get(k) is not None}
+    limit=d['order_type']=='LIMIT'
+    common.update(symbol=symbol,model_schema=MODEL_SCHEMA,created_ts=now,placed_ts=now,opened_ts=None if limit else now,processed_until_ts=now,stop_effective_ts=now,trail_start_ts=now,initial_stop=d['stop'],phase='PENDING_LIMIT' if limit else 'OPEN',quality='OBSERVED_M1',peak_r=0.,be_armed=False,tp1_hit=False,expires_ts=now+int(d.get('limit_ttl_min') or 8)*60000,source='SHADOW',pair_id=key,research_variant=d.get('research_variant') or 'ACTIVE_DETECTOR',rejection_codes=d.get('rejection_codes',[]))
+    trial=dict(d['shadow_exit_policy']); control={**trial,'tp1_enabled':False,'time_stop_enabled':False,'idea_review_enabled':False}
+    for ident,variant,ep in zip(ids,('CONTROL_EXIT','V154_EXIT'),(control,trial)):
+        pending[ident]={**common,**ep,'trade_id':ident,'shadow_variant':variant}
+
+
+def research_summary(ledger):
+    rows=[x for x in ledger['resolved'] if x.get('model_schema')==MODEL_SCHEMA and x.get('shadow_variant')]
+    result={}
+    for r in rows:
+        name=r['research_variant']+':'+r['shadow_variant']; g=result.setdefault(name,dict(resolved=0,observed=0,wins=0,net_r=0.,tp1_hits=0,funding_incomplete=0))
+        g['resolved']+=1
+        if r.get('tp1_hit'):g['tp1_hits']+=1
+        if r.get('cost_status') in ('FUNDING_HISTORY_UNAVAILABLE','FUNDING_MARK_PROXY_PARTIAL'):g['funding_incomplete']+=1
+        if r.get('quality')=='OBSERVED_M1' and isinstance(r.get('net_r'),(int,float)):
+            g['observed']+=1;g['wins']+=r['net_r']>0;g['net_r']+=r['net_r']
+    for g in result.values(): g['net_r']=round(g['net_r'],4)
+    pairs={}
+    for r in rows:
+        if r.get('quality')=='OBSERVED_M1' and isinstance(r.get('net_r'),(int,float)):
+            pairs.setdefault(r['pair_id'],{})[r['shadow_variant']]=r
+    paired={}
+    for x in pairs.values():
+        if set(x)!= {'CONTROL_EXIT','V154_EXIT'}:continue
+        a,b=x['CONTROL_EXIT'],x['V154_EXIT'];g=paired.setdefault(a['research_variant'],dict(pairs=0,delta_net_r=0.,funding_incomplete_pairs=0))
+        g['pairs']+=1;g['delta_net_r']+=b['net_r']-a['net_r']
+        g['funding_incomplete_pairs']+=any(r.get('cost_status') in ('FUNDING_HISTORY_UNAVAILABLE','FUNDING_MARK_PROXY_PARTIAL') for r in (a,b))
+    for g in paired.values():g['delta_net_r']=round(g['delta_net_r'],4)
+    return {'by_variant':result,'paired_exit_comparison':paired}
+
+
 def shadow_step(memory,items,now):
     """Resolve old hypothetical trades using only subsequently closed bars, before registering new ones.
     Static full SL/TP outcome = counterfactual route label; never real PnL.
@@ -102,7 +171,13 @@ def shadow_step(memory,items,now):
     ledger=memory.setdefault('opportunity_ledger',{'pending':{},'resolved':[],'observations':[],'events':{}})
     pending=ledger['pending']; by={x['symbol']:x for x in items}
     for key,a in list(pending.items()):
-        item=by.get(a['symbol'],{}); bars=item.get('candles_1m') or []; cursor=a['cursor']; side=a['side']; done=None
+        item=by.get(a['symbol'],{})
+        if a.get('shadow_variant'):
+            outcome=_advance_shadow_pair(a,item,now)
+            if outcome is not None:
+                ledger['resolved'].append(outcome);pending.pop(key)
+            continue
+        bars=item.get('candles_1m') or []; cursor=a['cursor']; side=a['side']; done=None
         for c in bars:
             t=int(c['t'])*1000; end=t+60000
             if end<=cursor or end>now: continue
@@ -149,8 +224,14 @@ def register(memory,items,now):
             if key not in events:
                 events[key]=now; ledger['observations'].append({'ts':now,'symbol':item['symbol'],**d})
             # Non-executable or invalidated candidates remain diagnostic only, not fabricated fills.
-            if key in seen or len(pending)>=500 or set(d.get('rejection_codes',[]))-SOFT or not d.get('valid'): continue
             if not all(d.get(k) for k in ('entry','stop','tp','risk','tick')): continue
+            if d.get('shadow_exit_policy') is not None:
+                # Strategy-only restrictions are counterfactuals. Physical execution guards remain.
+                ignore=SOFT|{'RESEARCH_ONLY','SIGNAL_CONSUMED','SIGNAL_BEFORE_LAST_EXIT'}
+                if d.get('valid') and not set(d.get('rejection_codes',[]))-ignore:
+                    _register_pair(pending,seen,key,d,item['symbol'],now)
+                continue
+            if key in seen or len(pending)>=500 or set(d.get('rejection_codes',[]))-SOFT or not d.get('valid'): continue
             pending[key]={k:d[k] for k in ('family','regime','side','entry','stop','tp','risk','tick','order_type','signal_event_key','signal_known_ts','entry_fee_rate','exit_fee_rate','entry_slip_rate','exit_slip_rate','spread_cost_rate') if k in d}
             pending[key].update(symbol=item['symbol'],model_schema=MODEL_SCHEMA,created_ts=now,opened_ts=now,cursor=now,filled=d['order_type']=='MARKET',expires_ts=now+int(d.get('limit_ttl_min',8))*60000,quality='SHADOW_M1_MODEL',rejection_codes=d.get('rejection_codes',[]))
         for w in item.get('elapsed_m1_windows',[]):
@@ -163,7 +244,7 @@ def register(memory,items,now):
                 if key not in events:
                     events[key]=now; ledger['observations'].append({'ts':now,'symbol':item['symbol'],'side':side,'window':w,'kind':'WINDOW_DIAGNOSTIC'})
     ledger['events']={k:t for k,t in events.items() if now-t<48*3600000}
-    return {'pending':len(pending),'resolved':len(ledger['resolved']),'usable_labels':sum(x.get('quality')=='SHADOW_M1_MODEL' and x.get('net_r') is not None for x in ledger['resolved']),'observations':len(ledger['observations']),'status':'RESEARCH_UNVALIDATED'}
+    return {'pending':len(pending),'resolved':len(ledger['resolved']),'usable_labels':sum(x.get('quality') in ('SHADOW_M1_MODEL','OBSERVED_M1') and x.get('net_r') is not None for x in ledger['resolved']),'observations':len(ledger['observations']),'status':'RESEARCH_UNVALIDATED','active_learning':'PAPER_ONLY',**research_summary(ledger)}
 
 
 def break_memory(rows, prior, now, tick):
