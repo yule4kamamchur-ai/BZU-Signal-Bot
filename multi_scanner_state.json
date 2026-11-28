@@ -1,15 +1,15 @@
 {
   "version": "BZU MULTI v15.3 Adaptive Direction",
   "exchange": "MEXC",
-  "updated_ts": 1795840278219,
-  "scan_started_ts": 1795840272152,
-  "updated_kyiv": "28.11.2026 06:31",
+  "updated_ts": 1795840553221,
+  "scan_started_ts": 1795840546771,
+  "updated_kyiv": "28.11.2026 06:35",
   "health": {
     "status": "OK",
     "timings": {
-      "candles_s": 5.729,
-      "ticker_s": 0.31,
-      "scan_s": 6.066
+      "candles_s": 5.828,
+      "ticker_s": 0.597,
+      "scan_s": 6.45
     },
     "expected_interval_sec": 300,
     "assets": 7,
@@ -17,7 +17,7 @@
     "recovered": [],
     "derived": [],
     "source": "GITHUB_ACTIONS",
-    "run_id": "46107901660",
+    "run_id": "46108256033",
     "run_attempt": "1",
     "api_base": "https://api.mexc.com",
     "api_http_statuses": {},
@@ -33,7 +33,7 @@
   },
   "btc_macro": {
     "symbol": "BTC_USDT",
-    "price": 59985.0,
+    "price": 59984.9,
     "bias_1h": 0,
     "bias_15m": 1,
     "vwap": 60456.21,
@@ -52,7 +52,7 @@
     "price": 44.58,
     "tick": 0.01,
     "change_24h_pct": 2.03,
-    "volume_24h": 11485854.0,
+    "volume_24h": 11549534.0,
     "funding_rate": -5e-05,
     "funding_pct": -0.005,
     "open_interest": 83035586.0,
@@ -72,10 +72,10 @@
     "stop": 44.46,
     "tp": 45.6,
     "rr": 2.17,
-    "rvol": 0.16,
+    "rvol": 1.2986193266065689,
     "range_pos": 0.61,
     "btc_aligned": true,
-    "reason_ua": "Відкрито 28.11 04:05 · PnL -0.74 R (-0.69$)",
+    "reason_ua": "Відкрито 28.11 04:05 · PnL -0.80 R (-0.74$)",
     "sizing": {
       "deposit_usdt": 100.0,
       "risk_pct": 2.25,
@@ -654,13 +654,6 @@
     ],
     "candles_5m": [
       {
-        "t": 1795816200,
-        "o": 44.38,
-        "h": 44.39,
-        "l": 44.36,
-        "c": 44.39
-      },
-      {
         "t": 1795816500,
         "o": 44.39,
         "h": 44.41,
@@ -1212,23 +1205,30 @@
         "h": 44.65,
         "l": 44.61,
         "c": 44.65
+      },
+      {
+        "t": 1795840200,
+        "o": 44.65,
+        "h": 44.65,
+        "l": 44.56,
+        "c": 44.56
       }
     ],
     "execution_tf": "1m",
-    "bid": 44.58,
-    "ask": 44.59,
+    "bid": 44.56,
+    "ask": 44.57,
     "quote_valid": true,
-    "quote_ts": 1795840275020,
+    "quote_ts": 1795840551031,
     "analysis_fresh": true,
     "htf_regime": "TREND_UP",
-    "regime": "TREND_UP",
+    "regime": "TRANSITION_DOWN",
     "local_wave": {
-      "side": 0,
+      "side": -1,
       "m5": {
-        "side": 0,
-        "move_atr": 0.676,
-        "efficiency": 0.259,
-        "directional_bars": 2
+        "side": -1,
+        "move_atr": 1.853,
+        "efficiency": 0.9,
+        "directional_bars": 3
       },
       "m15": {
         "side": 0,
@@ -1238,11 +1238,17 @@
       },
       "m5_slow": {
         "side": 0,
-        "move_atr": 0.193,
-        "efficiency": 0.045,
-        "directional_bars": 3
+        "move_atr": 0.721,
+        "efficiency": 0.132,
+        "directional_bars": 4
       },
-      "breaks": []
+      "breaks": [
+        {
+          "side": -1,
+          "level": 44.57,
+          "ts": 1795840200000
+        }
+      ]
     },
     "relative_strength": {
       "available": true,
@@ -1251,8 +1257,8 @@
       "asset_return_pct": 0.067,
       "btc_return_pct": 0.204
     },
-    "wave_side": 0,
-    "observed_wave_side": 0,
+    "wave_side": -1,
+    "observed_wave_side": -1,
     "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
     "direction_diagnostics": {
       "1": {
@@ -1262,50 +1268,50 @@
           {
             "tf": "M1",
             "offset": 0,
-            "known_ts": 1795840260000,
-            "body_atr": -2.872,
-            "break_distance_atr": -2.872,
-            "rvol": 0.787,
+            "known_ts": 1795840500000,
+            "body_atr": -0.596,
+            "break_distance_atr": -2.681,
+            "rvol": 3.468,
             "local_support": false,
             "higher_opposes": false
           },
           {
             "tf": "M1",
             "offset": 1,
-            "known_ts": 1795840200000,
-            "body_atr": 0.0,
-            "break_distance_atr": -1.024,
-            "rvol": 0.01,
+            "known_ts": 1795840440000,
+            "body_atr": 0.304,
+            "break_distance_atr": -2.13,
+            "rvol": 0.008,
             "local_support": false,
             "higher_opposes": false
           },
           {
             "tf": "M1",
             "offset": 2,
-            "known_ts": 1795840140000,
+            "known_ts": 1795840380000,
             "body_atr": 0.0,
-            "break_distance_atr": -0.955,
-            "rvol": 0.153,
+            "break_distance_atr": -2.435,
+            "rvol": 0.009,
             "local_support": false,
             "higher_opposes": false
           },
           {
             "tf": "M5",
             "offset": 0,
-            "known_ts": 1795840200000,
-            "body_atr": 0.097,
-            "break_distance_atr": -1.159,
-            "rvol": 0.158,
+            "known_ts": 1795840500000,
+            "body_atr": -0.926,
+            "break_distance_atr": -2.162,
+            "rvol": 1.299,
             "local_support": false,
             "higher_opposes": false
           },
           {
             "tf": "M5",
             "offset": 1,
-            "known_ts": 1795839900000,
-            "body_atr": -0.752,
-            "break_distance_atr": -1.221,
-            "rvol": 5.151,
+            "known_ts": 1795840200000,
+            "body_atr": 0.097,
+            "break_distance_atr": -1.159,
+            "rvol": 0.158,
             "local_support": false,
             "higher_opposes": false
           }
@@ -1316,90 +1322,188 @@
       },
       "-1": {
         "side": -1,
-        "local_support": false,
+        "local_support": true,
         "windows_checked": [
           {
             "tf": "M1",
             "offset": 0,
-            "known_ts": 1795840260000,
-            "body_atr": 2.872,
-            "break_distance_atr": 1.436,
-            "rvol": 0.787,
-            "local_support": false,
+            "known_ts": 1795840500000,
+            "body_atr": 0.596,
+            "break_distance_atr": -0.0,
+            "rvol": 3.468,
+            "local_support": true,
             "higher_opposes": true
           },
           {
             "tf": "M1",
             "offset": 1,
-            "known_ts": 1795840200000,
-            "body_atr": -0.0,
-            "break_distance_atr": -1.366,
-            "rvol": 0.01,
+            "known_ts": 1795840440000,
+            "body_atr": -0.304,
+            "break_distance_atr": -0.609,
+            "rvol": 0.008,
             "local_support": false,
             "higher_opposes": true
           },
           {
             "tf": "M1",
             "offset": 2,
-            "known_ts": 1795840140000,
+            "known_ts": 1795840380000,
             "body_atr": -0.0,
-            "break_distance_atr": -1.273,
-            "rvol": 0.153,
+            "break_distance_atr": -0.304,
+            "rvol": 0.009,
             "local_support": false,
             "higher_opposes": true
           },
           {
             "tf": "M5",
             "offset": 0,
+            "known_ts": 1795840500000,
+            "body_atr": 0.926,
+            "break_distance_atr": 0.103,
+            "rvol": 1.299,
+            "local_support": true,
+            "higher_opposes": true
+          },
+          {
+            "tf": "M5",
+            "offset": 1,
             "known_ts": 1795840200000,
             "body_atr": -0.097,
             "break_distance_atr": -0.772,
             "rvol": 0.158,
             "local_support": false,
             "higher_opposes": true
-          },
-          {
-            "tf": "M5",
-            "offset": 1,
-            "known_ts": 1795839900000,
-            "body_atr": 0.752,
-            "break_distance_atr": -0.658,
-            "rvol": 5.151,
-            "local_support": false,
-            "higher_opposes": true
           }
         ],
-        "detected": 0,
+        "detected": 2,
         "ready": 0,
-        "rejections": []
+        "rejections": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ]
       }
     },
-    "lifecycle_quality": "OBSERVED_M1",
-    "geometry_policy": "STRUCTURAL_V15_1",
-    "target_kind": "CONFIRMED_LIQUIDITY",
-    "trail_reason": null,
-    "be_trigger": null,
-    "initial_stop": 44.46,
+    "family": "EARLY_STRUCTURE_SHIFT",
+    "base_score": 78,
+    "structural_stop": 44.73,
+    "reference": 44.56,
+    "trigger_ts": 1795840200000,
+    "trigger_tf": "M5",
+    "retest_level": 44.57,
+    "transition_evidence": true,
     "tp1": 45.18,
     "tp1_r": 1.0,
+    "risk": 0.259999999999998,
+    "net_rr": 0.012553846153850606,
+    "valid": false,
+    "geometry_reason": "NEAR_LIQUIDITY",
+    "geometry_policy": "STRUCTURAL_V15_1",
+    "target_kind": "CONFIRMED_LIQUIDITY",
+    "atr_m5": 0.09500000000000039,
+    "atr_m15": 0.19642857142857192,
+    "structural_anchor": 44.73,
+    "stop_buffer": 0.023750000000000097,
+    "risk_floor": 0.2553571428571435,
+    "risk_ceiling": 0.80208,
+    "min_rr": 1.8,
+    "trail_atr_m5": 0.09500000000000039,
+    "trail_start_r": 1.25,
+    "target_r_preferred": 2.15,
+    "rank_score": 88.025,
+    "net_rr_estimate": 0.013,
+    "meta": {
+      "status": "COLLECTING_MEXC_LABELS",
+      "n": 2,
+      "total_n": 5,
+      "win_rate_estimate": null,
+      "expected_r_estimate": null,
+      "rank_adjustment": 0.0
+    },
+    "signal_id": "LTC_USDT:1:TREND_PULLBACK:M5:1795831200000",
+    "signal_event_key": "LTC_USDT:1:EVENT:5986104",
+    "rejection_codes": [
+      "GEOMETRY_OR_EXECUTION",
+      "NEAR_LIQUIDITY"
+    ],
+    "signal_known_ts": 1795840500000,
+    "trigger_offset": 0,
+    "signal_age_sec": 53.2,
+    "local_support": true,
+    "relative_support": false,
+    "chase_cap": 0.057,
+    "alignment_tier": "ALIGNED",
+    "risk_multiplier": 0.75,
+    "funding_risk_mult": 1.0,
+    "early_close_hint_ua": null,
+    "maker_pullback": false,
+    "limit_ttl_min": 8,
+    "partial_pct": 0.5,
+    "fee_rate": 0.0002,
+    "slippage_rate": 0.0001,
+    "candidate_count": 2,
+    "candidate_diagnostics": [
+      {
+        "setup": "EARLY_STRUCTURE_SHIFT",
+        "family": "EARLY_STRUCTURE_SHIFT",
+        "trigger_tf": "M5",
+        "trigger_offset": 0,
+        "signal_age_sec": 53.2,
+        "side": -1,
+        "status": "WATCH",
+        "score": 91,
+        "rank_score": 88.025,
+        "meta": {
+          "status": "COLLECTING_MEXC_LABELS",
+          "n": 2,
+          "total_n": 5,
+          "win_rate_estimate": null,
+          "expected_r_estimate": null,
+          "rank_adjustment": 0.0
+        },
+        "reason_ua": "M5 рання зміна структури · TRANSITION_DOWN · RVOL 1.30x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · підтверджений локальний перехід · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ]
+      },
+      {
+        "setup": "COUNTERTREND_WAVE",
+        "family": "COUNTERTREND_WAVE",
+        "trigger_tf": "M5",
+        "trigger_offset": 0,
+        "signal_age_sec": 53.2,
+        "side": -1,
+        "status": "WATCH",
+        "score": 90,
+        "rank_score": 87.025,
+        "meta": {
+          "status": "COLLECTING_MEXC_LABELS",
+          "n": 0,
+          "total_n": 5,
+          "win_rate_estimate": null,
+          "expected_r_estimate": null,
+          "rank_adjustment": 0.0
+        },
+        "reason_ua": "M5 локальна контртрендова хвиля · TRANSITION_DOWN · RVOL 1.30x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · підтверджений локальний перехід · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ]
+      }
+    ],
+    "be_trigger": null,
+    "lifecycle_quality": "OBSERVED_M1",
+    "trail_reason": null,
+    "initial_stop": 44.46,
     "tp1_hit": false,
     "tp1_fill_price": null,
-    "partial_pct": 0.5,
     "be_armed": false,
     "stale_tightened": false,
     "time_stop_countdown_min": null,
     "action_alert": null,
-    "alignment_tier": "ALIGNED",
-    "risk_multiplier": 0.75,
-    "early_close_hint_ua": null,
-    "maker_pullback": false,
     "opened_ts": 1795831556192,
     "opened_kyiv": "28.11 04:05",
-    "signal_id": "LTC_USDT:1:TREND_PULLBACK:M5:1795831200000",
-    "signal_event_key": "LTC_USDT:1:EVENT:5986104",
-    "phase": "OPEN",
-    "trigger_tf": "M5",
-    "trigger_offset": 0
+    "phase": "OPEN"
   },
   "instruments": [
     {
@@ -1413,7 +1517,7 @@
       "price": 44.58,
       "tick": 0.01,
       "change_24h_pct": 2.03,
-      "volume_24h": 11485854.0,
+      "volume_24h": 11549534.0,
       "funding_rate": -5e-05,
       "funding_pct": -0.005,
       "open_interest": 83035586.0,
@@ -1433,10 +1537,10 @@
       "stop": 44.46,
       "tp": 45.6,
       "rr": 2.17,
-      "rvol": 0.16,
+      "rvol": 1.2986193266065689,
       "range_pos": 0.61,
       "btc_aligned": true,
-      "reason_ua": "Відкрито 28.11 04:05 · PnL -0.74 R (-0.69$)",
+      "reason_ua": "Відкрито 28.11 04:05 · PnL -0.80 R (-0.74$)",
       "sizing": {
         "deposit_usdt": 100.0,
         "risk_pct": 2.25,
@@ -2015,13 +2119,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795816200,
-          "o": 44.38,
-          "h": 44.39,
-          "l": 44.36,
-          "c": 44.39
-        },
-        {
           "t": 1795816500,
           "o": 44.39,
           "h": 44.41,
@@ -2573,23 +2670,30 @@
           "h": 44.65,
           "l": 44.61,
           "c": 44.65
+        },
+        {
+          "t": 1795840200,
+          "o": 44.65,
+          "h": 44.65,
+          "l": 44.56,
+          "c": 44.56
         }
       ],
       "execution_tf": "1m",
-      "bid": 44.58,
-      "ask": 44.59,
+      "bid": 44.56,
+      "ask": 44.57,
       "quote_valid": true,
-      "quote_ts": 1795840275020,
+      "quote_ts": 1795840551031,
       "analysis_fresh": true,
       "htf_regime": "TREND_UP",
-      "regime": "TREND_UP",
+      "regime": "TRANSITION_DOWN",
       "local_wave": {
-        "side": 0,
+        "side": -1,
         "m5": {
-          "side": 0,
-          "move_atr": 0.676,
-          "efficiency": 0.259,
-          "directional_bars": 2
+          "side": -1,
+          "move_atr": 1.853,
+          "efficiency": 0.9,
+          "directional_bars": 3
         },
         "m15": {
           "side": 0,
@@ -2599,11 +2703,17 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 0.193,
-          "efficiency": 0.045,
-          "directional_bars": 3
+          "move_atr": 0.721,
+          "efficiency": 0.132,
+          "directional_bars": 4
         },
-        "breaks": []
+        "breaks": [
+          {
+            "side": -1,
+            "level": 44.57,
+            "ts": 1795840200000
+          }
+        ]
       },
       "relative_strength": {
         "available": true,
@@ -2612,8 +2722,8 @@
         "asset_return_pct": 0.067,
         "btc_return_pct": 0.204
       },
-      "wave_side": 0,
-      "observed_wave_side": 0,
+      "wave_side": -1,
+      "observed_wave_side": -1,
       "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
       "direction_diagnostics": {
         "1": {
@@ -2623,50 +2733,50 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -2.872,
-              "break_distance_atr": -2.872,
-              "rvol": 0.787,
+              "known_ts": 1795840500000,
+              "body_atr": -0.596,
+              "break_distance_atr": -2.681,
+              "rvol": 3.468,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 0.0,
-              "break_distance_atr": -1.024,
-              "rvol": 0.01,
+              "known_ts": 1795840440000,
+              "body_atr": 0.304,
+              "break_distance_atr": -2.13,
+              "rvol": 0.008,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
+              "known_ts": 1795840380000,
               "body_atr": 0.0,
-              "break_distance_atr": -0.955,
-              "rvol": 0.153,
+              "break_distance_atr": -2.435,
+              "rvol": 0.009,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": 0.097,
-              "break_distance_atr": -1.159,
-              "rvol": 0.158,
+              "known_ts": 1795840500000,
+              "body_atr": -0.926,
+              "break_distance_atr": -2.162,
+              "rvol": 1.299,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": -0.752,
-              "break_distance_atr": -1.221,
-              "rvol": 5.151,
+              "known_ts": 1795840200000,
+              "body_atr": 0.097,
+              "break_distance_atr": -1.159,
+              "rvol": 0.158,
               "local_support": false,
               "higher_opposes": false
             }
@@ -2677,90 +2787,188 @@
         },
         "-1": {
           "side": -1,
-          "local_support": false,
+          "local_support": true,
           "windows_checked": [
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 2.872,
-              "break_distance_atr": 1.436,
-              "rvol": 0.787,
-              "local_support": false,
+              "known_ts": 1795840500000,
+              "body_atr": 0.596,
+              "break_distance_atr": -0.0,
+              "rvol": 3.468,
+              "local_support": true,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -0.0,
-              "break_distance_atr": -1.366,
-              "rvol": 0.01,
+              "known_ts": 1795840440000,
+              "body_atr": -0.304,
+              "break_distance_atr": -0.609,
+              "rvol": 0.008,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
+              "known_ts": 1795840380000,
               "body_atr": -0.0,
-              "break_distance_atr": -1.273,
-              "rvol": 0.153,
+              "break_distance_atr": -0.304,
+              "rvol": 0.009,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": 0.926,
+              "break_distance_atr": 0.103,
+              "rvol": 1.299,
+              "local_support": true,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
               "known_ts": 1795840200000,
               "body_atr": -0.097,
               "break_distance_atr": -0.772,
               "rvol": 0.158,
               "local_support": false,
               "higher_opposes": true
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": 0.752,
-              "break_distance_atr": -0.658,
-              "rvol": 5.151,
-              "local_support": false,
-              "higher_opposes": true
             }
           ],
-          "detected": 0,
+          "detected": 2,
           "ready": 0,
-          "rejections": []
+          "rejections": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY"
+          ]
         }
       },
-      "lifecycle_quality": "OBSERVED_M1",
-      "geometry_policy": "STRUCTURAL_V15_1",
-      "target_kind": "CONFIRMED_LIQUIDITY",
-      "trail_reason": null,
-      "be_trigger": null,
-      "initial_stop": 44.46,
+      "family": "EARLY_STRUCTURE_SHIFT",
+      "base_score": 78,
+      "structural_stop": 44.73,
+      "reference": 44.56,
+      "trigger_ts": 1795840200000,
+      "trigger_tf": "M5",
+      "retest_level": 44.57,
+      "transition_evidence": true,
       "tp1": 45.18,
       "tp1_r": 1.0,
+      "risk": 0.259999999999998,
+      "net_rr": 0.012553846153850606,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
+      "geometry_policy": "STRUCTURAL_V15_1",
+      "target_kind": "CONFIRMED_LIQUIDITY",
+      "atr_m5": 0.09500000000000039,
+      "atr_m15": 0.19642857142857192,
+      "structural_anchor": 44.73,
+      "stop_buffer": 0.023750000000000097,
+      "risk_floor": 0.2553571428571435,
+      "risk_ceiling": 0.80208,
+      "min_rr": 1.8,
+      "trail_atr_m5": 0.09500000000000039,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.15,
+      "rank_score": 88.025,
+      "net_rr_estimate": 0.013,
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 2,
+        "total_n": 5,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
+      "signal_id": "LTC_USDT:1:TREND_PULLBACK:M5:1795831200000",
+      "signal_event_key": "LTC_USDT:1:EVENT:5986104",
+      "rejection_codes": [
+        "GEOMETRY_OR_EXECUTION",
+        "NEAR_LIQUIDITY"
+      ],
+      "signal_known_ts": 1795840500000,
+      "trigger_offset": 0,
+      "signal_age_sec": 53.2,
+      "local_support": true,
+      "relative_support": false,
+      "chase_cap": 0.057,
+      "alignment_tier": "ALIGNED",
+      "risk_multiplier": 0.75,
+      "funding_risk_mult": 1.0,
+      "early_close_hint_ua": null,
+      "maker_pullback": false,
+      "limit_ttl_min": 8,
+      "partial_pct": 0.5,
+      "fee_rate": 0.0002,
+      "slippage_rate": 0.0001,
+      "candidate_count": 2,
+      "candidate_diagnostics": [
+        {
+          "setup": "EARLY_STRUCTURE_SHIFT",
+          "family": "EARLY_STRUCTURE_SHIFT",
+          "trigger_tf": "M5",
+          "trigger_offset": 0,
+          "signal_age_sec": 53.2,
+          "side": -1,
+          "status": "WATCH",
+          "score": 91,
+          "rank_score": 88.025,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 2,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M5 рання зміна структури · TRANSITION_DOWN · RVOL 1.30x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · підтверджений локальний перехід · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY"
+          ]
+        },
+        {
+          "setup": "COUNTERTREND_WAVE",
+          "family": "COUNTERTREND_WAVE",
+          "trigger_tf": "M5",
+          "trigger_offset": 0,
+          "signal_age_sec": 53.2,
+          "side": -1,
+          "status": "WATCH",
+          "score": 90,
+          "rank_score": 87.025,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M5 локальна контртрендова хвиля · TRANSITION_DOWN · RVOL 1.30x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · підтверджений локальний перехід · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY"
+          ]
+        }
+      ],
+      "be_trigger": null,
+      "lifecycle_quality": "OBSERVED_M1",
+      "trail_reason": null,
+      "initial_stop": 44.46,
       "tp1_hit": false,
       "tp1_fill_price": null,
-      "partial_pct": 0.5,
       "be_armed": false,
       "stale_tightened": false,
       "time_stop_countdown_min": null,
       "action_alert": null,
-      "alignment_tier": "ALIGNED",
-      "risk_multiplier": 0.75,
-      "early_close_hint_ua": null,
-      "maker_pullback": false,
       "opened_ts": 1795831556192,
       "opened_kyiv": "28.11 04:05",
-      "signal_id": "LTC_USDT:1:TREND_PULLBACK:M5:1795831200000",
-      "signal_event_key": "LTC_USDT:1:EVENT:5986104",
-      "phase": "OPEN",
-      "trigger_tf": "M5",
-      "trigger_offset": 0
+      "phase": "OPEN"
     },
     {
       "symbol": "UKOIL_USDT",
@@ -2773,7 +2981,7 @@
       "price": 90.9,
       "tick": 0.01,
       "change_24h_pct": 0.16,
-      "volume_24h": 52864370.0,
+      "volume_24h": 52864702.0,
       "funding_rate": 0.0,
       "funding_pct": 0.0,
       "open_interest": 84606126.0,
@@ -2793,7 +3001,7 @@
       "stop": 90.17,
       "tp": 91.45,
       "rr": 1.78,
-      "rvol": 0.38,
+      "rvol": 0.39,
       "range_pos": 0.268,
       "btc_aligned": true,
       "reason_ua": "Відкрито 27.11 21:19 · PnL +0.59 R (+0.50$)",
@@ -3375,13 +3583,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795816200,
-          "o": 90.9,
-          "h": 90.92,
-          "l": 90.86,
-          "c": 90.87
-        },
-        {
           "t": 1795816500,
           "o": 90.87,
           "h": 90.96,
@@ -3933,13 +4134,20 @@
           "h": 90.93,
           "l": 90.9,
           "c": 90.91
+        },
+        {
+          "t": 1795840200,
+          "o": 90.91,
+          "h": 90.94,
+          "l": 90.9,
+          "c": 90.94
         }
       ],
       "execution_tf": "1m",
       "bid": 90.9,
-      "ask": 90.94,
+      "ask": 90.93,
       "quote_valid": true,
-      "quote_ts": 1795840275107,
+      "quote_ts": 1795840551120,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
       "regime": "RANGE_TRANSITION",
@@ -3947,9 +4155,9 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.903,
-          "efficiency": 0.667,
-          "directional_bars": 1
+          "move_atr": 0.933,
+          "efficiency": 1.0,
+          "directional_bars": 2
         },
         "m15": {
           "side": 0,
@@ -3959,9 +4167,9 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 1.581,
-          "efficiency": 0.368,
-          "directional_bars": 3
+          "move_atr": 0.0,
+          "efficiency": 0.0,
+          "directional_bars": 0
         },
         "breaks": []
       },
@@ -3980,50 +4188,50 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 0.84,
+              "known_ts": 1795840500000,
+              "body_atr": 1.143,
               "break_distance_atr": 0.0,
-              "rvol": 0.261,
+              "rvol": 0.719,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 0.0,
-              "break_distance_atr": -0.84,
-              "rvol": 0.183,
+              "known_ts": 1795840440000,
+              "body_atr": -0.857,
+              "break_distance_atr": -1.143,
+              "rvol": 0.285,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": 0.275,
-              "break_distance_atr": -0.824,
-              "rvol": 0.186,
+              "known_ts": 1795840380000,
+              "body_atr": 0.84,
+              "break_distance_atr": -0.28,
+              "rvol": 0.268,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": 0.0,
-              "break_distance_atr": -0.903,
-              "rvol": 0.452,
+              "known_ts": 1795840500000,
+              "body_atr": 0.7,
+              "break_distance_atr": -0.233,
+              "rvol": 0.462,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
+              "known_ts": 1795840200000,
               "body_atr": 0.0,
-              "break_distance_atr": -1.556,
-              "rvol": 0.492,
+              "break_distance_atr": -0.903,
+              "rvol": 0.452,
               "local_support": false,
               "higher_opposes": true
             }
@@ -4039,50 +4247,50 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -0.84,
-              "break_distance_atr": -1.12,
-              "rvol": 0.261,
+              "known_ts": 1795840500000,
+              "body_atr": -1.143,
+              "break_distance_atr": -1.143,
+              "rvol": 0.719,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -0.0,
-              "break_distance_atr": -0.28,
-              "rvol": 0.183,
+              "known_ts": 1795840440000,
+              "body_atr": 0.857,
+              "break_distance_atr": -0.0,
+              "rvol": 0.285,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": -0.275,
-              "break_distance_atr": -0.275,
-              "rvol": 0.186,
+              "known_ts": 1795840380000,
+              "body_atr": -0.84,
+              "break_distance_atr": -0.84,
+              "rvol": 0.268,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": -0.0,
-              "break_distance_atr": -0.226,
-              "rvol": 0.452,
+              "known_ts": 1795840500000,
+              "body_atr": -0.7,
+              "break_distance_atr": -0.933,
+              "rvol": 0.462,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
+              "known_ts": 1795840200000,
               "body_atr": -0.0,
-              "break_distance_atr": -0.222,
-              "rvol": 0.492,
+              "break_distance_atr": -0.226,
+              "rvol": 0.452,
               "local_support": false,
               "higher_opposes": false
             }
@@ -4120,1211 +4328,1220 @@
       "trigger_offset": 0
     },
     {
-      "symbol": "XPT_USDT",
-      "label": "PLATINUM (XPT)",
-      "short": "XPT",
-      "cluster": "METALS",
-      "cluster_ua": "МЕТАЛ",
-      "fee_tag": "0% FEE",
-      "mexc_url": "https://www.mexc.com/futures/XPT_USDT",
-      "price": 1339.71,
-      "tick": 0.01,
-      "change_24h_pct": 1.16,
-      "volume_24h": 1626377.0,
-      "funding_rate": 0.0,
-      "funding_pct": 0.0,
-      "open_interest": 17947077.0,
+      "symbol": "ORDI_USDT",
+      "label": "ORDI",
+      "short": "ORDI",
+      "cluster": "CRYPTO",
+      "cluster_ua": "КРИПТА",
+      "fee_tag": "0% Maker / 0.02%",
+      "mexc_url": "https://www.mexc.com/futures/ORDI_USDT",
+      "price": 2.617,
+      "tick": 0.001,
+      "change_24h_pct": -0.87,
+      "volume_24h": 2113596.0,
+      "funding_rate": 5e-05,
+      "funding_pct": 0.005,
+      "open_interest": 14331937.0,
       "funding_regime": "NEUTRAL",
-      "bias_4h": 1,
-      "bias_1h": 1,
-      "bias_15m": 0,
+      "bias_4h": 0,
+      "bias_1h": -1,
+      "bias_15m": -1,
       "status": "WATCH",
       "status_ua": "СПОСТЕРЕЖЕННЯ",
-      "score": 81,
-      "side": 1,
-      "side_ua": "LONG ↑",
-      "setup": "TREND_PULLBACK_FVG_VWAP",
-      "setup_ua": "M5 відкат до FVG/EMA/VWAP",
+      "score": 88,
+      "side": -1,
+      "side_ua": "SHORT ↓",
+      "setup": "BREAKOUT_RETEST",
+      "setup_ua": "M1 пробій + ретест",
       "order_type": "MARKET",
-      "entry": 1341.17,
-      "stop": 1336.47,
-      "tp": 1352.92,
-      "rr": 2.5,
-      "rvol": 0.8897485493230174,
-      "range_pos": 0.405,
+      "entry": 2.615,
+      "stop": 2.63,
+      "tp": 2.614,
+      "rr": 0.07,
+      "rvol": 0.32096424702058507,
+      "range_pos": 0.219,
       "btc_aligned": true,
-      "reason_ua": "M5 відкат до FVG/EMA/VWAP · TREND_UP · RVOL 0.89x · непридатна ціна/SL/spread/RR · попередня M5, повторна перевірка ціни · GEOMETRY_OR_EXECUTION, WIDE_SPREAD, CHASE_DISTANCE",
+      "reason_ua": "M1 пробій + ретест · LOCAL_DOWN · RVOL 0.32x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
       "sizing": {
         "deposit_usdt": 100.0,
-        "risk_pct": 2.25,
+        "risk_pct": 1.21,
         "max_leverage": 5.0,
-        "position_usdt": 500.0,
-        "effective_leverage": 5.0,
-        "risk_usd": 1.75,
-        "target_profit_usd": 4.38,
-        "sl_pct": 0.35,
-        "tp_pct": 0.88
+        "position_usdt": 210.25,
+        "effective_leverage": 2.1,
+        "risk_usd": 1.21,
+        "target_profit_usd": 0.08,
+        "sl_pct": 0.57,
+        "tp_pct": 0.04
       },
       "cluster_locked": false,
       "candles_15m": [
         {
           "t": 1795768200,
-          "o": 1363.51,
-          "h": 1366.48,
-          "l": 1360.39,
-          "c": 1366.48
+          "o": 2.713,
+          "h": 2.713,
+          "l": 2.701,
+          "c": 2.702
         },
         {
           "t": 1795769100,
-          "o": 1366.48,
-          "h": 1370.09,
-          "l": 1365.98,
-          "c": 1366.23
+          "o": 2.702,
+          "h": 2.714,
+          "l": 2.701,
+          "c": 2.71
         },
         {
           "t": 1795770000,
-          "o": 1366.23,
-          "h": 1367.09,
-          "l": 1363.94,
-          "c": 1366.22
+          "o": 2.71,
+          "h": 2.718,
+          "l": 2.705,
+          "c": 2.706
         },
         {
           "t": 1795770900,
-          "o": 1366.22,
-          "h": 1366.43,
-          "l": 1363.33,
-          "c": 1365.42
+          "o": 2.706,
+          "h": 2.709,
+          "l": 2.703,
+          "c": 2.703
         },
         {
           "t": 1795771800,
-          "o": 1365.42,
-          "h": 1370.4,
-          "l": 1365.12,
-          "c": 1369.08
+          "o": 2.703,
+          "h": 2.715,
+          "l": 2.703,
+          "c": 2.707
         },
         {
           "t": 1795772700,
-          "o": 1369.08,
-          "h": 1369.08,
-          "l": 1358.87,
-          "c": 1360.51
+          "o": 2.707,
+          "h": 2.71,
+          "l": 2.699,
+          "c": 2.708
         },
         {
           "t": 1795773600,
-          "o": 1360.51,
-          "h": 1361.24,
-          "l": 1355.56,
-          "c": 1358.78
+          "o": 2.708,
+          "h": 2.709,
+          "l": 2.703,
+          "c": 2.706
         },
         {
           "t": 1795774500,
-          "o": 1358.78,
-          "h": 1360.39,
-          "l": 1358.22,
-          "c": 1358.95
+          "o": 2.706,
+          "h": 2.715,
+          "l": 2.702,
+          "c": 2.713
         },
         {
           "t": 1795775400,
-          "o": 1358.95,
-          "h": 1362.03,
-          "l": 1358.65,
-          "c": 1361.6
+          "o": 2.713,
+          "h": 2.719,
+          "l": 2.71,
+          "c": 2.711
         },
         {
           "t": 1795776300,
-          "o": 1361.6,
-          "h": 1362.85,
-          "l": 1360.82,
-          "c": 1361.21
+          "o": 2.711,
+          "h": 2.713,
+          "l": 2.707,
+          "c": 2.708
         },
         {
           "t": 1795777200,
-          "o": 1361.21,
-          "h": 1361.21,
-          "l": 1358.24,
-          "c": 1359.48
+          "o": 2.708,
+          "h": 2.709,
+          "l": 2.702,
+          "c": 2.706
         },
         {
           "t": 1795778100,
-          "o": 1359.48,
-          "h": 1359.69,
-          "l": 1355.8,
-          "c": 1357.21
+          "o": 2.706,
+          "h": 2.708,
+          "l": 2.701,
+          "c": 2.703
         },
         {
           "t": 1795779000,
-          "o": 1357.21,
-          "h": 1358.16,
-          "l": 1355.49,
-          "c": 1355.58
+          "o": 2.703,
+          "h": 2.712,
+          "l": 2.703,
+          "c": 2.705
         },
         {
           "t": 1795779900,
-          "o": 1355.58,
-          "h": 1355.58,
-          "l": 1351.94,
-          "c": 1354.47
+          "o": 2.705,
+          "h": 2.714,
+          "l": 2.698,
+          "c": 2.714
         },
         {
           "t": 1795780800,
-          "o": 1354.47,
-          "h": 1354.91,
-          "l": 1349.97,
-          "c": 1350.01
+          "o": 2.714,
+          "h": 2.72,
+          "l": 2.708,
+          "c": 2.718
         },
         {
           "t": 1795781700,
-          "o": 1350.01,
-          "h": 1352.82,
-          "l": 1346.14,
-          "c": 1346.14
+          "o": 2.718,
+          "h": 2.719,
+          "l": 2.711,
+          "c": 2.712
         },
         {
           "t": 1795782600,
-          "o": 1346.14,
-          "h": 1346.14,
-          "l": 1344.57,
-          "c": 1344.98
+          "o": 2.712,
+          "h": 2.715,
+          "l": 2.709,
+          "c": 2.711
         },
         {
           "t": 1795783500,
-          "o": 1344.98,
-          "h": 1345.66,
-          "l": 1341.77,
-          "c": 1345.66
+          "o": 2.711,
+          "h": 2.713,
+          "l": 2.705,
+          "c": 2.711
         },
         {
           "t": 1795784400,
-          "o": 1345.66,
-          "h": 1345.71,
-          "l": 1340.34,
-          "c": 1340.92
+          "o": 2.711,
+          "h": 2.713,
+          "l": 2.706,
+          "c": 2.71
         },
         {
           "t": 1795785300,
-          "o": 1340.92,
-          "h": 1341.4,
-          "l": 1330.48,
-          "c": 1334.45
+          "o": 2.71,
+          "h": 2.712,
+          "l": 2.703,
+          "c": 2.708
         },
         {
           "t": 1795786200,
-          "o": 1334.45,
-          "h": 1335.75,
-          "l": 1332.56,
-          "c": 1334.48
+          "o": 2.708,
+          "h": 2.717,
+          "l": 2.707,
+          "c": 2.712
         },
         {
           "t": 1795787100,
-          "o": 1334.48,
-          "h": 1340.68,
-          "l": 1331.71,
-          "c": 1331.71
+          "o": 2.712,
+          "h": 2.723,
+          "l": 2.711,
+          "c": 2.712
         },
         {
           "t": 1795788000,
-          "o": 1331.71,
-          "h": 1333.09,
-          "l": 1326.25,
-          "c": 1326.25
+          "o": 2.712,
+          "h": 2.718,
+          "l": 2.709,
+          "c": 2.712
         },
         {
           "t": 1795788900,
-          "o": 1326.25,
-          "h": 1332.03,
-          "l": 1326.24,
-          "c": 1329.61
+          "o": 2.712,
+          "h": 2.715,
+          "l": 2.697,
+          "c": 2.703
         },
         {
           "t": 1795789800,
-          "o": 1329.61,
-          "h": 1331.38,
-          "l": 1322.21,
-          "c": 1327.23
+          "o": 2.703,
+          "h": 2.703,
+          "l": 2.628,
+          "c": 2.649
         },
         {
           "t": 1795790700,
-          "o": 1327.23,
-          "h": 1332.76,
-          "l": 1323.73,
-          "c": 1323.78
+          "o": 2.649,
+          "h": 2.652,
+          "l": 2.605,
+          "c": 2.613
         },
         {
           "t": 1795791600,
-          "o": 1323.78,
-          "h": 1326.75,
-          "l": 1322.42,
-          "c": 1326.25
+          "o": 2.613,
+          "h": 2.621,
+          "l": 2.587,
+          "c": 2.616
         },
         {
           "t": 1795792500,
-          "o": 1326.25,
-          "h": 1326.9,
-          "l": 1322.56,
-          "c": 1324.26
+          "o": 2.616,
+          "h": 2.625,
+          "l": 2.602,
+          "c": 2.623
         },
         {
           "t": 1795793400,
-          "o": 1324.26,
-          "h": 1326.65,
-          "l": 1322.85,
-          "c": 1324.92
+          "o": 2.623,
+          "h": 2.644,
+          "l": 2.623,
+          "c": 2.64
         },
         {
           "t": 1795794300,
-          "o": 1324.92,
-          "h": 1325.82,
-          "l": 1319.77,
-          "c": 1324.26
+          "o": 2.64,
+          "h": 2.643,
+          "l": 2.628,
+          "c": 2.64
         },
         {
           "t": 1795795200,
-          "o": 1324.26,
-          "h": 1324.26,
-          "l": 1320.17,
-          "c": 1321.45
+          "o": 2.64,
+          "h": 2.647,
+          "l": 2.636,
+          "c": 2.642
         },
         {
           "t": 1795796100,
-          "o": 1321.45,
-          "h": 1322.69,
-          "l": 1320.2,
-          "c": 1322.64
+          "o": 2.642,
+          "h": 2.646,
+          "l": 2.632,
+          "c": 2.638
         },
         {
           "t": 1795797000,
-          "o": 1322.64,
-          "h": 1325.06,
-          "l": 1321.25,
-          "c": 1324.71
+          "o": 2.638,
+          "h": 2.652,
+          "l": 2.63,
+          "c": 2.647
         },
         {
           "t": 1795797900,
-          "o": 1324.71,
-          "h": 1326.45,
-          "l": 1323.45,
-          "c": 1324.94
+          "o": 2.647,
+          "h": 2.653,
+          "l": 2.636,
+          "c": 2.636
         },
         {
           "t": 1795798800,
-          "o": 1324.94,
-          "h": 1327.32,
-          "l": 1323.92,
-          "c": 1325.68
+          "o": 2.636,
+          "h": 2.651,
+          "l": 2.632,
+          "c": 2.65
         },
         {
           "t": 1795799700,
-          "o": 1325.68,
-          "h": 1325.72,
-          "l": 1323.36,
-          "c": 1325.11
+          "o": 2.65,
+          "h": 2.652,
+          "l": 2.637,
+          "c": 2.64
         },
         {
           "t": 1795800600,
-          "o": 1325.11,
-          "h": 1325.12,
-          "l": 1320.25,
-          "c": 1320.25
+          "o": 2.64,
+          "h": 2.645,
+          "l": 2.625,
+          "c": 2.628
         },
         {
           "t": 1795801500,
-          "o": 1320.25,
-          "h": 1329.17,
-          "l": 1318.82,
-          "c": 1328.88
+          "o": 2.628,
+          "h": 2.659,
+          "l": 2.622,
+          "c": 2.659
         },
         {
           "t": 1795802400,
-          "o": 1328.88,
-          "h": 1331.5,
-          "l": 1327.24,
-          "c": 1330.44
+          "o": 2.659,
+          "h": 2.659,
+          "l": 2.645,
+          "c": 2.648
         },
         {
           "t": 1795803300,
-          "o": 1330.44,
-          "h": 1330.44,
-          "l": 1327.0,
-          "c": 1327.81
+          "o": 2.648,
+          "h": 2.649,
+          "l": 2.639,
+          "c": 2.64
         },
         {
           "t": 1795804200,
-          "o": 1327.81,
-          "h": 1328.56,
-          "l": 1326.16,
-          "c": 1327.57
+          "o": 2.64,
+          "h": 2.646,
+          "l": 2.639,
+          "c": 2.645
         },
         {
           "t": 1795805100,
-          "o": 1327.57,
-          "h": 1328.64,
-          "l": 1326.07,
-          "c": 1328.56
+          "o": 2.645,
+          "h": 2.659,
+          "l": 2.643,
+          "c": 2.656
         },
         {
           "t": 1795806000,
-          "o": 1328.56,
-          "h": 1328.56,
-          "l": 1326.82,
-          "c": 1327.83
+          "o": 2.656,
+          "h": 2.666,
+          "l": 2.654,
+          "c": 2.665
         },
         {
           "t": 1795806900,
-          "o": 1327.83,
-          "h": 1328.94,
-          "l": 1327.72,
-          "c": 1328.72
+          "o": 2.665,
+          "h": 2.67,
+          "l": 2.662,
+          "c": 2.666
         },
         {
           "t": 1795807800,
-          "o": 1328.72,
-          "h": 1333.33,
-          "l": 1328.03,
-          "c": 1333.33
+          "o": 2.666,
+          "h": 2.67,
+          "l": 2.661,
+          "c": 2.662
         },
         {
           "t": 1795808700,
-          "o": 1333.33,
-          "h": 1335.28,
-          "l": 1333.11,
-          "c": 1334.99
+          "o": 2.662,
+          "h": 2.662,
+          "l": 2.654,
+          "c": 2.658
         },
         {
           "t": 1795809600,
-          "o": 1334.99,
-          "h": 1335.62,
-          "l": 1333.82,
-          "c": 1335.62
+          "o": 2.658,
+          "h": 2.659,
+          "l": 2.647,
+          "c": 2.652
         },
         {
           "t": 1795810500,
-          "o": 1335.62,
-          "h": 1338.5,
-          "l": 1335.17,
-          "c": 1337.64
+          "o": 2.652,
+          "h": 2.652,
+          "l": 2.646,
+          "c": 2.651
         },
         {
           "t": 1795811400,
-          "o": 1337.64,
-          "h": 1338.13,
-          "l": 1336.51,
-          "c": 1336.7
+          "o": 2.651,
+          "h": 2.656,
+          "l": 2.651,
+          "c": 2.654
         },
         {
           "t": 1795812300,
-          "o": 1336.7,
-          "h": 1339.91,
-          "l": 1336.66,
-          "c": 1339.9
+          "o": 2.654,
+          "h": 2.655,
+          "l": 2.646,
+          "c": 2.649
         },
         {
           "t": 1795813200,
-          "o": 1339.9,
-          "h": 1340.65,
-          "l": 1338.87,
-          "c": 1339.14
+          "o": 2.649,
+          "h": 2.652,
+          "l": 2.647,
+          "c": 2.647
         },
         {
           "t": 1795814100,
-          "o": 1339.14,
-          "h": 1339.44,
-          "l": 1338.84,
-          "c": 1339.11
+          "o": 2.647,
+          "h": 2.651,
+          "l": 2.646,
+          "c": 2.649
         },
         {
           "t": 1795815000,
-          "o": 1339.11,
-          "h": 1339.11,
-          "l": 1337.41,
-          "c": 1337.88
+          "o": 2.649,
+          "h": 2.654,
+          "l": 2.645,
+          "c": 2.653
         },
         {
           "t": 1795815900,
-          "o": 1337.88,
-          "h": 1339.56,
-          "l": 1337.69,
-          "c": 1339.11
+          "o": 2.653,
+          "h": 2.654,
+          "l": 2.646,
+          "c": 2.646
         },
         {
           "t": 1795816800,
-          "o": 1339.11,
-          "h": 1339.12,
-          "l": 1337.47,
-          "c": 1338.26
+          "o": 2.646,
+          "h": 2.648,
+          "l": 2.628,
+          "c": 2.633
         },
         {
           "t": 1795817700,
-          "o": 1338.26,
-          "h": 1338.96,
-          "l": 1337.15,
-          "c": 1338.92
+          "o": 2.633,
+          "h": 2.638,
+          "l": 2.63,
+          "c": 2.638
         },
         {
           "t": 1795818600,
-          "o": 1338.92,
-          "h": 1339.7,
-          "l": 1338.57,
-          "c": 1339.48
+          "o": 2.638,
+          "h": 2.643,
+          "l": 2.637,
+          "c": 2.642
         },
         {
           "t": 1795819500,
-          "o": 1339.48,
-          "h": 1340.78,
-          "l": 1339.39,
-          "c": 1339.39
+          "o": 2.642,
+          "h": 2.647,
+          "l": 2.639,
+          "c": 2.644
         },
         {
           "t": 1795820400,
-          "o": 1339.39,
-          "h": 1339.61,
-          "l": 1338.73,
-          "c": 1339.61
+          "o": 2.644,
+          "h": 2.651,
+          "l": 2.641,
+          "c": 2.643
         },
         {
           "t": 1795821300,
-          "o": 1339.61,
-          "h": 1340.25,
-          "l": 1338.65,
-          "c": 1339.6
+          "o": 2.643,
+          "h": 2.643,
+          "l": 2.639,
+          "c": 2.641
         },
         {
           "t": 1795822200,
-          "o": 1339.6,
-          "h": 1340.81,
-          "l": 1339.4,
-          "c": 1340.29
+          "o": 2.641,
+          "h": 2.657,
+          "l": 2.641,
+          "c": 2.655
         },
         {
           "t": 1795823100,
-          "o": 1340.29,
-          "h": 1341.0,
-          "l": 1339.08,
-          "c": 1339.15
+          "o": 2.655,
+          "h": 2.663,
+          "l": 2.652,
+          "c": 2.662
         },
         {
           "t": 1795824000,
-          "o": 1339.15,
-          "h": 1340.89,
-          "l": 1339.15,
-          "c": 1339.35
+          "o": 2.662,
+          "h": 2.665,
+          "l": 2.656,
+          "c": 2.657
         },
         {
           "t": 1795824900,
-          "o": 1339.35,
-          "h": 1340.77,
-          "l": 1338.89,
-          "c": 1339.13
+          "o": 2.657,
+          "h": 2.661,
+          "l": 2.644,
+          "c": 2.647
         },
         {
           "t": 1795825800,
-          "o": 1339.13,
-          "h": 1339.13,
-          "l": 1338.65,
-          "c": 1338.9
+          "o": 2.647,
+          "h": 2.654,
+          "l": 2.646,
+          "c": 2.65
         },
         {
           "t": 1795826700,
-          "o": 1338.9,
-          "h": 1339.96,
-          "l": 1338.49,
-          "c": 1339.41
+          "o": 2.65,
+          "h": 2.651,
+          "l": 2.643,
+          "c": 2.649
         },
         {
           "t": 1795827600,
-          "o": 1339.41,
-          "h": 1339.56,
-          "l": 1337.74,
-          "c": 1338.15
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.643,
+          "c": 2.646
         },
         {
           "t": 1795828500,
-          "o": 1338.15,
-          "h": 1339.88,
-          "l": 1338.05,
-          "c": 1339.61
+          "o": 2.646,
+          "h": 2.657,
+          "l": 2.645,
+          "c": 2.645
         },
         {
           "t": 1795829400,
-          "o": 1339.61,
-          "h": 1340.72,
-          "l": 1339.33,
-          "c": 1339.51
+          "o": 2.645,
+          "h": 2.655,
+          "l": 2.645,
+          "c": 2.648
         },
         {
           "t": 1795830300,
-          "o": 1339.51,
-          "h": 1341.01,
-          "l": 1339.34,
-          "c": 1340.85
+          "o": 2.648,
+          "h": 2.654,
+          "l": 2.645,
+          "c": 2.645
         },
         {
           "t": 1795831200,
-          "o": 1340.85,
-          "h": 1341.13,
-          "l": 1340.52,
-          "c": 1340.77
+          "o": 2.645,
+          "h": 2.65,
+          "l": 2.642,
+          "c": 2.647
         },
         {
           "t": 1795832100,
-          "o": 1340.77,
-          "h": 1342.23,
-          "l": 1340.66,
-          "c": 1342.23
+          "o": 2.647,
+          "h": 2.648,
+          "l": 2.639,
+          "c": 2.64
         },
         {
           "t": 1795833000,
-          "o": 1342.23,
-          "h": 1342.26,
-          "l": 1340.8,
-          "c": 1342.12
+          "o": 2.64,
+          "h": 2.64,
+          "l": 2.63,
+          "c": 2.635
         },
         {
           "t": 1795833900,
-          "o": 1342.12,
-          "h": 1342.17,
-          "l": 1341.73,
-          "c": 1341.85
+          "o": 2.635,
+          "h": 2.639,
+          "l": 2.631,
+          "c": 2.632
         },
         {
           "t": 1795834800,
-          "o": 1341.85,
-          "h": 1342.26,
-          "l": 1340.82,
-          "c": 1341.66
+          "o": 2.632,
+          "h": 2.635,
+          "l": 2.63,
+          "c": 2.635
         },
         {
           "t": 1795835700,
-          "o": 1341.66,
-          "h": 1341.74,
-          "l": 1340.68,
-          "c": 1340.68
+          "o": 2.635,
+          "h": 2.635,
+          "l": 2.618,
+          "c": 2.618
         },
         {
           "t": 1795836600,
-          "o": 1340.68,
-          "h": 1341.19,
-          "l": 1340.18,
-          "c": 1341.07
+          "o": 2.618,
+          "h": 2.626,
+          "l": 2.616,
+          "c": 2.623
         },
         {
           "t": 1795837500,
-          "o": 1341.07,
-          "h": 1341.13,
-          "l": 1338.95,
-          "c": 1339.28
+          "o": 2.623,
+          "h": 2.625,
+          "l": 2.621,
+          "c": 2.623
         },
         {
           "t": 1795838400,
-          "o": 1339.28,
-          "h": 1339.79,
-          "l": 1338.96,
-          "c": 1339.26
+          "o": 2.623,
+          "h": 2.627,
+          "l": 2.621,
+          "c": 2.625
         },
         {
           "t": 1795839300,
-          "o": 1339.26,
-          "h": 1340.56,
-          "l": 1339.26,
-          "c": 1339.71
+          "o": 2.625,
+          "h": 2.63,
+          "l": 2.622,
+          "c": 2.623
         }
       ],
       "candles_5m": [
         {
-          "t": 1795816200,
-          "o": 1337.84,
-          "h": 1339.56,
-          "l": 1337.69,
-          "c": 1338.76
-        },
-        {
           "t": 1795816500,
-          "o": 1338.76,
-          "h": 1339.44,
-          "l": 1338.72,
-          "c": 1339.11
+          "o": 2.652,
+          "h": 2.652,
+          "l": 2.646,
+          "c": 2.646
         },
         {
           "t": 1795816800,
-          "o": 1339.11,
-          "h": 1339.12,
-          "l": 1337.47,
-          "c": 1339.02
+          "o": 2.646,
+          "h": 2.648,
+          "l": 2.638,
+          "c": 2.64
         },
         {
           "t": 1795817100,
-          "o": 1339.02,
-          "h": 1339.03,
-          "l": 1338.48,
-          "c": 1338.51
+          "o": 2.64,
+          "h": 2.642,
+          "l": 2.638,
+          "c": 2.639
         },
         {
           "t": 1795817400,
-          "o": 1338.51,
-          "h": 1338.51,
-          "l": 1337.98,
-          "c": 1338.26
+          "o": 2.639,
+          "h": 2.64,
+          "l": 2.628,
+          "c": 2.633
         },
         {
           "t": 1795817700,
-          "o": 1338.26,
-          "h": 1338.95,
-          "l": 1337.15,
-          "c": 1337.43
+          "o": 2.633,
+          "h": 2.635,
+          "l": 2.63,
+          "c": 2.633
         },
         {
           "t": 1795818000,
-          "o": 1337.43,
-          "h": 1338.47,
-          "l": 1337.43,
-          "c": 1338.47
+          "o": 2.633,
+          "h": 2.637,
+          "l": 2.632,
+          "c": 2.635
         },
         {
           "t": 1795818300,
-          "o": 1338.47,
-          "h": 1338.96,
-          "l": 1338.16,
-          "c": 1338.92
+          "o": 2.635,
+          "h": 2.638,
+          "l": 2.632,
+          "c": 2.638
         },
         {
           "t": 1795818600,
-          "o": 1338.92,
-          "h": 1338.92,
-          "l": 1338.57,
-          "c": 1338.9
+          "o": 2.638,
+          "h": 2.643,
+          "l": 2.638,
+          "c": 2.639
         },
         {
           "t": 1795818900,
-          "o": 1338.9,
-          "h": 1339.54,
-          "l": 1338.75,
-          "c": 1339.54
+          "o": 2.639,
+          "h": 2.643,
+          "l": 2.637,
+          "c": 2.642
         },
         {
           "t": 1795819200,
-          "o": 1339.54,
-          "h": 1339.7,
-          "l": 1339.29,
-          "c": 1339.48
+          "o": 2.642,
+          "h": 2.643,
+          "l": 2.637,
+          "c": 2.642
         },
         {
           "t": 1795819500,
-          "o": 1339.48,
-          "h": 1339.82,
-          "l": 1339.42,
-          "c": 1339.46
+          "o": 2.642,
+          "h": 2.645,
+          "l": 2.639,
+          "c": 2.642
         },
         {
           "t": 1795819800,
-          "o": 1339.46,
-          "h": 1340.78,
-          "l": 1339.42,
-          "c": 1339.7
+          "o": 2.642,
+          "h": 2.645,
+          "l": 2.641,
+          "c": 2.643
         },
         {
           "t": 1795820100,
-          "o": 1339.7,
-          "h": 1340.1,
-          "l": 1339.39,
-          "c": 1339.39
+          "o": 2.643,
+          "h": 2.647,
+          "l": 2.642,
+          "c": 2.644
         },
         {
           "t": 1795820400,
-          "o": 1339.39,
-          "h": 1339.39,
-          "l": 1338.73,
-          "c": 1339.26
+          "o": 2.644,
+          "h": 2.651,
+          "l": 2.644,
+          "c": 2.649
         },
         {
           "t": 1795820700,
-          "o": 1339.26,
-          "h": 1339.26,
-          "l": 1338.84,
-          "c": 1339.22
+          "o": 2.649,
+          "h": 2.649,
+          "l": 2.644,
+          "c": 2.644
         },
         {
           "t": 1795821000,
-          "o": 1339.22,
-          "h": 1339.61,
-          "l": 1339.09,
-          "c": 1339.61
+          "o": 2.644,
+          "h": 2.646,
+          "l": 2.641,
+          "c": 2.643
         },
         {
           "t": 1795821300,
-          "o": 1339.61,
-          "h": 1340.25,
-          "l": 1339.61,
-          "c": 1340.2
+          "o": 2.643,
+          "h": 2.643,
+          "l": 2.641,
+          "c": 2.642
         },
         {
           "t": 1795821600,
-          "o": 1340.2,
-          "h": 1340.25,
-          "l": 1338.65,
-          "c": 1338.68
+          "o": 2.642,
+          "h": 2.643,
+          "l": 2.639,
+          "c": 2.641
         },
         {
           "t": 1795821900,
-          "o": 1338.68,
-          "h": 1339.6,
-          "l": 1338.66,
-          "c": 1339.6
+          "o": 2.641,
+          "h": 2.643,
+          "l": 2.641,
+          "c": 2.641
         },
         {
           "t": 1795822200,
-          "o": 1339.6,
-          "h": 1339.78,
-          "l": 1339.4,
-          "c": 1339.48
+          "o": 2.641,
+          "h": 2.653,
+          "l": 2.641,
+          "c": 2.652
         },
         {
           "t": 1795822500,
-          "o": 1339.48,
-          "h": 1340.63,
-          "l": 1339.48,
-          "c": 1340.57
+          "o": 2.652,
+          "h": 2.657,
+          "l": 2.652,
+          "c": 2.655
         },
         {
           "t": 1795822800,
-          "o": 1340.57,
-          "h": 1340.81,
-          "l": 1340.29,
-          "c": 1340.29
+          "o": 2.655,
+          "h": 2.656,
+          "l": 2.653,
+          "c": 2.655
         },
         {
           "t": 1795823100,
-          "o": 1340.29,
-          "h": 1340.3,
-          "l": 1339.93,
-          "c": 1339.98
+          "o": 2.655,
+          "h": 2.657,
+          "l": 2.652,
+          "c": 2.655
         },
         {
           "t": 1795823400,
-          "o": 1339.98,
-          "h": 1340.05,
-          "l": 1339.71,
-          "c": 1339.72
+          "o": 2.655,
+          "h": 2.662,
+          "l": 2.654,
+          "c": 2.661
         },
         {
           "t": 1795823700,
-          "o": 1339.72,
-          "h": 1341.0,
-          "l": 1339.08,
-          "c": 1339.15
+          "o": 2.661,
+          "h": 2.663,
+          "l": 2.66,
+          "c": 2.662
         },
         {
           "t": 1795824000,
-          "o": 1339.15,
-          "h": 1340.0,
-          "l": 1339.15,
-          "c": 1339.66
+          "o": 2.662,
+          "h": 2.665,
+          "l": 2.66,
+          "c": 2.663
         },
         {
           "t": 1795824300,
-          "o": 1339.66,
-          "h": 1339.83,
-          "l": 1339.45,
-          "c": 1339.66
+          "o": 2.663,
+          "h": 2.663,
+          "l": 2.659,
+          "c": 2.659
         },
         {
           "t": 1795824600,
-          "o": 1339.66,
-          "h": 1340.89,
-          "l": 1339.24,
-          "c": 1339.35
+          "o": 2.659,
+          "h": 2.66,
+          "l": 2.656,
+          "c": 2.657
         },
         {
           "t": 1795824900,
-          "o": 1339.35,
-          "h": 1339.82,
-          "l": 1339.35,
-          "c": 1339.75
+          "o": 2.657,
+          "h": 2.661,
+          "l": 2.656,
+          "c": 2.656
         },
         {
           "t": 1795825200,
-          "o": 1339.75,
-          "h": 1340.77,
-          "l": 1338.89,
-          "c": 1338.95
+          "o": 2.656,
+          "h": 2.656,
+          "l": 2.65,
+          "c": 2.651
         },
         {
           "t": 1795825500,
-          "o": 1338.95,
-          "h": 1339.16,
-          "l": 1338.91,
-          "c": 1339.13
+          "o": 2.651,
+          "h": 2.653,
+          "l": 2.644,
+          "c": 2.647
         },
         {
           "t": 1795825800,
-          "o": 1339.13,
-          "h": 1339.13,
-          "l": 1338.85,
-          "c": 1338.85
+          "o": 2.647,
+          "h": 2.654,
+          "l": 2.646,
+          "c": 2.652
         },
         {
           "t": 1795826100,
-          "o": 1338.85,
-          "h": 1339.04,
-          "l": 1338.76,
-          "c": 1338.76
+          "o": 2.652,
+          "h": 2.653,
+          "l": 2.649,
+          "c": 2.65
         },
         {
           "t": 1795826400,
-          "o": 1338.76,
-          "h": 1339.11,
-          "l": 1338.65,
-          "c": 1338.9
+          "o": 2.65,
+          "h": 2.652,
+          "l": 2.648,
+          "c": 2.65
         },
         {
           "t": 1795826700,
-          "o": 1338.9,
-          "h": 1339.11,
-          "l": 1338.8,
-          "c": 1339.07
+          "o": 2.65,
+          "h": 2.651,
+          "l": 2.645,
+          "c": 2.646
         },
         {
           "t": 1795827000,
-          "o": 1339.07,
-          "h": 1339.2,
-          "l": 1338.49,
-          "c": 1338.71
+          "o": 2.646,
+          "h": 2.65,
+          "l": 2.643,
+          "c": 2.649
         },
         {
           "t": 1795827300,
-          "o": 1338.71,
-          "h": 1339.96,
-          "l": 1338.61,
-          "c": 1339.41
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.648,
+          "c": 2.649
         },
         {
           "t": 1795827600,
-          "o": 1339.41,
-          "h": 1339.56,
-          "l": 1339.32,
-          "c": 1339.45
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.643,
+          "c": 2.65
         },
         {
           "t": 1795827900,
-          "o": 1339.45,
-          "h": 1339.48,
-          "l": 1338.98,
-          "c": 1338.98
+          "o": 2.65,
+          "h": 2.65,
+          "l": 2.646,
+          "c": 2.646
         },
         {
           "t": 1795828200,
-          "o": 1338.98,
-          "h": 1339.01,
-          "l": 1337.74,
-          "c": 1338.15
+          "o": 2.646,
+          "h": 2.648,
+          "l": 2.644,
+          "c": 2.646
         },
         {
           "t": 1795828500,
-          "o": 1338.15,
-          "h": 1339.5,
-          "l": 1338.05,
-          "c": 1339.5
+          "o": 2.646,
+          "h": 2.657,
+          "l": 2.646,
+          "c": 2.655
         },
         {
           "t": 1795828800,
-          "o": 1339.5,
-          "h": 1339.88,
-          "l": 1339.33,
-          "c": 1339.63
+          "o": 2.655,
+          "h": 2.656,
+          "l": 2.649,
+          "c": 2.649
         },
         {
           "t": 1795829100,
-          "o": 1339.63,
-          "h": 1339.63,
-          "l": 1339.32,
-          "c": 1339.61
+          "o": 2.649,
+          "h": 2.65,
+          "l": 2.645,
+          "c": 2.645
         },
         {
           "t": 1795829400,
-          "o": 1339.61,
-          "h": 1339.63,
-          "l": 1339.33,
-          "c": 1339.51
+          "o": 2.645,
+          "h": 2.654,
+          "l": 2.645,
+          "c": 2.653
         },
         {
           "t": 1795829700,
-          "o": 1339.51,
-          "h": 1340.72,
-          "l": 1339.4,
-          "c": 1339.99
+          "o": 2.653,
+          "h": 2.655,
+          "l": 2.649,
+          "c": 2.65
         },
         {
           "t": 1795830000,
-          "o": 1339.99,
-          "h": 1340.36,
-          "l": 1339.47,
-          "c": 1339.51
+          "o": 2.65,
+          "h": 2.65,
+          "l": 2.646,
+          "c": 2.648
         },
         {
           "t": 1795830300,
-          "o": 1339.51,
-          "h": 1339.8,
-          "l": 1339.34,
-          "c": 1339.76
+          "o": 2.648,
+          "h": 2.654,
+          "l": 2.648,
+          "c": 2.65
         },
         {
           "t": 1795830600,
-          "o": 1339.76,
-          "h": 1340.54,
-          "l": 1339.6,
-          "c": 1340.54
+          "o": 2.65,
+          "h": 2.652,
+          "l": 2.649,
+          "c": 2.65
         },
         {
           "t": 1795830900,
-          "o": 1340.54,
-          "h": 1341.01,
-          "l": 1340.54,
-          "c": 1340.85
+          "o": 2.65,
+          "h": 2.65,
+          "l": 2.645,
+          "c": 2.645
         },
         {
           "t": 1795831200,
-          "o": 1340.85,
-          "h": 1340.93,
-          "l": 1340.6,
-          "c": 1340.6
+          "o": 2.645,
+          "h": 2.65,
+          "l": 2.645,
+          "c": 2.646
         },
         {
           "t": 1795831500,
-          "o": 1340.6,
-          "h": 1340.92,
-          "l": 1340.52,
-          "c": 1340.75
+          "o": 2.646,
+          "h": 2.647,
+          "l": 2.644,
+          "c": 2.645
         },
         {
           "t": 1795831800,
-          "o": 1340.75,
-          "h": 1341.13,
-          "l": 1340.65,
-          "c": 1340.77
+          "o": 2.645,
+          "h": 2.647,
+          "l": 2.642,
+          "c": 2.647
         },
         {
           "t": 1795832100,
-          "o": 1340.77,
-          "h": 1341.47,
-          "l": 1340.66,
-          "c": 1341.45
+          "o": 2.647,
+          "h": 2.648,
+          "l": 2.644,
+          "c": 2.644
         },
         {
           "t": 1795832400,
-          "o": 1341.45,
-          "h": 1342.0,
-          "l": 1341.45,
-          "c": 1341.93
+          "o": 2.644,
+          "h": 2.645,
+          "l": 2.641,
+          "c": 2.642
         },
         {
           "t": 1795832700,
-          "o": 1341.93,
-          "h": 1342.23,
-          "l": 1341.84,
-          "c": 1342.23
+          "o": 2.642,
+          "h": 2.644,
+          "l": 2.639,
+          "c": 2.64
         },
         {
           "t": 1795833000,
-          "o": 1342.23,
-          "h": 1342.23,
-          "l": 1340.8,
-          "c": 1341.67
+          "o": 2.64,
+          "h": 2.64,
+          "l": 2.633,
+          "c": 2.635
         },
         {
           "t": 1795833300,
-          "o": 1341.67,
-          "h": 1341.67,
-          "l": 1341.11,
-          "c": 1341.33
+          "o": 2.635,
+          "h": 2.635,
+          "l": 2.63,
+          "c": 2.634
         },
         {
           "t": 1795833600,
-          "o": 1341.33,
-          "h": 1342.26,
-          "l": 1341.25,
-          "c": 1342.12
+          "o": 2.634,
+          "h": 2.637,
+          "l": 2.634,
+          "c": 2.635
         },
         {
           "t": 1795833900,
-          "o": 1342.12,
-          "h": 1342.17,
-          "l": 1341.76,
-          "c": 1341.9
+          "o": 2.635,
+          "h": 2.639,
+          "l": 2.632,
+          "c": 2.633
         },
         {
           "t": 1795834200,
-          "o": 1341.9,
-          "h": 1342.12,
-          "l": 1341.73,
-          "c": 1341.85
+          "o": 2.633,
+          "h": 2.635,
+          "l": 2.632,
+          "c": 2.634
         },
         {
           "t": 1795834500,
-          "o": 1341.85,
-          "h": 1342.13,
-          "l": 1341.84,
-          "c": 1341.85
+          "o": 2.634,
+          "h": 2.635,
+          "l": 2.631,
+          "c": 2.632
         },
         {
           "t": 1795834800,
-          "o": 1341.85,
-          "h": 1342.03,
-          "l": 1341.61,
-          "c": 1342.0
+          "o": 2.632,
+          "h": 2.634,
+          "l": 2.63,
+          "c": 2.631
         },
         {
           "t": 1795835100,
-          "o": 1342.0,
-          "h": 1342.14,
-          "l": 1341.79,
-          "c": 1341.86
+          "o": 2.631,
+          "h": 2.633,
+          "l": 2.63,
+          "c": 2.633
         },
         {
           "t": 1795835400,
-          "o": 1341.86,
-          "h": 1342.26,
-          "l": 1340.82,
-          "c": 1341.66
+          "o": 2.633,
+          "h": 2.635,
+          "l": 2.631,
+          "c": 2.635
         },
         {
           "t": 1795835700,
-          "o": 1341.66,
-          "h": 1341.74,
-          "l": 1341.37,
-          "c": 1341.37
+          "o": 2.635,
+          "h": 2.635,
+          "l": 2.63,
+          "c": 2.632
         },
         {
           "t": 1795836000,
-          "o": 1341.37,
-          "h": 1341.6,
-          "l": 1341.11,
-          "c": 1341.5
+          "o": 2.632,
+          "h": 2.632,
+          "l": 2.623,
+          "c": 2.625
         },
         {
           "t": 1795836300,
-          "o": 1341.5,
-          "h": 1341.61,
-          "l": 1340.68,
-          "c": 1340.68
+          "o": 2.625,
+          "h": 2.625,
+          "l": 2.618,
+          "c": 2.618
         },
         {
           "t": 1795836600,
-          "o": 1340.68,
-          "h": 1340.81,
-          "l": 1340.18,
-          "c": 1340.81
+          "o": 2.618,
+          "h": 2.623,
+          "l": 2.616,
+          "c": 2.621
         },
         {
           "t": 1795836900,
-          "o": 1340.81,
-          "h": 1341.16,
-          "l": 1340.81,
-          "c": 1341.16
+          "o": 2.621,
+          "h": 2.626,
+          "l": 2.621,
+          "c": 2.624
         },
         {
           "t": 1795837200,
-          "o": 1341.16,
-          "h": 1341.19,
-          "l": 1340.86,
-          "c": 1341.07
+          "o": 2.624,
+          "h": 2.625,
+          "l": 2.622,
+          "c": 2.623
         },
         {
           "t": 1795837500,
-          "o": 1341.07,
-          "h": 1341.13,
-          "l": 1340.73,
-          "c": 1340.73
+          "o": 2.623,
+          "h": 2.625,
+          "l": 2.621,
+          "c": 2.621
         },
         {
           "t": 1795837800,
-          "o": 1340.73,
-          "h": 1340.77,
-          "l": 1338.96,
-          "c": 1338.98
+          "o": 2.621,
+          "h": 2.625,
+          "l": 2.621,
+          "c": 2.623
         },
         {
           "t": 1795838100,
-          "o": 1338.98,
-          "h": 1339.49,
-          "l": 1338.95,
-          "c": 1339.28
+          "o": 2.623,
+          "h": 2.624,
+          "l": 2.622,
+          "c": 2.623
         },
         {
           "t": 1795838400,
-          "o": 1339.28,
-          "h": 1339.43,
-          "l": 1339.28,
-          "c": 1339.43
+          "o": 2.623,
+          "h": 2.626,
+          "l": 2.621,
+          "c": 2.624
         },
         {
           "t": 1795838700,
-          "o": 1339.43,
-          "h": 1339.79,
-          "l": 1339.35,
-          "c": 1339.7
+          "o": 2.624,
+          "h": 2.626,
+          "l": 2.622,
+          "c": 2.626
         },
         {
           "t": 1795839000,
-          "o": 1339.7,
-          "h": 1339.76,
-          "l": 1338.96,
-          "c": 1339.26
+          "o": 2.626,
+          "h": 2.627,
+          "l": 2.623,
+          "c": 2.625
         },
         {
           "t": 1795839300,
-          "o": 1339.26,
-          "h": 1339.72,
-          "l": 1339.26,
-          "c": 1339.66
+          "o": 2.625,
+          "h": 2.63,
+          "l": 2.625,
+          "c": 2.628
         },
         {
           "t": 1795839600,
-          "o": 1339.66,
-          "h": 1340.07,
-          "l": 1339.66,
-          "c": 1340.07
+          "o": 2.628,
+          "h": 2.628,
+          "l": 2.624,
+          "c": 2.624
         },
         {
           "t": 1795839900,
-          "o": 1340.07,
-          "h": 1340.56,
-          "l": 1339.66,
-          "c": 1339.71
+          "o": 2.624,
+          "h": 2.624,
+          "l": 2.622,
+          "c": 2.623
+        },
+        {
+          "t": 1795840200,
+          "o": 2.623,
+          "h": 2.623,
+          "l": 2.616,
+          "c": 2.617
         }
       ],
       "execution_tf": "1m",
-      "bid": 1339.69,
-      "ask": 1341.17,
+      "bid": 2.615,
+      "ask": 2.616,
       "quote_valid": true,
-      "quote_ts": 1795840275371,
+      "quote_ts": 1795840551209,
       "analysis_fresh": true,
-      "htf_regime": "TREND_UP",
-      "regime": "TREND_UP",
+      "htf_regime": "RANGE_TRANSITION",
+      "regime": "LOCAL_DOWN",
       "local_wave": {
-        "side": 0,
+        "side": -1,
         "m5": {
-          "side": 0,
-          "move_atr": 0.017,
-          "efficiency": 0.006,
-          "directional_bars": 2
+          "side": -1,
+          "move_atr": 1.723,
+          "efficiency": 0.571,
+          "directional_bars": 3
         },
         "m15": {
-          "side": -1,
-          "move_atr": 1.014,
-          "efficiency": 0.602,
-          "directional_bars": 2
+          "side": 0,
+          "move_atr": 0.0,
+          "efficiency": 0.0,
+          "directional_bars": 0
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 1.761,
-          "efficiency": 0.25,
-          "directional_bars": 3
+          "move_atr": 1.292,
+          "efficiency": 0.333,
+          "directional_bars": 4
         },
-        "breaks": []
+        "breaks": [
+          {
+            "side": -1,
+            "level": 2.621,
+            "ts": 1795840200000
+          }
+        ]
       },
       "relative_strength": {
-        "available": false,
-        "side": 0
+        "available": true,
+        "side": 0,
+        "relative_atr": -0.037,
+        "asset_return_pct": 0.191,
+        "btc_return_pct": 0.204
       },
-      "wave_side": 0,
+      "wave_side": -1,
       "observed_wave_side": -1,
       "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
       "direction_diagnostics": {
@@ -5335,155 +5552,149 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 0.434,
-              "break_distance_atr": -3.669,
-              "rvol": 1.045,
+              "known_ts": 1795840500000,
+              "body_atr": -0.538,
+              "break_distance_atr": -3.769,
+              "rvol": 0.321,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -4.793,
-              "break_distance_atr": -5.045,
-              "rvol": 1.043,
+              "known_ts": 1795840440000,
+              "body_atr": -0.56,
+              "break_distance_atr": -3.36,
+              "rvol": 0.295,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": 0.422,
-              "break_distance_atr": 0.121,
-              "rvol": 1.098,
+              "known_ts": 1795840380000,
+              "body_atr": 0.583,
+              "break_distance_atr": -2.917,
+              "rvol": 1.034,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": -0.621,
-              "break_distance_atr": -0.621,
-              "rvol": 1.132,
+              "known_ts": 1795840500000,
+              "body_atr": -1.292,
+              "break_distance_atr": -2.8,
+              "rvol": 0.252,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": 0.628,
-              "break_distance_atr": -1.072,
-              "rvol": 0.89,
+              "known_ts": 1795840200000,
+              "body_atr": -0.206,
+              "break_distance_atr": -1.441,
+              "rvol": 1.675,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             }
           ],
-          "detected": 1,
+          "detected": 0,
           "ready": 0,
-          "rejections": [
-            "GEOMETRY_OR_EXECUTION",
-            "WIDE_SPREAD",
-            "CHASE_DISTANCE"
-          ]
+          "rejections": []
         },
         "-1": {
           "side": -1,
-          "local_support": false,
+          "local_support": true,
           "windows_checked": [
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -0.434,
-              "break_distance_atr": -0.676,
-              "rvol": 1.045,
-              "local_support": false,
-              "higher_opposes": true
+              "known_ts": 1795840500000,
+              "body_atr": 0.538,
+              "break_distance_atr": -0.0,
+              "rvol": 0.321,
+              "local_support": true,
+              "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 4.793,
-              "break_distance_atr": 1.387,
-              "rvol": 1.043,
+              "known_ts": 1795840440000,
+              "body_atr": 0.56,
+              "break_distance_atr": -0.56,
+              "rvol": 0.295,
               "local_support": false,
-              "higher_opposes": true
+              "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": -0.422,
-              "break_distance_atr": -3.44,
-              "rvol": 1.098,
+              "known_ts": 1795840380000,
+              "body_atr": -0.583,
+              "break_distance_atr": -0.583,
+              "rvol": 1.034,
               "local_support": false,
-              "higher_opposes": true
+              "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": 0.621,
-              "break_distance_atr": -1.312,
-              "rvol": 1.132,
-              "local_support": false,
-              "higher_opposes": true
+              "known_ts": 1795840500000,
+              "body_atr": 1.292,
+              "break_distance_atr": 0.862,
+              "rvol": 0.252,
+              "local_support": true,
+              "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": -0.628,
-              "break_distance_atr": -1.716,
-              "rvol": 0.89,
+              "known_ts": 1795840200000,
+              "body_atr": 0.206,
+              "break_distance_atr": -0.412,
+              "rvol": 1.675,
               "local_support": false,
-              "higher_opposes": true
+              "higher_opposes": false
             }
           ],
-          "detected": 1,
+          "detected": 2,
           "ready": 0,
           "rejections": [
             "GEOMETRY_OR_EXECUTION",
             "NEAR_LIQUIDITY",
-            "WIDE_SPREAD",
-            "LOW_EVIDENCE_SCORE",
             "M1_NO_M5_CONTEXT"
           ]
         }
       },
-      "family": "TREND_PULLBACK",
-      "base_score": 74,
-      "structural_stop": 1339.25,
-      "reference": 1340.07,
-      "trigger_ts": 1795839600000,
-      "trigger_tf": "M5",
-      "retest_level": 1339.8335295985098,
-      "tp1": 1345.87,
+      "family": "BREAKOUT_RETEST",
+      "base_score": 76,
+      "structural_stop": 2.621,
+      "reference": 2.617,
+      "trigger_ts": 1795840440000,
+      "trigger_tf": "M1",
+      "retest_level": 2.62,
+      "tp1": 2.601,
       "tp1_r": 1.0,
-      "risk": 4.7000000000000455,
-      "net_rr": 2.442928936170189,
-      "valid": true,
-      "geometry_reason": "",
+      "risk": 0.01499999999999968,
+      "net_rr": -0.03793333333331189,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
       "geometry_policy": "STRUCTURAL_V15_1",
-      "target_kind": "VOLATILITY_PROJECTION",
-      "atr_m5": 0.617142857142848,
-      "atr_m15": 1.3292857142857397,
-      "structural_anchor": 1339.25,
-      "stop_buffer": 0.154285714285712,
-      "risk_floor": 4.694095000000001,
-      "risk_ceiling": 20.11755,
-      "min_rr": 1.75,
-      "trail_atr_m5": 0.617142857142848,
+      "target_kind": "CONFIRMED_LIQUIDITY",
+      "atr_m5": 0.004500000000000012,
+      "atr_m15": 0.008857142857142833,
+      "structural_anchor": 2.621,
+      "stop_buffer": 0.002,
+      "risk_floor": 0.014382500000000001,
+      "risk_ceiling": 0.06276000000000001,
+      "min_rr": 1.85,
+      "trail_atr_m5": 0.004500000000000012,
       "trail_start_r": 1.25,
-      "target_r_preferred": 2.5,
-      "rank_score": 82.886,
-      "net_rr_estimate": 2.443,
+      "target_r_preferred": 2.15,
+      "rank_score": 85.0,
+      "net_rr_estimate": -0.038,
       "meta": {
         "status": "COLLECTING_MEXC_LABELS",
         "n": 0,
@@ -5492,40 +5703,39 @@
         "expected_r_estimate": null,
         "rank_adjustment": 0.0
       },
-      "signal_id": "XPT_USDT:1:TREND_PULLBACK:M5:1795839600000",
-      "signal_event_key": "XPT_USDT:1:EVENT:5986132",
+      "signal_id": "ORDI_USDT:-1:BREAKOUT_RETEST:M1:1795840440000",
+      "signal_event_key": "ORDI_USDT:-1:EVENT:5986134",
       "rejection_codes": [
         "GEOMETRY_OR_EXECUTION",
-        "WIDE_SPREAD",
-        "CHASE_DISTANCE"
+        "NEAR_LIQUIDITY"
       ],
-      "signal_known_ts": 1795839900000,
-      "trigger_offset": 1,
-      "signal_age_sec": 378.2,
-      "local_support": false,
+      "signal_known_ts": 1795840500000,
+      "trigger_offset": 0,
+      "signal_age_sec": 53.2,
+      "local_support": true,
       "relative_support": false,
-      "chase_cap": 0.30857143,
-      "alignment_tier": "ALIGNED",
-      "risk_multiplier": 0.75,
+      "chase_cap": 0.0036,
+      "alignment_tier": "EARLY_PARTIAL",
+      "risk_multiplier": 0.402,
       "funding_risk_mult": 1.0,
       "early_close_hint_ua": null,
       "maker_pullback": false,
       "limit_ttl_min": 8,
       "partial_pct": 0.5,
-      "fee_rate": 0.0,
+      "fee_rate": 0.0002,
       "slippage_rate": 0.0001,
       "candidate_count": 2,
       "candidate_diagnostics": [
         {
-          "setup": "TREND_PULLBACK_FVG_VWAP",
-          "family": "TREND_PULLBACK",
-          "trigger_tf": "M5",
-          "trigger_offset": 1,
-          "signal_age_sec": 378.2,
-          "side": 1,
+          "setup": "BREAKOUT_RETEST",
+          "family": "BREAKOUT_RETEST",
+          "trigger_tf": "M1",
+          "trigger_offset": 0,
+          "signal_age_sec": 53.2,
+          "side": -1,
           "status": "WATCH",
-          "score": 81,
-          "rank_score": 82.886,
+          "score": 88,
+          "rank_score": 85.0,
           "meta": {
             "status": "COLLECTING_MEXC_LABELS",
             "n": 0,
@@ -5534,23 +5744,22 @@
             "expected_r_estimate": null,
             "rank_adjustment": 0.0
           },
-          "reason_ua": "M5 відкат до FVG/EMA/VWAP · TREND_UP · RVOL 0.89x · непридатна ціна/SL/spread/RR · попередня M5, повторна перевірка ціни · GEOMETRY_OR_EXECUTION, WIDE_SPREAD, CHASE_DISTANCE",
+          "reason_ua": "M1 пробій + ретест · LOCAL_DOWN · RVOL 0.32x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
           "rejection_codes": [
             "GEOMETRY_OR_EXECUTION",
-            "WIDE_SPREAD",
-            "CHASE_DISTANCE"
+            "NEAR_LIQUIDITY"
           ]
         },
         {
-          "setup": "FAILED_BREAKOUT_TRAP",
-          "family": "FAILED_BREAKOUT",
+          "setup": "BREAKOUT_RETEST",
+          "family": "BREAKOUT_RETEST",
           "trigger_tf": "M1",
           "trigger_offset": 1,
-          "signal_age_sec": 78.2,
+          "signal_age_sec": 113.2,
           "side": -1,
           "status": "WATCH",
-          "score": 72,
-          "rank_score": 69.154,
+          "score": 82,
+          "rank_score": 79.0,
           "meta": {
             "status": "COLLECTING_MEXC_LABELS",
             "n": 0,
@@ -5559,12 +5768,10 @@
             "expected_r_estimate": null,
             "rank_adjustment": 0.0
           },
-          "reason_ua": "M1 хибний пробій / пастка · TREND_UP · RVOL 1.04x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, WIDE_SPREAD, LOW_EVIDENCE_SCORE, M1_NO_M5_CONTEXT",
+          "reason_ua": "M1 пробій + ретест · LOCAL_DOWN · RVOL 0.30x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, M1_NO_M5_CONTEXT",
           "rejection_codes": [
             "GEOMETRY_OR_EXECUTION",
             "NEAR_LIQUIDITY",
-            "WIDE_SPREAD",
-            "LOW_EVIDENCE_SCORE",
             "M1_NO_M5_CONTEXT"
           ]
         }
@@ -5582,31 +5789,41 @@
       "price": 71.58,
       "tick": 0.01,
       "change_24h_pct": -0.72,
-      "volume_24h": 49368103.0,
-      "funding_rate": 4.1e-05,
-      "funding_pct": 0.0041,
-      "open_interest": 59679646.0,
+      "volume_24h": 49421685.0,
+      "funding_rate": 4e-05,
+      "funding_pct": 0.004,
+      "open_interest": 59923454.0,
       "funding_regime": "NEUTRAL",
       "bias_4h": 0,
       "bias_1h": -1,
       "bias_15m": -1,
-      "status": "WAIT",
-      "status_ua": "НЕМАЄ СИГНАЛУ",
-      "score": 0,
-      "side": 0,
-      "side_ua": "НЕЙТРАЛЬНО",
-      "setup": null,
-      "setup_ua": "Немає підтвердженого сетапу",
-      "order_type": null,
-      "entry": null,
-      "stop": null,
-      "tp": null,
-      "rr": null,
-      "rvol": 0.68,
+      "status": "WATCH",
+      "status_ua": "СПОСТЕРЕЖЕННЯ",
+      "score": 72,
+      "side": 1,
+      "side_ua": "LONG ↑",
+      "setup": "EXHAUSTION_REVERSAL",
+      "setup_ua": "M1 виснаження + розворот",
+      "order_type": "MARKET",
+      "entry": 71.59,
+      "stop": 71.26,
+      "tp": 71.69,
+      "rr": 0.3,
+      "rvol": 1.4488508626559269,
       "range_pos": 0.398,
       "btc_aligned": true,
-      "reason_ua": "LONG та SHORT перевірено; немає підтвердженого тригера",
-      "sizing": null,
+      "reason_ua": "M1 виснаження + розворот · RANGE_TRANSITION · RVOL 1.45x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, LOW_EVIDENCE_SCORE, M1_NO_M5_CONTEXT, M1_WEAK_REVERSAL",
+      "sizing": {
+        "deposit_usdt": 100.0,
+        "risk_pct": 1.5,
+        "max_leverage": 5.0,
+        "position_usdt": 325.41,
+        "effective_leverage": 3.25,
+        "risk_usd": 1.5,
+        "target_profit_usd": 0.45,
+        "sl_pct": 0.46,
+        "tp_pct": 0.14
+      },
       "cluster_locked": false,
       "candles_15m": [
         {
@@ -6172,13 +6389,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795816200,
-          "o": 71.97,
-          "h": 72.0,
-          "l": 71.93,
-          "c": 72.0
-        },
-        {
           "t": 1795816500,
           "o": 72.0,
           "h": 72.02,
@@ -6730,13 +6940,20 @@
           "h": 71.66,
           "l": 71.61,
           "c": 71.65
+        },
+        {
+          "t": 1795840200,
+          "o": 71.65,
+          "h": 71.65,
+          "l": 71.53,
+          "c": 71.57
         }
       ],
       "execution_tf": "1m",
-      "bid": 71.57,
-      "ask": 71.58,
+      "bid": 71.58,
+      "ask": 71.59,
       "quote_valid": true,
-      "quote_ts": 1795840274964,
+      "quote_ts": 1795840550973,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
       "regime": "RANGE_TRANSITION",
@@ -6744,9 +6961,9 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.0,
-          "efficiency": 0.0,
-          "directional_bars": 0
+          "move_atr": 0.732,
+          "efficiency": 0.286,
+          "directional_bars": 2
         },
         "m15": {
           "side": 0,
@@ -6756,11 +6973,17 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 0.182,
-          "efficiency": 0.062,
-          "directional_bars": 4
+          "move_atr": 1.373,
+          "efficiency": 0.429,
+          "directional_bars": 5
         },
-        "breaks": []
+        "breaks": [
+          {
+            "side": -1,
+            "level": 71.61,
+            "ts": 1795840200000
+          }
+        ]
       },
       "relative_strength": {
         "available": true,
@@ -6780,52 +7003,1467 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -3.073,
-              "break_distance_atr": -3.756,
-              "rvol": 3.634,
+              "known_ts": 1795840500000,
+              "body_atr": -1.098,
+              "break_distance_atr": -2.471,
+              "rvol": 0.414,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 0.651,
-              "break_distance_atr": -1.953,
-              "rvol": 2.636,
+              "known_ts": 1795840440000,
+              "body_atr": 1.167,
+              "break_distance_atr": -1.458,
+              "rvol": 0.15,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": -0.292,
-              "break_distance_atr": -2.333,
-              "rvol": 0.729,
+              "known_ts": 1795840380000,
+              "body_atr": 0.304,
+              "break_distance_atr": -2.739,
+              "rvol": 1.449,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": 0.091,
-              "break_distance_atr": -1.545,
-              "rvol": 0.706,
+              "known_ts": 1795840500000,
+              "body_atr": -0.732,
+              "break_distance_atr": -1.83,
+              "rvol": 1.862,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": -0.892,
-              "break_distance_atr": -1.605,
-              "rvol": 0.744,
+              "known_ts": 1795840200000,
+              "body_atr": 0.091,
+              "break_distance_atr": -1.545,
+              "rvol": 0.706,
               "local_support": false,
               "higher_opposes": true
+            }
+          ],
+          "detected": 1,
+          "ready": 0,
+          "rejections": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY",
+            "LOW_EVIDENCE_SCORE",
+            "M1_NO_M5_CONTEXT",
+            "M1_WEAK_REVERSAL"
+          ]
+        },
+        "-1": {
+          "side": -1,
+          "local_support": false,
+          "windows_checked": [
+            {
+              "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": 1.098,
+              "break_distance_atr": -1.098,
+              "rvol": 0.414,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
+              "offset": 1,
+              "known_ts": 1795840440000,
+              "body_atr": -1.167,
+              "break_distance_atr": -2.333,
+              "rvol": 0.15,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
+              "offset": 2,
+              "known_ts": 1795840380000,
+              "body_atr": -0.304,
+              "break_distance_atr": -0.609,
+              "rvol": 1.449,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": 0.732,
+              "break_distance_atr": 0.366,
+              "rvol": 1.862,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
+              "known_ts": 1795840200000,
+              "body_atr": -0.091,
+              "break_distance_atr": -0.364,
+              "rvol": 0.706,
+              "local_support": false,
+              "higher_opposes": false
+            }
+          ],
+          "detected": 0,
+          "ready": 0,
+          "rejections": []
+        }
+      },
+      "family": "EXHAUSTION",
+      "base_score": 74,
+      "structural_stop": 71.52,
+      "reference": 71.57,
+      "trigger_ts": 1795840320000,
+      "trigger_tf": "M1",
+      "retest_level": null,
+      "tp1": 71.92,
+      "tp1_r": 1.0,
+      "risk": 0.3299999999999983,
+      "net_rr": 0.25964242424240835,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
+      "geometry_policy": "STRUCTURAL_V15_1",
+      "target_kind": "CONFIRMED_LIQUIDITY",
+      "atr_m5": 0.10714285714285308,
+      "atr_m15": 0.24999999999999695,
+      "structural_anchor": 71.52,
+      "stop_buffer": 0.02678571428571327,
+      "risk_floor": 0.32215499999999997,
+      "risk_ceiling": 1.4318000000000002,
+      "min_rr": 1.8,
+      "trail_atr_m5": 0.10714285714285308,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.15,
+      "rank_score": 69.519,
+      "net_rr_estimate": 0.26,
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 0,
+        "total_n": 5,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
+      "signal_id": "SOL_USDT:1:EXHAUSTION:M1:1795840320000",
+      "signal_event_key": "SOL_USDT:1:EVENT:5986134",
+      "rejection_codes": [
+        "GEOMETRY_OR_EXECUTION",
+        "NEAR_LIQUIDITY",
+        "LOW_EVIDENCE_SCORE",
+        "M1_NO_M5_CONTEXT",
+        "M1_WEAK_REVERSAL"
+      ],
+      "signal_known_ts": 1795840380000,
+      "trigger_offset": 2,
+      "signal_age_sec": 173.2,
+      "local_support": false,
+      "relative_support": false,
+      "chase_cap": 0.08571429,
+      "alignment_tier": "EARLY_REVERSAL",
+      "risk_multiplier": 0.5,
+      "funding_risk_mult": 1.0,
+      "early_close_hint_ua": null,
+      "maker_pullback": false,
+      "limit_ttl_min": 8,
+      "partial_pct": 0.5,
+      "fee_rate": 0.0,
+      "slippage_rate": 0.0001,
+      "candidate_count": 1,
+      "candidate_diagnostics": [
+        {
+          "setup": "EXHAUSTION_REVERSAL",
+          "family": "EXHAUSTION",
+          "trigger_tf": "M1",
+          "trigger_offset": 2,
+          "signal_age_sec": 173.2,
+          "side": 1,
+          "status": "WATCH",
+          "score": 72,
+          "rank_score": 69.519,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M1 виснаження + розворот · RANGE_TRANSITION · RVOL 1.45x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, LOW_EVIDENCE_SCORE, M1_NO_M5_CONTEXT, M1_WEAK_REVERSAL",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY",
+            "LOW_EVIDENCE_SCORE",
+            "M1_NO_M5_CONTEXT",
+            "M1_WEAK_REVERSAL"
+          ]
+        }
+      ],
+      "be_trigger": null
+    },
+    {
+      "symbol": "XPT_USDT",
+      "label": "PLATINUM (XPT)",
+      "short": "XPT",
+      "cluster": "METALS",
+      "cluster_ua": "МЕТАЛ",
+      "fee_tag": "0% FEE",
+      "mexc_url": "https://www.mexc.com/futures/XPT_USDT",
+      "price": 1340.86,
+      "tick": 0.01,
+      "change_24h_pct": 1.25,
+      "volume_24h": 1626599.0,
+      "funding_rate": 0.0,
+      "funding_pct": 0.0,
+      "open_interest": 17947077.0,
+      "funding_regime": "NEUTRAL",
+      "bias_4h": 1,
+      "bias_1h": 1,
+      "bias_15m": 0,
+      "status": "WATCH",
+      "status_ua": "ХВИЛЯ · ЧЕКАЄМО ТРИГЕР",
+      "score": 0,
+      "side": 0,
+      "side_ua": "НЕЙТРАЛЬНО",
+      "setup": null,
+      "setup_ua": "Немає підтвердженого сетапу",
+      "order_type": null,
+      "entry": null,
+      "stop": null,
+      "tp": null,
+      "rr": null,
+      "rvol": 1.0,
+      "range_pos": 0.427,
+      "btc_aligned": true,
+      "reason_ua": "Локальна низхідна хвиля · немає підтвердженого входу · M5 пауза",
+      "sizing": null,
+      "cluster_locked": false,
+      "candles_15m": [
+        {
+          "t": 1795768200,
+          "o": 1363.51,
+          "h": 1366.48,
+          "l": 1360.39,
+          "c": 1366.48
+        },
+        {
+          "t": 1795769100,
+          "o": 1366.48,
+          "h": 1370.09,
+          "l": 1365.98,
+          "c": 1366.23
+        },
+        {
+          "t": 1795770000,
+          "o": 1366.23,
+          "h": 1367.09,
+          "l": 1363.94,
+          "c": 1366.22
+        },
+        {
+          "t": 1795770900,
+          "o": 1366.22,
+          "h": 1366.43,
+          "l": 1363.33,
+          "c": 1365.42
+        },
+        {
+          "t": 1795771800,
+          "o": 1365.42,
+          "h": 1370.4,
+          "l": 1365.12,
+          "c": 1369.08
+        },
+        {
+          "t": 1795772700,
+          "o": 1369.08,
+          "h": 1369.08,
+          "l": 1358.87,
+          "c": 1360.51
+        },
+        {
+          "t": 1795773600,
+          "o": 1360.51,
+          "h": 1361.24,
+          "l": 1355.56,
+          "c": 1358.78
+        },
+        {
+          "t": 1795774500,
+          "o": 1358.78,
+          "h": 1360.39,
+          "l": 1358.22,
+          "c": 1358.95
+        },
+        {
+          "t": 1795775400,
+          "o": 1358.95,
+          "h": 1362.03,
+          "l": 1358.65,
+          "c": 1361.6
+        },
+        {
+          "t": 1795776300,
+          "o": 1361.6,
+          "h": 1362.85,
+          "l": 1360.82,
+          "c": 1361.21
+        },
+        {
+          "t": 1795777200,
+          "o": 1361.21,
+          "h": 1361.21,
+          "l": 1358.24,
+          "c": 1359.48
+        },
+        {
+          "t": 1795778100,
+          "o": 1359.48,
+          "h": 1359.69,
+          "l": 1355.8,
+          "c": 1357.21
+        },
+        {
+          "t": 1795779000,
+          "o": 1357.21,
+          "h": 1358.16,
+          "l": 1355.49,
+          "c": 1355.58
+        },
+        {
+          "t": 1795779900,
+          "o": 1355.58,
+          "h": 1355.58,
+          "l": 1351.94,
+          "c": 1354.47
+        },
+        {
+          "t": 1795780800,
+          "o": 1354.47,
+          "h": 1354.91,
+          "l": 1349.97,
+          "c": 1350.01
+        },
+        {
+          "t": 1795781700,
+          "o": 1350.01,
+          "h": 1352.82,
+          "l": 1346.14,
+          "c": 1346.14
+        },
+        {
+          "t": 1795782600,
+          "o": 1346.14,
+          "h": 1346.14,
+          "l": 1344.57,
+          "c": 1344.98
+        },
+        {
+          "t": 1795783500,
+          "o": 1344.98,
+          "h": 1345.66,
+          "l": 1341.77,
+          "c": 1345.66
+        },
+        {
+          "t": 1795784400,
+          "o": 1345.66,
+          "h": 1345.71,
+          "l": 1340.34,
+          "c": 1340.92
+        },
+        {
+          "t": 1795785300,
+          "o": 1340.92,
+          "h": 1341.4,
+          "l": 1330.48,
+          "c": 1334.45
+        },
+        {
+          "t": 1795786200,
+          "o": 1334.45,
+          "h": 1335.75,
+          "l": 1332.56,
+          "c": 1334.48
+        },
+        {
+          "t": 1795787100,
+          "o": 1334.48,
+          "h": 1340.68,
+          "l": 1331.71,
+          "c": 1331.71
+        },
+        {
+          "t": 1795788000,
+          "o": 1331.71,
+          "h": 1333.09,
+          "l": 1326.25,
+          "c": 1326.25
+        },
+        {
+          "t": 1795788900,
+          "o": 1326.25,
+          "h": 1332.03,
+          "l": 1326.24,
+          "c": 1329.61
+        },
+        {
+          "t": 1795789800,
+          "o": 1329.61,
+          "h": 1331.38,
+          "l": 1322.21,
+          "c": 1327.23
+        },
+        {
+          "t": 1795790700,
+          "o": 1327.23,
+          "h": 1332.76,
+          "l": 1323.73,
+          "c": 1323.78
+        },
+        {
+          "t": 1795791600,
+          "o": 1323.78,
+          "h": 1326.75,
+          "l": 1322.42,
+          "c": 1326.25
+        },
+        {
+          "t": 1795792500,
+          "o": 1326.25,
+          "h": 1326.9,
+          "l": 1322.56,
+          "c": 1324.26
+        },
+        {
+          "t": 1795793400,
+          "o": 1324.26,
+          "h": 1326.65,
+          "l": 1322.85,
+          "c": 1324.92
+        },
+        {
+          "t": 1795794300,
+          "o": 1324.92,
+          "h": 1325.82,
+          "l": 1319.77,
+          "c": 1324.26
+        },
+        {
+          "t": 1795795200,
+          "o": 1324.26,
+          "h": 1324.26,
+          "l": 1320.17,
+          "c": 1321.45
+        },
+        {
+          "t": 1795796100,
+          "o": 1321.45,
+          "h": 1322.69,
+          "l": 1320.2,
+          "c": 1322.64
+        },
+        {
+          "t": 1795797000,
+          "o": 1322.64,
+          "h": 1325.06,
+          "l": 1321.25,
+          "c": 1324.71
+        },
+        {
+          "t": 1795797900,
+          "o": 1324.71,
+          "h": 1326.45,
+          "l": 1323.45,
+          "c": 1324.94
+        },
+        {
+          "t": 1795798800,
+          "o": 1324.94,
+          "h": 1327.32,
+          "l": 1323.92,
+          "c": 1325.68
+        },
+        {
+          "t": 1795799700,
+          "o": 1325.68,
+          "h": 1325.72,
+          "l": 1323.36,
+          "c": 1325.11
+        },
+        {
+          "t": 1795800600,
+          "o": 1325.11,
+          "h": 1325.12,
+          "l": 1320.25,
+          "c": 1320.25
+        },
+        {
+          "t": 1795801500,
+          "o": 1320.25,
+          "h": 1329.17,
+          "l": 1318.82,
+          "c": 1328.88
+        },
+        {
+          "t": 1795802400,
+          "o": 1328.88,
+          "h": 1331.5,
+          "l": 1327.24,
+          "c": 1330.44
+        },
+        {
+          "t": 1795803300,
+          "o": 1330.44,
+          "h": 1330.44,
+          "l": 1327.0,
+          "c": 1327.81
+        },
+        {
+          "t": 1795804200,
+          "o": 1327.81,
+          "h": 1328.56,
+          "l": 1326.16,
+          "c": 1327.57
+        },
+        {
+          "t": 1795805100,
+          "o": 1327.57,
+          "h": 1328.64,
+          "l": 1326.07,
+          "c": 1328.56
+        },
+        {
+          "t": 1795806000,
+          "o": 1328.56,
+          "h": 1328.56,
+          "l": 1326.82,
+          "c": 1327.83
+        },
+        {
+          "t": 1795806900,
+          "o": 1327.83,
+          "h": 1328.94,
+          "l": 1327.72,
+          "c": 1328.72
+        },
+        {
+          "t": 1795807800,
+          "o": 1328.72,
+          "h": 1333.33,
+          "l": 1328.03,
+          "c": 1333.33
+        },
+        {
+          "t": 1795808700,
+          "o": 1333.33,
+          "h": 1335.28,
+          "l": 1333.11,
+          "c": 1334.99
+        },
+        {
+          "t": 1795809600,
+          "o": 1334.99,
+          "h": 1335.62,
+          "l": 1333.82,
+          "c": 1335.62
+        },
+        {
+          "t": 1795810500,
+          "o": 1335.62,
+          "h": 1338.5,
+          "l": 1335.17,
+          "c": 1337.64
+        },
+        {
+          "t": 1795811400,
+          "o": 1337.64,
+          "h": 1338.13,
+          "l": 1336.51,
+          "c": 1336.7
+        },
+        {
+          "t": 1795812300,
+          "o": 1336.7,
+          "h": 1339.91,
+          "l": 1336.66,
+          "c": 1339.9
+        },
+        {
+          "t": 1795813200,
+          "o": 1339.9,
+          "h": 1340.65,
+          "l": 1338.87,
+          "c": 1339.14
+        },
+        {
+          "t": 1795814100,
+          "o": 1339.14,
+          "h": 1339.44,
+          "l": 1338.84,
+          "c": 1339.11
+        },
+        {
+          "t": 1795815000,
+          "o": 1339.11,
+          "h": 1339.11,
+          "l": 1337.41,
+          "c": 1337.88
+        },
+        {
+          "t": 1795815900,
+          "o": 1337.88,
+          "h": 1339.56,
+          "l": 1337.69,
+          "c": 1339.11
+        },
+        {
+          "t": 1795816800,
+          "o": 1339.11,
+          "h": 1339.12,
+          "l": 1337.47,
+          "c": 1338.26
+        },
+        {
+          "t": 1795817700,
+          "o": 1338.26,
+          "h": 1338.96,
+          "l": 1337.15,
+          "c": 1338.92
+        },
+        {
+          "t": 1795818600,
+          "o": 1338.92,
+          "h": 1339.7,
+          "l": 1338.57,
+          "c": 1339.48
+        },
+        {
+          "t": 1795819500,
+          "o": 1339.48,
+          "h": 1340.78,
+          "l": 1339.39,
+          "c": 1339.39
+        },
+        {
+          "t": 1795820400,
+          "o": 1339.39,
+          "h": 1339.61,
+          "l": 1338.73,
+          "c": 1339.61
+        },
+        {
+          "t": 1795821300,
+          "o": 1339.61,
+          "h": 1340.25,
+          "l": 1338.65,
+          "c": 1339.6
+        },
+        {
+          "t": 1795822200,
+          "o": 1339.6,
+          "h": 1340.81,
+          "l": 1339.4,
+          "c": 1340.29
+        },
+        {
+          "t": 1795823100,
+          "o": 1340.29,
+          "h": 1341.0,
+          "l": 1339.08,
+          "c": 1339.15
+        },
+        {
+          "t": 1795824000,
+          "o": 1339.15,
+          "h": 1340.89,
+          "l": 1339.15,
+          "c": 1339.35
+        },
+        {
+          "t": 1795824900,
+          "o": 1339.35,
+          "h": 1340.77,
+          "l": 1338.89,
+          "c": 1339.13
+        },
+        {
+          "t": 1795825800,
+          "o": 1339.13,
+          "h": 1339.13,
+          "l": 1338.65,
+          "c": 1338.9
+        },
+        {
+          "t": 1795826700,
+          "o": 1338.9,
+          "h": 1339.96,
+          "l": 1338.49,
+          "c": 1339.41
+        },
+        {
+          "t": 1795827600,
+          "o": 1339.41,
+          "h": 1339.56,
+          "l": 1337.74,
+          "c": 1338.15
+        },
+        {
+          "t": 1795828500,
+          "o": 1338.15,
+          "h": 1339.88,
+          "l": 1338.05,
+          "c": 1339.61
+        },
+        {
+          "t": 1795829400,
+          "o": 1339.61,
+          "h": 1340.72,
+          "l": 1339.33,
+          "c": 1339.51
+        },
+        {
+          "t": 1795830300,
+          "o": 1339.51,
+          "h": 1341.01,
+          "l": 1339.34,
+          "c": 1340.85
+        },
+        {
+          "t": 1795831200,
+          "o": 1340.85,
+          "h": 1341.13,
+          "l": 1340.52,
+          "c": 1340.77
+        },
+        {
+          "t": 1795832100,
+          "o": 1340.77,
+          "h": 1342.23,
+          "l": 1340.66,
+          "c": 1342.23
+        },
+        {
+          "t": 1795833000,
+          "o": 1342.23,
+          "h": 1342.26,
+          "l": 1340.8,
+          "c": 1342.12
+        },
+        {
+          "t": 1795833900,
+          "o": 1342.12,
+          "h": 1342.17,
+          "l": 1341.73,
+          "c": 1341.85
+        },
+        {
+          "t": 1795834800,
+          "o": 1341.85,
+          "h": 1342.26,
+          "l": 1340.82,
+          "c": 1341.66
+        },
+        {
+          "t": 1795835700,
+          "o": 1341.66,
+          "h": 1341.74,
+          "l": 1340.68,
+          "c": 1340.68
+        },
+        {
+          "t": 1795836600,
+          "o": 1340.68,
+          "h": 1341.19,
+          "l": 1340.18,
+          "c": 1341.07
+        },
+        {
+          "t": 1795837500,
+          "o": 1341.07,
+          "h": 1341.13,
+          "l": 1338.95,
+          "c": 1339.28
+        },
+        {
+          "t": 1795838400,
+          "o": 1339.28,
+          "h": 1339.79,
+          "l": 1338.96,
+          "c": 1339.26
+        },
+        {
+          "t": 1795839300,
+          "o": 1339.26,
+          "h": 1340.56,
+          "l": 1339.26,
+          "c": 1339.71
+        }
+      ],
+      "candles_5m": [
+        {
+          "t": 1795816500,
+          "o": 1338.76,
+          "h": 1339.44,
+          "l": 1338.72,
+          "c": 1339.11
+        },
+        {
+          "t": 1795816800,
+          "o": 1339.11,
+          "h": 1339.12,
+          "l": 1337.47,
+          "c": 1339.02
+        },
+        {
+          "t": 1795817100,
+          "o": 1339.02,
+          "h": 1339.03,
+          "l": 1338.48,
+          "c": 1338.51
+        },
+        {
+          "t": 1795817400,
+          "o": 1338.51,
+          "h": 1338.51,
+          "l": 1337.98,
+          "c": 1338.26
+        },
+        {
+          "t": 1795817700,
+          "o": 1338.26,
+          "h": 1338.95,
+          "l": 1337.15,
+          "c": 1337.43
+        },
+        {
+          "t": 1795818000,
+          "o": 1337.43,
+          "h": 1338.47,
+          "l": 1337.43,
+          "c": 1338.47
+        },
+        {
+          "t": 1795818300,
+          "o": 1338.47,
+          "h": 1338.96,
+          "l": 1338.16,
+          "c": 1338.92
+        },
+        {
+          "t": 1795818600,
+          "o": 1338.92,
+          "h": 1338.92,
+          "l": 1338.57,
+          "c": 1338.9
+        },
+        {
+          "t": 1795818900,
+          "o": 1338.9,
+          "h": 1339.54,
+          "l": 1338.75,
+          "c": 1339.54
+        },
+        {
+          "t": 1795819200,
+          "o": 1339.54,
+          "h": 1339.7,
+          "l": 1339.29,
+          "c": 1339.48
+        },
+        {
+          "t": 1795819500,
+          "o": 1339.48,
+          "h": 1339.82,
+          "l": 1339.42,
+          "c": 1339.46
+        },
+        {
+          "t": 1795819800,
+          "o": 1339.46,
+          "h": 1340.78,
+          "l": 1339.42,
+          "c": 1339.7
+        },
+        {
+          "t": 1795820100,
+          "o": 1339.7,
+          "h": 1340.1,
+          "l": 1339.39,
+          "c": 1339.39
+        },
+        {
+          "t": 1795820400,
+          "o": 1339.39,
+          "h": 1339.39,
+          "l": 1338.73,
+          "c": 1339.26
+        },
+        {
+          "t": 1795820700,
+          "o": 1339.26,
+          "h": 1339.26,
+          "l": 1338.84,
+          "c": 1339.22
+        },
+        {
+          "t": 1795821000,
+          "o": 1339.22,
+          "h": 1339.61,
+          "l": 1339.09,
+          "c": 1339.61
+        },
+        {
+          "t": 1795821300,
+          "o": 1339.61,
+          "h": 1340.25,
+          "l": 1339.61,
+          "c": 1340.2
+        },
+        {
+          "t": 1795821600,
+          "o": 1340.2,
+          "h": 1340.25,
+          "l": 1338.65,
+          "c": 1338.68
+        },
+        {
+          "t": 1795821900,
+          "o": 1338.68,
+          "h": 1339.6,
+          "l": 1338.66,
+          "c": 1339.6
+        },
+        {
+          "t": 1795822200,
+          "o": 1339.6,
+          "h": 1339.78,
+          "l": 1339.4,
+          "c": 1339.48
+        },
+        {
+          "t": 1795822500,
+          "o": 1339.48,
+          "h": 1340.63,
+          "l": 1339.48,
+          "c": 1340.57
+        },
+        {
+          "t": 1795822800,
+          "o": 1340.57,
+          "h": 1340.81,
+          "l": 1340.29,
+          "c": 1340.29
+        },
+        {
+          "t": 1795823100,
+          "o": 1340.29,
+          "h": 1340.3,
+          "l": 1339.93,
+          "c": 1339.98
+        },
+        {
+          "t": 1795823400,
+          "o": 1339.98,
+          "h": 1340.05,
+          "l": 1339.71,
+          "c": 1339.72
+        },
+        {
+          "t": 1795823700,
+          "o": 1339.72,
+          "h": 1341.0,
+          "l": 1339.08,
+          "c": 1339.15
+        },
+        {
+          "t": 1795824000,
+          "o": 1339.15,
+          "h": 1340.0,
+          "l": 1339.15,
+          "c": 1339.66
+        },
+        {
+          "t": 1795824300,
+          "o": 1339.66,
+          "h": 1339.83,
+          "l": 1339.45,
+          "c": 1339.66
+        },
+        {
+          "t": 1795824600,
+          "o": 1339.66,
+          "h": 1340.89,
+          "l": 1339.24,
+          "c": 1339.35
+        },
+        {
+          "t": 1795824900,
+          "o": 1339.35,
+          "h": 1339.82,
+          "l": 1339.35,
+          "c": 1339.75
+        },
+        {
+          "t": 1795825200,
+          "o": 1339.75,
+          "h": 1340.77,
+          "l": 1338.89,
+          "c": 1338.95
+        },
+        {
+          "t": 1795825500,
+          "o": 1338.95,
+          "h": 1339.16,
+          "l": 1338.91,
+          "c": 1339.13
+        },
+        {
+          "t": 1795825800,
+          "o": 1339.13,
+          "h": 1339.13,
+          "l": 1338.85,
+          "c": 1338.85
+        },
+        {
+          "t": 1795826100,
+          "o": 1338.85,
+          "h": 1339.04,
+          "l": 1338.76,
+          "c": 1338.76
+        },
+        {
+          "t": 1795826400,
+          "o": 1338.76,
+          "h": 1339.11,
+          "l": 1338.65,
+          "c": 1338.9
+        },
+        {
+          "t": 1795826700,
+          "o": 1338.9,
+          "h": 1339.11,
+          "l": 1338.8,
+          "c": 1339.07
+        },
+        {
+          "t": 1795827000,
+          "o": 1339.07,
+          "h": 1339.2,
+          "l": 1338.49,
+          "c": 1338.71
+        },
+        {
+          "t": 1795827300,
+          "o": 1338.71,
+          "h": 1339.96,
+          "l": 1338.61,
+          "c": 1339.41
+        },
+        {
+          "t": 1795827600,
+          "o": 1339.41,
+          "h": 1339.56,
+          "l": 1339.32,
+          "c": 1339.45
+        },
+        {
+          "t": 1795827900,
+          "o": 1339.45,
+          "h": 1339.48,
+          "l": 1338.98,
+          "c": 1338.98
+        },
+        {
+          "t": 1795828200,
+          "o": 1338.98,
+          "h": 1339.01,
+          "l": 1337.74,
+          "c": 1338.15
+        },
+        {
+          "t": 1795828500,
+          "o": 1338.15,
+          "h": 1339.5,
+          "l": 1338.05,
+          "c": 1339.5
+        },
+        {
+          "t": 1795828800,
+          "o": 1339.5,
+          "h": 1339.88,
+          "l": 1339.33,
+          "c": 1339.63
+        },
+        {
+          "t": 1795829100,
+          "o": 1339.63,
+          "h": 1339.63,
+          "l": 1339.32,
+          "c": 1339.61
+        },
+        {
+          "t": 1795829400,
+          "o": 1339.61,
+          "h": 1339.63,
+          "l": 1339.33,
+          "c": 1339.51
+        },
+        {
+          "t": 1795829700,
+          "o": 1339.51,
+          "h": 1340.72,
+          "l": 1339.4,
+          "c": 1339.99
+        },
+        {
+          "t": 1795830000,
+          "o": 1339.99,
+          "h": 1340.36,
+          "l": 1339.47,
+          "c": 1339.51
+        },
+        {
+          "t": 1795830300,
+          "o": 1339.51,
+          "h": 1339.8,
+          "l": 1339.34,
+          "c": 1339.76
+        },
+        {
+          "t": 1795830600,
+          "o": 1339.76,
+          "h": 1340.54,
+          "l": 1339.6,
+          "c": 1340.54
+        },
+        {
+          "t": 1795830900,
+          "o": 1340.54,
+          "h": 1341.01,
+          "l": 1340.54,
+          "c": 1340.85
+        },
+        {
+          "t": 1795831200,
+          "o": 1340.85,
+          "h": 1340.93,
+          "l": 1340.6,
+          "c": 1340.6
+        },
+        {
+          "t": 1795831500,
+          "o": 1340.6,
+          "h": 1340.92,
+          "l": 1340.52,
+          "c": 1340.75
+        },
+        {
+          "t": 1795831800,
+          "o": 1340.75,
+          "h": 1341.13,
+          "l": 1340.65,
+          "c": 1340.77
+        },
+        {
+          "t": 1795832100,
+          "o": 1340.77,
+          "h": 1341.47,
+          "l": 1340.66,
+          "c": 1341.45
+        },
+        {
+          "t": 1795832400,
+          "o": 1341.45,
+          "h": 1342.0,
+          "l": 1341.45,
+          "c": 1341.93
+        },
+        {
+          "t": 1795832700,
+          "o": 1341.93,
+          "h": 1342.23,
+          "l": 1341.84,
+          "c": 1342.23
+        },
+        {
+          "t": 1795833000,
+          "o": 1342.23,
+          "h": 1342.23,
+          "l": 1340.8,
+          "c": 1341.67
+        },
+        {
+          "t": 1795833300,
+          "o": 1341.67,
+          "h": 1341.67,
+          "l": 1341.11,
+          "c": 1341.33
+        },
+        {
+          "t": 1795833600,
+          "o": 1341.33,
+          "h": 1342.26,
+          "l": 1341.25,
+          "c": 1342.12
+        },
+        {
+          "t": 1795833900,
+          "o": 1342.12,
+          "h": 1342.17,
+          "l": 1341.76,
+          "c": 1341.9
+        },
+        {
+          "t": 1795834200,
+          "o": 1341.9,
+          "h": 1342.12,
+          "l": 1341.73,
+          "c": 1341.85
+        },
+        {
+          "t": 1795834500,
+          "o": 1341.85,
+          "h": 1342.13,
+          "l": 1341.84,
+          "c": 1341.85
+        },
+        {
+          "t": 1795834800,
+          "o": 1341.85,
+          "h": 1342.03,
+          "l": 1341.61,
+          "c": 1342.0
+        },
+        {
+          "t": 1795835100,
+          "o": 1342.0,
+          "h": 1342.14,
+          "l": 1341.79,
+          "c": 1341.86
+        },
+        {
+          "t": 1795835400,
+          "o": 1341.86,
+          "h": 1342.26,
+          "l": 1340.82,
+          "c": 1341.66
+        },
+        {
+          "t": 1795835700,
+          "o": 1341.66,
+          "h": 1341.74,
+          "l": 1341.37,
+          "c": 1341.37
+        },
+        {
+          "t": 1795836000,
+          "o": 1341.37,
+          "h": 1341.6,
+          "l": 1341.11,
+          "c": 1341.5
+        },
+        {
+          "t": 1795836300,
+          "o": 1341.5,
+          "h": 1341.61,
+          "l": 1340.68,
+          "c": 1340.68
+        },
+        {
+          "t": 1795836600,
+          "o": 1340.68,
+          "h": 1340.81,
+          "l": 1340.18,
+          "c": 1340.81
+        },
+        {
+          "t": 1795836900,
+          "o": 1340.81,
+          "h": 1341.16,
+          "l": 1340.81,
+          "c": 1341.16
+        },
+        {
+          "t": 1795837200,
+          "o": 1341.16,
+          "h": 1341.19,
+          "l": 1340.86,
+          "c": 1341.07
+        },
+        {
+          "t": 1795837500,
+          "o": 1341.07,
+          "h": 1341.13,
+          "l": 1340.73,
+          "c": 1340.73
+        },
+        {
+          "t": 1795837800,
+          "o": 1340.73,
+          "h": 1340.77,
+          "l": 1338.96,
+          "c": 1338.98
+        },
+        {
+          "t": 1795838100,
+          "o": 1338.98,
+          "h": 1339.49,
+          "l": 1338.95,
+          "c": 1339.28
+        },
+        {
+          "t": 1795838400,
+          "o": 1339.28,
+          "h": 1339.43,
+          "l": 1339.28,
+          "c": 1339.43
+        },
+        {
+          "t": 1795838700,
+          "o": 1339.43,
+          "h": 1339.79,
+          "l": 1339.35,
+          "c": 1339.7
+        },
+        {
+          "t": 1795839000,
+          "o": 1339.7,
+          "h": 1339.76,
+          "l": 1338.96,
+          "c": 1339.26
+        },
+        {
+          "t": 1795839300,
+          "o": 1339.26,
+          "h": 1339.72,
+          "l": 1339.26,
+          "c": 1339.66
+        },
+        {
+          "t": 1795839600,
+          "o": 1339.66,
+          "h": 1340.07,
+          "l": 1339.66,
+          "c": 1340.07
+        },
+        {
+          "t": 1795839900,
+          "o": 1340.07,
+          "h": 1340.56,
+          "l": 1339.66,
+          "c": 1339.71
+        },
+        {
+          "t": 1795840200,
+          "o": 1339.71,
+          "h": 1339.89,
+          "l": 1339.39,
+          "c": 1339.46
+        }
+      ],
+      "execution_tf": "1m",
+      "bid": 1339.4,
+      "ask": 1340.97,
+      "quote_valid": true,
+      "quote_ts": 1795840551442,
+      "analysis_fresh": true,
+      "htf_regime": "TREND_UP",
+      "regime": "TREND_UP",
+      "local_wave": {
+        "side": 0,
+        "m5": {
+          "side": 0,
+          "move_atr": 0.324,
+          "efficiency": 0.141,
+          "directional_bars": 2
+        },
+        "m15": {
+          "side": -1,
+          "move_atr": 1.014,
+          "efficiency": 0.602,
+          "directional_bars": 2
+        },
+        "m5_slow": {
+          "side": 0,
+          "move_atr": 0.778,
+          "efficiency": 0.186,
+          "directional_bars": 5
+        },
+        "breaks": []
+      },
+      "relative_strength": {
+        "available": false,
+        "side": 0
+      },
+      "wave_side": 0,
+      "observed_wave_side": -1,
+      "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
+      "direction_diagnostics": {
+        "1": {
+          "side": 1,
+          "local_support": false,
+          "windows_checked": [
+            {
+              "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": 0.293,
+              "break_distance_atr": -4.597,
+              "rvol": 0.474,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
+              "offset": 1,
+              "known_ts": 1795840440000,
+              "body_atr": -2.007,
+              "break_distance_atr": -5.46,
+              "rvol": 1.335,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
+              "offset": 2,
+              "known_ts": 1795840380000,
+              "body_atr": 0.241,
+              "break_distance_atr": -3.56,
+              "rvol": 1.19,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": -0.405,
+              "break_distance_atr": -1.782,
+              "rvol": 0.952,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
+              "known_ts": 1795840200000,
+              "body_atr": -0.621,
+              "break_distance_atr": -0.621,
+              "rvol": 1.132,
+              "local_support": false,
+              "higher_opposes": false
             }
           ],
           "detected": 0,
@@ -6839,52 +8477,52 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 3.073,
-              "break_distance_atr": 1.707,
-              "rvol": 3.634,
+              "known_ts": 1795840500000,
+              "body_atr": -0.293,
+              "break_distance_atr": -0.293,
+              "rvol": 0.474,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -0.651,
-              "break_distance_atr": -1.302,
-              "rvol": 2.636,
+              "known_ts": 1795840440000,
+              "body_atr": 2.007,
+              "break_distance_atr": 1.26,
+              "rvol": 1.335,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": 0.292,
-              "break_distance_atr": -0.583,
-              "rvol": 0.729,
+              "known_ts": 1795840380000,
+              "body_atr": -0.241,
+              "break_distance_atr": -0.77,
+              "rvol": 1.19,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": -0.091,
-              "break_distance_atr": -0.364,
-              "rvol": 0.706,
+              "known_ts": 1795840500000,
+              "body_atr": 0.405,
+              "break_distance_atr": -0.81,
+              "rvol": 0.952,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": 0.892,
-              "break_distance_atr": -0.268,
-              "rvol": 0.744,
+              "known_ts": 1795840200000,
+              "body_atr": 0.621,
+              "break_distance_atr": -1.312,
+              "rvol": 1.132,
               "local_support": false,
-              "higher_opposes": false
+              "higher_opposes": true
             }
           ],
           "detected": 0,
@@ -6901,19 +8539,19 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/LINK_USDT",
-      "price": 9.222,
+      "price": 9.223,
       "tick": 0.001,
-      "change_24h_pct": -1.05,
-      "volume_24h": 30789639.0,
-      "funding_rate": 4.5e-05,
-      "funding_pct": 0.0045,
-      "open_interest": 36092314.0,
+      "change_24h_pct": -1.04,
+      "volume_24h": 30792192.0,
+      "funding_rate": 4.7e-05,
+      "funding_pct": 0.0047,
+      "open_interest": 36104180.0,
       "funding_regime": "NEUTRAL",
       "bias_4h": 0,
       "bias_1h": -1,
       "bias_15m": -1,
-      "status": "WAIT",
-      "status_ua": "НЕМАЄ СИГНАЛУ",
+      "status": "WATCH",
+      "status_ua": "ХВИЛЯ · ЧЕКАЄМО ТРИГЕР",
       "score": 0,
       "side": 0,
       "side_ua": "НЕЙТРАЛЬНО",
@@ -6924,10 +8562,10 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.27,
-      "range_pos": 0.208,
+      "rvol": 0.08,
+      "range_pos": 0.21,
       "btc_aligned": true,
-      "reason_ua": "LONG та SHORT перевірено; немає підтвердженого тригера",
+      "reason_ua": "Локальна низхідна хвиля · немає підтвердженого входу",
       "sizing": null,
       "cluster_locked": false,
       "candles_15m": [
@@ -7494,13 +9132,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795816200,
-          "o": 9.33,
-          "h": 9.332,
-          "l": 9.321,
-          "c": 9.332
-        },
-        {
           "t": 1795816500,
           "o": 9.332,
           "h": 9.335,
@@ -8052,22 +9683,29 @@
           "h": 9.237,
           "l": 9.232,
           "c": 9.234
+        },
+        {
+          "t": 1795840200,
+          "o": 9.234,
+          "h": 9.234,
+          "l": 9.22,
+          "c": 9.221
         }
       ],
       "execution_tf": "1m",
-      "bid": 9.225,
-      "ask": 9.226,
+      "bid": 9.221,
+      "ask": 9.222,
       "quote_valid": true,
-      "quote_ts": 1795840274978,
+      "quote_ts": 1795840550986,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
-      "regime": "RANGE_TRANSITION",
+      "regime": "LOCAL_DOWN",
       "local_wave": {
-        "side": 0,
+        "side": -1,
         "m5": {
-          "side": 0,
-          "move_atr": 0.764,
-          "efficiency": 0.857,
+          "side": -1,
+          "move_atr": 1.647,
+          "efficiency": 0.923,
           "directional_bars": 2
         },
         "m15": {
@@ -8077,12 +9715,18 @@
           "directional_bars": 2
         },
         "m5_slow": {
-          "side": 0,
-          "move_atr": 0.064,
-          "efficiency": 0.023,
-          "directional_bars": 3
+          "side": -1,
+          "move_atr": 1.578,
+          "efficiency": 0.489,
+          "directional_bars": 4
         },
-        "breaks": []
+        "breaks": [
+          {
+            "side": -1,
+            "level": 9.231,
+            "ts": 1795840200000
+          }
+        ]
       },
       "relative_strength": {
         "available": true,
@@ -8091,8 +9735,8 @@
         "asset_return_pct": 0.195,
         "btc_return_pct": 0.204
       },
-      "wave_side": 0,
-      "observed_wave_side": 0,
+      "wave_side": -1,
+      "observed_wave_side": -1,
       "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
       "direction_diagnostics": {
         "1": {
@@ -8102,19 +9746,19 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -4.083,
-              "break_distance_atr": -4.958,
-              "rvol": 0.505,
+              "known_ts": 1795840500000,
+              "body_atr": -1.167,
+              "break_distance_atr": -3.033,
+              "rvol": 0.014,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 0.264,
-              "break_distance_atr": -0.792,
+              "known_ts": 1795840440000,
+              "body_atr": 0.966,
+              "break_distance_atr": -1.931,
               "rvol": 0.018,
               "local_support": false,
               "higher_opposes": true
@@ -8122,30 +9766,30 @@
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": -0.25,
-              "break_distance_atr": -1.25,
-              "rvol": 0.012,
+              "known_ts": 1795840380000,
+              "body_atr": 0.491,
+              "break_distance_atr": -3.684,
+              "rvol": 0.285,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": 0.064,
-              "break_distance_atr": -1.082,
-              "rvol": 0.259,
+              "known_ts": 1795840500000,
+              "body_atr": -0.892,
+              "break_distance_atr": -2.059,
+              "rvol": 0.065,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": -0.715,
-              "break_distance_atr": -1.072,
-              "rvol": 0.734,
+              "known_ts": 1795840200000,
+              "body_atr": 0.064,
+              "break_distance_atr": -1.082,
+              "rvol": 0.259,
               "local_support": false,
               "higher_opposes": true
             }
@@ -8156,24 +9800,24 @@
         },
         "-1": {
           "side": -1,
-          "local_support": false,
+          "local_support": true,
           "windows_checked": [
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 4.083,
-              "break_distance_atr": 3.208,
-              "rvol": 0.505,
-              "local_support": false,
+              "known_ts": 1795840500000,
+              "body_atr": 1.167,
+              "break_distance_atr": -0.233,
+              "rvol": 0.014,
+              "local_support": true,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -0.264,
-              "break_distance_atr": -0.792,
+              "known_ts": 1795840440000,
+              "body_atr": -0.966,
+              "break_distance_atr": -1.448,
               "rvol": 0.018,
               "local_support": false,
               "higher_opposes": false
@@ -8181,30 +9825,30 @@
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": 0.25,
-              "break_distance_atr": -0.5,
-              "rvol": 0.012,
+              "known_ts": 1795840380000,
+              "body_atr": -0.491,
+              "break_distance_atr": -0.491,
+              "rvol": 0.285,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": -0.064,
-              "break_distance_atr": -0.191,
-              "rvol": 0.259,
-              "local_support": false,
+              "known_ts": 1795840500000,
+              "body_atr": 0.892,
+              "break_distance_atr": 0.686,
+              "rvol": 0.065,
+              "local_support": true,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": 0.715,
-              "break_distance_atr": 0.06,
-              "rvol": 0.734,
+              "known_ts": 1795840200000,
+              "body_atr": -0.064,
+              "break_distance_atr": -0.191,
+              "rvol": 0.259,
               "local_support": false,
               "higher_opposes": false
             }
@@ -8226,9 +9870,9 @@
       "price": 0.3864,
       "tick": 0.0001,
       "change_24h_pct": 1.41,
-      "volume_24h": 71835156.0,
-      "funding_rate": -1e-05,
-      "funding_pct": -0.001,
+      "volume_24h": 71843307.0,
+      "funding_rate": -1.7e-05,
+      "funding_pct": -0.0017,
       "open_interest": 227714886.0,
       "funding_regime": "NEUTRAL",
       "bias_4h": 0,
@@ -8816,13 +10460,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795816200,
-          "o": 0.3898,
-          "h": 0.3901,
-          "l": 0.3897,
-          "c": 0.3898
-        },
-        {
           "t": 1795816500,
           "o": 0.3898,
           "h": 0.3906,
@@ -9374,13 +11011,20 @@
           "h": 0.3869,
           "l": 0.3865,
           "c": 0.3868
+        },
+        {
+          "t": 1795840200,
+          "o": 0.3868,
+          "h": 0.3868,
+          "l": 0.386,
+          "c": 0.3862
         }
       ],
       "execution_tf": "1m",
-      "bid": 0.3864,
-      "ask": 0.3865,
+      "bid": 0.3862,
+      "ask": 0.3863,
       "quote_valid": true,
-      "quote_ts": 1795840275046,
+      "quote_ts": 1795840551057,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
       "regime": "RANGE_TRANSITION",
@@ -9388,9 +11032,9 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.0,
-          "efficiency": 0.0,
-          "directional_bars": 0
+          "move_atr": 1.176,
+          "efficiency": 0.417,
+          "directional_bars": 2
         },
         "m15": {
           "side": 0,
@@ -9400,9 +11044,9 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 1.197,
-          "efficiency": 0.263,
-          "directional_bars": 5
+          "move_atr": 0.0,
+          "efficiency": 0.0,
+          "directional_bars": 0
         },
         "breaks": []
       },
@@ -9424,52 +11068,52 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -1.75,
-              "break_distance_atr": -2.45,
-              "rvol": 0.258,
+              "known_ts": 1795840500000,
+              "body_atr": -1.273,
+              "break_distance_atr": -2.227,
+              "rvol": 0.362,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -0.35,
-              "break_distance_atr": -1.75,
-              "rvol": 0.151,
+              "known_ts": 1795840440000,
+              "body_atr": 0.651,
+              "break_distance_atr": -0.977,
+              "rvol": 0.281,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": 0.318,
-              "break_distance_atr": -1.273,
-              "rvol": 0.245,
+              "known_ts": 1795840380000,
+              "body_atr": 1.077,
+              "break_distance_atr": -1.795,
+              "rvol": 0.341,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": -0.706,
+              "break_distance_atr": -2.0,
+              "rvol": 0.054,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
               "known_ts": 1795840200000,
               "body_atr": 0.12,
               "break_distance_atr": -1.316,
               "rvol": 0.041,
               "local_support": false,
               "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": -1.363,
-              "break_distance_atr": -1.487,
-              "rvol": 0.047,
-              "local_support": false,
-              "higher_opposes": false
             }
           ],
           "detected": 0,
@@ -9483,1372 +11127,50 @@
             {
               "tf": "M1",
               "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 1.75,
-              "break_distance_atr": 0.7,
-              "rvol": 0.258,
+              "known_ts": 1795840500000,
+              "body_atr": 1.273,
+              "break_distance_atr": -0.636,
+              "rvol": 0.362,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 0.35,
-              "break_distance_atr": -1.05,
-              "rvol": 0.151,
+              "known_ts": 1795840440000,
+              "body_atr": -0.651,
+              "break_distance_atr": -1.953,
+              "rvol": 0.281,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": -0.318,
-              "break_distance_atr": -1.273,
-              "rvol": 0.245,
+              "known_ts": 1795840380000,
+              "body_atr": -1.077,
+              "break_distance_atr": -1.077,
+              "rvol": 0.341,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
+              "known_ts": 1795840500000,
+              "body_atr": 0.706,
+              "break_distance_atr": -0.235,
+              "rvol": 0.054,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
               "known_ts": 1795840200000,
               "body_atr": -0.12,
               "break_distance_atr": -1.077,
               "rvol": 0.041,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": 1.363,
-              "break_distance_atr": -1.115,
-              "rvol": 0.047,
-              "local_support": false,
-              "higher_opposes": false
-            }
-          ],
-          "detected": 0,
-          "ready": 0,
-          "rejections": []
-        }
-      }
-    },
-    {
-      "symbol": "ORDI_USDT",
-      "label": "ORDI",
-      "short": "ORDI",
-      "cluster": "CRYPTO",
-      "cluster_ua": "КРИПТА",
-      "fee_tag": "0% Maker / 0.02%",
-      "mexc_url": "https://www.mexc.com/futures/ORDI_USDT",
-      "price": 2.621,
-      "tick": 0.001,
-      "change_24h_pct": -0.71,
-      "volume_24h": 2112019.0,
-      "funding_rate": 5e-05,
-      "funding_pct": 0.005,
-      "open_interest": 14337238.0,
-      "funding_regime": "NEUTRAL",
-      "bias_4h": 0,
-      "bias_1h": -1,
-      "bias_15m": -1,
-      "status": "WAIT",
-      "status_ua": "НЕМАЄ СИГНАЛУ",
-      "score": 0,
-      "side": 0,
-      "side_ua": "НЕЙТРАЛЬНО",
-      "setup": null,
-      "setup_ua": "Немає підтвердженого сетапу",
-      "order_type": null,
-      "entry": null,
-      "stop": null,
-      "tp": null,
-      "rr": null,
-      "rvol": 1.95,
-      "range_pos": 0.248,
-      "btc_aligned": true,
-      "reason_ua": "LONG та SHORT перевірено; немає підтвердженого тригера",
-      "sizing": null,
-      "cluster_locked": false,
-      "candles_15m": [
-        {
-          "t": 1795768200,
-          "o": 2.713,
-          "h": 2.713,
-          "l": 2.701,
-          "c": 2.702
-        },
-        {
-          "t": 1795769100,
-          "o": 2.702,
-          "h": 2.714,
-          "l": 2.701,
-          "c": 2.71
-        },
-        {
-          "t": 1795770000,
-          "o": 2.71,
-          "h": 2.718,
-          "l": 2.705,
-          "c": 2.706
-        },
-        {
-          "t": 1795770900,
-          "o": 2.706,
-          "h": 2.709,
-          "l": 2.703,
-          "c": 2.703
-        },
-        {
-          "t": 1795771800,
-          "o": 2.703,
-          "h": 2.715,
-          "l": 2.703,
-          "c": 2.707
-        },
-        {
-          "t": 1795772700,
-          "o": 2.707,
-          "h": 2.71,
-          "l": 2.699,
-          "c": 2.708
-        },
-        {
-          "t": 1795773600,
-          "o": 2.708,
-          "h": 2.709,
-          "l": 2.703,
-          "c": 2.706
-        },
-        {
-          "t": 1795774500,
-          "o": 2.706,
-          "h": 2.715,
-          "l": 2.702,
-          "c": 2.713
-        },
-        {
-          "t": 1795775400,
-          "o": 2.713,
-          "h": 2.719,
-          "l": 2.71,
-          "c": 2.711
-        },
-        {
-          "t": 1795776300,
-          "o": 2.711,
-          "h": 2.713,
-          "l": 2.707,
-          "c": 2.708
-        },
-        {
-          "t": 1795777200,
-          "o": 2.708,
-          "h": 2.709,
-          "l": 2.702,
-          "c": 2.706
-        },
-        {
-          "t": 1795778100,
-          "o": 2.706,
-          "h": 2.708,
-          "l": 2.701,
-          "c": 2.703
-        },
-        {
-          "t": 1795779000,
-          "o": 2.703,
-          "h": 2.712,
-          "l": 2.703,
-          "c": 2.705
-        },
-        {
-          "t": 1795779900,
-          "o": 2.705,
-          "h": 2.714,
-          "l": 2.698,
-          "c": 2.714
-        },
-        {
-          "t": 1795780800,
-          "o": 2.714,
-          "h": 2.72,
-          "l": 2.708,
-          "c": 2.718
-        },
-        {
-          "t": 1795781700,
-          "o": 2.718,
-          "h": 2.719,
-          "l": 2.711,
-          "c": 2.712
-        },
-        {
-          "t": 1795782600,
-          "o": 2.712,
-          "h": 2.715,
-          "l": 2.709,
-          "c": 2.711
-        },
-        {
-          "t": 1795783500,
-          "o": 2.711,
-          "h": 2.713,
-          "l": 2.705,
-          "c": 2.711
-        },
-        {
-          "t": 1795784400,
-          "o": 2.711,
-          "h": 2.713,
-          "l": 2.706,
-          "c": 2.71
-        },
-        {
-          "t": 1795785300,
-          "o": 2.71,
-          "h": 2.712,
-          "l": 2.703,
-          "c": 2.708
-        },
-        {
-          "t": 1795786200,
-          "o": 2.708,
-          "h": 2.717,
-          "l": 2.707,
-          "c": 2.712
-        },
-        {
-          "t": 1795787100,
-          "o": 2.712,
-          "h": 2.723,
-          "l": 2.711,
-          "c": 2.712
-        },
-        {
-          "t": 1795788000,
-          "o": 2.712,
-          "h": 2.718,
-          "l": 2.709,
-          "c": 2.712
-        },
-        {
-          "t": 1795788900,
-          "o": 2.712,
-          "h": 2.715,
-          "l": 2.697,
-          "c": 2.703
-        },
-        {
-          "t": 1795789800,
-          "o": 2.703,
-          "h": 2.703,
-          "l": 2.628,
-          "c": 2.649
-        },
-        {
-          "t": 1795790700,
-          "o": 2.649,
-          "h": 2.652,
-          "l": 2.605,
-          "c": 2.613
-        },
-        {
-          "t": 1795791600,
-          "o": 2.613,
-          "h": 2.621,
-          "l": 2.587,
-          "c": 2.616
-        },
-        {
-          "t": 1795792500,
-          "o": 2.616,
-          "h": 2.625,
-          "l": 2.602,
-          "c": 2.623
-        },
-        {
-          "t": 1795793400,
-          "o": 2.623,
-          "h": 2.644,
-          "l": 2.623,
-          "c": 2.64
-        },
-        {
-          "t": 1795794300,
-          "o": 2.64,
-          "h": 2.643,
-          "l": 2.628,
-          "c": 2.64
-        },
-        {
-          "t": 1795795200,
-          "o": 2.64,
-          "h": 2.647,
-          "l": 2.636,
-          "c": 2.642
-        },
-        {
-          "t": 1795796100,
-          "o": 2.642,
-          "h": 2.646,
-          "l": 2.632,
-          "c": 2.638
-        },
-        {
-          "t": 1795797000,
-          "o": 2.638,
-          "h": 2.652,
-          "l": 2.63,
-          "c": 2.647
-        },
-        {
-          "t": 1795797900,
-          "o": 2.647,
-          "h": 2.653,
-          "l": 2.636,
-          "c": 2.636
-        },
-        {
-          "t": 1795798800,
-          "o": 2.636,
-          "h": 2.651,
-          "l": 2.632,
-          "c": 2.65
-        },
-        {
-          "t": 1795799700,
-          "o": 2.65,
-          "h": 2.652,
-          "l": 2.637,
-          "c": 2.64
-        },
-        {
-          "t": 1795800600,
-          "o": 2.64,
-          "h": 2.645,
-          "l": 2.625,
-          "c": 2.628
-        },
-        {
-          "t": 1795801500,
-          "o": 2.628,
-          "h": 2.659,
-          "l": 2.622,
-          "c": 2.659
-        },
-        {
-          "t": 1795802400,
-          "o": 2.659,
-          "h": 2.659,
-          "l": 2.645,
-          "c": 2.648
-        },
-        {
-          "t": 1795803300,
-          "o": 2.648,
-          "h": 2.649,
-          "l": 2.639,
-          "c": 2.64
-        },
-        {
-          "t": 1795804200,
-          "o": 2.64,
-          "h": 2.646,
-          "l": 2.639,
-          "c": 2.645
-        },
-        {
-          "t": 1795805100,
-          "o": 2.645,
-          "h": 2.659,
-          "l": 2.643,
-          "c": 2.656
-        },
-        {
-          "t": 1795806000,
-          "o": 2.656,
-          "h": 2.666,
-          "l": 2.654,
-          "c": 2.665
-        },
-        {
-          "t": 1795806900,
-          "o": 2.665,
-          "h": 2.67,
-          "l": 2.662,
-          "c": 2.666
-        },
-        {
-          "t": 1795807800,
-          "o": 2.666,
-          "h": 2.67,
-          "l": 2.661,
-          "c": 2.662
-        },
-        {
-          "t": 1795808700,
-          "o": 2.662,
-          "h": 2.662,
-          "l": 2.654,
-          "c": 2.658
-        },
-        {
-          "t": 1795809600,
-          "o": 2.658,
-          "h": 2.659,
-          "l": 2.647,
-          "c": 2.652
-        },
-        {
-          "t": 1795810500,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.646,
-          "c": 2.651
-        },
-        {
-          "t": 1795811400,
-          "o": 2.651,
-          "h": 2.656,
-          "l": 2.651,
-          "c": 2.654
-        },
-        {
-          "t": 1795812300,
-          "o": 2.654,
-          "h": 2.655,
-          "l": 2.646,
-          "c": 2.649
-        },
-        {
-          "t": 1795813200,
-          "o": 2.649,
-          "h": 2.652,
-          "l": 2.647,
-          "c": 2.647
-        },
-        {
-          "t": 1795814100,
-          "o": 2.647,
-          "h": 2.651,
-          "l": 2.646,
-          "c": 2.649
-        },
-        {
-          "t": 1795815000,
-          "o": 2.649,
-          "h": 2.654,
-          "l": 2.645,
-          "c": 2.653
-        },
-        {
-          "t": 1795815900,
-          "o": 2.653,
-          "h": 2.654,
-          "l": 2.646,
-          "c": 2.646
-        },
-        {
-          "t": 1795816800,
-          "o": 2.646,
-          "h": 2.648,
-          "l": 2.628,
-          "c": 2.633
-        },
-        {
-          "t": 1795817700,
-          "o": 2.633,
-          "h": 2.638,
-          "l": 2.63,
-          "c": 2.638
-        },
-        {
-          "t": 1795818600,
-          "o": 2.638,
-          "h": 2.643,
-          "l": 2.637,
-          "c": 2.642
-        },
-        {
-          "t": 1795819500,
-          "o": 2.642,
-          "h": 2.647,
-          "l": 2.639,
-          "c": 2.644
-        },
-        {
-          "t": 1795820400,
-          "o": 2.644,
-          "h": 2.651,
-          "l": 2.641,
-          "c": 2.643
-        },
-        {
-          "t": 1795821300,
-          "o": 2.643,
-          "h": 2.643,
-          "l": 2.639,
-          "c": 2.641
-        },
-        {
-          "t": 1795822200,
-          "o": 2.641,
-          "h": 2.657,
-          "l": 2.641,
-          "c": 2.655
-        },
-        {
-          "t": 1795823100,
-          "o": 2.655,
-          "h": 2.663,
-          "l": 2.652,
-          "c": 2.662
-        },
-        {
-          "t": 1795824000,
-          "o": 2.662,
-          "h": 2.665,
-          "l": 2.656,
-          "c": 2.657
-        },
-        {
-          "t": 1795824900,
-          "o": 2.657,
-          "h": 2.661,
-          "l": 2.644,
-          "c": 2.647
-        },
-        {
-          "t": 1795825800,
-          "o": 2.647,
-          "h": 2.654,
-          "l": 2.646,
-          "c": 2.65
-        },
-        {
-          "t": 1795826700,
-          "o": 2.65,
-          "h": 2.651,
-          "l": 2.643,
-          "c": 2.649
-        },
-        {
-          "t": 1795827600,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.643,
-          "c": 2.646
-        },
-        {
-          "t": 1795828500,
-          "o": 2.646,
-          "h": 2.657,
-          "l": 2.645,
-          "c": 2.645
-        },
-        {
-          "t": 1795829400,
-          "o": 2.645,
-          "h": 2.655,
-          "l": 2.645,
-          "c": 2.648
-        },
-        {
-          "t": 1795830300,
-          "o": 2.648,
-          "h": 2.654,
-          "l": 2.645,
-          "c": 2.645
-        },
-        {
-          "t": 1795831200,
-          "o": 2.645,
-          "h": 2.65,
-          "l": 2.642,
-          "c": 2.647
-        },
-        {
-          "t": 1795832100,
-          "o": 2.647,
-          "h": 2.648,
-          "l": 2.639,
-          "c": 2.64
-        },
-        {
-          "t": 1795833000,
-          "o": 2.64,
-          "h": 2.64,
-          "l": 2.63,
-          "c": 2.635
-        },
-        {
-          "t": 1795833900,
-          "o": 2.635,
-          "h": 2.639,
-          "l": 2.631,
-          "c": 2.632
-        },
-        {
-          "t": 1795834800,
-          "o": 2.632,
-          "h": 2.635,
-          "l": 2.63,
-          "c": 2.635
-        },
-        {
-          "t": 1795835700,
-          "o": 2.635,
-          "h": 2.635,
-          "l": 2.618,
-          "c": 2.618
-        },
-        {
-          "t": 1795836600,
-          "o": 2.618,
-          "h": 2.626,
-          "l": 2.616,
-          "c": 2.623
-        },
-        {
-          "t": 1795837500,
-          "o": 2.623,
-          "h": 2.625,
-          "l": 2.621,
-          "c": 2.623
-        },
-        {
-          "t": 1795838400,
-          "o": 2.623,
-          "h": 2.627,
-          "l": 2.621,
-          "c": 2.625
-        },
-        {
-          "t": 1795839300,
-          "o": 2.625,
-          "h": 2.63,
-          "l": 2.622,
-          "c": 2.623
-        }
-      ],
-      "candles_5m": [
-        {
-          "t": 1795816200,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.65,
-          "c": 2.652
-        },
-        {
-          "t": 1795816500,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.646,
-          "c": 2.646
-        },
-        {
-          "t": 1795816800,
-          "o": 2.646,
-          "h": 2.648,
-          "l": 2.638,
-          "c": 2.64
-        },
-        {
-          "t": 1795817100,
-          "o": 2.64,
-          "h": 2.642,
-          "l": 2.638,
-          "c": 2.639
-        },
-        {
-          "t": 1795817400,
-          "o": 2.639,
-          "h": 2.64,
-          "l": 2.628,
-          "c": 2.633
-        },
-        {
-          "t": 1795817700,
-          "o": 2.633,
-          "h": 2.635,
-          "l": 2.63,
-          "c": 2.633
-        },
-        {
-          "t": 1795818000,
-          "o": 2.633,
-          "h": 2.637,
-          "l": 2.632,
-          "c": 2.635
-        },
-        {
-          "t": 1795818300,
-          "o": 2.635,
-          "h": 2.638,
-          "l": 2.632,
-          "c": 2.638
-        },
-        {
-          "t": 1795818600,
-          "o": 2.638,
-          "h": 2.643,
-          "l": 2.638,
-          "c": 2.639
-        },
-        {
-          "t": 1795818900,
-          "o": 2.639,
-          "h": 2.643,
-          "l": 2.637,
-          "c": 2.642
-        },
-        {
-          "t": 1795819200,
-          "o": 2.642,
-          "h": 2.643,
-          "l": 2.637,
-          "c": 2.642
-        },
-        {
-          "t": 1795819500,
-          "o": 2.642,
-          "h": 2.645,
-          "l": 2.639,
-          "c": 2.642
-        },
-        {
-          "t": 1795819800,
-          "o": 2.642,
-          "h": 2.645,
-          "l": 2.641,
-          "c": 2.643
-        },
-        {
-          "t": 1795820100,
-          "o": 2.643,
-          "h": 2.647,
-          "l": 2.642,
-          "c": 2.644
-        },
-        {
-          "t": 1795820400,
-          "o": 2.644,
-          "h": 2.651,
-          "l": 2.644,
-          "c": 2.649
-        },
-        {
-          "t": 1795820700,
-          "o": 2.649,
-          "h": 2.649,
-          "l": 2.644,
-          "c": 2.644
-        },
-        {
-          "t": 1795821000,
-          "o": 2.644,
-          "h": 2.646,
-          "l": 2.641,
-          "c": 2.643
-        },
-        {
-          "t": 1795821300,
-          "o": 2.643,
-          "h": 2.643,
-          "l": 2.641,
-          "c": 2.642
-        },
-        {
-          "t": 1795821600,
-          "o": 2.642,
-          "h": 2.643,
-          "l": 2.639,
-          "c": 2.641
-        },
-        {
-          "t": 1795821900,
-          "o": 2.641,
-          "h": 2.643,
-          "l": 2.641,
-          "c": 2.641
-        },
-        {
-          "t": 1795822200,
-          "o": 2.641,
-          "h": 2.653,
-          "l": 2.641,
-          "c": 2.652
-        },
-        {
-          "t": 1795822500,
-          "o": 2.652,
-          "h": 2.657,
-          "l": 2.652,
-          "c": 2.655
-        },
-        {
-          "t": 1795822800,
-          "o": 2.655,
-          "h": 2.656,
-          "l": 2.653,
-          "c": 2.655
-        },
-        {
-          "t": 1795823100,
-          "o": 2.655,
-          "h": 2.657,
-          "l": 2.652,
-          "c": 2.655
-        },
-        {
-          "t": 1795823400,
-          "o": 2.655,
-          "h": 2.662,
-          "l": 2.654,
-          "c": 2.661
-        },
-        {
-          "t": 1795823700,
-          "o": 2.661,
-          "h": 2.663,
-          "l": 2.66,
-          "c": 2.662
-        },
-        {
-          "t": 1795824000,
-          "o": 2.662,
-          "h": 2.665,
-          "l": 2.66,
-          "c": 2.663
-        },
-        {
-          "t": 1795824300,
-          "o": 2.663,
-          "h": 2.663,
-          "l": 2.659,
-          "c": 2.659
-        },
-        {
-          "t": 1795824600,
-          "o": 2.659,
-          "h": 2.66,
-          "l": 2.656,
-          "c": 2.657
-        },
-        {
-          "t": 1795824900,
-          "o": 2.657,
-          "h": 2.661,
-          "l": 2.656,
-          "c": 2.656
-        },
-        {
-          "t": 1795825200,
-          "o": 2.656,
-          "h": 2.656,
-          "l": 2.65,
-          "c": 2.651
-        },
-        {
-          "t": 1795825500,
-          "o": 2.651,
-          "h": 2.653,
-          "l": 2.644,
-          "c": 2.647
-        },
-        {
-          "t": 1795825800,
-          "o": 2.647,
-          "h": 2.654,
-          "l": 2.646,
-          "c": 2.652
-        },
-        {
-          "t": 1795826100,
-          "o": 2.652,
-          "h": 2.653,
-          "l": 2.649,
-          "c": 2.65
-        },
-        {
-          "t": 1795826400,
-          "o": 2.65,
-          "h": 2.652,
-          "l": 2.648,
-          "c": 2.65
-        },
-        {
-          "t": 1795826700,
-          "o": 2.65,
-          "h": 2.651,
-          "l": 2.645,
-          "c": 2.646
-        },
-        {
-          "t": 1795827000,
-          "o": 2.646,
-          "h": 2.65,
-          "l": 2.643,
-          "c": 2.649
-        },
-        {
-          "t": 1795827300,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.648,
-          "c": 2.649
-        },
-        {
-          "t": 1795827600,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.643,
-          "c": 2.65
-        },
-        {
-          "t": 1795827900,
-          "o": 2.65,
-          "h": 2.65,
-          "l": 2.646,
-          "c": 2.646
-        },
-        {
-          "t": 1795828200,
-          "o": 2.646,
-          "h": 2.648,
-          "l": 2.644,
-          "c": 2.646
-        },
-        {
-          "t": 1795828500,
-          "o": 2.646,
-          "h": 2.657,
-          "l": 2.646,
-          "c": 2.655
-        },
-        {
-          "t": 1795828800,
-          "o": 2.655,
-          "h": 2.656,
-          "l": 2.649,
-          "c": 2.649
-        },
-        {
-          "t": 1795829100,
-          "o": 2.649,
-          "h": 2.65,
-          "l": 2.645,
-          "c": 2.645
-        },
-        {
-          "t": 1795829400,
-          "o": 2.645,
-          "h": 2.654,
-          "l": 2.645,
-          "c": 2.653
-        },
-        {
-          "t": 1795829700,
-          "o": 2.653,
-          "h": 2.655,
-          "l": 2.649,
-          "c": 2.65
-        },
-        {
-          "t": 1795830000,
-          "o": 2.65,
-          "h": 2.65,
-          "l": 2.646,
-          "c": 2.648
-        },
-        {
-          "t": 1795830300,
-          "o": 2.648,
-          "h": 2.654,
-          "l": 2.648,
-          "c": 2.65
-        },
-        {
-          "t": 1795830600,
-          "o": 2.65,
-          "h": 2.652,
-          "l": 2.649,
-          "c": 2.65
-        },
-        {
-          "t": 1795830900,
-          "o": 2.65,
-          "h": 2.65,
-          "l": 2.645,
-          "c": 2.645
-        },
-        {
-          "t": 1795831200,
-          "o": 2.645,
-          "h": 2.65,
-          "l": 2.645,
-          "c": 2.646
-        },
-        {
-          "t": 1795831500,
-          "o": 2.646,
-          "h": 2.647,
-          "l": 2.644,
-          "c": 2.645
-        },
-        {
-          "t": 1795831800,
-          "o": 2.645,
-          "h": 2.647,
-          "l": 2.642,
-          "c": 2.647
-        },
-        {
-          "t": 1795832100,
-          "o": 2.647,
-          "h": 2.648,
-          "l": 2.644,
-          "c": 2.644
-        },
-        {
-          "t": 1795832400,
-          "o": 2.644,
-          "h": 2.645,
-          "l": 2.641,
-          "c": 2.642
-        },
-        {
-          "t": 1795832700,
-          "o": 2.642,
-          "h": 2.644,
-          "l": 2.639,
-          "c": 2.64
-        },
-        {
-          "t": 1795833000,
-          "o": 2.64,
-          "h": 2.64,
-          "l": 2.633,
-          "c": 2.635
-        },
-        {
-          "t": 1795833300,
-          "o": 2.635,
-          "h": 2.635,
-          "l": 2.63,
-          "c": 2.634
-        },
-        {
-          "t": 1795833600,
-          "o": 2.634,
-          "h": 2.637,
-          "l": 2.634,
-          "c": 2.635
-        },
-        {
-          "t": 1795833900,
-          "o": 2.635,
-          "h": 2.639,
-          "l": 2.632,
-          "c": 2.633
-        },
-        {
-          "t": 1795834200,
-          "o": 2.633,
-          "h": 2.635,
-          "l": 2.632,
-          "c": 2.634
-        },
-        {
-          "t": 1795834500,
-          "o": 2.634,
-          "h": 2.635,
-          "l": 2.631,
-          "c": 2.632
-        },
-        {
-          "t": 1795834800,
-          "o": 2.632,
-          "h": 2.634,
-          "l": 2.63,
-          "c": 2.631
-        },
-        {
-          "t": 1795835100,
-          "o": 2.631,
-          "h": 2.633,
-          "l": 2.63,
-          "c": 2.633
-        },
-        {
-          "t": 1795835400,
-          "o": 2.633,
-          "h": 2.635,
-          "l": 2.631,
-          "c": 2.635
-        },
-        {
-          "t": 1795835700,
-          "o": 2.635,
-          "h": 2.635,
-          "l": 2.63,
-          "c": 2.632
-        },
-        {
-          "t": 1795836000,
-          "o": 2.632,
-          "h": 2.632,
-          "l": 2.623,
-          "c": 2.625
-        },
-        {
-          "t": 1795836300,
-          "o": 2.625,
-          "h": 2.625,
-          "l": 2.618,
-          "c": 2.618
-        },
-        {
-          "t": 1795836600,
-          "o": 2.618,
-          "h": 2.623,
-          "l": 2.616,
-          "c": 2.621
-        },
-        {
-          "t": 1795836900,
-          "o": 2.621,
-          "h": 2.626,
-          "l": 2.621,
-          "c": 2.624
-        },
-        {
-          "t": 1795837200,
-          "o": 2.624,
-          "h": 2.625,
-          "l": 2.622,
-          "c": 2.623
-        },
-        {
-          "t": 1795837500,
-          "o": 2.623,
-          "h": 2.625,
-          "l": 2.621,
-          "c": 2.621
-        },
-        {
-          "t": 1795837800,
-          "o": 2.621,
-          "h": 2.625,
-          "l": 2.621,
-          "c": 2.623
-        },
-        {
-          "t": 1795838100,
-          "o": 2.623,
-          "h": 2.624,
-          "l": 2.622,
-          "c": 2.623
-        },
-        {
-          "t": 1795838400,
-          "o": 2.623,
-          "h": 2.626,
-          "l": 2.621,
-          "c": 2.624
-        },
-        {
-          "t": 1795838700,
-          "o": 2.624,
-          "h": 2.626,
-          "l": 2.622,
-          "c": 2.626
-        },
-        {
-          "t": 1795839000,
-          "o": 2.626,
-          "h": 2.627,
-          "l": 2.623,
-          "c": 2.625
-        },
-        {
-          "t": 1795839300,
-          "o": 2.625,
-          "h": 2.63,
-          "l": 2.625,
-          "c": 2.628
-        },
-        {
-          "t": 1795839600,
-          "o": 2.628,
-          "h": 2.628,
-          "l": 2.624,
-          "c": 2.624
-        },
-        {
-          "t": 1795839900,
-          "o": 2.624,
-          "h": 2.624,
-          "l": 2.622,
-          "c": 2.623
-        }
-      ],
-      "execution_tf": "1m",
-      "bid": 2.62,
-      "ask": 2.621,
-      "quote_valid": true,
-      "quote_ts": 1795840275189,
-      "analysis_fresh": true,
-      "htf_regime": "RANGE_TRANSITION",
-      "regime": "RANGE_TRANSITION",
-      "local_wave": {
-        "side": 0,
-        "m5": {
-          "side": 0,
-          "move_atr": 0.618,
-          "efficiency": 0.333,
-          "directional_bars": 3
-        },
-        "m15": {
-          "side": 0,
-          "move_atr": 0.0,
-          "efficiency": 0.0,
-          "directional_bars": 0
-        },
-        "m5_slow": {
-          "side": 0,
-          "move_atr": 0.412,
-          "efficiency": 0.143,
-          "directional_bars": 4
-        },
-        "breaks": []
-      },
-      "relative_strength": {
-        "available": true,
-        "side": 0,
-        "relative_atr": -0.037,
-        "asset_return_pct": 0.191,
-        "btc_return_pct": 0.204
-      },
-      "wave_side": 0,
-      "observed_wave_side": 0,
-      "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
-      "direction_diagnostics": {
-        "1": {
-          "side": 1,
-          "local_support": false,
-          "windows_checked": [
-            {
-              "tf": "M1",
-              "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": -1.909,
-              "break_distance_atr": -3.818,
-              "rvol": 0.177,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M1",
-              "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": -0.667,
-              "break_distance_atr": -2.667,
-              "rvol": 32.779,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M1",
-              "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": 0.609,
-              "break_distance_atr": -1.826,
-              "rvol": 1.114,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M5",
-              "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": -0.206,
-              "break_distance_atr": -1.441,
-              "rvol": 1.675,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": -0.824,
-              "break_distance_atr": -1.235,
-              "rvol": 0.227,
-              "local_support": false,
-              "higher_opposes": true
-            }
-          ],
-          "detected": 0,
-          "ready": 0,
-          "rejections": []
-        },
-        "-1": {
-          "side": -1,
-          "local_support": false,
-          "windows_checked": [
-            {
-              "tf": "M1",
-              "offset": 0,
-              "known_ts": 1795840260000,
-              "body_atr": 1.909,
-              "break_distance_atr": 1.273,
-              "rvol": 0.177,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M1",
-              "offset": 1,
-              "known_ts": 1795840200000,
-              "body_atr": 0.667,
-              "break_distance_atr": -0.667,
-              "rvol": 32.779,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M1",
-              "offset": 2,
-              "known_ts": 1795840140000,
-              "body_atr": -0.609,
-              "break_distance_atr": -1.217,
-              "rvol": 1.114,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 0,
-              "known_ts": 1795840200000,
-              "body_atr": 0.206,
-              "break_distance_atr": -0.412,
-              "rvol": 1.675,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795839900000,
-              "body_atr": 0.824,
-              "break_distance_atr": -0.618,
-              "rvol": 0.227,
               "local_support": false,
               "higher_opposes": false
             }
@@ -10861,14 +11183,14 @@
     }
   ],
   "ready_count": 0,
-  "watch_count": 1,
+  "watch_count": 4,
   "errors": [],
   "oil_slot": {
     "occupied": true,
     "active": {
       "phase": "OPEN",
       "placed_ts": 1795806958232,
-      "processed_until_ts": 1795840260000,
+      "processed_until_ts": 1795840500000,
       "expires_ts": 1795807858232,
       "stop_effective_ts": 1795806958232,
       "quality": "PARTIAL_ENTRY_BAR",
@@ -10950,15 +11272,6 @@
       "be_armed": false,
       "partial_entry_bar": true,
       "trail_m5": [
-        {
-          "bucket": 1795835400000,
-          "last": 1795835700000,
-          "count": 5,
-          "o": 91.01,
-          "h": 91.05,
-          "l": 91.0,
-          "c": 91.04
-        },
         {
           "bucket": 1795835700000,
           "last": 1795836000000,
@@ -11093,17 +11406,17 @@
           "h": 90.93,
           "l": 90.9,
           "c": 90.91
+        },
+        {
+          "bucket": 1795840200000,
+          "last": 1795840500000,
+          "count": 5,
+          "o": 90.91,
+          "h": 90.94,
+          "l": 90.9,
+          "c": 90.94
         }
-      ],
-      "trail_partial": {
-        "bucket": 1795840200000,
-        "last": 1795840260000,
-        "count": 1,
-        "o": 90.91,
-        "h": 90.94,
-        "l": 90.9,
-        "c": 90.94
-      }
+      ]
     },
     "daily": {
       "day": "2026-11-28",
@@ -11298,7 +11611,7 @@
     "active": {
       "phase": "OPEN",
       "placed_ts": 1795831556192,
-      "processed_until_ts": 1795840260000,
+      "processed_until_ts": 1795840500000,
       "expires_ts": 1795832036192,
       "stop_effective_ts": 1795831556192,
       "quality": "OBSERVED_M1",
@@ -11373,22 +11686,13 @@
       },
       "opened_ts": 1795831556192,
       "opened_kyiv": "28.11 04:05",
-      "current_price": 44.58,
-      "pnl_r": -0.7412,
-      "pnl_usd": -0.69,
+      "current_price": 44.56,
+      "pnl_r": -0.7967,
+      "pnl_usd": -0.74,
       "peak_r": 0.5555555555555644,
       "be_armed": false,
       "partial_entry_bar": true,
       "trail_m5": [
-        {
-          "bucket": 1795835400000,
-          "last": 1795835700000,
-          "count": 5,
-          "o": 44.79,
-          "h": 44.93,
-          "l": 44.79,
-          "c": 44.92
-        },
         {
           "bucket": 1795835700000,
           "last": 1795836000000,
@@ -11523,17 +11827,17 @@
           "h": 44.65,
           "l": 44.61,
           "c": 44.65
+        },
+        {
+          "bucket": 1795840200000,
+          "last": 1795840500000,
+          "count": 5,
+          "o": 44.65,
+          "h": 44.65,
+          "l": 44.56,
+          "c": 44.56
         }
-      ],
-      "trail_partial": {
-        "bucket": 1795840200000,
-        "last": 1795840260000,
-        "count": 1,
-        "o": 44.65,
-        "h": 44.65,
-        "l": 44.57,
-        "c": 44.57
-      }
+      ]
     },
     "daily": {
       "day": "2026-11-28",
@@ -12442,5 +12746,5 @@
       "reason_ua": "Беззбиток / Структурний трейлінг"
     }
   ],
-  "last_attempt_ts": 1795840278219
+  "last_attempt_ts": 1795840553221
 }
