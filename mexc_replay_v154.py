@@ -14,9 +14,9 @@ def iso_ms(s):
     d=datetime.datetime.fromisoformat(s.replace('Z','+00:00')); return int((d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)).timestamp()*1000)
 
 
-def download(engine,path,start,end):
+def download(engine,path,start,end,symbols=None):
     path.mkdir(parents=True,exist_ok=True)
-    ticks=engine.fetch_contract_ticks(); symbols=[x['symbol'] for x in engine.INSTRUMENTS]+['BTC_USDT']
+    ticks=engine.fetch_contract_ticks(); symbols=symbols if symbols is not None else [x['symbol'] for x in engine.INSTRUMENTS]+['BTC_USDT']
     if not all(s in ticks for s in symbols): raise RuntimeError('Missing exact tick metadata; cannot fabricate ticks')
     (path/'ticks.json').write_text(json.dumps(ticks))
     for sym in symbols:
@@ -24,18 +24,31 @@ def download(engine,path,start,end):
         allrows={}
         for t in range(start,end,1440*60000):
             stop=min(end,t+1440*60000); file=chunks/f'{t}_{stop}.json'
-            if file.exists(): raw=json.loads(file.read_text())
-            else:
+            rows=[]
+            if file.exists():
+                try:
+                    raw=json.loads(file.read_text())
+                    if isinstance(raw,dict) and raw.get('success') is not False:
+                        rows=[b for b in engine.parse_mexc_klines(raw,60,stop) if t<=b.ts<stop]
+                except (ValueError,OSError,TypeError):
+                    rows=[]
+            if not rows:
                 url=f'{engine.MEXC_BASE}/api/v1/contract/kline/{sym}?interval=Min1&start={t//1000}&end={stop//1000}'
-                raw=engine._http_json(url); tmp=file.with_suffix('.tmp');tmp.write_text(json.dumps(raw));tmp.replace(file)
-            for b in engine.parse_mexc_klines(raw,60,stop):
-                if t<=b.ts<stop: allrows[b.ts]=b
+                raw=engine._http_json(url)
+                rows=[b for b in engine.parse_mexc_klines(raw,60,stop) if t<=b.ts<stop]
+                # Empty/out-of-window results are not reusable cache hits.
+                if rows:
+                    tmp=file.with_suffix('.tmp');tmp.write_text(json.dumps(raw));tmp.replace(file)
+            for b in rows: allrows[b.ts]=b
         if not allrows: raise RuntimeError(f'No candles for {sym}')
         file=path/(sym+'.csv');tmp=file.with_suffix('.tmp')
         with tmp.open('w',newline='') as f:
             w=csv.writer(f);w.writerow(['ts','open','high','low','close','volume'])
             w.writerows((b.ts,b.open,b.high,b.low,b.close,b.volume) for b in sorted(allrows.values(),key=lambda b:b.ts))
-        tmp.replace(file);print(sym,len(allrows),'cached',flush=True)
+        tmp.replace(file)
+        first,last=min(allrows),max(allrows)
+        fmt=lambda x:datetime.datetime.fromtimestamp(x/1000,datetime.timezone.utc).isoformat()
+        print(f'{sym}: {len(allrows)} M1 cached; first={fmt(first)} last_close={fmt(last+60000)}; requested={fmt(start)} -- {fmt(end)}',flush=True)
 
 
 def read_bars(engine,file):
