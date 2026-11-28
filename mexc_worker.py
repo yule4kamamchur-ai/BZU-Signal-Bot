@@ -53,7 +53,7 @@ def main():
     root=Path(__file__).resolve().parent
     data=Path(os.getenv('MEXC_DATA_DIR',str(root/'data'))); data.mkdir(parents=True,exist_ok=True)
     state=data/'multi_scanner_state.json'; memory=data/'multi_scanner_memory.json'
-    interval=int(os.getenv('MEXC_SCAN_INTERVAL_SEC','180'))
+    interval=int(os.getenv('MEXC_SCAN_INTERVAL_SEC','60'))
     if interval<60: raise ValueError('MEXC_SCAN_INTERVAL_SEC must be at least 60')
     # Never silently create an empty journal while migrating an existing bot.
     if not memory.exists() and os.getenv('BZU_ALLOW_EMPTY_LEDGER')!='1':
@@ -82,7 +82,7 @@ def main():
             except Exception: logging.exception('Cannot publish failure heartbeat')
         duration=time.monotonic()-started
         if duration>interval: logging.warning('MEXC scan took %.1fs, longer than interval %ds',duration,interval)
-        # No overlapping cycles and no catch-up storm. Next start is 180s after previous start unless overrun.
+        # No overlapping cycles and no catch-up storm. Next start is interval seconds after previous start unless overrun.
         next_run=max(started+interval,time.monotonic()+1)
 
 

@@ -64,7 +64,7 @@ def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe):
         anchor=min(c.low,p.low,zone)-tick if side==1 else max(c.high,p.high,zone)+tick
         add('TREND_PULLBACK_FVG_VWAP',f'{timeframe} відкат до FVG/EMA/VWAP',74,anchor,retest=zone)
     # Break from a range that existed BEFORE the breakout, followed by a separate retest.
-    for i in range(len(rows)-4,len(rows)-1):
+    for i in range(max(10,len(rows)-12),len(rows)-1):
         br=rows[i]; pre=rows[i-10:i]
         level=max(x.high for x in pre) if side==1 else min(x.low for x in pre)
         if side*(br.close-level)<.12*atr or side*(br.close-br.open)<.4*atr:
@@ -75,12 +75,20 @@ def detect(rows, *, side, atr, tick, min_rvol, trend, zone, timeframe):
             anchor=min(x.low for x in between)-tick if side==1 else max(x.high for x in between)+tick
             add('BREAKOUT_RETEST',f'{timeframe} пробій + ретест',76,anchor,retest=level)
             break
-    if trend and side*(c.close-boundary)>=.12*atr and body>=.70*atr and close_strength>=.24 and rv>=min_rvol and side*(p.close-rows[-4].close)>=.15*atr:
-        add('MOMENTUM_NO_PULLBACK_CONTINUATION',f'{timeframe} імпульс без відкату',77,stop)
+    # Impulse phase: expansion from compression / fresh break, or orderly continuation.
+    leg=side*(p.close-rows[-7].close)/atr
+    recent_path=sum(abs(x.close-y.close) for x,y in zip(rows[-7:-2],rows[-6:-1]))/atr
+    fresh_expansion=body>=1.15*atr and side*(c.close-boundary)>=.18*atr
+    orderly=side*(p.close-rows[-4].close)>=.15*atr and leg<3.2
+    volume_evidence=rv>=min_rvol or (fresh_expansion and rv>=.65 and close_strength>=.30)
+    exhausted=leg>3.2 and (body<1.4*atr or close_strength<.32)
+    if (trend or fresh_expansion) and side*(c.close-boundary)>=.12*atr and body>=.70*atr and close_strength>=.24 and volume_evidence and (orderly or fresh_expansion) and not exhausted:
+        add('MOMENTUM_NO_PULLBACK_CONTINUATION',f'{timeframe} імпульс без відкату',77 if rv>=min_rvol else 74,stop,retest=boundary)
+        out[-1].update(impulse_phase='FRESH_EXPANSION' if fresh_expansion else 'CONTINUATION',leg_atr=round(leg,3),volume_soft=rv<min_rvol)
     # Failed expansion in the opposite direction, then a close back inside the old range.
     pre=rows[-13:-2]
     level=min(x.low for x in pre) if side==1 else max(x.high for x in pre)
-    if side*(p.close-level)<-.10*atr and side*(c.close-level)>.10*atr and body>=.45*atr and rv>=.95:
+    if side*(p.close-level)<-.10*atr and side*(c.close-level)>.10*atr and body>=.45*atr and (rv>=.95 or body>=1.0*atr and close_strength>=.25):
         anchor=min(p.low,c.low)-tick if side==1 else max(p.high,c.high)+tick
         add('FAILED_BREAKOUT_TRAP',f'{timeframe} хибний пробій / пастка',77,anchor,retest=level)
     prior_move=side*(p.close-rows[-7].open)

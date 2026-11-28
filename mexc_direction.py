@@ -88,7 +88,9 @@ def detect_transitions(rows, *, side, atr, tick, min_rvol, context_now, higher_o
     body=side*(c.close-c.open); width=max(tick,c.high-c.low)
     strength=side*(c.close-(c.high+c.low)/2)/width
     avg=mean(x.volume for x in rows[-21:-1]); rv=c.volume/avg if avg>0 else 0.
-    if body<.35*atr or strength<.12 or rv<max(.85,.75*min_rvol): return []
+    if body<.35*atr or strength<.12: return []
+    strong_price=body>=1.15*atr and strength>=.25 and side*(c.close-level)>=.18*atr
+    if rv<max(.85,.75*min_rvol) and not (strong_price and rv>=.65): return []
     prior=wave(rows[:-1],4,300000,floor=.75)
     fresh_break=side*(c.close-level)>=.08*atr and body>=.5*atr
     supported=context_now['side']==side
@@ -101,7 +103,7 @@ def detect_transitions(rows, *, side, atr, tick, min_rvol, context_now, higher_o
             structural_stop=anchor,reference=c.close,trigger_ts=c.ts,trigger_tf='M5',rvol=rv,
             retest_level=retest,transition_evidence=True))
     # First structural break against the old direction, or reversal of the recent local leg.
-    if fresh_break and (prior['side']==-side or higher_opposes) and (w5 or w15 or body>=.85*atr) and rv>=min_rvol:
+    if fresh_break and (prior['side']==-side or higher_opposes) and (w5 or w15 or body>=.85*atr) and (rv>=min_rvol or strong_price and rv>=.65):
         add('EARLY_STRUCTURE_SHIFT','EARLY_STRUCTURE_SHIFT','рання зміна структури',78,level)
     # Multi-bar countertrend wave: support from two horizons or a still-valid structural break.
     if higher_opposes and supported and (fresh_break or (side*(c.close-p.close)>=.22*atr and side*(p.close-rows[-4].close)>=.30*atr)) and rv>=.95:

@@ -77,7 +77,7 @@
     }).join('');
     const relText=rel.available ? ` · vs BTC ${Number(rel.relative_atr).toFixed(2)} ATR (${dirText(rel.side)})` : '';
     const trigger=item.trigger_tf ? ` · тригер ${escapeHtml(item.trigger_tf)}${item.trigger_offset===1?' (попередня)':''}${Number.isFinite(item.signal_age_sec)&&item.status!=='IN_TRADE'?' · '+Math.round(item.signal_age_sec)+' с':''}` : '';
-    return `<div class="ms-direction-panel"><small>АНАЛІЗ ОБОХ НАПРЯМКІВ · НЕ ЙМОВІРНІСТЬ</small><p>${escapeHtml(item.regime||'')} · M5 ${dirText(w.m5?.side)} · M15 ${dirText(w.m15?.side)}${escapeHtml(relText)}${trigger}</p>${rows}</div>`;
+    return `<div class="ms-direction-panel"><small>АНАЛІЗ ОБОХ НАПРЯМКІВ · НЕ ЙМОВІРНІСТЬ</small><p>${escapeHtml(item.regime||'')} · ${escapeHtml(item.market_state?.phase||'')} / ${escapeHtml(item.market_state?.volatility||'')} · M5 ${dirText(w.m5?.side)} · M15 ${dirText(w.m15?.side)}${escapeHtml(relText)}${trigger}</p>${rows}</div>`;
   }
 
   function arrow(bias) {
@@ -375,7 +375,7 @@
         <div><small>ПОЧАТКОВИЙ РИЗИК</small><strong class="ms-dn">−${sz.riskUsd} USDT</strong></div>
         <div><small>ВАЛОВИЙ TP</small><strong class="ms-up">+${sz.profitUsd} USDT</strong></div>
       </div>` : ''}
-      <p class="ms-hl-reason">${escapeHtml(item.reason_ua || '')}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ' (невалідована оцінка)'}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
+      <p class="ms-hl-reason">${escapeHtml(item.reason_ua || '')}${item.meta ? ` · Meta: ${item.meta.n || 0} історичних аналогів${item.meta.expected_r_estimate === null ? ' (збір даних)' : ` · E[R] ${Number(item.meta.expected_r_estimate||0).toFixed(3)} (невалідовано; еф. n=${item.meta.effective_n??'—'})`}` : ''}${item.geometry_policy === 'STRUCTURAL_V15_1' ? ` · Структурний SL${item.target_kind === 'CONFIRMED_LIQUIDITY' ? ' · TP: ліквідність' : item.target_kind === 'VOLATILITY_PROJECTION' ? ' · TP: розрахункова проєкція' : ''}` : ''}${item.lifecycle_quality && item.lifecycle_quality !== 'OBSERVED_M1' ? ` · Якість обліку: ${item.lifecycle_quality}` : ''}</p>
       ${directionPanel(item)}
     `;
   }
@@ -646,9 +646,11 @@
 
     _renderSlotCard('ms-slot-metal','ms-slot-metal-badge','ms-slot-metal-title','ms-slot-metal-sub','ms-slot-metal-alert',metalSlot,
       'Немає відкритої угоди по металу','Слот 3 вільний · XPT · спільний бюджет');
+    const opp=$('ms-opportunity'), intel=latestData?.opportunity_intelligence;
+    if(opp) opp.textContent=intel ? `SHADOW · спостережень ${intel.observations} · відкритих моделей ${intel.pending} · завершених ${intel.resolved} · придатних ${intel.usable_labels} · НЕ фактичні угоди` : 'Opportunity Intelligence: очікуємо v15.4';
     const port=$('ms-portfolio'), budget=latestData?.portfolio;
     if(port) {
-      port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.3';
+      port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.4';
       port.classList.toggle('ms-dn',budget?.status==='LEGACY_EXCEEDS_BUDGET');
     }
     const oilD = oilSlot.daily_all || oilSlot.daily || { trades: 0, net_r: 0, net_usd: 0 };

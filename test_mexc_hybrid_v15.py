@@ -142,7 +142,7 @@ class StrategyTests(unittest.TestCase):
             self.assertNotEqual(ms.analyze_instrument(**dict(kwargs,ticker=ticker))['status'],'READY')
 
     def test_fee_costs_can_turn_gross_win_into_net_loss(self):
-        a=dict(active(),symbol='SOL_USDT',label='SOL',cluster_ua='CRYPTO',side_ua='LONG',setup='MOMENTUM_NO_PULLBACK_CONTINUATION',family='MOMENTUM',regime='TREND_UP',trade_id='x',model_schema=MODEL_SCHEMA,sizing={'risk_usd':3},fee_rate=.0005,slippage_rate=.0001,opened_kyiv='now',be_armed=True)
+        a=dict(active(),symbol='SOL_USDT',label='SOL',cluster_ua='CRYPTO',side_ua='LONG',setup='MOMENTUM_NO_PULLBACK_CONTINUATION',family='MOMENTUM',regime='TREND_UP',trade_id='x',model_schema=ms.MODEL_SCHEMA,sizing={'risk_usd':3},fee_rate=.0005,slippage_rate=.0001,opened_kyiv='now',be_armed=True)
         a['stop']=100.05
         row=dict(item([packed(T,100.3,100.5,100,100.1)]),symbol='SOL_USDT',cluster='CRYPTO',status='WAIT',score=0,rr=0)
         mem={'cm_active':a}; state={'instruments':[row]}
@@ -187,6 +187,6 @@ class StrategyTests(unittest.TestCase):
 
     def test_workflow_separate_and_worker_interval(self):
         main=Path('.github/workflows/main.yml').read_text(); self.assertNotIn('python bot_oneshot.py',main); self.assertNotIn('signal_journal_v6_4.json',main)
-        self.assertIn('workflow_dispatch:',main); self.assertIn('mexc_worker.py',Path('compose.yaml').read_text()); self.assertIn('"180"',Path('compose.yaml').read_text())
+        self.assertIn('workflow_dispatch:',main); self.assertIn('mexc_worker.py',Path('compose.yaml').read_text()); self.assertIn('MEXC_SCAN_INTERVAL_SEC: "60"',Path('compose.yaml').read_text())
 
 if __name__=='__main__': unittest.main()

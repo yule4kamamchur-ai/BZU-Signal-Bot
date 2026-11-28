@@ -21,7 +21,8 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
     if 'processed_until_ts' not in active:
         active['processed_until_ts'] = max(start, int(legacy_cursor or start))
         active['quality'] = 'LEGACY_CURSOR_MIGRATION'
-    cursor = int(active['processed_until_ts'])
+    cursor = max(int(active['processed_until_ts']),int(active.get("stop_effective_ts",0)))
+    # A quote-triggered stop becomes effective only at that quote, never earlier in the minute.
     peak = float(active.get('peak_r', 0.))
     quality = active.get('quality', 'OBSERVED_M1')
     if cursor > now:
@@ -53,7 +54,7 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
         return base_reason
 
     def _trigger_tp1(ts):
-        nonlocal stop
+        nonlocal stop, cursor, quality
         if not tp1_enabled or active.get('tp1_hit') or tp1_price is None:
             return
         be_price = compute_net_be_price(
@@ -65,6 +66,8 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
         if side * (be_price - stop) > tick / 2:
             stop = be_price
             moved = True
+        cursor=max(cursor,ts)
+        if ts % step and quality=="OBSERVED_M1": quality="QUOTE_TP1_UNOBSERVED_INTRABAR"
         active.update(
             tp1_hit=True,
             tp1_hit_ts=ts,
@@ -81,9 +84,9 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
                 'ts': ts,
                 'title_ua': f'⚡ УВАГА: ФІКСУЄМО {int(round(partial_pct * 100))}% (TP1 +{tp1_r:.2f} R) · СТОП ПЕРЕНЕСЕНО В Б/У',
                 'detail_ua': (
-                    f'Фіксація 50% по {tp1_price}. '
+                    f'Фіксація {partial_pct:.0%} по {tp1_price}. '
                     f'{"Стоп залишку перенесено в Б/У (" + str(stop) + "). " if moved else ""}'
-                    f'Решта 50% іде як Runner до TP {tp}.'
+                    f'Решта {1-partial_pct:.0%} іде як Runner до TP {tp}.'
                 ),
             },
         )
@@ -155,7 +158,9 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
         hit = cross(l, h, o, end)
         cursor = end
         if hit:
-            # If full TP hit directly on a big impulse bar before TP1 was marked, record full TP honestly.
+            # For new partial policy a direct target hit includes the already-crossed TP1.
+            if hit[0]=='TAKE_PROFIT' and active.get('idea_review_enabled') and tp1_enabled and not active.get('tp1_hit') and tp1_price is not None and side*(tp-tp1_price)>0:
+                _trigger_tp1(end)
             return finish(hit[0], hit[1], end)
         if end >= start + 18 * 3600000:
             return finish('TIME_EXIT', cl, end)
@@ -231,10 +236,18 @@ def advance(active, item, now, *, round_price, legacy_cursor=0):
         if side * (quote - tp) >= 0:
             if quote_ts > cursor and quality == 'OBSERVED_M1':
                 quality = 'QUOTE_EXIT_UNOBSERVED_INTRABAR'
+            if active.get('idea_review_enabled') and tp1_enabled and not active.get('tp1_hit') and tp1_price is not None and side*(tp-tp1_price)>0:
+                _trigger_tp1(quote_ts)
             return finish('TAKE_PROFIT', tp, quote_ts)
         if tp1_enabled and not active.get('tp1_hit') and tp1_price is not None:
             if side * (quote - tp1_price) >= 0:
                 _trigger_tp1(quote_ts)
+        if active.get('idea_review_enabled') and item.get('analysis_fresh') and quote_ts>cursor and now-start>=15*60000:
+            wave=item.get('local_wave') or {}; m5=wave.get('m5') or {}; m15=wave.get('m15') or {}
+            if wave.get('side')==-side and m5.get('side')==-side and m15.get('side')==-side and m5.get('efficiency',0)>=.65 and side*(quote-entry)/risk<.25:
+                cursor=quote_ts
+                if quality=='OBSERVED_M1': quality='QUOTE_EXIT_UNOBSERVED_INTRABAR'
+                return finish('THESIS_DECAY',quote,quote_ts)
         if now - start >= 18 * 3600000:
             return finish('TIME_EXIT', quote, quote_ts)
         if time_stop_enabled and not active.get('tp1_hit'):
