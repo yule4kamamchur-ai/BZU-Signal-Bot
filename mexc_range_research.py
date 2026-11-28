@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 from statistics import mean, pstdev
 from mexc_h1_trend import MINUTE, valid_bar, atr, tickround
+import mexc_portfolio_intelligence as intel
 
 STEP=15*MINUTE
 SETUP='M15_MEAN_REVERSION_RECLAIM'
@@ -29,7 +30,7 @@ def signal(rows, now, n=20, sigma=2.2):
             'strength':reclaim*(1-.5*efficiency),'strategy':'RANGE_M15'}
 
 
-def open_position(symbol,group,sig,price,now,*,tick,risk_budget,notional_budget,fee,slip):
+def open_position(symbol,group,sig,price,now,*,tick,risk_budget,notional_budget,fee,slip,contract=None,require_contract=False):
     from mexc_h1_trend import SCHEMA
     s=int(sig['side']); p=float(price); a=float(sig['atr']); center=float(sig['mean'])
     if s not in (-1,1) or not all(math.isfinite(x) and x>0 for x in (p,a,tick,risk_budget,notional_budget,center)): return None,'INVALID_INPUT_OR_BUDGET'
@@ -42,7 +43,8 @@ def open_position(symbol,group,sig,price,now,*,tick,risk_budget,notional_budget,
     if min(stop,tp,risk,reward)<=0: return None,'INVALID_RANGE_GEOMETRY'
     # Avoid targets consumed by costs. Geometry test, not a direction/TF gate.
     if reward-cost*(e+tp)<1.25*(risk+cost*(e+stop)): return None,'RANGE_INSUFFICIENT_NET_RR'
-    qty=min(risk_budget/(risk+cost*(e+stop)),notional_budget/e)
-    if not math.isfinite(qty) or qty<=0: return None,'NO_RISK_BUDGET'
+    sizing,reason=intel.size(e,stop,risk_budget,notional_budget,cost,contract,require_contract)
+    if not sizing: return None,reason
+    qty=sizing['qty']
     return {'symbol':symbol,'cluster':group,'setup':SETUP,'strategy':'RANGE_M15','model_schema':SCHEMA,'side':s,'entry':e,'stop':stop,'initial_stop':stop,'risk':risk,'tp':tp,'qty':qty,'notional':qty*e,'risk_usd':qty*risk,'reserve_usd':qty*(risk+cost*(e+stop)),
-            'opened_ts':now,'processed_until_ts':now,'signal_ts':sig['signal_ts'],'stop_effective_ts':now,'atr_entry':a,'stop_mult':1.6,'trail_mult':0.,'tick':tick,'peak_price':e,'peak_r':0.,'mae_r':0.,'fee_rate':fee,'slippage_rate':slip,'quality':'OBSERVED_M1','funding_r':0.,'funding_status':'FUNDING_HISTORY_UNAVAILABLE'},'OPEN'
+            'opened_ts':now,'processed_until_ts':now,'signal_ts':sig['signal_ts'],'stop_effective_ts':now,'atr_entry':a,'stop_mult':1.6,'trail_mult':0.,'tick':tick,'peak_price':e,'peak_r':0.,'mae_r':0.,'fee_rate':fee,'slippage_rate':slip,'quality':'OBSERVED_M1','funding_r':0.,'funding_status':'FUNDING_HISTORY_UNAVAILABLE',**sizing},'OPEN'

@@ -14,14 +14,21 @@ def iso_ms(s):
     d=datetime.datetime.fromisoformat(s.replace('Z','+00:00')); return int((d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)).timestamp()*1000)
 
 
-def download(engine,path,start,end,symbols=None):
+def download(engine,path,start,end,symbols=None,export_contracts=False):
     path.mkdir(parents=True,exist_ok=True)
-    ticks=engine.fetch_contract_ticks(); symbols=symbols if symbols is not None else [x['symbol'] for x in engine.INSTRUMENTS]+['BTC_USDT']
+    contract_specs={}
+    ticks=engine.fetch_contract_ticks(contract_specs=contract_specs) if export_contracts else engine.fetch_contract_ticks(); symbols=symbols if symbols is not None else [x['symbol'] for x in engine.INSTRUMENTS]+['BTC_USDT']
     if not all(s in ticks for s in symbols): raise RuntimeError('Missing exact tick metadata; cannot fabricate ticks')
     (path/'ticks.json').write_text(json.dumps(ticks))
+    if export_contracts:
+        (path/'contract_specs.json').write_text(json.dumps({'source':'MEXC_PUBLIC_CONTRACT_DETAIL','observed_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'specs':{s:contract_specs[s] for s in symbols if s in contract_specs}},indent=2))
+        print('Contract quantity metadata:',len([s for s in symbols if s in contract_specs]),'/',len(symbols),flush=True)
     for sym in symbols:
         chunks=path/'chunks'/sym;chunks.mkdir(parents=True,exist_ok=True)
-        allrows={}
+        # v15.9 portfolio cache retains previously exported observed candles,
+        # including days that have since expired from the exchange API window.
+        existing=path/(sym+'.csv')
+        allrows={b.ts:b for b in read_bars(engine,existing)} if export_contracts and existing.exists() else {}
         for t in range(start,end,1440*60000):
             stop=min(end,t+1440*60000); file=chunks/f'{t}_{stop}.json'
             rows=[]
@@ -32,6 +39,8 @@ def download(engine,path,start,end,symbols=None):
                         rows=[b for b in engine.parse_mexc_klines(raw,60,stop) if t<=b.ts<stop]
                 except (ValueError,OSError,TypeError):
                     rows=[]
+            if not rows and export_contracts and all(t0 in allrows for t0 in range(t,stop,60000)):
+                rows=[allrows[t0] for t0 in range(t,stop,60000)]
             if not rows:
                 url=f'{engine.MEXC_BASE}/api/v1/contract/kline/{sym}?interval=Min1&start={t//1000}&end={stop//1000}'
                 raw=engine._http_json(url)
@@ -40,7 +49,7 @@ def download(engine,path,start,end,symbols=None):
                 if rows:
                     tmp=file.with_suffix('.tmp');tmp.write_text(json.dumps(raw));tmp.replace(file)
             for b in rows: allrows[b.ts]=b
-        if not allrows: raise RuntimeError(f'No candles for {sym}')
+        if not allrows or not any(start<=t<end for t in allrows): raise RuntimeError(f'No candles for requested interval: {sym}')
         file=path/(sym+'.csv');tmp=file.with_suffix('.tmp')
         with tmp.open('w',newline='') as f:
             w=csv.writer(f);w.writerow(['ts','open','high','low','close','volume'])

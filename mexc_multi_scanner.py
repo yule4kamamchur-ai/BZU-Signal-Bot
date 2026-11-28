@@ -18,6 +18,7 @@ from mexc_opportunity import MODEL_SCHEMA, PREVIOUS_SCHEMA, market_state, beta_r
 from mexc_lifecycle import advance
 from mexc_evidence import SHADOW_FAMILIES, active_estimate, exit_policies, tag_experiment
 import mexc_h1_trend
+import mexc_portfolio_intelligence as portfolio_intel
 import mexc_geometry_research
 from copy import deepcopy
 from mexc_direction import (context as direction_context, relative_strength, detect_transitions,
@@ -41,7 +42,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.8 Adaptive Trend Portfolio Research"
+SCANNER_VERSION = "BZU MULTI v15.9 Adaptive Portfolio Intelligence"
 SHADOW_IN_ACTIVE_HISTORY = False
 
 FAMILY_RISK_MULT = {
@@ -240,7 +241,7 @@ def fetch_all_tickers(fetcher=_http_json) -> dict[str, dict[str, Any]]:
     return out
 
 
-def fetch_contract_ticks(fetcher=_http_json) -> dict[str, float]:
+def fetch_contract_ticks(fetcher=_http_json, contract_specs=None) -> dict[str, float]:
     payload = fetcher(f"{MEXC_BASE}/api/v1/contract/detail")
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
@@ -249,6 +250,9 @@ def fetch_contract_ticks(fetcher=_http_json) -> dict[str, float]:
     for row in rows:
         sym = row.get("symbol")
         unit = row.get("priceUnit")
+        if sym and contract_specs is not None:
+            spec=portfolio_intel.contract_spec(row)
+            if spec is not None: contract_specs[sym]=spec
         if sym and unit:
             try:
                 val = float(unit)
@@ -1284,11 +1288,11 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
              memory=None, apply_locks=True) -> dict[str, Any]:
     """Bounded parallel data collection, independent failures, quote fetched last."""
     started=time.monotonic(); cut=now_ms if now_ms is not None else int(time.time()*1000)
-    memory=memory or {}; errors=[]; data={}; ticks={}; timings={}
+    memory=memory or {}; errors=[]; data={}; ticks={}; contract_specs={}; timings={}
     active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active"),memory.get("metal_active")) if a}
     trend_positions={}
     research_positions=[]
-    for key in ("h1_trend_book","h1_close_book","mixed_trend_range_book"):
+    for key in ("h1_trend_book","h1_close_book","mixed_trend_range_book","range_control_book","adaptive_h1_book","early_h1_m5_book","adaptive_range_book"):
         for sym,p in memory.get(key,{}).get("positions",{}).items():
             research_positions.append(p)
             old=trend_positions.get(sym)
@@ -1308,7 +1312,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     # Confirm broad access denial using two different public endpoints BEFORE fan-out.
     # A denied endpoint is not retried in the same cycle. No alternate proxy/host bypass.
     try:
-        ticks=fetch_contract_ticks(fetcher)
+        ticks=fetch_contract_ticks(fetcher,contract_specs)
         if not ticks: errors.append("DETAIL/: empty response")
     except Exception as exc:
         record_error(("DETAIL",""),exc)
@@ -1343,7 +1347,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
         with ThreadPoolExecutor(max_workers=4) as pool:
             retry={}
             for sym,tf in failed:
-                if sym=="DETAIL": retry[pool.submit(fetch_contract_ticks,fetcher)]=(sym,tf)
+                if sym=="DETAIL": retry[pool.submit(fetch_contract_ticks,fetcher,contract_specs)]=(sym,tf)
                 else:
                     count=counts[(sym,tf)]
                     retry[pool.submit(fetch_klines,sym,tf,count,cut,fetcher)]=(sym,tf)
@@ -1411,6 +1415,8 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
                 for d in res.get("candidate_diagnostics",[]): d.setdefault("rejection_codes",[]).append("MISSING_TICK")
             res["_trend_h1"]=mexc_h1_trend.pack(data.get((sym,"Min60"),[]))
             res["trend_tick_valid"]=sym in ticks
+            res["contract_spec"]=contract_specs.get(sym)
+            res["require_contract_spec"]=True
             fund_positions=[a for a in (memory.get("oil_active"),memory.get("cm_active"),memory.get("metal_active"),*research_positions) if a and a.get("symbol")==sym and a.get("opened_ts") is not None and a.get("model_schema") in (MODEL_SCHEMA,PREVIOUS_SCHEMA,mexc_h1_trend.SCHEMA)]
             if fund_positions and not denied:
                 try:
@@ -1519,17 +1525,17 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         # Independent control accounts. Each uses its own hypothetical deposit; only MIXED
         # shares a portfolio across H1 and M15, never adds risk to the M1/M5 book.
         state["portfolio_research"]={}
-        for key,profile in (("h1_close_book","CLOSE_PRIOR"),("mixed_trend_range_book","MIXED_PEAK_RANGE")):
+        for key,profile in (("h1_close_book","CLOSE_PRIOR"),("mixed_trend_range_book","MIXED_PEAK_RANGE"),("range_control_book","RANGE_ONLY"),("adaptive_h1_book","ADAPTIVE_H1"),("early_h1_m5_book","EARLY_H1_M5"),("adaptive_range_book","ADAPTIVE_RANGE")):
             try:
                 book=deepcopy(mem.get(key,{})); fee,slip=cost_rates()
-                result=mexc_h1_trend.update(book,state["instruments"],state["updated_ts"],deposit=float(os.getenv("BZU_H1_DEPOSIT_USDT","100")),risk_pct=min(3.,float(os.getenv("BZU_H1_RISK_PCT","3"))),max_leverage=min(5.,lev),fee=fee,slip=slip,profile=profile)
+                result=mexc_h1_trend.update(book,state["instruments"],state["updated_ts"],deposit=float(os.getenv("BZU_H1_DEPOSIT_USDT","100")),risk_pct=min(3.,float(os.getenv("BZU_H1_RISK_PCT","3"))),max_leverage=min(5.,lev),fee=fee,slip=slip,profile=profile,allow_new=profile!="MIXED_PEAK_RANGE")
                 state["portfolio_research"][profile]=result; mem[key]=book
             except Exception as exc:
                 logging.exception("Independent portfolio research failed: %s",profile)
                 state["portfolio_research"][profile]={"mode":"ERROR","error":type(exc).__name__}
         # Execution bars are internal. Keep the public snapshot small and do not duplicate long catch-up history.
         for r in state["instruments"]:
-            r.pop("candles_1m",None); r.pop("funding_events",None); r.pop("_trend_h1",None)
+            r.pop("candles_1m",None); r.pop("funding_events",None); r.pop("_trend_h1",None); r.pop("contract_spec",None); r.pop("require_contract_spec",None)
         # An unavailable market must not masquerade as a successful refresh.
         fresh_count=sum(bool(r.get("quote_valid")) and r.get("quote_ts",0)>=state["updated_ts"]-60000 for r in state["instruments"])
         state["health"]["fresh_quotes"]=fresh_count

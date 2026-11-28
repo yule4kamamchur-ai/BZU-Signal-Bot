@@ -705,23 +705,23 @@
     if(trendSummary) {
       if(trend?.mode==='PAPER_SEPARATE_ACCOUNT') {
         trendSummary.textContent=`H1 DONCHIAN · ОКРЕМИЙ PAPER-депозит ${Number(trend.initial_deposit).toFixed(2)} USDT (НЕ додається до M1/M5) · баланс із PnL ${Number(trend.equity_usdt).toFixed(2)} · закритий PnL ${fmtSigned(trend.realised_usdt)} · відкриті ${trend.open_count} · угод ${trend.trades} · WR ${trend.win_rate==null?'—':(100*trend.win_rate).toFixed(1)+'%'} · PF ${trend.pf==null?'—':Number(trend.pf).toFixed(2)} · просадка за сканами ${Number(trend.scan_mdd_usdt).toFixed(2)} · резерв ${Number(trend.reserved_usdt).toFixed(2)}/${Number(trend.risk_budget_usdt).toFixed(2)} USDT`;
-      } else trendSummary.textContent=trend?.mode==='ERROR'?'H1: помилка оновлення; попередня пам’ять збережена':'H1: очікуємо перший скан v15.8';
+      } else trendSummary.textContent=trend?.mode==='ERROR'?'H1: помилка оновлення; попередня пам’ять збережена':'H1: очікуємо перший скан v15.9';
     }
     if(trendRows) {
       trendRows.textContent='';
       for(const a of (trend?.assets||[])) {
         const el=document.createElement('p'); el.className='ms-portfolio';
-        const labels={NO_BREAKOUT:'немає пробою',DATA_UNAVAILABLE:'дані недоступні',STALE_H1_BREAKOUT:'прострочений H1',PRICE_TOO_FAR:'ціна відійшла',BREAKOUT_NO_LONGER_VALID:'повернення за канал',ALREADY_EVALUATED:'подію оброблено',OPEN:'відкрита',OPEN_STALE:'відкрита · котировка несвіжа',CLOSED:'закрита',WIDE_SPREAD:'широкий спред',INVALID_INPUT_OR_BUDGET:'немає бюджету / некоректні дані'};
+        const labels={NO_BREAKOUT:'немає пробою',DATA_UNAVAILABLE:'дані недоступні',STALE_H1_BREAKOUT:'прострочений H1',PRICE_TOO_FAR:'ціна відійшла',BREAKOUT_NO_LONGER_VALID:'повернення за канал',ALREADY_EVALUATED:'подію оброблено',OPEN:'відкрита',OPEN_STALE:'відкрита · котировка несвіжа',CLOSED:'закрита',WIDE_SPREAD:'широкий спред',INVALID_INPUT_OR_BUDGET:'немає бюджету / некоректні дані',BELOW_MIN_RISK_BUDGET:'недостатній залишок ризику',BELOW_MIN_ALLOCATED_RISK:'занадто мала позиція',BELOW_MIN_NOTIONAL:'номінал менше 5 USDT',BELOW_MIN_CONTRACTS:'менше мінімуму контрактів',MISSING_CONTRACT_SPEC:'немає кроку кількості контрактів',RESEARCH_DRAIN_ONLY:'лише супровід старих позицій'};
         el.textContent=`${a.symbol} · ${labels[a.status]||a.status}${a.side?' · '+(a.side===1?'LONG':'SHORT'):''}${a.entry!=null?' · вхід '+a.entry+' · SL '+a.stop+' · TP: без стелі · PnL '+fmtSigned(a.net_usd)+' USDT · '+(a.quality||'')+' · '+(a.funding_status||''):''}${a.atr_h1!=null?' · ATR H1 '+Number(a.atr_h1).toPrecision(4):''}`;
         trendRows.appendChild(el);
       }
     }
     const researchEl=$('ms-research-portfolios');
-    if(researchEl && !latestData?.portfolio_research) researchEl.textContent='Дослідницькі портфелі: очікуємо перший скан v15.8';
+    if(researchEl && !latestData?.portfolio_research) researchEl.textContent='Дослідницькі портфелі: очікуємо перший скан v15.9';
     else if(researchEl) {
       researchEl.textContent='';
       const books=latestData?.portfolio_research||{};
-      for(const [key,label] of [['CLOSE_PRIOR','H1 CLOSE · попередній ATR'],['MIXED_PEAK_RANGE','H1 + M15 RECLAIM · спільний бюджет']]) {
+      for(const [key,label] of [['CLOSE_PRIOR','H1 CLOSE · попередній ATR'],['MIXED_PEAK_RANGE','H1 + M15 · спільний бюджет (лише завершення старих угод)'],['RANGE_ONLY','M15 RANGE · контроль'],['ADAPTIVE_H1','H1 ADAPTIVE · експеримент'],['EARLY_H1_M5','H1 / ранній M5 · експеримент'],['ADAPTIVE_RANGE','M15 ADAPTIVE EXIT · експеримент']]) {
         const z=books[key], el=document.createElement('p');el.className='ms-portfolio';
         el.textContent=z?.mode==='PAPER_SEPARATE_ACCOUNT'?`${label} · ОКРЕМИЙ PAPER ${Number(z.initial_deposit).toFixed(2)} USDT · equity ${Number(z.equity_usdt).toFixed(2)} · закрито ${z.trades} · PnL ${fmtSigned(z.realised_usdt)} · PF ${z.pf==null?'—':Number(z.pf).toFixed(2)} · MDD (скани) ${Number(z.scan_mdd_usdt).toFixed(2)} · резерв ${Number(z.reserved_usdt).toFixed(2)}/${Number(z.risk_budget_usdt).toFixed(2)} · відкрито ${z.open_count}`:`${label} · ${z?.mode==='ERROR'?'помилка; попередній журнал збережено':'очікуємо перший скан'}`;
         researchEl.appendChild(el);
