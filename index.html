@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0b0d14">
 <title>BZU MULTI · MEXC v15.8 Adaptive Trend Portfolio Research</title>
-<link rel="stylesheet" href="./live_terminal.css?v=15.3.0">
+<link rel="stylesheet" href="./live_terminal.css?v=15.8.1">
 <script defer src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
 <meta name="bzu-state-source" content="">
-<script defer src="./multi_scanner.js?v=15.8.0"></script>
+<script defer src="./multi_scanner.js?v=15.8.1"></script>
 </head>
 <body class="bzu-multi-clean">
 <header class="masthead ms-masthead">
@@ -56,12 +56,10 @@
     <div id="ms-slot-metal-alert" class="ms-action-banner" hidden></div>
   </div>
 </section>
-<p id="ms-opportunity" class="ms-portfolio" aria-live="polite">Opportunity Intelligence: очікуємо статистику…</p>
-<p id="ms-geometry-research" class="ms-portfolio" aria-live="polite">SHADOW геометрія: очікуємо нові MARKET-входи…</p>
-<p id="ms-portfolio" class="ms-portfolio" aria-live="polite">Портфель: очікуємо серверний бюджет…</p>
-<section class="panel" aria-label="H1 Trend separate PAPER"><h3>H1 Donchian Trend · незалежний дослідницький PAPER</h3><p id="ms-h1-summary" class="ms-portfolio" aria-live="polite">Очікуємо H1…</p><div id="ms-h1-rows"></div><p class="ms-portfolio">30 закритих H1 · SL 2.5 ATR · трейл 3.5 ATR · без фіксованого TP. Окремий гіпотетичний рахунок, не підсумовується з M1/M5. Витрати оцінені, funding може бути неповним.</p></section>
-
-<section class="panel" aria-label="Independent portfolio research"><h3>Дослідницький портфель H1 / M15</h3><p class="ms-portfolio">Кожний рядок — незалежний гіпотетичний PAPER-рахунок. MIXED має єдиний бюджет між H1 та M15, не додається до інших рахунків. Не торгові рекомендації.</p><div id="ms-research-portfolios" aria-live="polite"></div></section>
+<div class="ms-main-status">
+  <p id="ms-portfolio" class="ms-portfolio" aria-live="polite">Портфель: очікуємо серверний бюджет…</p>
+  <a class="ms-research-link" href="#ms-research-details" id="ms-research-jump">Дослідження H1 / M15 / Shadow ↓</a>
+</div>
 
 <section id="multi-scanner-section" class="panel ms-panel" aria-label="BZU MULTI Сканер">
   <div class="ms-grid">
@@ -84,8 +82,8 @@
         <div id="ms-chart-legend" class="ms-chart-legend" hidden>
           <span style="color:#f97316">● Вхід</span>
           <span style="color:#ef4444">● SL</span>
-          <span style="color:#38bdf8">● TP1 (50%)</span>
-          <span style="color:#22c55e">● TP2 (Runner)</span>
+          <span style="color:#38bdf8" id="ms-legend-tp1" hidden>● TP1</span>
+          <span style="color:#22c55e">● TP</span>
           <span style="color:#eab308">● Б/У</span>
         </div>
       </div>
@@ -111,7 +109,7 @@
         </table>
       </div>
       <p class="ms-status-help">
-        <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — Smart Maker лімітка (0% fee) ·
+        <strong class="ms-up">В УГОДІ</strong> — паперова відкрита позиція · <strong>ЛІМІТКА ОЧІКУЄ</strong> — лімітна PAPER-заявка (витрати оцінені) ·
         <strong class="ms-up">ВХІД ЗАРАЗ / ЛІМІТКА ГОТОВА</strong> — активний сигнал ·
         <strong style="color:#fcd34d">ОЧІКУЄМО ПІДТВЕРДЖЕННЯ</strong> — ціна біля зони, ще НЕ входимо ·
         <strong>ХВИЛЯ</strong> — напрямок розпізнано, але це не дозвіл на вхід · <strong>НЕМАЄ СИГНАЛУ</strong> — тригера не підтверджено. Клік по активу показує LONG/SHORT діагностику.
@@ -141,6 +139,22 @@
     <small class="muted">Клік → деталі кожної угоди та причина закриття</small>
   </div>
 </section>
+
+<details id="ms-research-details" class="panel ms-research-details">
+  <summary>
+    <span class="ms-research-title">Дослідницькі рахунки H1 / M15 та Shadow</span>
+    <span id="ms-research-summary" class="ms-research-summary">Окремі PAPER-рахунки · очікуємо дані</span>
+  </summary>
+  <p class="ms-research-note">Експериментальні результати не додаються до основного M1/M5 рахунку. Показники оновлюються за серверними сканами.</p>
+  <div class="ms-research-grid">
+    <section class="ms-research-card" aria-label="Shadow research"><h3>Shadow · альтернативні сценарії</h3>
+      <p id="ms-opportunity" class="ms-portfolio" aria-live="polite">Opportunity Intelligence: очікуємо статистику…</p>
+      <p id="ms-geometry-research" class="ms-portfolio" aria-live="polite">SHADOW геометрія: очікуємо нові MARKET-входи…</p>
+    </section>
+    <section class="ms-research-card" aria-label="H1 Trend separate PAPER"><h3>H1 Donchian Trend · незалежний дослідницький PAPER</h3><p id="ms-h1-summary" class="ms-portfolio" aria-live="polite">Очікуємо H1…</p><div id="ms-h1-rows"></div><p class="ms-portfolio">30 закритих H1 · SL 2.5 ATR · трейл 3.5 ATR · без фіксованого TP. Окремий гіпотетичний рахунок, не підсумовується з M1/M5. Витрати оцінені, funding може бути неповним.</p></section>
+    <section class="ms-research-card ms-research-wide" aria-label="Independent portfolio research"><h3>Дослідницький портфель H1 / M15</h3><p class="ms-portfolio">Кожний рядок — незалежний гіпотетичний PAPER-рахунок. MIXED має єдиний бюджет між H1 та M15, не додається до інших рахунків. Не торгові рекомендації.</p><div id="ms-research-portfolios" aria-live="polite"></div></section>
+  </div>
+</details>
 
 <div id="ms-history-modal" class="ms-modal-backdrop" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="ms-history-title">
   <div class="ms-modal">

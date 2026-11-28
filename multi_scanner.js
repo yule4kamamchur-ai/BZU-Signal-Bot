@@ -187,7 +187,7 @@
     bzuBox.hidden = false;
     if (legend) legend.hidden = false;
 
-    if (typeof window.LightweightCharts === 'undefined') return;
+    if (typeof window.LightweightCharts === 'undefined') { bzuBox.textContent = 'Графік рівнів недоступний: бібліотека не завантажилась. Спробуйте TradingView або оновіть сторінку.'; if (legend) legend.hidden=true; return; }
     destroyLwc();
     bzuBox.innerHTML = '';
 
@@ -264,6 +264,15 @@
         price: stopP, color: 'rgba(239, 68, 68, 0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '',
       }));
     }
+    const tp1P = item.tp1_enabled || item.tp1_hit ? posNum(item.tp1) : null;
+    const tp1Legend = $('ms-legend-tp1');
+    if (tp1Legend) {
+      tp1Legend.hidden = tp1P === null;
+      tp1Legend.textContent = `● TP1 (${Math.round(100*Number(item.partial_pct ?? .5))}%)`;
+    }
+    if (tp1P !== null) {
+      priceLines.push(candleSeries.createPriceLine({price:tp1P,color:'rgba(56,189,248,0.65)',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:''}));
+    }
     if (tpP !== null) {
       priceLines.push(candleSeries.createPriceLine({
         price: tpP, color: 'rgba(34, 197, 94, 0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '',
@@ -322,7 +331,7 @@
         return `<div class="ms-action-banner ms-hl-action-banner ${cls}">${alert.title_ua}${alert.detail_ua ? `<small>${alert.detail_ua}</small>` : ''}</div>`;
       }
       if (obj.tp1_hit) {
-        return `<div class="ms-action-banner ms-hl-action-banner ms-alert-success">⚡ УВАГА: ФІКСУЄМО 50% (TP1) · СТОП ПЕРЕНЕСЕНО В Б/У (${fmtPrice(obj.stop, obj.tick)})<small>Решта 50% іде як Runner до TP ${fmtPrice(obj.tp, obj.tick)}.</small></div>`;
+        return `<div class="ms-action-banner ms-hl-action-banner ms-alert-success">⚡ УВАГА: ФІКСУЄМО ${Math.round(100*Number(obj.partial_pct ?? .5))}% (TP1) · СТОП ${fmtPrice(obj.stop, obj.tick)}<small>Решта ${100-Math.round(100*Number(obj.partial_pct ?? .5))}% іде як Runner до TP ${fmtPrice(obj.tp, obj.tick)}.</small></div>`;
       }
       if (obj.stale_tightened) {
         const rem = obj.time_stop_countdown_min ? ` · закриття через ~${obj.time_stop_countdown_min} хв` : '';
@@ -363,7 +372,7 @@
       </div>
       ${hlBannerHtml}
       <div class="ms-hl-levels">
-        <div class="ms-lvl"><small>ВХІД${item.maker_pullback ? ' · MAKER 0%' : ''}</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
+        <div class="ms-lvl"><small>ВХІД${item.maker_pullback ? ' · MAKER (FEE EST.)' : ''}</small><strong>${fmtPrice(item.entry, item.tick)}</strong></div>
         <div class="ms-lvl"><small>СТОП-ЛОСС${item.be_armed ? ' (Б/У)' : item.stale_tightened ? ' (ТАЙМ-СТОП)' : ''}</small><strong class="${item.be_armed ? 'ms-up' : 'ms-dn'}">${fmtPrice(item.stop, item.tick)}${sz && item.status !== 'IN_TRADE' ? ' (−' + sz.slPct + '%)' : ''}</strong></div>
         <div class="ms-lvl"><small>${tp1Txt ? 'TP2 (RUNNER) · ' + tp1Txt : 'TP'}</small><strong class="ms-up">${fmtPrice(item.tp, item.tick)}${sz ? ' (+' + sz.tpPct + '%)' : ''}</strong></div>
         <div class="ms-lvl"><small>R:R / RVOL${item.funding_pct ? ' · FR ' + Number(item.funding_pct).toFixed(3) + '%' : ''}</small><strong>${item.rr ? item.rr.toFixed(2) + ' R' : '—'} · ${item.rvol ? item.rvol.toFixed(2) + '×' : '—'}</strong></div>
@@ -496,7 +505,7 @@
       if (hl) hl.textContent = `${fmtPrice(price, item.tick)} USDT`;
       tickChartPrice(sym, price);
     }
-    renderDualSlotsAndDaily();
+    renderDualSlotsAndDaily(false);
   }
 
   function connectMexcWebSocket() {
@@ -553,8 +562,8 @@
       detail = act.action_alert.detail_ua || '';
       level = act.action_alert.level === 'success' ? 'success' : 'warn';
     } else if (act.tp1_hit) {
-      title = `⚡ УВАГА: ФІКСУЄМО 50% (TP1) · СТОП ПЕРЕНЕСЕНО В Б/У (${fmtPrice(act.stop, tick)})`;
-      detail = `Решта 50% іде як Runner до TP ${fmtPrice(act.tp, tick)}.`;
+      title = `⚡ УВАГА: ФІКСУЄМО ${Math.round(100*Number(act.partial_pct ?? .5))}% (TP1) · СТОП ${fmtPrice(act.stop, tick)}`;
+      detail = `Решта ${100-Math.round(100*Number(act.partial_pct ?? .5))}% іде як Runner до TP ${fmtPrice(act.tp, tick)}.`;
       level = 'success';
     } else if (act.stale_tightened) {
       const rem = act.time_stop_countdown_min ? ` · закриття через ~${act.time_stop_countdown_min} хв` : '';
@@ -616,9 +625,9 @@
       const riskUsd = Number((act.sizing && act.sizing.risk_usd) || 3);
       const pnlUsd = pnlR * riskUsd;
       card.classList.add(pnlUsd >= 0 ? 'ms-slot-pos' : 'ms-slot-neg');
-      badge.textContent = `${act.tp1_hit ? 'TP1 50% ✓ · ' : 'В УГОДІ · '}${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)} USDT)`;
+      badge.textContent = `${act.tp1_hit ? `TP1 ${Math.round(100*Number(act.partial_pct ?? .5))}% ✓ · ` : 'В УГОДІ · '}${fmtSigned(pnlR)} R (${fmtSigned(pnlUsd)} USDT)`;
       title.textContent = `${act.label} · ${sideTxt} @ ${fmtPrice(entry, tick)} USDT`;
-      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)}${act.tp1_enabled && act.tp1 && !act.tp1_hit ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP ${fmtPrice(tp, tick)}${act.tp1_hit ? ' · Б/У + Runner 50%' : act.stale_tightened ? ' · Тайм-стоп SL' : act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
+      sub.textContent = `Ціна ${fmtPrice(curP, tick)} · SL ${fmtPrice(stop, tick)}${act.tp1_enabled && act.tp1 && !act.tp1_hit ? ' · TP1 ' + fmtPrice(act.tp1, tick) : ''} · TP ${fmtPrice(tp, tick)}${act.tp1_hit ? ` · Runner ${100-Math.round(100*Number(act.partial_pct ?? .5))}%` : act.stale_tightened ? ' · Тайм-стоп SL' : act.trail_reason ? ' · Структурний SL' : act.be_armed ? ' · Б/У' : ''}`;
       _renderSlotActionBanner(alertEl, act);
     } else {
       card.classList.add('ms-slot-free');
@@ -629,27 +638,8 @@
     }
   }
 
-  function renderDualSlotsAndDaily() {
-    const oilSlot = (latestData && latestData.oil_slot) || {};
-    const cmSlot = (latestData && latestData.cm_slot) || {};
-    const metalSlot = latestData?.metal_slot || {};
-    const metalCard=$('ms-slot-metal'); if(metalCard) metalCard.hidden=!latestData?.metal_slot;
-
-    _renderSlotCard(
-      'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub', 'ms-slot-oil-alert',
-      oilSlot,
-      'Немає відкритої угоди по нафті',
-      'Слот 1 вільний · очікуємо A+ сигнал UKOIL на MEXC'
-    );
-    _renderSlotCard(
-      'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub', 'ms-slot-cm-alert',
-      cmSlot,
-      'Немає відкритої угоди по крипті',
-      'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI'
-    );
-
-    _renderSlotCard('ms-slot-metal','ms-slot-metal-badge','ms-slot-metal-title','ms-slot-metal-sub','ms-slot-metal-alert',metalSlot,
-      'Немає відкритої угоди по металу','Слот 3 вільний · XPT · спільний бюджет');
+  // Research uses server snapshots, not individual price ticks.
+  function renderResearch() {
     const geom=latestData?.geometry_research, geomEl=$('ms-geometry-research');
     if(geomEl) geomEl.textContent=geom?.mode==='SHADOW_MATCHED_STATIC_EX_FUNDING'?`SHADOW геометрія M1/M5 · пар ${geom.complete_observed_pairs} · відкритих моделей ${geom.pending} · ${Object.entries(geom.variants||{}).map(([k,v])=>k+' '+fmtSigned(v.net_r)+'R').join(' · ')} · без funding; не PnL рахунку`:geom?.mode==='ERROR'?'SHADOW геометрія: помилка оновлення':'SHADOW геометрія: очікуємо дані';
     const trend=latestData?.h1_trend, trendSummary=$('ms-h1-summary'), trendRows=$('ms-h1-rows');
@@ -685,6 +675,38 @@
     }
     const opp=$('ms-opportunity'), intel=latestData?.opportunity_intelligence;
     if(opp) opp.textContent=intel ? `SHADOW · спостережень ${intel.observations} · відкритих моделей ${intel.pending} · завершених ${intel.resolved} · придатних ${intel.usable_labels} · НЕ фактичні угоди · навчання Active: ${intel.active_learning==='PAPER_ONLY'?'лише PAPER':'—'}` : 'Evidence Engine: очікуємо v15.5';
+    const compact = $('ms-research-summary');
+    if (compact) {
+      const books = latestData?.portfolio_research || {};
+      const describe = (label, book) => book?.mode === 'PAPER_SEPARATE_ACCOUNT'
+        ? `${label}: ${Number(book.open_count || 0)} відкр. · PnL ${fmtSigned(book.realised_usdt)} USDT`
+        : `${label}: ${book?.mode === 'ERROR' ? 'помилка' : 'очікуємо'}`;
+      compact.textContent = [describe('H1 Peak', trend), describe('H1 Close', books.CLOSE_PRIOR), describe('H1/M15', books.MIXED_PEAK_RANGE)].join(' | ');
+    }
+  }
+
+  function renderDualSlotsAndDaily(includeResearch = true) {
+    const oilSlot = (latestData && latestData.oil_slot) || {};
+    const cmSlot = (latestData && latestData.cm_slot) || {};
+    const metalSlot = latestData?.metal_slot || {};
+    const metalCard=$('ms-slot-metal'); if(metalCard) metalCard.hidden=!latestData?.metal_slot;
+
+    _renderSlotCard(
+      'ms-slot-oil', 'ms-slot-oil-badge', 'ms-slot-oil-title', 'ms-slot-oil-sub', 'ms-slot-oil-alert',
+      oilSlot,
+      'Немає відкритої угоди по нафті',
+      'Слот 1 вільний · очікуємо A+ сигнал UKOIL на MEXC'
+    );
+    _renderSlotCard(
+      'ms-slot-cm', 'ms-slot-cm-badge', 'ms-slot-cm-title', 'ms-slot-cm-sub', 'ms-slot-cm-alert',
+      cmSlot,
+      'Немає відкритої угоди по крипті',
+      'Слот 2 вільний · скануємо SOL · LINK · LTC · APT · ORDI'
+    );
+
+    _renderSlotCard('ms-slot-metal','ms-slot-metal-badge','ms-slot-metal-title','ms-slot-metal-sub','ms-slot-metal-alert',metalSlot,
+      'Немає відкритої угоди по металу','Слот 3 вільний · XPT · спільний бюджет');
+    if (includeResearch) renderResearch();
     const port=$('ms-portfolio'), budget=latestData?.portfolio;
     if(port) {
       port.textContent=budget ? `ПОРТФЕЛЬ · стоп-ризик із витратами ${budget.used_risk_usd??'—'} / ${budget.risk_usd.toFixed(2)} USDT · номінал ${budget.used_notional_usd??'—'} / ${budget.notional_usd.toFixed(2)} USDT · на новий слот ≤ ${budget.per_slot_risk_cap.toFixed(2)} USDT ризику · ${budget.status==='OK'?'бюджет активний':'старі позиції перевищують бюджет; не збільшуємо'}` : 'Очікуємо актуальний портфель v15.5';
@@ -937,7 +959,7 @@
       return `
         <tr>
           <td><strong>${r.closed_kyiv || '—'}</strong>${r.opened_kyiv ? `<small>відкр. ${r.opened_kyiv}</small>` : ''}</td>
-          <td><strong>${r.label || r.symbol}</strong> · <span class="${sideCls}">${r.side_ua || (r.side === 1 ? 'LONG ↑' : 'SHORT ↓')}</span><small>${setupTxt}${r.tp1_hit ? ' · ⚡ TP1 50%' : ''}</small></td>
+          <td><strong>${r.label || r.symbol}</strong> · <span class="${sideCls}">${r.side_ua || (r.side === 1 ? 'LONG ↑' : 'SHORT ↓')}</span><small>${setupTxt}${r.tp1_hit ? ` · ⚡ TP1 ${Math.round(100*Number(r.partial_pct ?? .5))}%` : ''}</small></td>
           <td class="ms-num">${fmtPrice(r.entry, tick)} → ${fmtPrice(r.exit, tick)}</td>
           <td class="ms-num ${resCls}"><strong>${fmtSigned(usd)} USDT</strong><small>${fmtSigned(nr)} R</small></td>
           <td><span class="ms-reason-pill ${pillCls}">${reasonTxt}</span></td>
@@ -1087,6 +1109,8 @@
   }
 
   function init() {
+    const jump = $('ms-research-jump');
+    if (jump) jump.addEventListener('click', () => { const details = $('ms-research-details'); if (details) details.open = true; });
     wireBannerClick();
     wireSoundButton();
     wireHistoryModal();
