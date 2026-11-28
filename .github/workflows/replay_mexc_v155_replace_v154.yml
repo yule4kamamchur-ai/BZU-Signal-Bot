@@ -1,0 +1,62 @@
+name: BZU v15.5 historical replay (research only)
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'UTC beginning of replay (YYYY-MM-DD)'
+        required: true
+        default: '2026-11-07'
+      split:
+        description: 'UTC holdout beginning (YYYY-MM-DD)'
+        required: true
+        default: '2026-11-21'
+      end:
+        description: 'UTC exclusive end (YYYY-MM-DD)'
+        required: true
+        default: '2026-11-28'
+      baseline_ref:
+        description: Optional exact baseline Git commit SHA for same-data comparison
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      BZU_ALLOW_M1_ENTRY: 'true'
+      MEXC_TAKER_FEE_RATE: ${{ vars.MEXC_TAKER_FEE_RATE || '0.0002' }}
+      MEXC_MAKER_FEE_RATE: ${{ vars.MEXC_MAKER_FEE_RATE || '0.0002' }}
+      MEXC_SLIPPAGE_RATE: ${{ vars.MEXC_SLIPPAGE_RATE || '0.0001' }}
+      START: ${{ inputs.start }}
+      SPLIT: ${{ inputs.split }}
+      END: ${{ inputs.end }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: mexc_replay_cache
+          key: mexc-v154-${{ inputs.start }}-${{ inputs.end }}
+      - name: Download and walk forward
+        run: python mexc_replay_v154.py --data mexc_replay_cache --start "$START" --split "$SPLIT" --end "$END" --download --interval 180 --output MEXC_REPLAY_REPORT.json --export-prior mexc_calibration_v155_research.json
+      - uses: actions/checkout@v6
+        if: ${{ inputs.baseline_ref != '' }}
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: baseline_engine
+      - name: Replay baseline on the same cached candles
+        if: ${{ inputs.baseline_ref != '' }}
+        run: python mexc_replay_v154.py --engine-dir baseline_engine --data mexc_replay_cache --start "$START" --split "$SPLIT" --end "$END" --interval 180 --output MEXC_BASELINE_REPORT.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mexc-v155-research
+          path: |
+            MEXC_REPLAY_REPORT.json
+            MEXC_BASELINE_REPORT.json
+            mexc_calibration_v155_research.json
+          if-no-files-found: warn
