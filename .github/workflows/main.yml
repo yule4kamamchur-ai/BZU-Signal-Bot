@@ -1,4 +1,4 @@
-name: BZU MULTI v15.3 Adaptive Direction — MEXC scanner
+name: BZU MULTI v15.4 Adaptive Opportunity — MEXC scanner
 on:
   workflow_dispatch:
 permissions:
@@ -13,11 +13,12 @@ jobs:
     timeout-minutes: 4
     env:
       PYTHONUNBUFFERED: '1'
-      MEXC_SCAN_INTERVAL_SEC: ${{ vars.MEXC_SCAN_INTERVAL_SEC || '300' }}
+      MEXC_SCAN_INTERVAL_SEC: ${{ vars.MEXC_SCAN_INTERVAL_SEC || '180' }}
       MEXC_FUTURES_BASE: 'https://api.mexc.com'
       BZU_ALLOW_M1_ENTRY: ${{ vars.BZU_ALLOW_M1_ENTRY || 'true' }}
       BZU_PORTFOLIO_RISK_PCT: ${{ vars.BZU_PORTFOLIO_RISK_PCT || vars.BZU_RISK_PCT || '3' }}
       MEXC_TAKER_FEE_RATE: ${{ vars.MEXC_TAKER_FEE_RATE || '0.0002' }}
+      MEXC_MAKER_FEE_RATE: ${{ vars.MEXC_MAKER_FEE_RATE || '0.0002' }}
       MEXC_SLIPPAGE_RATE: ${{ vars.MEXC_SLIPPAGE_RATE || '0.0001' }}
       BZU_DEPOSIT_USDT: ${{ vars.BZU_DEPOSIT_USDT || '100' }}
       BZU_RISK_PCT: ${{ vars.BZU_RISK_PCT || '3' }}
@@ -38,7 +39,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -m py_compile mexc_multi_scanner.py mexc_hybrid.py mexc_lifecycle.py mexc_geometry.py mexc_direction.py
+          python -m py_compile mexc_multi_scanner.py mexc_hybrid.py mexc_lifecycle.py mexc_geometry.py mexc_direction.py mexc_opportunity.py mexc_replay_v154.py
           python mexc_multi_scanner.py --notify
           python - <<'PYCODE'
           import json, os
