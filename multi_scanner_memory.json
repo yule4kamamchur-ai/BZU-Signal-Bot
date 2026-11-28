@@ -12,11 +12,11 @@
     "LINK_USDT:-1:MOMENTUM:M5:1795842000000:OPEN": 1795842355,
     "ORDI_USDT:1:BREAKOUT_RETEST:M5:1795850400000:OPEN": 1795850750
   },
-  "last_run_ts": 1795856219891,
+  "last_run_ts": 1795856495131,
   "cm_active": {
     "phase": "OPEN",
     "placed_ts": 1795850750582,
-    "processed_until_ts": 1795856160000,
+    "processed_until_ts": 1795856460000,
     "expires_ts": 1795851230582,
     "stop_effective_ts": 1795850750582,
     "quality": "OBSERVED_M1",
@@ -91,22 +91,13 @@
     },
     "opened_ts": 1795850750582,
     "opened_kyiv": "28.11 09:25",
-    "current_price": 2.583,
-    "pnl_r": -0.3975,
-    "pnl_usd": -0.37,
+    "current_price": 2.585,
+    "pnl_r": -0.2922,
+    "pnl_usd": -0.27,
     "peak_r": 0.10526315789474791,
     "be_armed": false,
     "partial_entry_bar": true,
     "trail_m5": [
-      {
-        "bucket": 1795851300000,
-        "last": 1795851600000,
-        "count": 5,
-        "o": 2.587,
-        "h": 2.59,
-        "l": 2.583,
-        "c": 2.583
-      },
       {
         "bucket": 1795851600000,
         "last": 1795851900000,
@@ -241,16 +232,25 @@
         "h": 2.581,
         "l": 2.577,
         "c": 2.581
+      },
+      {
+        "bucket": 1795856100000,
+        "last": 1795856400000,
+        "count": 5,
+        "o": 2.581,
+        "h": 2.586,
+        "l": 2.581,
+        "c": 2.584
       }
     ],
     "trail_partial": {
-      "bucket": 1795856100000,
-      "last": 1795856160000,
+      "bucket": 1795856400000,
+      "last": 1795856460000,
       "count": 1,
-      "o": 2.581,
-      "h": 2.583,
-      "l": 2.581,
-      "c": 2.583
+      "o": 2.584,
+      "h": 2.587,
+      "l": 2.584,
+      "c": 2.586
     }
   },
   "cm_daily": {
@@ -265,7 +265,7 @@
   "oil_active": {
     "phase": "OPEN",
     "placed_ts": 1795806958232,
-    "processed_until_ts": 1795856160000,
+    "processed_until_ts": 1795856460000,
     "expires_ts": 1795807858232,
     "stop_effective_ts": 1795806958232,
     "quality": "PARTIAL_ENTRY_BAR",
@@ -340,22 +340,13 @@
     },
     "opened_ts": 1795807140000,
     "opened_kyiv": "27.11 21:19",
-    "current_price": 90.97,
-    "pnl_r": 0.7391,
-    "pnl_usd": 0.63,
+    "current_price": 90.65,
+    "pnl_r": 0.0435,
+    "pnl_usd": 0.04,
     "peak_r": 0.9130434782608857,
     "be_armed": false,
     "partial_entry_bar": true,
     "trail_m5": [
-      {
-        "bucket": 1795851300000,
-        "last": 1795851600000,
-        "count": 5,
-        "o": 90.9,
-        "h": 90.95,
-        "l": 90.87,
-        "c": 90.91
-      },
       {
         "bucket": 1795851600000,
         "last": 1795851900000,
@@ -490,16 +481,25 @@
         "h": 91.0,
         "l": 90.97,
         "c": 91.0
+      },
+      {
+        "bucket": 1795856100000,
+        "last": 1795856400000,
+        "count": 5,
+        "o": 91.0,
+        "h": 91.02,
+        "l": 90.5,
+        "c": 90.67
       }
     ],
     "trail_partial": {
-      "bucket": 1795856100000,
-      "last": 1795856160000,
+      "bucket": 1795856400000,
+      "last": 1795856460000,
       "count": 1,
-      "o": 91.0,
-      "h": 91.0,
-      "l": 90.97,
-      "c": 90.97
+      "o": 90.67,
+      "h": 90.7,
+      "l": 90.66,
+      "c": 90.7
     }
   },
   "oil_daily": {
@@ -1124,18 +1124,18 @@
     }
   ],
   "opportunity_breaks": {
-    "UKOIL_USDT": [],
+    "UKOIL_USDT": [
+      {
+        "ts": 1795856100000,
+        "side": -1,
+        "level": 90.87,
+        "atr": 0.07785714285713803
+      }
+    ],
     "XPT_USDT": [],
     "SOL_USDT": [],
     "LINK_USDT": [],
-    "LTC_USDT": [
-      {
-        "ts": 1795855200000,
-        "side": -1,
-        "level": 43.92,
-        "atr": 0.08071428571428488
-      }
-    ],
+    "LTC_USDT": [],
     "APT_USDT": [],
     "ORDI_USDT": []
   },
@@ -2796,6 +2796,1404 @@
           "M1_NO_M5_CONTEXT"
         ],
         "signal_id": "APT_USDT:1:BREAKOUT_RETEST:M1:1795856100000"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "setup": "M5_LIQUIDITY_SWEEP_RECLAIM",
+        "family": "LIQUIDITY_SWEEP",
+        "trigger_tf": "M1",
+        "trigger_offset": 2,
+        "signal_age_sec": 155.1,
+        "side": -1,
+        "status": "WATCH",
+        "score": 84,
+        "rank_score": 0.02,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 0,
+          "total_n": 6,
+          "effective_n": 0.131,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.501,
+          "expected_r_estimate": 0.0051,
+          "rank_adjustment": 0.0051,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M1 свіп + реклайм · LOCAL_DOWN · RVOL 1.42x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, WIDE_SPREAD, CHASE_DISTANCE, M1_NO_M5_CONTEXT",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "WIDE_SPREAD",
+          "CHASE_DISTANCE",
+          "M1_NO_M5_CONTEXT"
+        ],
+        "signal_id": "UKOIL_USDT:-1:LIQUIDITY_SWEEP:M1:1795856280000",
+        "signal_event_key": "UKOIL_USDT:-1:EVENT:5986187",
+        "signal_known_ts": 1795856340000,
+        "entry": 90.65,
+        "stop": 91.06,
+        "tp": 90.07,
+        "risk": 0.4099999999999966,
+        "tick": 0.01,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "LOCAL_DOWN",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 0.0004964147821290083,
+        "retest_level": 91.0,
+        "reference": 90.98
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "ts": 1795856040000,
+        "side": 1,
+        "body_atr": 0.724,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "ts": 1795856160000,
+        "side": -1,
+        "body_atr": 0.764,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "ts": 1795856280000,
+        "side": 1,
+        "body_atr": 0.824,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 0.433,
+          "break_distance_atr": -4.619,
+          "rvol": 0.487,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -8.68,
+          "break_distance_atr": -9.8,
+          "rvol": 26.338,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.56,
+          "break_distance_atr": -0.56,
+          "rvol": 1.419,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -4.239,
+          "break_distance_atr": -4.495,
+          "rvol": 5.511,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -0.433,
+          "break_distance_atr": -2.887,
+          "rvol": 0.487,
+          "local_support": true,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 8.68,
+          "break_distance_atr": 8.4,
+          "rvol": 26.338,
+          "local_support": true,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.56,
+          "break_distance_atr": -0.28,
+          "rvol": 1.419,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 4.239,
+          "break_distance_atr": 2.954,
+          "rvol": 5.511,
+          "local_support": true,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "setup": "BREAKOUT_RETEST",
+        "family": "BREAKOUT_RETEST",
+        "trigger_tf": "M1",
+        "trigger_offset": 0,
+        "signal_age_sec": 35.1,
+        "side": 1,
+        "status": "WATCH",
+        "score": 84,
+        "rank_score": -0.023,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 0,
+          "total_n": 1,
+          "effective_n": 0.033,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.498,
+          "expected_r_estimate": -0.0043,
+          "rank_adjustment": -0.0043,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M1 пробій + ретест · RANGE_TRANSITION · RVOL 0.65x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, WIDE_SPREAD",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "WIDE_SPREAD"
+        ],
+        "signal_id": "XPT_USDT:1:BREAKOUT_RETEST:M1:1795856400000",
+        "signal_event_key": "XPT_USDT:1:EVENT:5986188",
+        "signal_known_ts": 1795856460000,
+        "entry": 1341.4,
+        "stop": 1336.7,
+        "tp": 1343.65,
+        "risk": 4.7000000000000455,
+        "tick": 0.01,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "RANGE_TRANSITION",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 0.0005852094826301489,
+        "retest_level": 1341.15,
+        "reference": 1341.2
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "setup": "TREND_PULLBACK_FVG_VWAP",
+        "family": "TREND_PULLBACK",
+        "trigger_tf": "M5",
+        "trigger_offset": 0,
+        "signal_age_sec": 95.1,
+        "side": 1,
+        "status": "WATCH",
+        "score": 83,
+        "rank_score": -0.045,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 1,
+          "total_n": 1,
+          "effective_n": 0.163,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.49,
+          "expected_r_estimate": -0.0214,
+          "rank_adjustment": -0.0214,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M5 відкат до FVG/EMA/VWAP · RANGE_TRANSITION · RVOL 1.06x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, WIDE_SPREAD",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "WIDE_SPREAD"
+        ],
+        "signal_id": "XPT_USDT:1:TREND_PULLBACK:M5:1795856100000",
+        "signal_event_key": "XPT_USDT:1:EVENT:5986187",
+        "signal_known_ts": 1795856400000,
+        "entry": 1341.4,
+        "stop": 1336.7,
+        "tp": 1343.65,
+        "risk": 4.7000000000000455,
+        "tick": 0.01,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "RANGE_TRANSITION",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 0.0005852094826301489,
+        "retest_level": 1340.7303351874411,
+        "reference": 1341.15
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "XPT_USDT",
+        "ts": 1795856100000,
+        "side": -1,
+        "body_atr": 1.116,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "XPT_USDT",
+        "ts": 1795856220000,
+        "side": 1,
+        "body_atr": 4.091,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 0.151,
+          "break_distance_atr": -0.151,
+          "rvol": 0.652,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -0.126,
+          "break_distance_atr": -0.126,
+          "rvol": 0.817,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.406,
+          "break_distance_atr": 0.127,
+          "rvol": 0.658,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 2.227,
+          "break_distance_atr": -0.043,
+          "rvol": 1.055,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -0.151,
+          "break_distance_atr": -4.968,
+          "rvol": 0.652,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 0.126,
+          "break_distance_atr": -4.036,
+          "rvol": 0.817,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.406,
+          "break_distance_atr": -4.185,
+          "rvol": 0.658,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -2.227,
+          "break_distance_atr": -2.329,
+          "rvol": 1.055,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "SOL_USDT",
+        "ts": 1795856220000,
+        "side": 1,
+        "body_atr": 0.986,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 0.618,
+          "break_distance_atr": -0.412,
+          "rvol": 0.144,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 0.418,
+          "break_distance_atr": -1.045,
+          "rvol": 1.661,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.545,
+          "break_distance_atr": -1.273,
+          "rvol": 0.318,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 0.23,
+          "break_distance_atr": -2.219,
+          "rvol": 0.934,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -0.618,
+          "break_distance_atr": -1.647,
+          "rvol": 0.144,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -0.418,
+          "break_distance_atr": -1.045,
+          "rvol": 1.661,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.545,
+          "break_distance_atr": -0.545,
+          "rvol": 0.318,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "SOL_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -0.23,
+          "break_distance_atr": -0.459,
+          "rvol": 0.934,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "setup": "MOMENTUM_NO_PULLBACK_CONTINUATION",
+        "family": "MOMENTUM",
+        "trigger_tf": "M1",
+        "trigger_offset": 0,
+        "signal_age_sec": 35.1,
+        "side": 1,
+        "status": "WATCH",
+        "score": 92,
+        "rank_score": 0.052,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 0,
+          "total_n": 1,
+          "effective_n": 0.016,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.499,
+          "expected_r_estimate": -0.0022,
+          "rank_adjustment": -0.0022,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M1 імпульс без відкату · TRANSITION_UP · RVOL 1.62x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · BTC проти (вага, не блок) · відносна сила/слабкість підтверджує · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ],
+        "signal_id": "LINK_USDT:1:MOMENTUM:M1:1795856400000",
+        "signal_event_key": "LINK_USDT:1:EVENT:5986188",
+        "signal_known_ts": 1795856460000,
+        "entry": 9.19,
+        "stop": 9.148,
+        "tp": 9.248,
+        "risk": 0.041999999999999815,
+        "tick": 0.001,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "TRANSITION_UP",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 5.440696409137355e-05,
+        "retest_level": 9.179,
+        "reference": 9.198
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "setup": "BREAKOUT_RETEST",
+        "family": "BREAKOUT_RETEST",
+        "trigger_tf": "M1",
+        "trigger_offset": 0,
+        "signal_age_sec": 35.1,
+        "side": 1,
+        "status": "WATCH",
+        "score": 91,
+        "rank_score": 0.047,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 0,
+          "total_n": 1,
+          "effective_n": 0.016,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.499,
+          "expected_r_estimate": -0.0022,
+          "rank_adjustment": -0.0022,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M1 пробій + ретест · TRANSITION_UP · RVOL 1.62x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · BTC проти (вага, не блок) · відносна сила/слабкість підтверджує · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ],
+        "signal_id": "LINK_USDT:1:BREAKOUT_RETEST:M1:1795856400000",
+        "signal_event_key": "LINK_USDT:1:EVENT:5986188",
+        "signal_known_ts": 1795856460000,
+        "entry": 9.19,
+        "stop": 9.148,
+        "tp": 9.248,
+        "risk": 0.041999999999999815,
+        "tick": 0.001,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "TRANSITION_UP",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 5.440696409137355e-05,
+        "retest_level": 9.176,
+        "reference": 9.198
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "setup": "TREND_PULLBACK_FVG_VWAP",
+        "family": "TREND_PULLBACK",
+        "trigger_tf": "M1",
+        "trigger_offset": 0,
+        "signal_age_sec": 35.1,
+        "side": 1,
+        "status": "WATCH",
+        "score": 89,
+        "rank_score": 0.028,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 1,
+          "total_n": 1,
+          "effective_n": 0.081,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.495,
+          "expected_r_estimate": -0.0108,
+          "rank_adjustment": -0.0108,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M1 відкат до FVG/EMA/VWAP · TRANSITION_UP · RVOL 1.62x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · BTC проти (вага, не блок) · відносна сила/слабкість підтверджує · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ],
+        "signal_id": "LINK_USDT:1:TREND_PULLBACK:M1:1795856400000",
+        "signal_event_key": "LINK_USDT:1:EVENT:5986188",
+        "signal_known_ts": 1795856460000,
+        "entry": 9.19,
+        "stop": 9.148,
+        "tp": 9.248,
+        "risk": 0.041999999999999815,
+        "tick": 0.001,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "TRANSITION_UP",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 5.440696409137355e-05,
+        "retest_level": 9.187784967600363,
+        "reference": 9.198
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "LINK_USDT",
+        "ts": 1795856160000,
+        "side": 1,
+        "body_atr": 0.712,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "LINK_USDT",
+        "ts": 1795856220000,
+        "side": 1,
+        "body_atr": 0.933,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 4.29,
+          "break_distance_atr": 4.29,
+          "rvol": 1.623,
+          "local_support": true,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 1.424,
+          "break_distance_atr": 0.949,
+          "rvol": 0.137,
+          "local_support": true,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.0,
+          "break_distance_atr": -0.444,
+          "rvol": 0.175,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 0.828,
+          "break_distance_atr": -0.452,
+          "rvol": 0.135,
+          "local_support": true,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -4.29,
+          "break_distance_atr": -7.452,
+          "rvol": 1.623,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -1.424,
+          "break_distance_atr": -3.322,
+          "rvol": 0.137,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.0,
+          "break_distance_atr": -2.0,
+          "rvol": 0.175,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -0.828,
+          "break_distance_atr": -2.183,
+          "rvol": 0.135,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "LTC_USDT",
+        "ts": 1795856160000,
+        "side": 1,
+        "body_atr": 0.737,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "LTC_USDT",
+        "ts": 1795856220000,
+        "side": 1,
+        "body_atr": 1.077,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 0.0,
+          "break_distance_atr": -0.333,
+          "rvol": 5.742,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 0.341,
+          "break_distance_atr": 0.341,
+          "rvol": 0.057,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.326,
+          "break_distance_atr": 0.0,
+          "rvol": 0.878,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 1.047,
+          "break_distance_atr": -1.308,
+          "rvol": 0.185,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -0.0,
+          "break_distance_atr": -3.333,
+          "rvol": 5.742,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -0.341,
+          "break_distance_atr": -3.415,
+          "rvol": 0.057,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.326,
+          "break_distance_atr": -2.93,
+          "rvol": 0.878,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LTC_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -1.047,
+          "break_distance_atr": -1.308,
+          "rvol": 0.185,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "APT_USDT",
+        "ts": 1795856160000,
+        "side": 1,
+        "body_atr": 1.944,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -0.35,
+          "break_distance_atr": -0.35,
+          "rvol": 2.968,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 0.737,
+          "break_distance_atr": 0.368,
+          "rvol": 1.554,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.718,
+          "break_distance_atr": 0.0,
+          "rvol": 1.077,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 0.926,
+          "break_distance_atr": 0.116,
+          "rvol": 0.149,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 0.35,
+          "break_distance_atr": -3.15,
+          "rvol": 2.968,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -0.737,
+          "break_distance_atr": -3.684,
+          "rvol": 1.554,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.718,
+          "break_distance_atr": -2.872,
+          "rvol": 1.077,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "APT_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -0.926,
+          "break_distance_atr": -1.504,
+          "rvol": 0.149,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "setup": "BREAKOUT_RETEST",
+        "family": "BREAKOUT_RETEST",
+        "trigger_tf": "M1",
+        "trigger_offset": 2,
+        "signal_age_sec": 155.1,
+        "side": 1,
+        "status": "WATCH",
+        "score": 78,
+        "rank_score": -0.052,
+        "meta": {
+          "status": "SHRUNK_ESTIMATE_UNVALIDATED",
+          "n": 0,
+          "total_n": 1,
+          "effective_n": 0.016,
+          "shadow_n": 0,
+          "win_rate_estimate": 0.499,
+          "expected_r_estimate": -0.0022,
+          "rank_adjustment": -0.0022,
+          "prior_strength": 8,
+          "validated": false
+        },
+        "reason_ua": "M1 пробій + ретест · TREND_DOWN · RVOL 0.90x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · BTC проти (вага, не блок) · відносна сила/слабкість підтверджує · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, M1_NO_M5_CONTEXT",
+        "rejection_codes": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "M1_NO_M5_CONTEXT"
+        ],
+        "signal_id": "ORDI_USDT:1:BREAKOUT_RETEST:M1:1795856280000",
+        "signal_event_key": "ORDI_USDT:1:EVENT:5986187",
+        "signal_known_ts": 1795856340000,
+        "entry": 2.586,
+        "stop": 2.568,
+        "tp": 2.592,
+        "risk": 0.017999999999999794,
+        "tick": 0.001,
+        "order_type": "MARKET",
+        "valid": false,
+        "regime": "TREND_DOWN",
+        "limit_ttl_min": 8,
+        "entry_fee_rate": 0.0002,
+        "exit_fee_rate": 0.0002,
+        "entry_slip_rate": 0.0001,
+        "exit_slip_rate": 0.0001,
+        "spread_cost_rate": 0.00019334880123741103,
+        "retest_level": 2.583,
+        "reference": 2.584
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "ts": 1795856040000,
+        "side": 1,
+        "body_atr": 1.12,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "observed_at": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "ts": 1795856160000,
+        "side": 1,
+        "body_atr": 1.037,
+        "kind": "ELAPSED_M1_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": 0.903,
+          "break_distance_atr": 0.0,
+          "rvol": 0.696,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": 0.0,
+          "break_distance_atr": -0.933,
+          "rvol": 1.007,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": 0.483,
+          "break_distance_atr": -0.483,
+          "rvol": 0.895,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": 0.553,
+          "break_distance_atr": -0.184,
+          "rvol": 0.539,
+          "local_support": false,
+          "higher_opposes": true
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 0,
+          "known_ts": 1795856460000,
+          "body_atr": -0.903,
+          "break_distance_atr": -3.613,
+          "rvol": 0.696,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 1,
+          "known_ts": 1795856400000,
+          "body_atr": -0.0,
+          "break_distance_atr": -2.8,
+          "rvol": 1.007,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M1",
+          "offset": 2,
+          "known_ts": 1795856340000,
+          "body_atr": -0.483,
+          "break_distance_atr": -2.897,
+          "rvol": 0.895,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "side": "-1",
+        "window": {
+          "tf": "M5",
+          "offset": 0,
+          "known_ts": 1795856400000,
+          "body_atr": -0.553,
+          "break_distance_atr": -1.658,
+          "rvol": 0.539,
+          "local_support": false,
+          "higher_opposes": false
+        },
+        "kind": "WINDOW_DIAGNOSTIC"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "UKOIL_USDT",
+        "kind": "FINAL_DISPOSITION",
+        "status": "IN_TRADE",
+        "rejections": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "WIDE_SPREAD",
+          "CHASE_DISTANCE",
+          "M1_NO_M5_CONTEXT"
+        ],
+        "signal_id": "UKOIL_USDT:1:BREAKOUT_RETEST:M5:1795806600000"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "ORDI_USDT",
+        "kind": "FINAL_DISPOSITION",
+        "status": "IN_TRADE",
+        "rejections": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "M1_NO_M5_CONTEXT"
+        ],
+        "signal_id": "ORDI_USDT:1:BREAKOUT_RETEST:M5:1795850400000"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "LINK_USDT",
+        "kind": "FINAL_DISPOSITION",
+        "status": "WATCH",
+        "rejections": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY"
+        ],
+        "signal_id": "LINK_USDT:1:MOMENTUM:M1:1795856400000"
+      },
+      {
+        "ts": 1795856495131,
+        "symbol": "XPT_USDT",
+        "kind": "FINAL_DISPOSITION",
+        "status": "WATCH",
+        "rejections": [
+          "GEOMETRY_OR_EXECUTION",
+          "NEAR_LIQUIDITY",
+          "WIDE_SPREAD"
+        ],
+        "signal_id": "XPT_USDT:1:BREAKOUT_RETEST:M1:1795856400000"
       }
     ],
     "events": {
@@ -2907,7 +4305,83 @@
       "APT_USDT:1:M1:1795856160000:WINDOW": 1795856219891,
       "APT_USDT:-1:M1:1795856160000:WINDOW": 1795856219891,
       "ORDI_USDT:1:M1:1795856160000:WINDOW": 1795856219891,
-      "ORDI_USDT:-1:M1:1795856160000:WINDOW": 1795856219891
+      "ORDI_USDT:-1:M1:1795856160000:WINDOW": 1795856219891,
+      "UKOIL_USDT:UKOIL_USDT:-1:LIQUIDITY_SWEEP:M1:1795856280000:MARKET": 1795856495131,
+      "UKOIL_USDT:1:1795856040000:ELAPSED": 1795856495131,
+      "UKOIL_USDT:-1:1795856160000:ELAPSED": 1795856495131,
+      "UKOIL_USDT:1:1795856280000:ELAPSED": 1795856495131,
+      "UKOIL_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "UKOIL_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "UKOIL_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "UKOIL_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "UKOIL_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "UKOIL_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "UKOIL_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "UKOIL_USDT:-1:M5:1795856400000:WINDOW": 1795856495131,
+      "XPT_USDT:XPT_USDT:1:BREAKOUT_RETEST:M1:1795856400000:MARKET": 1795856495131,
+      "XPT_USDT:XPT_USDT:1:TREND_PULLBACK:M5:1795856100000:MARKET": 1795856495131,
+      "XPT_USDT:-1:1795856100000:ELAPSED": 1795856495131,
+      "XPT_USDT:1:1795856220000:ELAPSED": 1795856495131,
+      "XPT_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "XPT_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "XPT_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "XPT_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "XPT_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "XPT_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "XPT_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "XPT_USDT:-1:M5:1795856400000:WINDOW": 1795856495131,
+      "SOL_USDT:1:1795856220000:ELAPSED": 1795856495131,
+      "SOL_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "SOL_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "SOL_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "SOL_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "SOL_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "SOL_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "SOL_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "SOL_USDT:-1:M5:1795856400000:WINDOW": 1795856495131,
+      "LINK_USDT:LINK_USDT:1:MOMENTUM:M1:1795856400000:MARKET": 1795856495131,
+      "LINK_USDT:LINK_USDT:1:BREAKOUT_RETEST:M1:1795856400000:MARKET": 1795856495131,
+      "LINK_USDT:LINK_USDT:1:TREND_PULLBACK:M1:1795856400000:MARKET": 1795856495131,
+      "LINK_USDT:1:1795856160000:ELAPSED": 1795856495131,
+      "LINK_USDT:1:1795856220000:ELAPSED": 1795856495131,
+      "LINK_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "LINK_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "LINK_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "LINK_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "LINK_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "LINK_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "LINK_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "LINK_USDT:-1:M5:1795856400000:WINDOW": 1795856495131,
+      "LTC_USDT:1:1795856160000:ELAPSED": 1795856495131,
+      "LTC_USDT:1:1795856220000:ELAPSED": 1795856495131,
+      "LTC_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "LTC_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "LTC_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "LTC_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "LTC_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "LTC_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "LTC_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "LTC_USDT:-1:M5:1795856400000:WINDOW": 1795856495131,
+      "APT_USDT:1:1795856160000:ELAPSED": 1795856495131,
+      "APT_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "APT_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "APT_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "APT_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "APT_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "APT_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "APT_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "APT_USDT:-1:M5:1795856400000:WINDOW": 1795856495131,
+      "ORDI_USDT:ORDI_USDT:1:BREAKOUT_RETEST:M1:1795856280000:MARKET": 1795856495131,
+      "ORDI_USDT:1:1795856040000:ELAPSED": 1795856495131,
+      "ORDI_USDT:1:1795856160000:ELAPSED": 1795856495131,
+      "ORDI_USDT:1:M1:1795856460000:WINDOW": 1795856495131,
+      "ORDI_USDT:1:M1:1795856400000:WINDOW": 1795856495131,
+      "ORDI_USDT:1:M1:1795856340000:WINDOW": 1795856495131,
+      "ORDI_USDT:1:M5:1795856400000:WINDOW": 1795856495131,
+      "ORDI_USDT:-1:M1:1795856460000:WINDOW": 1795856495131,
+      "ORDI_USDT:-1:M1:1795856400000:WINDOW": 1795856495131,
+      "ORDI_USDT:-1:M1:1795856340000:WINDOW": 1795856495131,
+      "ORDI_USDT:-1:M5:1795856400000:WINDOW": 1795856495131
     }
   }
 }
