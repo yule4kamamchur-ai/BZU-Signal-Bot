@@ -94,7 +94,7 @@ class PortfolioV159(unittest.TestCase):
         row=item();row['require_contract_spec']=True;b={};out=h.update(b,[row],NOW);self.assertFalse(b['positions']);self.assertEqual(out['assets'][0]['status'],'MISSING_CONTRACT_SPEC')
         row['contract_spec']={**CONTRACT,'contractSize':.01};out=h.update(b,[row],NOW);self.assertEqual(out['open_count'],1)
     def test_workflow_exports_candles_and_contract_metadata(self):
-        w=Path('.github/workflows/replay_h1_v158_coverage_fix.yml').read_text()
+        w=Path('.github/workflows/replay_h1_v159_replace_v158_coverage_fix.yml').read_text()
         self.assertIn('mexc_replay_cache/*.csv',w);self.assertIn('mexc_replay_cache/contract_specs.json',w);self.assertIn('--require-contract-specs',w);self.assertIn('default: PEAK_CURRENT',w)
     def test_strict_replay_metadata_and_execution(self):
         import csv, contextlib, io

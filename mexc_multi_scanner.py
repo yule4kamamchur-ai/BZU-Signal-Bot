@@ -19,6 +19,7 @@ from mexc_lifecycle import advance
 from mexc_evidence import SHADOW_FAMILIES, active_estimate, exit_policies, tag_experiment
 import mexc_h1_trend
 import mexc_portfolio_intelligence as portfolio_intel
+import mexc_trend_research as trend_research
 import mexc_geometry_research
 from copy import deepcopy
 from mexc_direction import (context as direction_context, relative_strength, detect_transitions,
@@ -42,7 +43,7 @@ from zoneinfo import ZoneInfo
 
 MEXC_BASE = (os.getenv("MEXC_FUTURES_BASE") or "https://api.mexc.com").rstrip("/")
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
-SCANNER_VERSION = "BZU MULTI v15.9 Adaptive Portfolio Intelligence"
+SCANNER_VERSION = "BZU MULTI v16.0 Trend Evidence & Alpha Research"
 SHADOW_IN_ACTIVE_HISTORY = False
 
 FAMILY_RISK_MULT = {
@@ -1292,7 +1293,7 @@ def run_scan(*, fetcher=_http_json, now_ms: int | None=None, deposit=100., risk_
     active_symbols={a["symbol"]:a for a in (memory.get("oil_active"),memory.get("cm_active"),memory.get("metal_active")) if a}
     trend_positions={}
     research_positions=[]
-    for key in ("h1_trend_book","h1_close_book","mixed_trend_range_book","range_control_book","adaptive_h1_book","early_h1_m5_book","adaptive_range_book"):
+    for key in ("h1_trend_book","h1_close_book","mixed_trend_range_book","range_control_book","adaptive_h1_book","early_h1_m5_book","adaptive_range_book",*trend_research.LIVE_PROFILES):
         for sym,p in memory.get(key,{}).get("positions",{}).items():
             research_positions.append(p)
             old=trend_positions.get(sym)
@@ -1525,10 +1526,12 @@ def run_cycle(output: Path, memory_path: Path, notify=False, *, fetcher=_http_js
         # Independent control accounts. Each uses its own hypothetical deposit; only MIXED
         # shares a portfolio across H1 and M15, never adds risk to the M1/M5 book.
         state["portfolio_research"]={}
-        for key,profile in (("h1_close_book","CLOSE_PRIOR"),("mixed_trend_range_book","MIXED_PEAK_RANGE"),("range_control_book","RANGE_ONLY"),("adaptive_h1_book","ADAPTIVE_H1"),("early_h1_m5_book","EARLY_H1_M5"),("adaptive_range_book","ADAPTIVE_RANGE")):
+        for key,profile in (("h1_close_book","CLOSE_PRIOR"),("mixed_trend_range_book","MIXED_PEAK_RANGE"),("range_control_book","RANGE_ONLY"),("adaptive_h1_book","ADAPTIVE_H1"),("early_h1_m5_book","EARLY_H1_M5"),("adaptive_range_book","ADAPTIVE_RANGE"),*trend_research.LIVE_PROFILES.items()):
             try:
+                enabled=os.getenv("BZU_V160_RESEARCH","true").lower() in ("1","true","yes")
+                if profile in trend_research.PROFILES and not enabled and key not in mem: continue
                 book=deepcopy(mem.get(key,{})); fee,slip=cost_rates()
-                result=mexc_h1_trend.update(book,state["instruments"],state["updated_ts"],deposit=float(os.getenv("BZU_H1_DEPOSIT_USDT","100")),risk_pct=min(3.,float(os.getenv("BZU_H1_RISK_PCT","3"))),max_leverage=min(5.,lev),fee=fee,slip=slip,profile=profile,allow_new=profile!="MIXED_PEAK_RANGE")
+                result=mexc_h1_trend.update(book,state["instruments"],state["updated_ts"],deposit=float(os.getenv("BZU_H1_DEPOSIT_USDT","100")),risk_pct=min(3.,float(os.getenv("BZU_H1_RISK_PCT","3"))),max_leverage=min(5.,lev),fee=fee,slip=slip,profile=profile,allow_new=profile!="MIXED_PEAK_RANGE" and (profile not in trend_research.PROFILES or enabled))
                 state["portfolio_research"][profile]=result; mem[key]=book
             except Exception as exc:
                 logging.exception("Independent portfolio research failed: %s",profile)

@@ -9,6 +9,7 @@ from collections import defaultdict
 from copy import deepcopy
 from mexc_opportunity import funding_accrual
 import mexc_portfolio_intelligence as intel
+import mexc_trend_research as tr
 
 MINUTE = 60_000
 HOUR = 3_600_000
@@ -226,7 +227,9 @@ def update(book,items,now,*,deposit=100.,risk_pct=3.,max_leverage=5.,fee=.0002,s
             else:
                 mark=float(p.get('last_mark',p['entry'])); marks[sym]=pnl(p,mark)
                 rec.update(status='OPEN' if quote_ok else 'OPEN_STALE',side=p['side'],entry=p['entry'],stop=p['stop'],tp=p['tp'],strategy=p.get('strategy','TREND_H1'),net_usd=marks[sym],risk_usd=p['reserve_usd'],quality=p['quality'],funding_status=p['funding_status'])
-        sig=signal(rows,now,prior_atr=profile=='CLOSE_PRIOR') if profile in intel.H1_PROFILES else None
+        channel_n=tr.channel_period(rows,now) if profile in tr.CHANNEL_PROFILES or (profile=='H1_OIL_CONTEXT' and sym=='UKOIL_USDT') else 30
+        sig=signal(rows,now,n=channel_n,prior_atr=profile=='CLOSE_PRIOR') if profile in intel.H1_PROFILES else None
+        if sig and profile in tr.PROFILES: sig['channel_n']=channel_n
         rs=range_signal(item.get('candles_15m',[]),now) if profile in intel.RANGE_PROFILES else None
         if profile=='EARLY_H1_M5' and (not sig or not sig['side'] or now-sig['signal_ts']>15*MINUTE):
             sig=early_signal(rows,item.get('candles_5m',[]),now) or sig
@@ -265,6 +268,9 @@ def update(book,items,now,*,deposit=100.,risk_pct=3.,max_leverage=5.,fee=.0002,s
         return sum(p['reserve_usd'] for p in positions.values()),sum(p['notional'] for p in positions.values()),by
     def budget(group):
         ur,un,groups=used(); group_cap=total_risk/3.
+        if profile in tr.FLEX_PROFILES:
+            waiting_groups={row[2] for row in candidates if row[1] not in positions}
+            return tr.flex_budget(total_risk,ur,groups,group,waiting_groups),total_nominal-un
         return min(total_risk-ur,group_cap-groups[group],group_cap/2 if group=='CRYPTO' else group_cap),total_nominal-un
 
     def prepare(sym,group,strategy,sig,item,rec):
@@ -292,6 +298,19 @@ def update(book,items,now,*,deposit=100.,risk_pct=3.,max_leverage=5.,fee=.0002,s
             if strategy=='RANGE_M15': weight*=1.-.25*max(0.,-features['directional_efficiency'])
             # If residual budget is barely executable, do not create a fractional ghost.
             available=min(available,max(intel.MIN_RISK_BUDGET,available*weight))
+        research_features=None; exposure=None; research_est=None
+        if profile in tr.PROFILES and strategy=='TREND_H1':
+            research_features=tr.breakout_features(frows,sig,now,item.get('candles_1m',[]))
+            features.update(research_features)
+            weight=tr.evidence_weight('H1_QUALITY' if profile=='H1_OIL_CONTEXT' and sym=='UKOIL_USDT' else profile,research_features)
+            if profile in tr.CORRELATION_PROFILES:
+                exposure=tr.overlap_exposure(sym,s,positions,rows_by_symbol,intel.correlation,total_risk)
+                weight*=1.-.25*exposure['overlap']
+            if profile in tr.LEARN_PROFILES:
+                research_est=intel.estimate(hist,sym,s,features['regime'],strategy,now)
+                weight*=tr.clamp(1.+.2*research_est['expected_r'],.7,1.)
+            if available>=intel.MIN_RISK_BUDGET:
+                available=min(available,max(intel.MIN_RISK_BUDGET,available*weight))
         anchor='CLOSE' if profile=='CLOSE_PRIOR' else 'PEAK'
         use_sig=sig
         if profile=='ADAPTIVE_H1':
@@ -311,6 +330,19 @@ def update(book,items,now,*,deposit=100.,risk_pct=3.,max_leverage=5.,fee=.0002,s
             p['expected_net_usdt']=est['expected_r']*p['risk_usd']
             priority=p['expected_net_usdt']+.12*p['risk_usd']*(features['breakout_quality']-.5*overlap)
         else: priority=sig['strength']
+        if profile in tr.PROFILES and research_features is not None:
+            p.update(research_profile=profile,channel_n=sig.get('channel_n',30),research_features=research_features,correlation_exposure=exposure,research_estimate=research_est)
+            quality=tr.evidence_weight(profile,research_features)
+            # In pure adaptive-channel profile, preserve strength ranking. Other
+            # challengers compare feasible risk-weighted evidence (NOT calibrated probabilities).
+            if profile=='H1_OIL_CONTEXT' and sym=='UKOIL_USDT':
+                priority=sig['strength']*tr.evidence_weight('H1_QUALITY',research_features)
+            elif profile not in tr.STRENGTH_RANK_PROFILES:
+                priority=p['risk_usd']*(.2+min(2.,sig['strength']))*quality
+                if exposure: priority*=1.-.25*exposure['overlap']
+                if research_est is not None:
+                    p['expected_net_usdt']=research_est['expected_r']*p['risk_usd']
+                    priority+=p['expected_net_usdt']
         return p,reason,priority
 
     def admit(p,sym,opts,item,rec):
@@ -319,7 +351,7 @@ def update(book,items,now,*,deposit=100.,risk_pct=3.,max_leverage=5.,fee=.0002,s
         marks[sym]=pnl(p,p['last_mark'])
         rec.update(status='OPEN',side=s,entry=p['entry'],stop=p['stop'],tp=p['tp'],strategy=p['strategy'],net_usd=marks[sym],risk_usd=p['reserve_usd'],quality=p['quality'],funding_status=p['funding_status'],quantity_policy=p['quantity_policy'],expected_net_usdt=p.get('expected_net_usdt'),entry_route=p.get('entry_route'))
 
-    if profile in intel.ADAPTIVE_PROFILES:
+    if profile in intel.ADAPTIVE_PROFILES or (profile in tr.PROFILES and profile not in tr.STRENGTH_RANK_PROFILES):
         # Re-evaluate feasible allocations after each admitted candidate; no use of future outcomes.
         remaining=list(candidates)
         while remaining:

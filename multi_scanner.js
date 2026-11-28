@@ -705,7 +705,7 @@
     if(trendSummary) {
       if(trend?.mode==='PAPER_SEPARATE_ACCOUNT') {
         trendSummary.textContent=`H1 DONCHIAN · ОКРЕМИЙ PAPER-депозит ${Number(trend.initial_deposit).toFixed(2)} USDT (НЕ додається до M1/M5) · баланс із PnL ${Number(trend.equity_usdt).toFixed(2)} · закритий PnL ${fmtSigned(trend.realised_usdt)} · відкриті ${trend.open_count} · угод ${trend.trades} · WR ${trend.win_rate==null?'—':(100*trend.win_rate).toFixed(1)+'%'} · PF ${trend.pf==null?'—':Number(trend.pf).toFixed(2)} · просадка за сканами ${Number(trend.scan_mdd_usdt).toFixed(2)} · резерв ${Number(trend.reserved_usdt).toFixed(2)}/${Number(trend.risk_budget_usdt).toFixed(2)} USDT`;
-      } else trendSummary.textContent=trend?.mode==='ERROR'?'H1: помилка оновлення; попередня пам’ять збережена':'H1: очікуємо перший скан v15.9';
+      } else trendSummary.textContent=trend?.mode==='ERROR'?'H1: помилка оновлення; попередня пам’ять збережена':'H1: очікуємо перший скан v16.0';
     }
     if(trendRows) {
       trendRows.textContent='';
@@ -717,15 +717,15 @@
       }
     }
     const researchEl=$('ms-research-portfolios');
-    if(researchEl && !latestData?.portfolio_research) researchEl.textContent='Дослідницькі портфелі: очікуємо перший скан v15.9';
+    if(researchEl && !latestData?.portfolio_research) researchEl.textContent='Дослідницькі портфелі: очікуємо перший скан v16.0';
     else if(researchEl) {
       researchEl.textContent='';
       const books=latestData?.portfolio_research||{};
-      for(const [key,label] of [['CLOSE_PRIOR','H1 CLOSE · попередній ATR'],['MIXED_PEAK_RANGE','H1 + M15 · спільний бюджет (лише завершення старих угод)'],['RANGE_ONLY','M15 RANGE · контроль'],['ADAPTIVE_H1','H1 ADAPTIVE · експеримент'],['EARLY_H1_M5','H1 / ранній M5 · експеримент'],['ADAPTIVE_RANGE','M15 ADAPTIVE EXIT · експеримент']]) {
+      for(const [key,label] of [['CLOSE_PRIOR','H1 CLOSE · попередній ATR'],['MIXED_PEAK_RANGE','H1 + M15 · спільний бюджет (лише завершення старих угод)'],['RANGE_ONLY','M15 RANGE · контроль'],['ADAPTIVE_H1','H1 ADAPTIVE · експеримент'],['EARLY_H1_M5','H1 / ранній M5 · експеримент'],['ADAPTIVE_RANGE','M15 ADAPTIVE EXIT · експеримент'],['H1_QUALITY','H1 · якість пробою'],['H1_HA','H1 · Heikin-Ashi'],['H1_ADAPTIVE_CHANNEL','H1 · адаптивний канал'],['H1_FLEX_PURE','H1 · тільки гнучкий бюджет'],['H1_FLEX_CAPITAL','H1 · бюджет + кореляція'],['H1_OIL_CONTEXT','H1 · нафтовий експеримент'],['H1_COMBINED','H1 · комбінований експеримент']]) {
         const z=books[key], el=document.createElement('p');el.className='ms-portfolio';
         el.textContent=z?.mode==='PAPER_SEPARATE_ACCOUNT'?`${label} · ОКРЕМИЙ PAPER ${Number(z.initial_deposit).toFixed(2)} USDT · equity ${Number(z.equity_usdt).toFixed(2)} · закрито ${z.trades} · PnL ${fmtSigned(z.realised_usdt)} · PF ${z.pf==null?'—':Number(z.pf).toFixed(2)} · MDD (скани) ${Number(z.scan_mdd_usdt).toFixed(2)} · резерв ${Number(z.reserved_usdt).toFixed(2)}/${Number(z.risk_budget_usdt).toFixed(2)} · відкрито ${z.open_count}`:`${label} · ${z?.mode==='ERROR'?'помилка; попередній журнал збережено':'очікуємо перший скан'}`;
         researchEl.appendChild(el);
-        for(const a of (z?.assets||[])) {
+        for(const a of (key.startsWith('H1_') ? [] : (z?.assets||[]))) {
           const line=document.createElement('p');line.className='ms-portfolio';
           line.textContent=`${a.symbol} · ${a.strategy||a.candidate_strategy||'—'} · ${a.status}${a.side?' · '+(a.side===1?'LONG':'SHORT'):''}${a.entry!=null?' · вхід '+a.entry+' · SL '+a.stop+' · TP '+(a.tp==null?'без стелі':a.tp)+' · PnL '+fmtSigned(a.net_usd)+' USDT':''}`;
           researchEl.appendChild(line);

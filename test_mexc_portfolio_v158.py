@@ -4,6 +4,7 @@ from copy import deepcopy
 import mexc_h1_trend as h
 import mexc_range_research as r
 import mexc_multi_scanner as sc
+import mexc_trend_research as tr
 from test_mexc_h1_trend import NOW,bar,item,pos
 from test_mexc_api_v1511 import mock_good
 
@@ -51,5 +52,5 @@ class PortfolioV158(unittest.TestCase):
         with self.assertRaises(ValueError): h.update(mixed,rows,NOW,profile='CLOSE_PRIOR')
     def test_live_cycle_separate_books_and_drain(self):
         with tempfile.TemporaryDirectory() as folder:
-            a,b=Path(folder)/'state.json',Path(folder)/'memory.json';z=sc.run_cycle(a,b,fetcher=mock_good);m=json.loads(b.read_text());self.assertEqual(set(z['portfolio_research']),{'CLOSE_PRIOR','MIXED_PEAK_RANGE','RANGE_ONLY','ADAPTIVE_H1','EARLY_H1_M5','ADAPTIVE_RANGE'});self.assertEqual(m['h1_trend_book']['profile'],'PEAK_CURRENT');self.assertEqual(m['h1_close_book']['profile'],'CLOSE_PRIOR');self.assertEqual(m['mixed_trend_range_book']['profile'],'MIXED_PEAK_RANGE');self.assertTrue(all(v['mode']=='PAPER_SEPARATE_ACCOUNT' for v in z['portfolio_research'].values()));self.assertFalse(z['portfolio_research']['MIXED_PEAK_RANGE']['allow_new'])
+            a,b=Path(folder)/'state.json',Path(folder)/'memory.json';z=sc.run_cycle(a,b,fetcher=mock_good);m=json.loads(b.read_text());self.assertEqual(set(z['portfolio_research']),{'CLOSE_PRIOR','MIXED_PEAK_RANGE','RANGE_ONLY','ADAPTIVE_H1','EARLY_H1_M5','ADAPTIVE_RANGE',*tr.PROFILES});self.assertEqual(m['h1_trend_book']['profile'],'PEAK_CURRENT');self.assertEqual(m['h1_close_book']['profile'],'CLOSE_PRIOR');self.assertEqual(m['mixed_trend_range_book']['profile'],'MIXED_PEAK_RANGE');self.assertTrue(all(v['mode']=='PAPER_SEPARATE_ACCOUNT' for v in z['portfolio_research'].values()));self.assertFalse(z['portfolio_research']['MIXED_PEAK_RANGE']['allow_new'])
 if __name__=='__main__':unittest.main()
