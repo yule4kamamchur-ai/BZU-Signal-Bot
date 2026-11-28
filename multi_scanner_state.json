@@ -1,15 +1,15 @@
 {
   "version": "BZU MULTI v15.3 Adaptive Direction",
   "exchange": "MEXC",
-  "updated_ts": 1795825260477,
-  "scan_started_ts": 1795825253862,
-  "updated_kyiv": "28.11.2026 02:21",
+  "updated_ts": 1795825552130,
+  "scan_started_ts": 1795825545717,
+  "updated_kyiv": "28.11.2026 02:25",
   "health": {
     "status": "OK",
     "timings": {
-      "candles_s": 5.774,
-      "ticker_s": 0.808,
-      "scan_s": 6.615
+      "candles_s": 5.914,
+      "ticker_s": 0.473,
+      "scan_s": 6.413
     },
     "expected_interval_sec": 300,
     "assets": 7,
@@ -17,7 +17,7 @@
     "recovered": [],
     "derived": [],
     "source": "GITHUB_ACTIONS",
-    "run_id": "46087372960",
+    "run_id": "46087799055",
     "run_attempt": "1",
     "api_base": "https://api.mexc.com",
     "api_http_statuses": {},
@@ -33,7 +33,7 @@
   },
   "btc_macro": {
     "symbol": "BTC_USDT",
-    "price": 59949.0,
+    "price": 59930.4,
     "bias_1h": -1,
     "bias_15m": 0,
     "vwap": 60608.48,
@@ -49,10 +49,10 @@
     "cluster_ua": "КРИПТА",
     "fee_tag": "0% Maker / 0.02%",
     "mexc_url": "https://www.mexc.com/futures/LTC_USDT",
-    "price": 45.44,
+    "price": 45.49,
     "tick": 0.01,
-    "change_24h_pct": 4.0,
-    "volume_24h": 10046994.0,
+    "change_24h_pct": 4.11,
+    "volume_24h": 10079398.0,
     "funding_rate": -3.4e-05,
     "funding_pct": -0.0034,
     "open_interest": 81490838.0,
@@ -72,10 +72,10 @@
     "stop": 44.67,
     "tp": 46.11,
     "rr": 2.79,
-    "rvol": 1.3,
-    "range_pos": 1.029,
-    "btc_aligned": true,
-    "reason_ua": "Відкрито 28.11 01:46 · PnL +0.93 R (+0.84$)",
+    "rvol": 0.04785627517128807,
+    "range_pos": 1.049,
+    "btc_aligned": false,
+    "reason_ua": "Відкрито 28.11 01:46 · PnL +1.09 R (+0.98$)",
     "sizing": {
       "deposit_usdt": 100.0,
       "risk_pct": 0.9,
@@ -654,13 +654,6 @@
     ],
     "candles_5m": [
       {
-        "t": 1795801200,
-        "o": 43.46,
-        "h": 43.46,
-        "l": 43.39,
-        "c": 43.45
-      },
-      {
         "t": 1795801500,
         "o": 43.45,
         "h": 43.53,
@@ -1212,23 +1205,30 @@
         "h": 45.45,
         "l": 45.27,
         "c": 45.4
+      },
+      {
+        "t": 1795825200,
+        "o": 45.4,
+        "h": 45.46,
+        "l": 45.28,
+        "c": 45.45
       }
     ],
     "execution_tf": "1m",
-    "bid": 45.43,
-    "ask": 45.44,
+    "bid": 45.49,
+    "ask": 45.5,
     "quote_valid": true,
-    "quote_ts": 1795825259005,
+    "quote_ts": 1795825551134,
     "analysis_fresh": true,
     "htf_regime": "RANGE_TRANSITION",
-    "regime": "RANGE_TRANSITION",
+    "regime": "LOCAL_UP",
     "local_wave": {
-      "side": 0,
+      "side": 1,
       "m5": {
-        "side": 0,
-        "move_atr": 1.706,
-        "efficiency": 0.444,
-        "directional_bars": 3
+        "side": 1,
+        "move_atr": 2.947,
+        "efficiency": 1.0,
+        "directional_bars": 4
       },
       "m15": {
         "side": 1,
@@ -1238,8 +1238,8 @@
       },
       "m5_slow": {
         "side": 1,
-        "move_atr": 4.904,
-        "efficiency": 0.697,
+        "move_atr": 2.679,
+        "efficiency": 0.571,
         "directional_bars": 6
       },
       "breaks": [
@@ -1262,57 +1262,67 @@
       "asset_return_pct": 1.547,
       "btc_return_pct": 0.266
     },
-    "wave_side": 0,
+    "wave_side": 1,
     "observed_wave_side": 1,
     "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
     "direction_diagnostics": {
       "1": {
         "side": 1,
-        "local_support": false,
+        "local_support": true,
         "windows_checked": [
           {
             "tf": "M1",
+            "offset": 0,
+            "known_ts": 1795825500000,
+            "body_atr": 0.139,
+            "break_distance_atr": 0.0,
+            "rvol": 0.087,
+            "local_support": true,
+            "higher_opposes": false
+          },
+          {
+            "tf": "M1",
             "offset": 1,
-            "known_ts": 1795825200000,
-            "body_atr": -0.519,
-            "break_distance_atr": -0.864,
-            "rvol": 0.599,
+            "known_ts": 1795825440000,
+            "body_atr": 0.416,
+            "break_distance_atr": -0.139,
+            "rvol": 0.013,
             "local_support": false,
             "higher_opposes": false
           },
           {
             "tf": "M1",
             "offset": 2,
-            "known_ts": 1795825140000,
-            "body_atr": 2.435,
-            "break_distance_atr": 1.217,
-            "rvol": 0.815,
+            "known_ts": 1795825380000,
+            "body_atr": 0.467,
+            "break_distance_atr": -0.622,
+            "rvol": 0.038,
             "local_support": false,
             "higher_opposes": false
           },
           {
             "tf": "M5",
             "offset": 0,
+            "known_ts": 1795825500000,
+            "body_atr": 0.335,
+            "break_distance_atr": 0.0,
+            "rvol": 0.048,
+            "local_support": true,
+            "higher_opposes": false
+          },
+          {
+            "tf": "M5",
+            "offset": 1,
             "known_ts": 1795825200000,
             "body_atr": 0.853,
             "break_distance_atr": 0.213,
             "rvol": 1.666,
             "local_support": false,
             "higher_opposes": false
-          },
-          {
-            "tf": "M5",
-            "offset": 1,
-            "known_ts": 1795824900000,
-            "body_atr": 1.888,
-            "break_distance_atr": 0.551,
-            "rvol": 2.401,
-            "local_support": false,
-            "higher_opposes": false
           }
         ],
-        "detected": 0,
-        "ready": 0,
+        "detected": 1,
+        "ready": 1,
         "rejections": []
       },
       "-1": {
@@ -1321,41 +1331,51 @@
         "windows_checked": [
           {
             "tf": "M1",
+            "offset": 0,
+            "known_ts": 1795825500000,
+            "body_atr": -0.139,
+            "break_distance_atr": -2.356,
+            "rvol": 0.087,
+            "local_support": false,
+            "higher_opposes": true
+          },
+          {
+            "tf": "M1",
             "offset": 1,
-            "known_ts": 1795825200000,
-            "body_atr": 0.519,
-            "break_distance_atr": -5.358,
-            "rvol": 0.599,
+            "known_ts": 1795825440000,
+            "body_atr": -0.416,
+            "break_distance_atr": -2.218,
+            "rvol": 0.013,
             "local_support": false,
             "higher_opposes": true
           },
           {
             "tf": "M1",
             "offset": 2,
-            "known_ts": 1795825140000,
-            "body_atr": -2.435,
-            "break_distance_atr": -7.101,
-            "rvol": 0.815,
+            "known_ts": 1795825380000,
+            "body_atr": -0.467,
+            "break_distance_atr": -1.867,
+            "rvol": 0.038,
             "local_support": false,
             "higher_opposes": true
           },
           {
             "tf": "M5",
             "offset": 0,
-            "known_ts": 1795825200000,
-            "body_atr": -0.853,
-            "break_distance_atr": -2.914,
-            "rvol": 1.666,
+            "known_ts": 1795825500000,
+            "body_atr": -0.335,
+            "break_distance_atr": -3.081,
+            "rvol": 0.048,
             "local_support": false,
             "higher_opposes": true
           },
           {
             "tf": "M5",
             "offset": 1,
-            "known_ts": 1795824900000,
-            "body_atr": -1.888,
-            "break_distance_atr": -4.483,
-            "rvol": 2.401,
+            "known_ts": 1795825200000,
+            "body_atr": -0.853,
+            "break_distance_atr": -2.914,
+            "rvol": 1.666,
             "local_support": false,
             "higher_opposes": true
           }
@@ -1365,32 +1385,96 @@
         "rejections": []
       }
     },
-    "lifecycle_quality": "OBSERVED_M1",
-    "geometry_policy": "STRUCTURAL_V15_1",
-    "target_kind": "VOLATILITY_PROJECTION",
-    "trail_reason": null,
-    "be_trigger": null,
-    "initial_stop": 44.67,
+    "family": "BREAKOUT_RETEST",
+    "base_score": 76,
+    "structural_stop": 45.27,
+    "reference": 45.45,
+    "trigger_ts": 1795825200000,
+    "trigger_tf": "M5",
+    "retest_level": 45.37,
     "tp1": 45.42,
     "tp1_r": 1.0,
+    "risk": 0.28999999999999915,
+    "net_rr": 2.4920689655172485,
+    "valid": true,
+    "geometry_reason": "",
+    "geometry_policy": "STRUCTURAL_V15_1",
+    "target_kind": "VOLATILITY_PROJECTION",
+    "atr_m5": 0.1557142857142852,
+    "atr_m15": 0.22214285714285711,
+    "structural_anchor": 45.27,
+    "stop_buffer": 0.0389285714285713,
+    "risk_floor": 0.28878571428571426,
+    "risk_ceiling": 0.819,
+    "min_rr": 1.8,
+    "trail_atr_m5": 0.1557142857142852,
+    "trail_start_r": 1.25,
+    "target_r_preferred": 2.6,
+    "rank_score": 97.984,
+    "net_rr_estimate": 2.492,
+    "meta": {
+      "status": "COLLECTING_MEXC_LABELS",
+      "n": 0,
+      "total_n": 5,
+      "win_rate_estimate": null,
+      "expected_r_estimate": null,
+      "rank_adjustment": 0.0
+    },
+    "signal_id": "LTC_USDT:1:MOMENTUM:M5:1795822800000",
+    "signal_event_key": "LTC_USDT:1:EVENT:5986076",
+    "rejection_codes": [],
+    "signal_known_ts": 1795825500000,
+    "trigger_offset": 0,
+    "signal_age_sec": 52.1,
+    "local_support": true,
+    "relative_support": true,
+    "chase_cap": 0.12457143,
+    "alignment_tier": "ALIGNED",
+    "risk_multiplier": 0.3,
+    "funding_risk_mult": 1.0,
+    "early_close_hint_ua": null,
+    "maker_pullback": false,
+    "limit_ttl_min": 8,
+    "partial_pct": 0.5,
+    "fee_rate": 0.0002,
+    "slippage_rate": 0.0001,
+    "candidate_count": 1,
+    "candidate_diagnostics": [
+      {
+        "setup": "BREAKOUT_RETEST",
+        "family": "BREAKOUT_RETEST",
+        "trigger_tf": "M5",
+        "trigger_offset": 0,
+        "signal_age_sec": 52.1,
+        "side": 1,
+        "status": "READY",
+        "score": 96,
+        "rank_score": 97.984,
+        "meta": {
+          "status": "COLLECTING_MEXC_LABELS",
+          "n": 0,
+          "total_n": 5,
+          "win_rate_estimate": null,
+          "expected_r_estimate": null,
+          "rank_adjustment": 0.0
+        },
+        "reason_ua": "M5 пробій + ретест · LOCAL_UP · RVOL 0.05x · BTC проти (вага, не блок) · відносна сила/слабкість підтверджує",
+        "rejection_codes": []
+      }
+    ],
+    "be_trigger": null,
+    "lifecycle_quality": "OBSERVED_M1",
+    "trail_reason": null,
+    "initial_stop": 44.67,
     "tp1_hit": false,
     "tp1_fill_price": null,
-    "partial_pct": 0.5,
     "be_armed": false,
     "stale_tightened": false,
     "time_stop_countdown_min": null,
     "action_alert": null,
-    "alignment_tier": "ALIGNED",
-    "risk_multiplier": 0.3,
-    "early_close_hint_ua": null,
-    "maker_pullback": false,
     "opened_ts": 1795823162898,
     "opened_kyiv": "28.11 01:46",
-    "signal_id": "LTC_USDT:1:MOMENTUM:M5:1795822800000",
-    "signal_event_key": "LTC_USDT:1:EVENT:5986076",
-    "phase": "OPEN",
-    "trigger_tf": "M5",
-    "trigger_offset": 0
+    "phase": "OPEN"
   },
   "instruments": [
     {
@@ -1401,10 +1485,10 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/LTC_USDT",
-      "price": 45.44,
+      "price": 45.49,
       "tick": 0.01,
-      "change_24h_pct": 4.0,
-      "volume_24h": 10046994.0,
+      "change_24h_pct": 4.11,
+      "volume_24h": 10079398.0,
       "funding_rate": -3.4e-05,
       "funding_pct": -0.0034,
       "open_interest": 81490838.0,
@@ -1424,10 +1508,10 @@
       "stop": 44.67,
       "tp": 46.11,
       "rr": 2.79,
-      "rvol": 1.3,
-      "range_pos": 1.029,
-      "btc_aligned": true,
-      "reason_ua": "Відкрито 28.11 01:46 · PnL +0.93 R (+0.84$)",
+      "rvol": 0.04785627517128807,
+      "range_pos": 1.049,
+      "btc_aligned": false,
+      "reason_ua": "Відкрито 28.11 01:46 · PnL +1.09 R (+0.98$)",
       "sizing": {
         "deposit_usdt": 100.0,
         "risk_pct": 0.9,
@@ -2006,13 +2090,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795801200,
-          "o": 43.46,
-          "h": 43.46,
-          "l": 43.39,
-          "c": 43.45
-        },
-        {
           "t": 1795801500,
           "o": 43.45,
           "h": 43.53,
@@ -2564,23 +2641,30 @@
           "h": 45.45,
           "l": 45.27,
           "c": 45.4
+        },
+        {
+          "t": 1795825200,
+          "o": 45.4,
+          "h": 45.46,
+          "l": 45.28,
+          "c": 45.45
         }
       ],
       "execution_tf": "1m",
-      "bid": 45.43,
-      "ask": 45.44,
+      "bid": 45.49,
+      "ask": 45.5,
       "quote_valid": true,
-      "quote_ts": 1795825259005,
+      "quote_ts": 1795825551134,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
-      "regime": "RANGE_TRANSITION",
+      "regime": "LOCAL_UP",
       "local_wave": {
-        "side": 0,
+        "side": 1,
         "m5": {
-          "side": 0,
-          "move_atr": 1.706,
-          "efficiency": 0.444,
-          "directional_bars": 3
+          "side": 1,
+          "move_atr": 2.947,
+          "efficiency": 1.0,
+          "directional_bars": 4
         },
         "m15": {
           "side": 1,
@@ -2590,8 +2674,8 @@
         },
         "m5_slow": {
           "side": 1,
-          "move_atr": 4.904,
-          "efficiency": 0.697,
+          "move_atr": 2.679,
+          "efficiency": 0.571,
           "directional_bars": 6
         },
         "breaks": [
@@ -2614,57 +2698,67 @@
         "asset_return_pct": 1.547,
         "btc_return_pct": 0.266
       },
-      "wave_side": 0,
+      "wave_side": 1,
       "observed_wave_side": 1,
       "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
       "direction_diagnostics": {
         "1": {
           "side": 1,
-          "local_support": false,
+          "local_support": true,
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.139,
+              "break_distance_atr": 0.0,
+              "rvol": 0.087,
+              "local_support": true,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -0.519,
-              "break_distance_atr": -0.864,
-              "rvol": 0.599,
+              "known_ts": 1795825440000,
+              "body_atr": 0.416,
+              "break_distance_atr": -0.139,
+              "rvol": 0.013,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": 2.435,
-              "break_distance_atr": 1.217,
-              "rvol": 0.815,
+              "known_ts": 1795825380000,
+              "body_atr": 0.467,
+              "break_distance_atr": -0.622,
+              "rvol": 0.038,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.335,
+              "break_distance_atr": 0.0,
+              "rvol": 0.048,
+              "local_support": true,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
               "known_ts": 1795825200000,
               "body_atr": 0.853,
               "break_distance_atr": 0.213,
               "rvol": 1.666,
               "local_support": false,
               "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 1.888,
-              "break_distance_atr": 0.551,
-              "rvol": 2.401,
-              "local_support": false,
-              "higher_opposes": false
             }
           ],
-          "detected": 0,
-          "ready": 0,
+          "detected": 1,
+          "ready": 1,
           "rejections": []
         },
         "-1": {
@@ -2673,41 +2767,51 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.139,
+              "break_distance_atr": -2.356,
+              "rvol": 0.087,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 0.519,
-              "break_distance_atr": -5.358,
-              "rvol": 0.599,
+              "known_ts": 1795825440000,
+              "body_atr": -0.416,
+              "break_distance_atr": -2.218,
+              "rvol": 0.013,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": -2.435,
-              "break_distance_atr": -7.101,
-              "rvol": 0.815,
+              "known_ts": 1795825380000,
+              "body_atr": -0.467,
+              "break_distance_atr": -1.867,
+              "rvol": 0.038,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": -0.853,
-              "break_distance_atr": -2.914,
-              "rvol": 1.666,
+              "known_ts": 1795825500000,
+              "body_atr": -0.335,
+              "break_distance_atr": -3.081,
+              "rvol": 0.048,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -1.888,
-              "break_distance_atr": -4.483,
-              "rvol": 2.401,
+              "known_ts": 1795825200000,
+              "body_atr": -0.853,
+              "break_distance_atr": -2.914,
+              "rvol": 1.666,
               "local_support": false,
               "higher_opposes": true
             }
@@ -2717,32 +2821,96 @@
           "rejections": []
         }
       },
-      "lifecycle_quality": "OBSERVED_M1",
-      "geometry_policy": "STRUCTURAL_V15_1",
-      "target_kind": "VOLATILITY_PROJECTION",
-      "trail_reason": null,
-      "be_trigger": null,
-      "initial_stop": 44.67,
+      "family": "BREAKOUT_RETEST",
+      "base_score": 76,
+      "structural_stop": 45.27,
+      "reference": 45.45,
+      "trigger_ts": 1795825200000,
+      "trigger_tf": "M5",
+      "retest_level": 45.37,
       "tp1": 45.42,
       "tp1_r": 1.0,
+      "risk": 0.28999999999999915,
+      "net_rr": 2.4920689655172485,
+      "valid": true,
+      "geometry_reason": "",
+      "geometry_policy": "STRUCTURAL_V15_1",
+      "target_kind": "VOLATILITY_PROJECTION",
+      "atr_m5": 0.1557142857142852,
+      "atr_m15": 0.22214285714285711,
+      "structural_anchor": 45.27,
+      "stop_buffer": 0.0389285714285713,
+      "risk_floor": 0.28878571428571426,
+      "risk_ceiling": 0.819,
+      "min_rr": 1.8,
+      "trail_atr_m5": 0.1557142857142852,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.6,
+      "rank_score": 97.984,
+      "net_rr_estimate": 2.492,
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 0,
+        "total_n": 5,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
+      "signal_id": "LTC_USDT:1:MOMENTUM:M5:1795822800000",
+      "signal_event_key": "LTC_USDT:1:EVENT:5986076",
+      "rejection_codes": [],
+      "signal_known_ts": 1795825500000,
+      "trigger_offset": 0,
+      "signal_age_sec": 52.1,
+      "local_support": true,
+      "relative_support": true,
+      "chase_cap": 0.12457143,
+      "alignment_tier": "ALIGNED",
+      "risk_multiplier": 0.3,
+      "funding_risk_mult": 1.0,
+      "early_close_hint_ua": null,
+      "maker_pullback": false,
+      "limit_ttl_min": 8,
+      "partial_pct": 0.5,
+      "fee_rate": 0.0002,
+      "slippage_rate": 0.0001,
+      "candidate_count": 1,
+      "candidate_diagnostics": [
+        {
+          "setup": "BREAKOUT_RETEST",
+          "family": "BREAKOUT_RETEST",
+          "trigger_tf": "M5",
+          "trigger_offset": 0,
+          "signal_age_sec": 52.1,
+          "side": 1,
+          "status": "READY",
+          "score": 96,
+          "rank_score": 97.984,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M5 пробій + ретест · LOCAL_UP · RVOL 0.05x · BTC проти (вага, не блок) · відносна сила/слабкість підтверджує",
+          "rejection_codes": []
+        }
+      ],
+      "be_trigger": null,
+      "lifecycle_quality": "OBSERVED_M1",
+      "trail_reason": null,
+      "initial_stop": 44.67,
       "tp1_hit": false,
       "tp1_fill_price": null,
-      "partial_pct": 0.5,
       "be_armed": false,
       "stale_tightened": false,
       "time_stop_countdown_min": null,
       "action_alert": null,
-      "alignment_tier": "ALIGNED",
-      "risk_multiplier": 0.3,
-      "early_close_hint_ua": null,
-      "maker_pullback": false,
       "opened_ts": 1795823162898,
       "opened_kyiv": "28.11 01:46",
-      "signal_id": "LTC_USDT:1:MOMENTUM:M5:1795822800000",
-      "signal_event_key": "LTC_USDT:1:EVENT:5986076",
-      "phase": "OPEN",
-      "trigger_tf": "M5",
-      "trigger_offset": 0
+      "phase": "OPEN"
     },
     {
       "symbol": "UKOIL_USDT",
@@ -2755,7 +2923,7 @@
       "price": 90.85,
       "tick": 0.01,
       "change_24h_pct": 0.11,
-      "volume_24h": 55991830.0,
+      "volume_24h": 55992350.0,
       "funding_rate": 0.0,
       "funding_pct": 0.0,
       "open_interest": 84606126.0,
@@ -2775,10 +2943,10 @@
       "stop": 90.17,
       "tp": 91.45,
       "rr": 1.78,
-      "rvol": 1.907960009158208,
+      "rvol": 1.039777190602014,
       "range_pos": 0.253,
       "btc_aligned": true,
-      "reason_ua": "Відкрито 27.11 21:19 · PnL +0.43 R (+0.37$)",
+      "reason_ua": "Відкрито 27.11 21:19 · PnL +0.41 R (+0.35$)",
       "sizing": {
         "deposit_usdt": 100.0,
         "risk_pct": 1.72,
@@ -3357,13 +3525,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795801200,
-          "o": 90.25,
-          "h": 90.25,
-          "l": 90.15,
-          "c": 90.15
-        },
-        {
           "t": 1795801500,
           "o": 90.15,
           "h": 90.16,
@@ -3915,13 +4076,20 @@
           "h": 90.9,
           "l": 90.83,
           "c": 90.89
+        },
+        {
+          "t": 1795825200,
+          "o": 90.89,
+          "h": 90.9,
+          "l": 90.82,
+          "c": 90.84
         }
       ],
       "execution_tf": "1m",
-      "bid": 90.83,
+      "bid": 90.82,
       "ask": 90.9,
       "quote_valid": true,
-      "quote_ts": 1795825259091,
+      "quote_ts": 1795825551212,
       "analysis_fresh": true,
       "htf_regime": "TREND_DOWN",
       "regime": "TREND_DOWN",
@@ -3929,7 +4097,7 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.98,
+          "move_atr": 0.961,
           "efficiency": 0.538,
           "directional_bars": 2
         },
@@ -3941,8 +4109,8 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 0.84,
-          "efficiency": 0.214,
+          "move_atr": 1.235,
+          "efficiency": 0.29,
           "directional_bars": 4
         },
         "breaks": [
@@ -3967,41 +4135,51 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.165,
+              "break_distance_atr": -0.988,
+              "rvol": 0.528,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 1.091,
-              "break_distance_atr": -0.182,
-              "rvol": 0.709,
+              "known_ts": 1795825440000,
+              "body_atr": 0.329,
+              "break_distance_atr": -0.824,
+              "rvol": 0.519,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
+              "known_ts": 1795825380000,
               "body_atr": 0.0,
-              "break_distance_atr": -1.974,
-              "rvol": 0.536,
+              "break_distance_atr": -1.225,
+              "rvol": 0.792,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": 0.0,
-              "break_distance_atr": -1.12,
-              "rvol": 0.54,
+              "known_ts": 1795825500000,
+              "body_atr": -0.686,
+              "break_distance_atr": -1.784,
+              "rvol": 1.04,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -0.753,
-              "break_distance_atr": -1.204,
-              "rvol": 1.908,
+              "known_ts": 1795825200000,
+              "body_atr": 0.0,
+              "break_distance_atr": -1.12,
+              "rvol": 0.54,
               "local_support": false,
               "higher_opposes": true
             }
@@ -4016,81 +4194,89 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.165,
+              "break_distance_atr": -0.329,
+              "rvol": 0.528,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -1.091,
-              "break_distance_atr": -1.091,
-              "rvol": 0.709,
+              "known_ts": 1795825440000,
+              "body_atr": -0.329,
+              "break_distance_atr": -0.494,
+              "rvol": 0.519,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
+              "known_ts": 1795825380000,
               "body_atr": -0.0,
               "break_distance_atr": -0.0,
-              "rvol": 0.536,
+              "rvol": 0.792,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": -0.0,
-              "break_distance_atr": -0.84,
-              "rvol": 0.54,
+              "known_ts": 1795825500000,
+              "body_atr": 0.686,
+              "break_distance_atr": -0.137,
+              "rvol": 1.04,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 0.753,
-              "break_distance_atr": 0.151,
-              "rvol": 1.908,
+              "known_ts": 1795825200000,
+              "body_atr": -0.0,
+              "break_distance_atr": -0.84,
+              "rvol": 0.54,
               "local_support": false,
               "higher_opposes": false
             }
           ],
-          "detected": 1,
+          "detected": 2,
           "ready": 0,
           "rejections": [
             "GEOMETRY_OR_EXECUTION",
-            "WIDE_SPREAD",
-            "CHASE_DISTANCE",
-            "DELAYED_DATA_GAP"
+            "WIDE_SPREAD"
           ]
         }
       },
-      "family": "TREND_PULLBACK",
-      "base_score": 74,
-      "structural_stop": 90.98,
-      "reference": 90.89,
-      "trigger_ts": 1795824600000,
+      "family": "BREAKOUT_RETEST",
+      "base_score": 76,
+      "structural_stop": 90.91000000000001,
+      "reference": 90.84,
+      "trigger_ts": 1795825200000,
       "trigger_tf": "M5",
-      "retest_level": 90.89170340024606,
+      "retest_level": 90.9,
       "tp1": 91.08,
       "tp1_r": 1.0,
       "risk": 0.3200000000000074,
-      "net_rr": 1.954693749999932,
+      "net_rr": 1.954712499999932,
       "valid": true,
       "geometry_reason": "",
       "geometry_policy": "STRUCTURAL_V15_1",
       "target_kind": "CONFIRMED_LIQUIDITY",
-      "atr_m5": 0.07285714285714155,
+      "atr_m5": 0.0721428571428565,
       "atr_m15": 0.09785714285714116,
-      "structural_anchor": 90.98,
+      "structural_anchor": 90.91000000000001,
       "stop_buffer": 0.02,
-      "risk_floor": 0.317905,
-      "risk_ceiling": 0.862885,
+      "risk_floor": 0.31787,
+      "risk_ceiling": 0.86279,
       "min_rr": 1.75,
-      "trail_atr_m5": 0.07285714285714155,
+      "trail_atr_m5": 0.0721428571428565,
       "trail_start_r": 1.25,
       "target_r_preferred": 2.15,
-      "rank_score": 79.909,
+      "rank_score": 81.909,
       "net_rr_estimate": 1.955,
       "meta": {
         "status": "COLLECTING_MEXC_LABELS",
@@ -4104,16 +4290,14 @@
       "signal_event_key": "UKOIL_USDT:1:EVENT:5986022",
       "rejection_codes": [
         "GEOMETRY_OR_EXECUTION",
-        "WIDE_SPREAD",
-        "CHASE_DISTANCE",
-        "DELAYED_DATA_GAP"
+        "WIDE_SPREAD"
       ],
-      "signal_known_ts": 1795824900000,
+      "signal_known_ts": 1795825500000,
       "trigger_offset": 0,
-      "signal_age_sec": 360.4,
+      "signal_age_sec": 52.1,
       "local_support": false,
       "relative_support": false,
-      "chase_cap": 0.03321429,
+      "chase_cap": 0.05771429,
       "alignment_tier": "EARLY_REVERSAL",
       "risk_multiplier": 0.575,
       "funding_risk_mult": 1.0,
@@ -4123,14 +4307,38 @@
       "partial_pct": 0.5,
       "fee_rate": 0.0002,
       "slippage_rate": 0.0001,
-      "candidate_count": 1,
+      "candidate_count": 2,
       "candidate_diagnostics": [
+        {
+          "setup": "BREAKOUT_RETEST",
+          "family": "BREAKOUT_RETEST",
+          "trigger_tf": "M5",
+          "trigger_offset": 0,
+          "signal_age_sec": 52.1,
+          "side": -1,
+          "status": "WATCH",
+          "score": 81,
+          "rank_score": 81.909,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M5 пробій + ретест · TREND_DOWN · RVOL 1.04x · непридатна ціна/SL/spread/RR · GEOMETRY_OR_EXECUTION, WIDE_SPREAD",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "WIDE_SPREAD"
+          ]
+        },
         {
           "setup": "TREND_PULLBACK_FVG_VWAP",
           "family": "TREND_PULLBACK",
           "trigger_tf": "M5",
-          "trigger_offset": 1,
-          "signal_age_sec": 360.4,
+          "trigger_offset": 0,
+          "signal_age_sec": 52.1,
           "side": -1,
           "status": "WATCH",
           "score": 79,
@@ -4143,12 +4351,10 @@
             "expected_r_estimate": null,
             "rank_adjustment": 0.0
           },
-          "reason_ua": "M5 відкат до FVG/EMA/VWAP · TREND_DOWN · RVOL 1.91x · непридатна ціна/SL/spread/RR · попередня M5, повторна перевірка ціни · GEOMETRY_OR_EXECUTION, WIDE_SPREAD, CHASE_DISTANCE, DELAYED_DATA_GAP",
+          "reason_ua": "M5 відкат до FVG/EMA/VWAP · TREND_DOWN · RVOL 1.04x · непридатна ціна/SL/spread/RR · GEOMETRY_OR_EXECUTION, WIDE_SPREAD",
           "rejection_codes": [
             "GEOMETRY_OR_EXECUTION",
-            "WIDE_SPREAD",
-            "CHASE_DISTANCE",
-            "DELAYED_DATA_GAP"
+            "WIDE_SPREAD"
           ]
         }
       ],
@@ -4167,6 +4373,1431 @@
       "phase": "OPEN"
     },
     {
+      "symbol": "ORDI_USDT",
+      "label": "ORDI",
+      "short": "ORDI",
+      "cluster": "CRYPTO",
+      "cluster_ua": "КРИПТА",
+      "fee_tag": "0% Maker / 0.02%",
+      "mexc_url": "https://www.mexc.com/futures/ORDI_USDT",
+      "price": 2.651,
+      "tick": 0.001,
+      "change_24h_pct": 0.41,
+      "volume_24h": 2253946.0,
+      "funding_rate": 5e-05,
+      "funding_pct": 0.005,
+      "open_interest": 14650814.0,
+      "funding_regime": "NEUTRAL",
+      "bias_4h": 1,
+      "bias_1h": 0,
+      "bias_15m": 1,
+      "status": "WATCH",
+      "status_ua": "СПОСТЕРЕЖЕННЯ",
+      "score": 79,
+      "side": -1,
+      "side_ua": "SHORT ↓",
+      "setup": "BREAKOUT_RETEST",
+      "setup_ua": "M1 пробій + ретест",
+      "order_type": "MARKET",
+      "entry": 2.65,
+      "stop": 2.665,
+      "tp": 2.636,
+      "rr": 0.93,
+      "rvol": 0.4578139980824545,
+      "range_pos": 0.467,
+      "btc_aligned": true,
+      "reason_ua": "M1 пробій + ретест · TRANSITION_DOWN · RVOL 0.46x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+      "sizing": {
+        "deposit_usdt": 100.0,
+        "risk_pct": 1.72,
+        "max_leverage": 5.0,
+        "position_usdt": 304.75,
+        "effective_leverage": 3.05,
+        "risk_usd": 1.72,
+        "target_profit_usd": 1.61,
+        "sl_pct": 0.57,
+        "tp_pct": 0.53
+      },
+      "cluster_locked": false,
+      "candles_15m": [
+        {
+          "t": 1795752900,
+          "o": 2.698,
+          "h": 2.699,
+          "l": 2.689,
+          "c": 2.693
+        },
+        {
+          "t": 1795753800,
+          "o": 2.693,
+          "h": 2.707,
+          "l": 2.693,
+          "c": 2.701
+        },
+        {
+          "t": 1795754700,
+          "o": 2.701,
+          "h": 2.702,
+          "l": 2.693,
+          "c": 2.694
+        },
+        {
+          "t": 1795755600,
+          "o": 2.694,
+          "h": 2.708,
+          "l": 2.693,
+          "c": 2.697
+        },
+        {
+          "t": 1795756500,
+          "o": 2.697,
+          "h": 2.703,
+          "l": 2.695,
+          "c": 2.703
+        },
+        {
+          "t": 1795757400,
+          "o": 2.703,
+          "h": 2.72,
+          "l": 2.703,
+          "c": 2.711
+        },
+        {
+          "t": 1795758300,
+          "o": 2.711,
+          "h": 2.715,
+          "l": 2.705,
+          "c": 2.715
+        },
+        {
+          "t": 1795759200,
+          "o": 2.715,
+          "h": 2.718,
+          "l": 2.711,
+          "c": 2.716
+        },
+        {
+          "t": 1795760100,
+          "o": 2.716,
+          "h": 2.721,
+          "l": 2.713,
+          "c": 2.72
+        },
+        {
+          "t": 1795761000,
+          "o": 2.72,
+          "h": 2.721,
+          "l": 2.712,
+          "c": 2.714
+        },
+        {
+          "t": 1795761900,
+          "o": 2.714,
+          "h": 2.715,
+          "l": 2.709,
+          "c": 2.71
+        },
+        {
+          "t": 1795762800,
+          "o": 2.71,
+          "h": 2.717,
+          "l": 2.706,
+          "c": 2.716
+        },
+        {
+          "t": 1795763700,
+          "o": 2.716,
+          "h": 2.72,
+          "l": 2.712,
+          "c": 2.718
+        },
+        {
+          "t": 1795764600,
+          "o": 2.718,
+          "h": 2.724,
+          "l": 2.705,
+          "c": 2.709
+        },
+        {
+          "t": 1795765500,
+          "o": 2.709,
+          "h": 2.714,
+          "l": 2.706,
+          "c": 2.706
+        },
+        {
+          "t": 1795766400,
+          "o": 2.706,
+          "h": 2.712,
+          "l": 2.703,
+          "c": 2.706
+        },
+        {
+          "t": 1795767300,
+          "o": 2.706,
+          "h": 2.722,
+          "l": 2.705,
+          "c": 2.713
+        },
+        {
+          "t": 1795768200,
+          "o": 2.713,
+          "h": 2.713,
+          "l": 2.701,
+          "c": 2.702
+        },
+        {
+          "t": 1795769100,
+          "o": 2.702,
+          "h": 2.714,
+          "l": 2.701,
+          "c": 2.71
+        },
+        {
+          "t": 1795770000,
+          "o": 2.71,
+          "h": 2.718,
+          "l": 2.705,
+          "c": 2.706
+        },
+        {
+          "t": 1795770900,
+          "o": 2.706,
+          "h": 2.709,
+          "l": 2.703,
+          "c": 2.703
+        },
+        {
+          "t": 1795771800,
+          "o": 2.703,
+          "h": 2.715,
+          "l": 2.703,
+          "c": 2.707
+        },
+        {
+          "t": 1795772700,
+          "o": 2.707,
+          "h": 2.71,
+          "l": 2.699,
+          "c": 2.708
+        },
+        {
+          "t": 1795773600,
+          "o": 2.708,
+          "h": 2.709,
+          "l": 2.703,
+          "c": 2.706
+        },
+        {
+          "t": 1795774500,
+          "o": 2.706,
+          "h": 2.715,
+          "l": 2.702,
+          "c": 2.713
+        },
+        {
+          "t": 1795775400,
+          "o": 2.713,
+          "h": 2.719,
+          "l": 2.71,
+          "c": 2.711
+        },
+        {
+          "t": 1795776300,
+          "o": 2.711,
+          "h": 2.713,
+          "l": 2.707,
+          "c": 2.708
+        },
+        {
+          "t": 1795777200,
+          "o": 2.708,
+          "h": 2.709,
+          "l": 2.702,
+          "c": 2.706
+        },
+        {
+          "t": 1795778100,
+          "o": 2.706,
+          "h": 2.708,
+          "l": 2.701,
+          "c": 2.703
+        },
+        {
+          "t": 1795779000,
+          "o": 2.703,
+          "h": 2.712,
+          "l": 2.703,
+          "c": 2.705
+        },
+        {
+          "t": 1795779900,
+          "o": 2.705,
+          "h": 2.714,
+          "l": 2.698,
+          "c": 2.714
+        },
+        {
+          "t": 1795780800,
+          "o": 2.714,
+          "h": 2.72,
+          "l": 2.708,
+          "c": 2.718
+        },
+        {
+          "t": 1795781700,
+          "o": 2.718,
+          "h": 2.719,
+          "l": 2.711,
+          "c": 2.712
+        },
+        {
+          "t": 1795782600,
+          "o": 2.712,
+          "h": 2.715,
+          "l": 2.709,
+          "c": 2.711
+        },
+        {
+          "t": 1795783500,
+          "o": 2.711,
+          "h": 2.713,
+          "l": 2.705,
+          "c": 2.711
+        },
+        {
+          "t": 1795784400,
+          "o": 2.711,
+          "h": 2.713,
+          "l": 2.706,
+          "c": 2.71
+        },
+        {
+          "t": 1795785300,
+          "o": 2.71,
+          "h": 2.712,
+          "l": 2.703,
+          "c": 2.708
+        },
+        {
+          "t": 1795786200,
+          "o": 2.708,
+          "h": 2.717,
+          "l": 2.707,
+          "c": 2.712
+        },
+        {
+          "t": 1795787100,
+          "o": 2.712,
+          "h": 2.723,
+          "l": 2.711,
+          "c": 2.712
+        },
+        {
+          "t": 1795788000,
+          "o": 2.712,
+          "h": 2.718,
+          "l": 2.709,
+          "c": 2.712
+        },
+        {
+          "t": 1795788900,
+          "o": 2.712,
+          "h": 2.715,
+          "l": 2.697,
+          "c": 2.703
+        },
+        {
+          "t": 1795789800,
+          "o": 2.703,
+          "h": 2.703,
+          "l": 2.628,
+          "c": 2.649
+        },
+        {
+          "t": 1795790700,
+          "o": 2.649,
+          "h": 2.652,
+          "l": 2.605,
+          "c": 2.613
+        },
+        {
+          "t": 1795791600,
+          "o": 2.613,
+          "h": 2.621,
+          "l": 2.587,
+          "c": 2.616
+        },
+        {
+          "t": 1795792500,
+          "o": 2.616,
+          "h": 2.625,
+          "l": 2.602,
+          "c": 2.623
+        },
+        {
+          "t": 1795793400,
+          "o": 2.623,
+          "h": 2.644,
+          "l": 2.623,
+          "c": 2.64
+        },
+        {
+          "t": 1795794300,
+          "o": 2.64,
+          "h": 2.643,
+          "l": 2.628,
+          "c": 2.64
+        },
+        {
+          "t": 1795795200,
+          "o": 2.64,
+          "h": 2.647,
+          "l": 2.636,
+          "c": 2.642
+        },
+        {
+          "t": 1795796100,
+          "o": 2.642,
+          "h": 2.646,
+          "l": 2.632,
+          "c": 2.638
+        },
+        {
+          "t": 1795797000,
+          "o": 2.638,
+          "h": 2.652,
+          "l": 2.63,
+          "c": 2.647
+        },
+        {
+          "t": 1795797900,
+          "o": 2.647,
+          "h": 2.653,
+          "l": 2.636,
+          "c": 2.636
+        },
+        {
+          "t": 1795798800,
+          "o": 2.636,
+          "h": 2.651,
+          "l": 2.632,
+          "c": 2.65
+        },
+        {
+          "t": 1795799700,
+          "o": 2.65,
+          "h": 2.652,
+          "l": 2.637,
+          "c": 2.64
+        },
+        {
+          "t": 1795800600,
+          "o": 2.64,
+          "h": 2.645,
+          "l": 2.625,
+          "c": 2.628
+        },
+        {
+          "t": 1795801500,
+          "o": 2.628,
+          "h": 2.659,
+          "l": 2.622,
+          "c": 2.659
+        },
+        {
+          "t": 1795802400,
+          "o": 2.659,
+          "h": 2.659,
+          "l": 2.645,
+          "c": 2.648
+        },
+        {
+          "t": 1795803300,
+          "o": 2.648,
+          "h": 2.649,
+          "l": 2.639,
+          "c": 2.64
+        },
+        {
+          "t": 1795804200,
+          "o": 2.64,
+          "h": 2.646,
+          "l": 2.639,
+          "c": 2.645
+        },
+        {
+          "t": 1795805100,
+          "o": 2.645,
+          "h": 2.659,
+          "l": 2.643,
+          "c": 2.656
+        },
+        {
+          "t": 1795806000,
+          "o": 2.656,
+          "h": 2.666,
+          "l": 2.654,
+          "c": 2.665
+        },
+        {
+          "t": 1795806900,
+          "o": 2.665,
+          "h": 2.67,
+          "l": 2.662,
+          "c": 2.666
+        },
+        {
+          "t": 1795807800,
+          "o": 2.666,
+          "h": 2.67,
+          "l": 2.661,
+          "c": 2.662
+        },
+        {
+          "t": 1795808700,
+          "o": 2.662,
+          "h": 2.662,
+          "l": 2.654,
+          "c": 2.658
+        },
+        {
+          "t": 1795809600,
+          "o": 2.658,
+          "h": 2.659,
+          "l": 2.647,
+          "c": 2.652
+        },
+        {
+          "t": 1795810500,
+          "o": 2.652,
+          "h": 2.652,
+          "l": 2.646,
+          "c": 2.651
+        },
+        {
+          "t": 1795811400,
+          "o": 2.651,
+          "h": 2.656,
+          "l": 2.651,
+          "c": 2.654
+        },
+        {
+          "t": 1795812300,
+          "o": 2.654,
+          "h": 2.655,
+          "l": 2.646,
+          "c": 2.649
+        },
+        {
+          "t": 1795813200,
+          "o": 2.649,
+          "h": 2.652,
+          "l": 2.647,
+          "c": 2.647
+        },
+        {
+          "t": 1795814100,
+          "o": 2.647,
+          "h": 2.651,
+          "l": 2.646,
+          "c": 2.649
+        },
+        {
+          "t": 1795815000,
+          "o": 2.649,
+          "h": 2.654,
+          "l": 2.645,
+          "c": 2.653
+        },
+        {
+          "t": 1795815900,
+          "o": 2.653,
+          "h": 2.654,
+          "l": 2.646,
+          "c": 2.646
+        },
+        {
+          "t": 1795816800,
+          "o": 2.646,
+          "h": 2.648,
+          "l": 2.628,
+          "c": 2.633
+        },
+        {
+          "t": 1795817700,
+          "o": 2.633,
+          "h": 2.638,
+          "l": 2.63,
+          "c": 2.638
+        },
+        {
+          "t": 1795818600,
+          "o": 2.638,
+          "h": 2.643,
+          "l": 2.637,
+          "c": 2.642
+        },
+        {
+          "t": 1795819500,
+          "o": 2.642,
+          "h": 2.647,
+          "l": 2.639,
+          "c": 2.644
+        },
+        {
+          "t": 1795820400,
+          "o": 2.644,
+          "h": 2.651,
+          "l": 2.641,
+          "c": 2.643
+        },
+        {
+          "t": 1795821300,
+          "o": 2.643,
+          "h": 2.643,
+          "l": 2.639,
+          "c": 2.641
+        },
+        {
+          "t": 1795822200,
+          "o": 2.641,
+          "h": 2.657,
+          "l": 2.641,
+          "c": 2.655
+        },
+        {
+          "t": 1795823100,
+          "o": 2.655,
+          "h": 2.663,
+          "l": 2.652,
+          "c": 2.662
+        },
+        {
+          "t": 1795824000,
+          "o": 2.662,
+          "h": 2.665,
+          "l": 2.656,
+          "c": 2.657
+        }
+      ],
+      "candles_5m": [
+        {
+          "t": 1795801500,
+          "o": 2.628,
+          "h": 2.629,
+          "l": 2.622,
+          "c": 2.629
+        },
+        {
+          "t": 1795801800,
+          "o": 2.629,
+          "h": 2.643,
+          "l": 2.626,
+          "c": 2.643
+        },
+        {
+          "t": 1795802100,
+          "o": 2.643,
+          "h": 2.659,
+          "l": 2.64,
+          "c": 2.659
+        },
+        {
+          "t": 1795802400,
+          "o": 2.659,
+          "h": 2.659,
+          "l": 2.648,
+          "c": 2.648
+        },
+        {
+          "t": 1795802700,
+          "o": 2.648,
+          "h": 2.655,
+          "l": 2.648,
+          "c": 2.649
+        },
+        {
+          "t": 1795803000,
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.645,
+          "c": 2.648
+        },
+        {
+          "t": 1795803300,
+          "o": 2.648,
+          "h": 2.649,
+          "l": 2.643,
+          "c": 2.643
+        },
+        {
+          "t": 1795803600,
+          "o": 2.643,
+          "h": 2.647,
+          "l": 2.641,
+          "c": 2.647
+        },
+        {
+          "t": 1795803900,
+          "o": 2.647,
+          "h": 2.648,
+          "l": 2.639,
+          "c": 2.64
+        },
+        {
+          "t": 1795804200,
+          "o": 2.64,
+          "h": 2.646,
+          "l": 2.639,
+          "c": 2.641
+        },
+        {
+          "t": 1795804500,
+          "o": 2.641,
+          "h": 2.643,
+          "l": 2.64,
+          "c": 2.643
+        },
+        {
+          "t": 1795804800,
+          "o": 2.643,
+          "h": 2.646,
+          "l": 2.641,
+          "c": 2.645
+        },
+        {
+          "t": 1795805100,
+          "o": 2.645,
+          "h": 2.646,
+          "l": 2.643,
+          "c": 2.645
+        },
+        {
+          "t": 1795805400,
+          "o": 2.645,
+          "h": 2.656,
+          "l": 2.645,
+          "c": 2.656
+        },
+        {
+          "t": 1795805700,
+          "o": 2.656,
+          "h": 2.659,
+          "l": 2.653,
+          "c": 2.656
+        },
+        {
+          "t": 1795806000,
+          "o": 2.656,
+          "h": 2.664,
+          "l": 2.654,
+          "c": 2.664
+        },
+        {
+          "t": 1795806300,
+          "o": 2.664,
+          "h": 2.664,
+          "l": 2.657,
+          "c": 2.658
+        },
+        {
+          "t": 1795806600,
+          "o": 2.658,
+          "h": 2.666,
+          "l": 2.658,
+          "c": 2.665
+        },
+        {
+          "t": 1795806900,
+          "o": 2.665,
+          "h": 2.67,
+          "l": 2.664,
+          "c": 2.668
+        },
+        {
+          "t": 1795807200,
+          "o": 2.668,
+          "h": 2.668,
+          "l": 2.662,
+          "c": 2.663
+        },
+        {
+          "t": 1795807500,
+          "o": 2.663,
+          "h": 2.668,
+          "l": 2.662,
+          "c": 2.666
+        },
+        {
+          "t": 1795807800,
+          "o": 2.666,
+          "h": 2.67,
+          "l": 2.665,
+          "c": 2.665
+        },
+        {
+          "t": 1795808100,
+          "o": 2.665,
+          "h": 2.67,
+          "l": 2.665,
+          "c": 2.669
+        },
+        {
+          "t": 1795808400,
+          "o": 2.669,
+          "h": 2.669,
+          "l": 2.661,
+          "c": 2.662
+        },
+        {
+          "t": 1795808700,
+          "o": 2.662,
+          "h": 2.662,
+          "l": 2.657,
+          "c": 2.657
+        },
+        {
+          "t": 1795809000,
+          "o": 2.657,
+          "h": 2.658,
+          "l": 2.654,
+          "c": 2.658
+        },
+        {
+          "t": 1795809300,
+          "o": 2.658,
+          "h": 2.658,
+          "l": 2.654,
+          "c": 2.658
+        },
+        {
+          "t": 1795809600,
+          "o": 2.658,
+          "h": 2.658,
+          "l": 2.651,
+          "c": 2.657
+        },
+        {
+          "t": 1795809900,
+          "o": 2.657,
+          "h": 2.659,
+          "l": 2.653,
+          "c": 2.654
+        },
+        {
+          "t": 1795810200,
+          "o": 2.654,
+          "h": 2.654,
+          "l": 2.647,
+          "c": 2.652
+        },
+        {
+          "t": 1795810500,
+          "o": 2.652,
+          "h": 2.652,
+          "l": 2.648,
+          "c": 2.65
+        },
+        {
+          "t": 1795810800,
+          "o": 2.65,
+          "h": 2.651,
+          "l": 2.648,
+          "c": 2.649
+        },
+        {
+          "t": 1795811100,
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.646,
+          "c": 2.651
+        },
+        {
+          "t": 1795811400,
+          "o": 2.651,
+          "h": 2.656,
+          "l": 2.651,
+          "c": 2.655
+        },
+        {
+          "t": 1795811700,
+          "o": 2.655,
+          "h": 2.656,
+          "l": 2.651,
+          "c": 2.653
+        },
+        {
+          "t": 1795812000,
+          "o": 2.653,
+          "h": 2.655,
+          "l": 2.652,
+          "c": 2.654
+        },
+        {
+          "t": 1795812300,
+          "o": 2.654,
+          "h": 2.655,
+          "l": 2.649,
+          "c": 2.65
+        },
+        {
+          "t": 1795812600,
+          "o": 2.65,
+          "h": 2.65,
+          "l": 2.646,
+          "c": 2.647
+        },
+        {
+          "t": 1795812900,
+          "o": 2.647,
+          "h": 2.65,
+          "l": 2.646,
+          "c": 2.649
+        },
+        {
+          "t": 1795813200,
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.647,
+          "c": 2.649
+        },
+        {
+          "t": 1795813500,
+          "o": 2.649,
+          "h": 2.652,
+          "l": 2.648,
+          "c": 2.649
+        },
+        {
+          "t": 1795813800,
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.647,
+          "c": 2.647
+        },
+        {
+          "t": 1795814100,
+          "o": 2.647,
+          "h": 2.651,
+          "l": 2.646,
+          "c": 2.651
+        },
+        {
+          "t": 1795814400,
+          "o": 2.651,
+          "h": 2.651,
+          "l": 2.649,
+          "c": 2.65
+        },
+        {
+          "t": 1795814700,
+          "o": 2.65,
+          "h": 2.651,
+          "l": 2.648,
+          "c": 2.649
+        },
+        {
+          "t": 1795815000,
+          "o": 2.649,
+          "h": 2.651,
+          "l": 2.645,
+          "c": 2.651
+        },
+        {
+          "t": 1795815300,
+          "o": 2.651,
+          "h": 2.654,
+          "l": 2.65,
+          "c": 2.651
+        },
+        {
+          "t": 1795815600,
+          "o": 2.651,
+          "h": 2.653,
+          "l": 2.651,
+          "c": 2.653
+        },
+        {
+          "t": 1795815900,
+          "o": 2.653,
+          "h": 2.654,
+          "l": 2.65,
+          "c": 2.652
+        },
+        {
+          "t": 1795816200,
+          "o": 2.652,
+          "h": 2.652,
+          "l": 2.65,
+          "c": 2.652
+        },
+        {
+          "t": 1795816500,
+          "o": 2.652,
+          "h": 2.652,
+          "l": 2.646,
+          "c": 2.646
+        },
+        {
+          "t": 1795816800,
+          "o": 2.646,
+          "h": 2.648,
+          "l": 2.638,
+          "c": 2.64
+        },
+        {
+          "t": 1795817100,
+          "o": 2.64,
+          "h": 2.642,
+          "l": 2.638,
+          "c": 2.639
+        },
+        {
+          "t": 1795817400,
+          "o": 2.639,
+          "h": 2.64,
+          "l": 2.628,
+          "c": 2.633
+        },
+        {
+          "t": 1795817700,
+          "o": 2.633,
+          "h": 2.635,
+          "l": 2.63,
+          "c": 2.633
+        },
+        {
+          "t": 1795818000,
+          "o": 2.633,
+          "h": 2.637,
+          "l": 2.632,
+          "c": 2.635
+        },
+        {
+          "t": 1795818300,
+          "o": 2.635,
+          "h": 2.638,
+          "l": 2.632,
+          "c": 2.638
+        },
+        {
+          "t": 1795818600,
+          "o": 2.638,
+          "h": 2.643,
+          "l": 2.638,
+          "c": 2.639
+        },
+        {
+          "t": 1795818900,
+          "o": 2.639,
+          "h": 2.643,
+          "l": 2.637,
+          "c": 2.642
+        },
+        {
+          "t": 1795819200,
+          "o": 2.642,
+          "h": 2.643,
+          "l": 2.637,
+          "c": 2.642
+        },
+        {
+          "t": 1795819500,
+          "o": 2.642,
+          "h": 2.645,
+          "l": 2.639,
+          "c": 2.642
+        },
+        {
+          "t": 1795819800,
+          "o": 2.642,
+          "h": 2.645,
+          "l": 2.641,
+          "c": 2.643
+        },
+        {
+          "t": 1795820100,
+          "o": 2.643,
+          "h": 2.647,
+          "l": 2.642,
+          "c": 2.644
+        },
+        {
+          "t": 1795820400,
+          "o": 2.644,
+          "h": 2.651,
+          "l": 2.644,
+          "c": 2.649
+        },
+        {
+          "t": 1795820700,
+          "o": 2.649,
+          "h": 2.649,
+          "l": 2.644,
+          "c": 2.644
+        },
+        {
+          "t": 1795821000,
+          "o": 2.644,
+          "h": 2.646,
+          "l": 2.641,
+          "c": 2.643
+        },
+        {
+          "t": 1795821300,
+          "o": 2.643,
+          "h": 2.643,
+          "l": 2.641,
+          "c": 2.642
+        },
+        {
+          "t": 1795821600,
+          "o": 2.642,
+          "h": 2.643,
+          "l": 2.639,
+          "c": 2.641
+        },
+        {
+          "t": 1795821900,
+          "o": 2.641,
+          "h": 2.643,
+          "l": 2.641,
+          "c": 2.641
+        },
+        {
+          "t": 1795822200,
+          "o": 2.641,
+          "h": 2.653,
+          "l": 2.641,
+          "c": 2.652
+        },
+        {
+          "t": 1795822500,
+          "o": 2.652,
+          "h": 2.657,
+          "l": 2.652,
+          "c": 2.655
+        },
+        {
+          "t": 1795822800,
+          "o": 2.655,
+          "h": 2.656,
+          "l": 2.653,
+          "c": 2.655
+        },
+        {
+          "t": 1795823100,
+          "o": 2.655,
+          "h": 2.657,
+          "l": 2.652,
+          "c": 2.655
+        },
+        {
+          "t": 1795823400,
+          "o": 2.655,
+          "h": 2.662,
+          "l": 2.654,
+          "c": 2.661
+        },
+        {
+          "t": 1795823700,
+          "o": 2.661,
+          "h": 2.663,
+          "l": 2.66,
+          "c": 2.662
+        },
+        {
+          "t": 1795824000,
+          "o": 2.662,
+          "h": 2.665,
+          "l": 2.66,
+          "c": 2.663
+        },
+        {
+          "t": 1795824300,
+          "o": 2.663,
+          "h": 2.663,
+          "l": 2.659,
+          "c": 2.659
+        },
+        {
+          "t": 1795824600,
+          "o": 2.659,
+          "h": 2.66,
+          "l": 2.656,
+          "c": 2.657
+        },
+        {
+          "t": 1795824900,
+          "o": 2.657,
+          "h": 2.661,
+          "l": 2.656,
+          "c": 2.656
+        },
+        {
+          "t": 1795825200,
+          "o": 2.656,
+          "h": 2.656,
+          "l": 2.65,
+          "c": 2.651
+        }
+      ],
+      "execution_tf": "1m",
+      "bid": 2.65,
+      "ask": 2.651,
+      "quote_valid": true,
+      "quote_ts": 1795825551291,
+      "analysis_fresh": true,
+      "htf_regime": "RANGE_TRANSITION",
+      "regime": "TRANSITION_DOWN",
+      "local_wave": {
+        "side": -1,
+        "m5": {
+          "side": -1,
+          "move_atr": 2.507,
+          "efficiency": 1.0,
+          "directional_bars": 4
+        },
+        "m15": {
+          "side": 1,
+          "move_atr": 1.806,
+          "efficiency": 0.615,
+          "directional_bars": 2
+        },
+        "m5_slow": {
+          "side": 0,
+          "move_atr": 0.836,
+          "efficiency": 0.2,
+          "directional_bars": 4
+        },
+        "breaks": [
+          {
+            "side": -1,
+            "level": 2.654,
+            "ts": 1795825200000
+          }
+        ]
+      },
+      "relative_strength": {
+        "available": true,
+        "side": 1,
+        "relative_atr": 0.762,
+        "asset_return_pct": 0.53,
+        "btc_return_pct": 0.266
+      },
+      "wave_side": -1,
+      "observed_wave_side": -1,
+      "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
+      "direction_diagnostics": {
+        "1": {
+          "side": 1,
+          "local_support": false,
+          "windows_checked": [
+            {
+              "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.467,
+              "break_distance_atr": -4.667,
+              "rvol": 0.458,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
+              "offset": 1,
+              "known_ts": 1795825440000,
+              "body_atr": 0.966,
+              "break_distance_atr": -4.345,
+              "rvol": 0.502,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
+              "offset": 2,
+              "known_ts": 1795825380000,
+              "body_atr": -1.556,
+              "break_distance_atr": -5.704,
+              "rvol": 0.559,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -1.045,
+              "break_distance_atr": -2.925,
+              "rvol": 0.419,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
+              "known_ts": 1795825200000,
+              "body_atr": -0.209,
+              "break_distance_atr": -1.881,
+              "rvol": 0.503,
+              "local_support": false,
+              "higher_opposes": false
+            }
+          ],
+          "detected": 0,
+          "ready": 0,
+          "rejections": []
+        },
+        "-1": {
+          "side": -1,
+          "local_support": true,
+          "windows_checked": [
+            {
+              "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.467,
+              "break_distance_atr": -0.467,
+              "rvol": 0.458,
+              "local_support": true,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
+              "offset": 1,
+              "known_ts": 1795825440000,
+              "body_atr": -0.966,
+              "break_distance_atr": -0.966,
+              "rvol": 0.502,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
+              "offset": 2,
+              "known_ts": 1795825380000,
+              "body_atr": 1.556,
+              "break_distance_atr": 1.037,
+              "rvol": 0.559,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M5",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 1.045,
+              "break_distance_atr": 0.627,
+              "rvol": 0.419,
+              "local_support": true,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
+              "known_ts": 1795825200000,
+              "body_atr": 0.209,
+              "break_distance_atr": -0.836,
+              "rvol": 0.503,
+              "local_support": false,
+              "higher_opposes": true
+            }
+          ],
+          "detected": 1,
+          "ready": 0,
+          "rejections": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY"
+          ]
+        }
+      },
+      "family": "BREAKOUT_RETEST",
+      "base_score": 76,
+      "structural_stop": 2.653,
+      "reference": 2.651,
+      "trigger_ts": 1795825440000,
+      "trigger_tf": "M1",
+      "retest_level": 2.652,
+      "tp1": 2.635,
+      "tp1_r": 1.0,
+      "risk": 0.015000000000000124,
+      "net_rr": 0.8273333333333125,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
+      "geometry_policy": "STRUCTURAL_V15_1",
+      "target_kind": "CONFIRMED_LIQUIDITY",
+      "atr_m5": 0.004857142857142798,
+      "atr_m15": 0.009142857142857088,
+      "structural_anchor": 2.653,
+      "stop_buffer": 0.002,
+      "risk_floor": 0.014575,
+      "risk_ceiling": 0.0636,
+      "min_rr": 1.85,
+      "trail_atr_m5": 0.004857142857142798,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.15,
+      "rank_score": 77.655,
+      "net_rr_estimate": 0.827,
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 1,
+        "total_n": 5,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
+      "signal_id": "ORDI_USDT:-1:BREAKOUT_RETEST:M1:1795825440000",
+      "signal_event_key": "ORDI_USDT:-1:EVENT:5986084",
+      "rejection_codes": [
+        "GEOMETRY_OR_EXECUTION",
+        "NEAR_LIQUIDITY"
+      ],
+      "signal_known_ts": 1795825500000,
+      "trigger_offset": 0,
+      "signal_age_sec": 52.1,
+      "local_support": true,
+      "relative_support": false,
+      "chase_cap": 0.00388571,
+      "alignment_tier": "EARLY_REVERSAL",
+      "risk_multiplier": 0.575,
+      "funding_risk_mult": 1.0,
+      "early_close_hint_ua": null,
+      "maker_pullback": false,
+      "limit_ttl_min": 8,
+      "partial_pct": 0.5,
+      "fee_rate": 0.0002,
+      "slippage_rate": 0.0001,
+      "candidate_count": 1,
+      "candidate_diagnostics": [
+        {
+          "setup": "BREAKOUT_RETEST",
+          "family": "BREAKOUT_RETEST",
+          "trigger_tf": "M1",
+          "trigger_offset": 0,
+          "signal_age_sec": 52.1,
+          "side": -1,
+          "status": "WATCH",
+          "score": 79,
+          "rank_score": 77.655,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 1,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M1 пробій + ретест · TRANSITION_DOWN · RVOL 0.46x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY"
+          ]
+        }
+      ],
+      "be_trigger": null
+    },
+    {
       "symbol": "LINK_USDT",
       "label": "Chainlink (LINK)",
       "short": "LINK",
@@ -4174,43 +5805,43 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/LINK_USDT",
-      "price": 9.379,
+      "price": 9.369,
       "tick": 0.001,
-      "change_24h_pct": 0.63,
-      "volume_24h": 30695951.0,
-      "funding_rate": 4.3e-05,
-      "funding_pct": 0.0043,
-      "open_interest": 34326255.0,
+      "change_24h_pct": 0.52,
+      "volume_24h": 30728040.0,
+      "funding_rate": 4.2e-05,
+      "funding_pct": 0.0042,
+      "open_interest": 34328772.0,
       "funding_regime": "NEUTRAL",
       "bias_4h": 1,
       "bias_1h": 0,
       "bias_15m": 0,
       "status": "WATCH",
       "status_ua": "СПОСТЕРЕЖЕННЯ",
-      "score": 79,
+      "score": 77,
       "side": -1,
       "side_ua": "SHORT ↓",
       "setup": "M5_LIQUIDITY_SWEEP_RECLAIM",
       "setup_ua": "M5 свіп + реклайм",
       "order_type": "MARKET",
-      "entry": 9.379,
-      "stop": 9.422,
+      "entry": 9.368,
+      "stop": 9.411,
       "tp": 9.354,
-      "rr": 0.58,
+      "rr": 0.33,
       "rvol": 2.3290412992653127,
-      "range_pos": 0.461,
+      "range_pos": 0.445,
       "btc_aligned": true,
-      "reason_ua": "M5 свіп + реклайм · RANGE_TRANSITION · RVOL 2.33x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+      "reason_ua": "M5 свіп + реклайм · RANGE_TRANSITION · RVOL 2.33x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · попередня M5, повторна перевірка ціни · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
       "sizing": {
         "deposit_usdt": 100.0,
         "risk_pct": 1.72,
         "max_leverage": 5.0,
-        "position_usdt": 376.25,
+        "position_usdt": 375.81,
         "effective_leverage": 3.76,
         "risk_usd": 1.72,
-        "target_profit_usd": 1.0,
+        "target_profit_usd": 0.56,
         "sl_pct": 0.46,
-        "tp_pct": 0.27
+        "tp_pct": 0.15
       },
       "cluster_locked": false,
       "candles_15m": [
@@ -4777,13 +6408,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795801200,
-          "o": 9.298,
-          "h": 9.303,
-          "l": 9.279,
-          "c": 9.296
-        },
-        {
           "t": 1795801500,
           "o": 9.296,
           "h": 9.304,
@@ -5335,13 +6959,20 @@
           "h": 9.387,
           "l": 9.375,
           "c": 9.375
+        },
+        {
+          "t": 1795825200,
+          "o": 9.375,
+          "h": 9.381,
+          "l": 9.364,
+          "c": 9.37
         }
       ],
       "execution_tf": "1m",
-      "bid": 9.379,
-      "ask": 9.38,
+      "bid": 9.368,
+      "ask": 9.369,
       "quote_valid": true,
-      "quote_ts": 1795825258965,
+      "quote_ts": 1795825551095,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
       "regime": "RANGE_TRANSITION",
@@ -5349,8 +6980,8 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.402,
-          "efficiency": 0.2,
+          "move_atr": 0.471,
+          "efficiency": 0.241,
           "directional_bars": 2
         },
         "m15": {
@@ -5361,17 +6992,11 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 1.072,
-          "efficiency": 0.235,
-          "directional_bars": 4
+          "move_atr": 0.135,
+          "efficiency": 0.031,
+          "directional_bars": 3
         },
-        "breaks": [
-          {
-            "side": 1,
-            "level": 9.377,
-            "ts": 1795824600000
-          }
-        ]
+        "breaks": []
       },
       "relative_strength": {
         "available": true,
@@ -5390,42 +7015,52 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.337,
+              "break_distance_atr": -2.53,
+              "rvol": 0.047,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -1.775,
-              "break_distance_atr": -2.366,
-              "rvol": 2.847,
+              "known_ts": 1795825440000,
+              "body_atr": -0.167,
+              "break_distance_atr": -2.833,
+              "rvol": 0.274,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": 1.045,
-              "break_distance_atr": -0.627,
-              "rvol": 4.99,
-              "local_support": true,
+              "known_ts": 1795825380000,
+              "body_atr": 0.0,
+              "break_distance_atr": -3.111,
+              "rvol": 0.868,
+              "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": -0.402,
-              "break_distance_atr": -0.603,
-              "rvol": 2.329,
+              "known_ts": 1795825500000,
+              "body_atr": -0.337,
+              "break_distance_atr": -1.144,
+              "rvol": 0.376,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 0.986,
-              "break_distance_atr": 0.263,
-              "rvol": 1.24,
-              "local_support": true,
+              "known_ts": 1795825200000,
+              "body_atr": -0.402,
+              "break_distance_atr": -0.603,
+              "rvol": 2.329,
+              "local_support": false,
               "higher_opposes": false
             }
           ],
@@ -5439,41 +7074,51 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.337,
+              "break_distance_atr": -1.012,
+              "rvol": 0.047,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 1.775,
-              "break_distance_atr": -0.197,
-              "rvol": 2.847,
+              "known_ts": 1795825440000,
+              "body_atr": 0.167,
+              "break_distance_atr": -0.667,
+              "rvol": 0.274,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": -1.045,
-              "break_distance_atr": -3.552,
-              "rvol": 4.99,
+              "known_ts": 1795825380000,
+              "body_atr": -0.0,
+              "break_distance_atr": -0.173,
+              "rvol": 0.868,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": 0.402,
-              "break_distance_atr": -1.474,
-              "rvol": 2.329,
+              "known_ts": 1795825500000,
+              "body_atr": 0.337,
+              "break_distance_atr": -1.144,
+              "rvol": 0.376,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -0.986,
-              "break_distance_atr": -1.84,
-              "rvol": 1.24,
+              "known_ts": 1795825200000,
+              "body_atr": 0.402,
+              "break_distance_atr": -1.474,
+              "rvol": 2.329,
               "local_support": false,
               "higher_opposes": true
             }
@@ -5493,26 +7138,26 @@
       "trigger_ts": 1795824900000,
       "trigger_tf": "M5",
       "retest_level": 9.384,
-      "tp1": 9.336,
+      "tp1": 9.326,
       "tp1_r": 1.0,
-      "risk": 0.04300000000000104,
-      "net_rr": 0.45052558139534626,
+      "risk": 0.04299999999999926,
+      "net_rr": 0.19486511627909922,
       "valid": false,
       "geometry_reason": "NEAR_LIQUIDITY",
       "geometry_policy": "STRUCTURAL_V15_1",
       "target_kind": "CONFIRMED_LIQUIDITY",
-      "atr_m5": 0.014857142857142997,
+      "atr_m5": 0.014785714285714338,
       "atr_m15": 0.030785714285713972,
       "structural_anchor": 9.388,
-      "stop_buffer": 0.0037142857142857494,
-      "risk_floor": 0.04220549999999999,
-      "risk_ceiling": 0.18758,
+      "stop_buffer": 0.0036964285714285844,
+      "risk_floor": 0.042156,
+      "risk_ceiling": 0.18736,
       "min_rr": 1.8,
-      "trail_atr_m5": 0.014857142857142997,
+      "trail_atr_m5": 0.014785714285714338,
       "trail_start_r": 1.25,
       "target_r_preferred": 2.15,
-      "rank_score": 76.901,
-      "net_rr_estimate": 0.451,
+      "rank_score": 74.39,
+      "net_rr_estimate": 0.195,
       "meta": {
         "status": "COLLECTING_MEXC_LABELS",
         "n": 0,
@@ -5528,11 +7173,11 @@
         "NEAR_LIQUIDITY"
       ],
       "signal_known_ts": 1795825200000,
-      "trigger_offset": 0,
-      "signal_age_sec": 60.4,
+      "trigger_offset": 1,
+      "signal_age_sec": 352.1,
       "local_support": false,
       "relative_support": false,
-      "chase_cap": 0.01188571,
+      "chase_cap": 0.00739286,
       "alignment_tier": "EARLY_REVERSAL",
       "risk_multiplier": 0.575,
       "funding_risk_mult": 1.0,
@@ -5548,12 +7193,12 @@
           "setup": "M5_LIQUIDITY_SWEEP_RECLAIM",
           "family": "LIQUIDITY_SWEEP",
           "trigger_tf": "M5",
-          "trigger_offset": 0,
-          "signal_age_sec": 60.4,
+          "trigger_offset": 1,
+          "signal_age_sec": 352.1,
           "side": -1,
           "status": "WATCH",
-          "score": 79,
-          "rank_score": 76.901,
+          "score": 77,
+          "rank_score": 74.39,
           "meta": {
             "status": "COLLECTING_MEXC_LABELS",
             "n": 0,
@@ -5562,7 +7207,7 @@
             "expected_r_estimate": null,
             "rank_adjustment": 0.0
           },
-          "reason_ua": "M5 свіп + реклайм · RANGE_TRANSITION · RVOL 2.33x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
+          "reason_ua": "M5 свіп + реклайм · RANGE_TRANSITION · RVOL 2.33x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · попередня M5, повторна перевірка ціни · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY",
           "rejection_codes": [
             "GEOMETRY_OR_EXECUTION",
             "NEAR_LIQUIDITY"
@@ -5579,34 +7224,44 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% FEE",
       "mexc_url": "https://www.mexc.com/futures/SOL_USDT",
-      "price": 71.8,
+      "price": 71.69,
       "tick": 0.01,
-      "change_24h_pct": -0.41,
-      "volume_24h": 54513149.0,
-      "funding_rate": 7.5e-05,
-      "funding_pct": 0.0075,
-      "open_interest": 68030184.0,
+      "change_24h_pct": -0.56,
+      "volume_24h": 54584238.0,
+      "funding_rate": 7.6e-05,
+      "funding_pct": 0.0076,
+      "open_interest": 67899901.0,
       "funding_regime": "NEUTRAL",
       "bias_4h": 0,
       "bias_1h": -1,
       "bias_15m": 0,
       "status": "WATCH",
-      "status_ua": "ХВИЛЯ · ЧЕКАЄМО ТРИГЕР",
-      "score": 0,
-      "side": 0,
-      "side_ua": "НЕЙТРАЛЬНО",
-      "setup": null,
-      "setup_ua": "Немає підтвердженого сетапу",
-      "order_type": null,
-      "entry": null,
-      "stop": null,
-      "tp": null,
-      "rr": null,
-      "rvol": 0.6,
-      "range_pos": 0.455,
+      "status_ua": "СПОСТЕРЕЖЕННЯ",
+      "score": 74,
+      "side": -1,
+      "side_ua": "SHORT ↓",
+      "setup": "TREND_PULLBACK_FVG_VWAP",
+      "setup_ua": "M5 відкат до FVG/EMA/VWAP",
+      "order_type": "MARKET",
+      "entry": 71.68,
+      "stop": 72.01,
+      "tp": 71.31,
+      "rr": 1.12,
+      "rvol": 1.3740207592478382,
+      "range_pos": 0.427,
       "btc_aligned": true,
-      "reason_ua": "Локальна висхідна хвиля · немає підтвердженого входу",
-      "sizing": null,
+      "reason_ua": "M5 відкат до FVG/EMA/VWAP · RANGE_TRANSITION · RVOL 1.37x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, LOW_EVIDENCE_SCORE",
+      "sizing": {
+        "deposit_usdt": 100.0,
+        "risk_pct": 0.79,
+        "max_leverage": 5.0,
+        "position_usdt": 170.73,
+        "effective_leverage": 1.71,
+        "risk_usd": 0.79,
+        "target_profit_usd": 0.88,
+        "sl_pct": 0.46,
+        "tp_pct": 0.52
+      },
       "cluster_locked": false,
       "candles_15m": [
         {
@@ -6172,13 +7827,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795801200,
-          "o": 71.53,
-          "h": 71.53,
-          "l": 71.35,
-          "c": 71.42
-        },
-        {
           "t": 1795801500,
           "o": 71.42,
           "h": 71.49,
@@ -6730,23 +8378,30 @@
           "h": 71.85,
           "l": 71.74,
           "c": 71.77
+        },
+        {
+          "t": 1795825200,
+          "o": 71.77,
+          "h": 71.81,
+          "l": 71.63,
+          "c": 71.71
         }
       ],
       "execution_tf": "1m",
-      "bid": 71.78,
-      "ask": 71.79,
+      "bid": 71.68,
+      "ask": 71.69,
       "quote_valid": true,
-      "quote_ts": 1795825258950,
+      "quote_ts": 1795825551081,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
-      "regime": "TRANSITION_UP",
+      "regime": "RANGE_TRANSITION",
       "local_wave": {
-        "side": 1,
+        "side": 0,
         "m5": {
-          "side": 1,
-          "move_atr": 1.409,
-          "efficiency": 0.789,
-          "directional_bars": 3
+          "side": 0,
+          "move_atr": 0.19,
+          "efficiency": 0.111,
+          "directional_bars": 2
         },
         "m15": {
           "side": 1,
@@ -6756,8 +8411,8 @@
         },
         "m5_slow": {
           "side": 1,
-          "move_atr": 2.631,
-          "efficiency": 0.875,
+          "move_atr": 2.095,
+          "efficiency": 0.579,
           "directional_bars": 5
         },
         "breaks": []
@@ -6769,51 +8424,61 @@
         "asset_return_pct": 0.504,
         "btc_return_pct": 0.266
       },
-      "wave_side": 1,
+      "wave_side": 0,
       "observed_wave_side": 1,
       "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
       "direction_diagnostics": {
         "1": {
           "side": 1,
-          "local_support": true,
+          "local_support": false,
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.553,
+              "break_distance_atr": -2.579,
+              "rvol": 0.802,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -1.094,
-              "break_distance_atr": -1.75,
-              "rvol": 1.923,
+              "known_ts": 1795825440000,
+              "body_atr": 0.359,
+              "break_distance_atr": -3.051,
+              "rvol": 0.309,
               "local_support": true,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": 0.966,
-              "break_distance_atr": -0.241,
-              "rvol": 0.622,
+              "known_ts": 1795825380000,
+              "body_atr": 0.35,
+              "break_distance_atr": -3.325,
+              "rvol": 1.206,
               "local_support": true,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": 0.282,
-              "break_distance_atr": -0.188,
-              "rvol": 0.613,
-              "local_support": true,
+              "known_ts": 1795825500000,
+              "body_atr": -0.571,
+              "break_distance_atr": -1.333,
+              "rvol": 1.374,
+              "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -0.172,
-              "break_distance_atr": -0.429,
-              "rvol": 0.776,
+              "known_ts": 1795825200000,
+              "body_atr": 0.282,
+              "break_distance_atr": -0.188,
+              "rvol": 0.613,
               "local_support": true,
               "higher_opposes": true
             }
@@ -6828,50 +8493,150 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.553,
+              "break_distance_atr": -1.474,
+              "rvol": 0.802,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 1.094,
-              "break_distance_atr": -0.875,
-              "rvol": 1.923,
+              "known_ts": 1795825440000,
+              "body_atr": -0.359,
+              "break_distance_atr": -0.897,
+              "rvol": 0.309,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": -0.966,
-              "break_distance_atr": -2.414,
-              "rvol": 0.622,
+              "known_ts": 1795825380000,
+              "body_atr": -0.35,
+              "break_distance_atr": -0.525,
+              "rvol": 1.206,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": -0.282,
-              "break_distance_atr": -3.289,
-              "rvol": 0.613,
+              "known_ts": 1795825500000,
+              "body_atr": 0.571,
+              "break_distance_atr": -2.095,
+              "rvol": 1.374,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 0.172,
-              "break_distance_atr": -2.748,
-              "rvol": 0.776,
+              "known_ts": 1795825200000,
+              "body_atr": -0.282,
+              "break_distance_atr": -3.289,
+              "rvol": 0.613,
               "local_support": false,
               "higher_opposes": false
             }
           ],
-          "detected": 0,
+          "detected": 1,
           "ready": 0,
-          "rejections": []
+          "rejections": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY",
+            "LOW_EVIDENCE_SCORE"
+          ]
         }
-      }
+      },
+      "family": "TREND_PULLBACK",
+      "base_score": 74,
+      "structural_stop": 71.86,
+      "reference": 71.71,
+      "trigger_ts": 1795825200000,
+      "trigger_tf": "M5",
+      "retest_level": 71.7325758300988,
+      "tp1": 71.36,
+      "tp1_r": 1.0,
+      "risk": 0.3299999999999983,
+      "net_rr": 1.0777696969697164,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
+      "geometry_policy": "STRUCTURAL_V15_1",
+      "target_kind": "CONFIRMED_LIQUIDITY",
+      "atr_m5": 0.10285714285714269,
+      "atr_m15": 0.2128571428571411,
+      "structural_anchor": 71.86,
+      "stop_buffer": 0.025714285714285672,
+      "risk_floor": 0.32256,
+      "risk_ceiling": 1.4336000000000002,
+      "min_rr": 1.8,
+      "trail_atr_m5": 0.10285714285714269,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.15,
+      "rank_score": 73.156,
+      "net_rr_estimate": 1.078,
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 0,
+        "total_n": 5,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
+      "signal_id": "SOL_USDT:-1:TREND_PULLBACK:M5:1795825200000",
+      "signal_event_key": "SOL_USDT:-1:EVENT:5986084",
+      "rejection_codes": [
+        "GEOMETRY_OR_EXECUTION",
+        "NEAR_LIQUIDITY",
+        "LOW_EVIDENCE_SCORE"
+      ],
+      "signal_known_ts": 1795825500000,
+      "trigger_offset": 0,
+      "signal_age_sec": 52.1,
+      "local_support": false,
+      "relative_support": false,
+      "chase_cap": 0.08228571,
+      "alignment_tier": "EARLY_PARTIAL",
+      "risk_multiplier": 0.262,
+      "funding_risk_mult": 1.0,
+      "early_close_hint_ua": null,
+      "maker_pullback": false,
+      "limit_ttl_min": 8,
+      "partial_pct": 0.5,
+      "fee_rate": 0.0,
+      "slippage_rate": 0.0001,
+      "candidate_count": 1,
+      "candidate_diagnostics": [
+        {
+          "setup": "TREND_PULLBACK_FVG_VWAP",
+          "family": "TREND_PULLBACK",
+          "trigger_tf": "M5",
+          "trigger_offset": 0,
+          "signal_age_sec": 52.1,
+          "side": -1,
+          "status": "WATCH",
+          "score": 74,
+          "rank_score": 73.156,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M5 відкат до FVG/EMA/VWAP · RANGE_TRANSITION · RVOL 1.37x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, LOW_EVIDENCE_SCORE",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY",
+            "LOW_EVIDENCE_SCORE"
+          ]
+        }
+      ],
+      "be_trigger": null
     },
     {
       "symbol": "APT_USDT",
@@ -6881,34 +8646,44 @@
       "cluster_ua": "КРИПТА",
       "fee_tag": "0% Maker / 0.02%",
       "mexc_url": "https://www.mexc.com/futures/APT_USDT",
-      "price": 0.3934,
+      "price": 0.392,
       "tick": 0.0001,
-      "change_24h_pct": 3.25,
-      "volume_24h": 62936890.0,
-      "funding_rate": -2.9e-05,
-      "funding_pct": -0.0029,
-      "open_interest": 230057339.0,
+      "change_24h_pct": 2.88,
+      "volume_24h": 62971717.0,
+      "funding_rate": -3.3e-05,
+      "funding_pct": -0.0033,
+      "open_interest": 229923199.0,
       "funding_regime": "NEUTRAL",
       "bias_4h": 1,
       "bias_1h": 1,
       "bias_15m": 1,
       "status": "WATCH",
-      "status_ua": "ХВИЛЯ · ЧЕКАЄМО ТРИГЕР",
-      "score": 0,
-      "side": 0,
-      "side_ua": "НЕЙТРАЛЬНО",
-      "setup": null,
-      "setup_ua": "Немає підтвердженого сетапу",
-      "order_type": null,
-      "entry": null,
-      "stop": null,
-      "tp": null,
-      "rr": null,
-      "rvol": 3.33,
-      "range_pos": 0.915,
+      "status_ua": "СПОСТЕРЕЖЕННЯ",
+      "score": 73,
+      "side": -1,
+      "side_ua": "SHORT ↓",
+      "setup": "BREAKOUT_RETEST",
+      "setup_ua": "M1 пробій + ретест",
+      "order_type": "MARKET",
+      "entry": 0.392,
+      "stop": 0.3944,
+      "tp": 0.3919,
+      "rr": 0.04,
+      "rvol": 0.10219361007725944,
+      "range_pos": 0.856,
       "btc_aligned": true,
-      "reason_ua": "Локальна висхідна хвиля · немає підтвердженого входу · M5 пауза",
-      "sizing": null,
+      "reason_ua": "M1 пробій + ретест · RANGE_TRANSITION · RVOL 0.10x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, LOW_EVIDENCE_SCORE, NO_LOCAL_SHIFT_EVIDENCE, M1_NO_M5_CONTEXT",
+      "sizing": {
+        "deposit_usdt": 100.0,
+        "risk_pct": 1.72,
+        "max_leverage": 5.0,
+        "position_usdt": 281.75,
+        "effective_leverage": 2.82,
+        "risk_usd": 1.72,
+        "target_profit_usd": 0.07,
+        "sl_pct": 0.61,
+        "tp_pct": 0.03
+      },
       "cluster_locked": false,
       "candles_15m": [
         {
@@ -7474,13 +9249,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795801200,
-          "o": 0.3823,
-          "h": 0.3823,
-          "l": 0.3811,
-          "c": 0.3815
-        },
-        {
           "t": 1795801500,
           "o": 0.3815,
           "h": 0.3817,
@@ -8032,13 +9800,20 @@
           "h": 0.3938,
           "l": 0.3932,
           "c": 0.3933
+        },
+        {
+          "t": 1795825200,
+          "o": 0.3933,
+          "h": 0.3934,
+          "l": 0.3922,
+          "c": 0.3925
         }
       ],
       "execution_tf": "1m",
-      "bid": 0.3933,
-      "ask": 0.3934,
+      "bid": 0.392,
+      "ask": 0.3921,
       "quote_valid": true,
-      "quote_ts": 1795825259030,
+      "quote_ts": 1795825551158,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
       "regime": "RANGE_TRANSITION",
@@ -8046,9 +9821,9 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.467,
-          "efficiency": 1.0,
-          "directional_bars": 2
+          "move_atr": 0.803,
+          "efficiency": 0.778,
+          "directional_bars": 1
         },
         "m15": {
           "side": 1,
@@ -8058,8 +9833,8 @@
         },
         "m5_slow": {
           "side": 1,
-          "move_atr": 2.567,
-          "efficiency": 0.917,
+          "move_atr": 1.721,
+          "efficiency": 0.484,
           "directional_bars": 4
         },
         "breaks": []
@@ -8081,43 +9856,53 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.509,
+              "break_distance_atr": -3.309,
+              "rvol": 0.044,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -1.098,
-              "break_distance_atr": -1.922,
-              "rvol": 10.279,
+              "known_ts": 1795825440000,
+              "body_atr": -0.264,
+              "break_distance_atr": -3.962,
+              "rvol": 0.102,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": 0.857,
-              "break_distance_atr": -0.857,
-              "rvol": 0.793,
+              "known_ts": 1795825380000,
+              "body_atr": -0.519,
+              "break_distance_atr": -3.63,
+              "rvol": 0.484,
               "local_support": false,
               "higher_opposes": false
             },
             {
               "tf": "M5",
               "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.918,
+              "break_distance_atr": -1.836,
+              "rvol": 0.161,
+              "local_support": false,
+              "higher_opposes": false
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
               "known_ts": 1795825200000,
               "body_atr": 0.0,
               "break_distance_atr": -0.933,
               "rvol": 1.864,
               "local_support": false,
               "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 0.115,
-              "break_distance_atr": 0.0,
-              "rvol": 2.077,
-              "local_support": false,
-              "higher_opposes": false
             }
           ],
           "detected": 0,
@@ -8130,1352 +9915,156 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.509,
+              "break_distance_atr": -0.764,
+              "rvol": 0.044,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 1.098,
-              "break_distance_atr": -0.275,
-              "rvol": 10.279,
+              "known_ts": 1795825440000,
+              "body_atr": 0.264,
+              "break_distance_atr": -0.264,
+              "rvol": 0.102,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": -0.857,
-              "break_distance_atr": -1.429,
-              "rvol": 0.793,
+              "known_ts": 1795825380000,
+              "body_atr": 0.519,
+              "break_distance_atr": 0.259,
+              "rvol": 0.484,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.918,
+              "break_distance_atr": -1.836,
+              "rvol": 0.161,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M5",
+              "offset": 1,
               "known_ts": 1795825200000,
               "body_atr": -0.0,
               "break_distance_atr": -3.617,
               "rvol": 1.864,
               "local_support": false,
               "higher_opposes": true
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -0.115,
-              "break_distance_atr": -3.672,
-              "rvol": 2.077,
-              "local_support": false,
-              "higher_opposes": true
             }
           ],
-          "detected": 0,
+          "detected": 1,
           "ready": 0,
-          "rejections": []
+          "rejections": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY",
+            "LOW_EVIDENCE_SCORE",
+            "NO_LOCAL_SHIFT_EVIDENCE",
+            "M1_NO_M5_CONTEXT"
+          ]
         }
-      }
-    },
-    {
-      "symbol": "ORDI_USDT",
-      "label": "ORDI",
-      "short": "ORDI",
-      "cluster": "CRYPTO",
-      "cluster_ua": "КРИПТА",
-      "fee_tag": "0% Maker / 0.02%",
-      "mexc_url": "https://www.mexc.com/futures/ORDI_USDT",
-      "price": 2.655,
-      "tick": 0.001,
-      "change_24h_pct": 0.56,
-      "volume_24h": 2252774.0,
-      "funding_rate": 5e-05,
-      "funding_pct": 0.005,
-      "open_interest": 14650814.0,
-      "funding_regime": "NEUTRAL",
-      "bias_4h": 1,
-      "bias_1h": 0,
-      "bias_15m": 1,
-      "status": "WATCH",
-      "status_ua": "ХВИЛЯ · ЧЕКАЄМО ТРИГЕР",
-      "score": 0,
-      "side": 0,
-      "side_ua": "НЕЙТРАЛЬНО",
-      "setup": null,
-      "setup_ua": "Немає підтвердженого сетапу",
-      "order_type": null,
-      "entry": null,
-      "stop": null,
-      "tp": null,
-      "rr": null,
-      "rvol": 0.45,
-      "range_pos": 0.496,
-      "btc_aligned": true,
-      "reason_ua": "Локальна висхідна хвиля · немає підтвердженого входу · M5 пауза",
-      "sizing": null,
-      "cluster_locked": false,
-      "candles_15m": [
-        {
-          "t": 1795752900,
-          "o": 2.698,
-          "h": 2.699,
-          "l": 2.689,
-          "c": 2.693
-        },
-        {
-          "t": 1795753800,
-          "o": 2.693,
-          "h": 2.707,
-          "l": 2.693,
-          "c": 2.701
-        },
-        {
-          "t": 1795754700,
-          "o": 2.701,
-          "h": 2.702,
-          "l": 2.693,
-          "c": 2.694
-        },
-        {
-          "t": 1795755600,
-          "o": 2.694,
-          "h": 2.708,
-          "l": 2.693,
-          "c": 2.697
-        },
-        {
-          "t": 1795756500,
-          "o": 2.697,
-          "h": 2.703,
-          "l": 2.695,
-          "c": 2.703
-        },
-        {
-          "t": 1795757400,
-          "o": 2.703,
-          "h": 2.72,
-          "l": 2.703,
-          "c": 2.711
-        },
-        {
-          "t": 1795758300,
-          "o": 2.711,
-          "h": 2.715,
-          "l": 2.705,
-          "c": 2.715
-        },
-        {
-          "t": 1795759200,
-          "o": 2.715,
-          "h": 2.718,
-          "l": 2.711,
-          "c": 2.716
-        },
-        {
-          "t": 1795760100,
-          "o": 2.716,
-          "h": 2.721,
-          "l": 2.713,
-          "c": 2.72
-        },
-        {
-          "t": 1795761000,
-          "o": 2.72,
-          "h": 2.721,
-          "l": 2.712,
-          "c": 2.714
-        },
-        {
-          "t": 1795761900,
-          "o": 2.714,
-          "h": 2.715,
-          "l": 2.709,
-          "c": 2.71
-        },
-        {
-          "t": 1795762800,
-          "o": 2.71,
-          "h": 2.717,
-          "l": 2.706,
-          "c": 2.716
-        },
-        {
-          "t": 1795763700,
-          "o": 2.716,
-          "h": 2.72,
-          "l": 2.712,
-          "c": 2.718
-        },
-        {
-          "t": 1795764600,
-          "o": 2.718,
-          "h": 2.724,
-          "l": 2.705,
-          "c": 2.709
-        },
-        {
-          "t": 1795765500,
-          "o": 2.709,
-          "h": 2.714,
-          "l": 2.706,
-          "c": 2.706
-        },
-        {
-          "t": 1795766400,
-          "o": 2.706,
-          "h": 2.712,
-          "l": 2.703,
-          "c": 2.706
-        },
-        {
-          "t": 1795767300,
-          "o": 2.706,
-          "h": 2.722,
-          "l": 2.705,
-          "c": 2.713
-        },
-        {
-          "t": 1795768200,
-          "o": 2.713,
-          "h": 2.713,
-          "l": 2.701,
-          "c": 2.702
-        },
-        {
-          "t": 1795769100,
-          "o": 2.702,
-          "h": 2.714,
-          "l": 2.701,
-          "c": 2.71
-        },
-        {
-          "t": 1795770000,
-          "o": 2.71,
-          "h": 2.718,
-          "l": 2.705,
-          "c": 2.706
-        },
-        {
-          "t": 1795770900,
-          "o": 2.706,
-          "h": 2.709,
-          "l": 2.703,
-          "c": 2.703
-        },
-        {
-          "t": 1795771800,
-          "o": 2.703,
-          "h": 2.715,
-          "l": 2.703,
-          "c": 2.707
-        },
-        {
-          "t": 1795772700,
-          "o": 2.707,
-          "h": 2.71,
-          "l": 2.699,
-          "c": 2.708
-        },
-        {
-          "t": 1795773600,
-          "o": 2.708,
-          "h": 2.709,
-          "l": 2.703,
-          "c": 2.706
-        },
-        {
-          "t": 1795774500,
-          "o": 2.706,
-          "h": 2.715,
-          "l": 2.702,
-          "c": 2.713
-        },
-        {
-          "t": 1795775400,
-          "o": 2.713,
-          "h": 2.719,
-          "l": 2.71,
-          "c": 2.711
-        },
-        {
-          "t": 1795776300,
-          "o": 2.711,
-          "h": 2.713,
-          "l": 2.707,
-          "c": 2.708
-        },
-        {
-          "t": 1795777200,
-          "o": 2.708,
-          "h": 2.709,
-          "l": 2.702,
-          "c": 2.706
-        },
-        {
-          "t": 1795778100,
-          "o": 2.706,
-          "h": 2.708,
-          "l": 2.701,
-          "c": 2.703
-        },
-        {
-          "t": 1795779000,
-          "o": 2.703,
-          "h": 2.712,
-          "l": 2.703,
-          "c": 2.705
-        },
-        {
-          "t": 1795779900,
-          "o": 2.705,
-          "h": 2.714,
-          "l": 2.698,
-          "c": 2.714
-        },
-        {
-          "t": 1795780800,
-          "o": 2.714,
-          "h": 2.72,
-          "l": 2.708,
-          "c": 2.718
-        },
-        {
-          "t": 1795781700,
-          "o": 2.718,
-          "h": 2.719,
-          "l": 2.711,
-          "c": 2.712
-        },
-        {
-          "t": 1795782600,
-          "o": 2.712,
-          "h": 2.715,
-          "l": 2.709,
-          "c": 2.711
-        },
-        {
-          "t": 1795783500,
-          "o": 2.711,
-          "h": 2.713,
-          "l": 2.705,
-          "c": 2.711
-        },
-        {
-          "t": 1795784400,
-          "o": 2.711,
-          "h": 2.713,
-          "l": 2.706,
-          "c": 2.71
-        },
-        {
-          "t": 1795785300,
-          "o": 2.71,
-          "h": 2.712,
-          "l": 2.703,
-          "c": 2.708
-        },
-        {
-          "t": 1795786200,
-          "o": 2.708,
-          "h": 2.717,
-          "l": 2.707,
-          "c": 2.712
-        },
-        {
-          "t": 1795787100,
-          "o": 2.712,
-          "h": 2.723,
-          "l": 2.711,
-          "c": 2.712
-        },
-        {
-          "t": 1795788000,
-          "o": 2.712,
-          "h": 2.718,
-          "l": 2.709,
-          "c": 2.712
-        },
-        {
-          "t": 1795788900,
-          "o": 2.712,
-          "h": 2.715,
-          "l": 2.697,
-          "c": 2.703
-        },
-        {
-          "t": 1795789800,
-          "o": 2.703,
-          "h": 2.703,
-          "l": 2.628,
-          "c": 2.649
-        },
-        {
-          "t": 1795790700,
-          "o": 2.649,
-          "h": 2.652,
-          "l": 2.605,
-          "c": 2.613
-        },
-        {
-          "t": 1795791600,
-          "o": 2.613,
-          "h": 2.621,
-          "l": 2.587,
-          "c": 2.616
-        },
-        {
-          "t": 1795792500,
-          "o": 2.616,
-          "h": 2.625,
-          "l": 2.602,
-          "c": 2.623
-        },
-        {
-          "t": 1795793400,
-          "o": 2.623,
-          "h": 2.644,
-          "l": 2.623,
-          "c": 2.64
-        },
-        {
-          "t": 1795794300,
-          "o": 2.64,
-          "h": 2.643,
-          "l": 2.628,
-          "c": 2.64
-        },
-        {
-          "t": 1795795200,
-          "o": 2.64,
-          "h": 2.647,
-          "l": 2.636,
-          "c": 2.642
-        },
-        {
-          "t": 1795796100,
-          "o": 2.642,
-          "h": 2.646,
-          "l": 2.632,
-          "c": 2.638
-        },
-        {
-          "t": 1795797000,
-          "o": 2.638,
-          "h": 2.652,
-          "l": 2.63,
-          "c": 2.647
-        },
-        {
-          "t": 1795797900,
-          "o": 2.647,
-          "h": 2.653,
-          "l": 2.636,
-          "c": 2.636
-        },
-        {
-          "t": 1795798800,
-          "o": 2.636,
-          "h": 2.651,
-          "l": 2.632,
-          "c": 2.65
-        },
-        {
-          "t": 1795799700,
-          "o": 2.65,
-          "h": 2.652,
-          "l": 2.637,
-          "c": 2.64
-        },
-        {
-          "t": 1795800600,
-          "o": 2.64,
-          "h": 2.645,
-          "l": 2.625,
-          "c": 2.628
-        },
-        {
-          "t": 1795801500,
-          "o": 2.628,
-          "h": 2.659,
-          "l": 2.622,
-          "c": 2.659
-        },
-        {
-          "t": 1795802400,
-          "o": 2.659,
-          "h": 2.659,
-          "l": 2.645,
-          "c": 2.648
-        },
-        {
-          "t": 1795803300,
-          "o": 2.648,
-          "h": 2.649,
-          "l": 2.639,
-          "c": 2.64
-        },
-        {
-          "t": 1795804200,
-          "o": 2.64,
-          "h": 2.646,
-          "l": 2.639,
-          "c": 2.645
-        },
-        {
-          "t": 1795805100,
-          "o": 2.645,
-          "h": 2.659,
-          "l": 2.643,
-          "c": 2.656
-        },
-        {
-          "t": 1795806000,
-          "o": 2.656,
-          "h": 2.666,
-          "l": 2.654,
-          "c": 2.665
-        },
-        {
-          "t": 1795806900,
-          "o": 2.665,
-          "h": 2.67,
-          "l": 2.662,
-          "c": 2.666
-        },
-        {
-          "t": 1795807800,
-          "o": 2.666,
-          "h": 2.67,
-          "l": 2.661,
-          "c": 2.662
-        },
-        {
-          "t": 1795808700,
-          "o": 2.662,
-          "h": 2.662,
-          "l": 2.654,
-          "c": 2.658
-        },
-        {
-          "t": 1795809600,
-          "o": 2.658,
-          "h": 2.659,
-          "l": 2.647,
-          "c": 2.652
-        },
-        {
-          "t": 1795810500,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.646,
-          "c": 2.651
-        },
-        {
-          "t": 1795811400,
-          "o": 2.651,
-          "h": 2.656,
-          "l": 2.651,
-          "c": 2.654
-        },
-        {
-          "t": 1795812300,
-          "o": 2.654,
-          "h": 2.655,
-          "l": 2.646,
-          "c": 2.649
-        },
-        {
-          "t": 1795813200,
-          "o": 2.649,
-          "h": 2.652,
-          "l": 2.647,
-          "c": 2.647
-        },
-        {
-          "t": 1795814100,
-          "o": 2.647,
-          "h": 2.651,
-          "l": 2.646,
-          "c": 2.649
-        },
-        {
-          "t": 1795815000,
-          "o": 2.649,
-          "h": 2.654,
-          "l": 2.645,
-          "c": 2.653
-        },
-        {
-          "t": 1795815900,
-          "o": 2.653,
-          "h": 2.654,
-          "l": 2.646,
-          "c": 2.646
-        },
-        {
-          "t": 1795816800,
-          "o": 2.646,
-          "h": 2.648,
-          "l": 2.628,
-          "c": 2.633
-        },
-        {
-          "t": 1795817700,
-          "o": 2.633,
-          "h": 2.638,
-          "l": 2.63,
-          "c": 2.638
-        },
-        {
-          "t": 1795818600,
-          "o": 2.638,
-          "h": 2.643,
-          "l": 2.637,
-          "c": 2.642
-        },
-        {
-          "t": 1795819500,
-          "o": 2.642,
-          "h": 2.647,
-          "l": 2.639,
-          "c": 2.644
-        },
-        {
-          "t": 1795820400,
-          "o": 2.644,
-          "h": 2.651,
-          "l": 2.641,
-          "c": 2.643
-        },
-        {
-          "t": 1795821300,
-          "o": 2.643,
-          "h": 2.643,
-          "l": 2.639,
-          "c": 2.641
-        },
-        {
-          "t": 1795822200,
-          "o": 2.641,
-          "h": 2.657,
-          "l": 2.641,
-          "c": 2.655
-        },
-        {
-          "t": 1795823100,
-          "o": 2.655,
-          "h": 2.663,
-          "l": 2.652,
-          "c": 2.662
-        },
-        {
-          "t": 1795824000,
-          "o": 2.662,
-          "h": 2.665,
-          "l": 2.656,
-          "c": 2.657
+      },
+      "family": "BREAKOUT_RETEST",
+      "base_score": 76,
+      "structural_stop": 0.3926,
+      "reference": 0.3923,
+      "trigger_ts": 1795825380000,
+      "trigger_tf": "M1",
+      "retest_level": 0.3925,
+      "tp1": 0.3897,
+      "tp1_r": 1.0,
+      "risk": 0.0023999999999999577,
+      "net_rr": -0.056333333333338925,
+      "valid": false,
+      "geometry_reason": "NEAR_LIQUIDITY",
+      "geometry_policy": "STRUCTURAL_V15_1",
+      "target_kind": "CONFIRMED_LIQUIDITY",
+      "atr_m5": 0.0008999999999999921,
+      "atr_m15": 0.0017142857142857118,
+      "structural_anchor": 0.3926,
+      "stop_buffer": 0.0002699999999999976,
+      "risk_floor": 0.002314285714285711,
+      "risk_ceiling": 0.009408,
+      "min_rr": 1.85,
+      "trail_atr_m5": 0.0008999999999999921,
+      "trail_start_r": 1.25,
+      "target_r_preferred": 2.15,
+      "rank_score": 70.0,
+      "net_rr_estimate": -0.056,
+      "meta": {
+        "status": "COLLECTING_MEXC_LABELS",
+        "n": 0,
+        "total_n": 5,
+        "win_rate_estimate": null,
+        "expected_r_estimate": null,
+        "rank_adjustment": 0.0
+      },
+      "signal_id": "APT_USDT:-1:BREAKOUT_RETEST:M1:1795825380000",
+      "signal_event_key": "APT_USDT:-1:EVENT:5986084",
+      "rejection_codes": [
+        "GEOMETRY_OR_EXECUTION",
+        "NEAR_LIQUIDITY",
+        "LOW_EVIDENCE_SCORE",
+        "NO_LOCAL_SHIFT_EVIDENCE",
+        "M1_NO_M5_CONTEXT"
+      ],
+      "signal_known_ts": 1795825440000,
+      "trigger_offset": 1,
+      "signal_age_sec": 112.1,
+      "local_support": false,
+      "relative_support": false,
+      "chase_cap": 0.00072,
+      "alignment_tier": "EARLY_REVERSAL",
+      "risk_multiplier": 0.575,
+      "funding_risk_mult": 1.0,
+      "early_close_hint_ua": null,
+      "maker_pullback": false,
+      "limit_ttl_min": 8,
+      "partial_pct": 0.5,
+      "fee_rate": 0.0002,
+      "slippage_rate": 0.0001,
+      "candidate_count": 1,
+      "candidate_diagnostics": [
+        {
+          "setup": "BREAKOUT_RETEST",
+          "family": "BREAKOUT_RETEST",
+          "trigger_tf": "M1",
+          "trigger_offset": 1,
+          "signal_age_sec": 112.1,
+          "side": -1,
+          "status": "WATCH",
+          "score": 73,
+          "rank_score": 70.0,
+          "meta": {
+            "status": "COLLECTING_MEXC_LABELS",
+            "n": 0,
+            "total_n": 5,
+            "win_rate_estimate": null,
+            "expected_r_estimate": null,
+            "rank_adjustment": 0.0
+          },
+          "reason_ua": "M1 пробій + ретест · RANGE_TRANSITION · RVOL 0.10x · непридатна ціна/SL/spread/RR · близький рівень ліквідності: недостатній RR · GEOMETRY_OR_EXECUTION, NEAR_LIQUIDITY, LOW_EVIDENCE_SCORE, NO_LOCAL_SHIFT_EVIDENCE, M1_NO_M5_CONTEXT",
+          "rejection_codes": [
+            "GEOMETRY_OR_EXECUTION",
+            "NEAR_LIQUIDITY",
+            "LOW_EVIDENCE_SCORE",
+            "NO_LOCAL_SHIFT_EVIDENCE",
+            "M1_NO_M5_CONTEXT"
+          ]
         }
       ],
-      "candles_5m": [
-        {
-          "t": 1795801200,
-          "o": 2.632,
-          "h": 2.632,
-          "l": 2.625,
-          "c": 2.628
-        },
-        {
-          "t": 1795801500,
-          "o": 2.628,
-          "h": 2.629,
-          "l": 2.622,
-          "c": 2.629
-        },
-        {
-          "t": 1795801800,
-          "o": 2.629,
-          "h": 2.643,
-          "l": 2.626,
-          "c": 2.643
-        },
-        {
-          "t": 1795802100,
-          "o": 2.643,
-          "h": 2.659,
-          "l": 2.64,
-          "c": 2.659
-        },
-        {
-          "t": 1795802400,
-          "o": 2.659,
-          "h": 2.659,
-          "l": 2.648,
-          "c": 2.648
-        },
-        {
-          "t": 1795802700,
-          "o": 2.648,
-          "h": 2.655,
-          "l": 2.648,
-          "c": 2.649
-        },
-        {
-          "t": 1795803000,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.645,
-          "c": 2.648
-        },
-        {
-          "t": 1795803300,
-          "o": 2.648,
-          "h": 2.649,
-          "l": 2.643,
-          "c": 2.643
-        },
-        {
-          "t": 1795803600,
-          "o": 2.643,
-          "h": 2.647,
-          "l": 2.641,
-          "c": 2.647
-        },
-        {
-          "t": 1795803900,
-          "o": 2.647,
-          "h": 2.648,
-          "l": 2.639,
-          "c": 2.64
-        },
-        {
-          "t": 1795804200,
-          "o": 2.64,
-          "h": 2.646,
-          "l": 2.639,
-          "c": 2.641
-        },
-        {
-          "t": 1795804500,
-          "o": 2.641,
-          "h": 2.643,
-          "l": 2.64,
-          "c": 2.643
-        },
-        {
-          "t": 1795804800,
-          "o": 2.643,
-          "h": 2.646,
-          "l": 2.641,
-          "c": 2.645
-        },
-        {
-          "t": 1795805100,
-          "o": 2.645,
-          "h": 2.646,
-          "l": 2.643,
-          "c": 2.645
-        },
-        {
-          "t": 1795805400,
-          "o": 2.645,
-          "h": 2.656,
-          "l": 2.645,
-          "c": 2.656
-        },
-        {
-          "t": 1795805700,
-          "o": 2.656,
-          "h": 2.659,
-          "l": 2.653,
-          "c": 2.656
-        },
-        {
-          "t": 1795806000,
-          "o": 2.656,
-          "h": 2.664,
-          "l": 2.654,
-          "c": 2.664
-        },
-        {
-          "t": 1795806300,
-          "o": 2.664,
-          "h": 2.664,
-          "l": 2.657,
-          "c": 2.658
-        },
-        {
-          "t": 1795806600,
-          "o": 2.658,
-          "h": 2.666,
-          "l": 2.658,
-          "c": 2.665
-        },
-        {
-          "t": 1795806900,
-          "o": 2.665,
-          "h": 2.67,
-          "l": 2.664,
-          "c": 2.668
-        },
-        {
-          "t": 1795807200,
-          "o": 2.668,
-          "h": 2.668,
-          "l": 2.662,
-          "c": 2.663
-        },
-        {
-          "t": 1795807500,
-          "o": 2.663,
-          "h": 2.668,
-          "l": 2.662,
-          "c": 2.666
-        },
-        {
-          "t": 1795807800,
-          "o": 2.666,
-          "h": 2.67,
-          "l": 2.665,
-          "c": 2.665
-        },
-        {
-          "t": 1795808100,
-          "o": 2.665,
-          "h": 2.67,
-          "l": 2.665,
-          "c": 2.669
-        },
-        {
-          "t": 1795808400,
-          "o": 2.669,
-          "h": 2.669,
-          "l": 2.661,
-          "c": 2.662
-        },
-        {
-          "t": 1795808700,
-          "o": 2.662,
-          "h": 2.662,
-          "l": 2.657,
-          "c": 2.657
-        },
-        {
-          "t": 1795809000,
-          "o": 2.657,
-          "h": 2.658,
-          "l": 2.654,
-          "c": 2.658
-        },
-        {
-          "t": 1795809300,
-          "o": 2.658,
-          "h": 2.658,
-          "l": 2.654,
-          "c": 2.658
-        },
-        {
-          "t": 1795809600,
-          "o": 2.658,
-          "h": 2.658,
-          "l": 2.651,
-          "c": 2.657
-        },
-        {
-          "t": 1795809900,
-          "o": 2.657,
-          "h": 2.659,
-          "l": 2.653,
-          "c": 2.654
-        },
-        {
-          "t": 1795810200,
-          "o": 2.654,
-          "h": 2.654,
-          "l": 2.647,
-          "c": 2.652
-        },
-        {
-          "t": 1795810500,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.648,
-          "c": 2.65
-        },
-        {
-          "t": 1795810800,
-          "o": 2.65,
-          "h": 2.651,
-          "l": 2.648,
-          "c": 2.649
-        },
-        {
-          "t": 1795811100,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.646,
-          "c": 2.651
-        },
-        {
-          "t": 1795811400,
-          "o": 2.651,
-          "h": 2.656,
-          "l": 2.651,
-          "c": 2.655
-        },
-        {
-          "t": 1795811700,
-          "o": 2.655,
-          "h": 2.656,
-          "l": 2.651,
-          "c": 2.653
-        },
-        {
-          "t": 1795812000,
-          "o": 2.653,
-          "h": 2.655,
-          "l": 2.652,
-          "c": 2.654
-        },
-        {
-          "t": 1795812300,
-          "o": 2.654,
-          "h": 2.655,
-          "l": 2.649,
-          "c": 2.65
-        },
-        {
-          "t": 1795812600,
-          "o": 2.65,
-          "h": 2.65,
-          "l": 2.646,
-          "c": 2.647
-        },
-        {
-          "t": 1795812900,
-          "o": 2.647,
-          "h": 2.65,
-          "l": 2.646,
-          "c": 2.649
-        },
-        {
-          "t": 1795813200,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.647,
-          "c": 2.649
-        },
-        {
-          "t": 1795813500,
-          "o": 2.649,
-          "h": 2.652,
-          "l": 2.648,
-          "c": 2.649
-        },
-        {
-          "t": 1795813800,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.647,
-          "c": 2.647
-        },
-        {
-          "t": 1795814100,
-          "o": 2.647,
-          "h": 2.651,
-          "l": 2.646,
-          "c": 2.651
-        },
-        {
-          "t": 1795814400,
-          "o": 2.651,
-          "h": 2.651,
-          "l": 2.649,
-          "c": 2.65
-        },
-        {
-          "t": 1795814700,
-          "o": 2.65,
-          "h": 2.651,
-          "l": 2.648,
-          "c": 2.649
-        },
-        {
-          "t": 1795815000,
-          "o": 2.649,
-          "h": 2.651,
-          "l": 2.645,
-          "c": 2.651
-        },
-        {
-          "t": 1795815300,
-          "o": 2.651,
-          "h": 2.654,
-          "l": 2.65,
-          "c": 2.651
-        },
-        {
-          "t": 1795815600,
-          "o": 2.651,
-          "h": 2.653,
-          "l": 2.651,
-          "c": 2.653
-        },
-        {
-          "t": 1795815900,
-          "o": 2.653,
-          "h": 2.654,
-          "l": 2.65,
-          "c": 2.652
-        },
-        {
-          "t": 1795816200,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.65,
-          "c": 2.652
-        },
-        {
-          "t": 1795816500,
-          "o": 2.652,
-          "h": 2.652,
-          "l": 2.646,
-          "c": 2.646
-        },
-        {
-          "t": 1795816800,
-          "o": 2.646,
-          "h": 2.648,
-          "l": 2.638,
-          "c": 2.64
-        },
-        {
-          "t": 1795817100,
-          "o": 2.64,
-          "h": 2.642,
-          "l": 2.638,
-          "c": 2.639
-        },
-        {
-          "t": 1795817400,
-          "o": 2.639,
-          "h": 2.64,
-          "l": 2.628,
-          "c": 2.633
-        },
-        {
-          "t": 1795817700,
-          "o": 2.633,
-          "h": 2.635,
-          "l": 2.63,
-          "c": 2.633
-        },
-        {
-          "t": 1795818000,
-          "o": 2.633,
-          "h": 2.637,
-          "l": 2.632,
-          "c": 2.635
-        },
-        {
-          "t": 1795818300,
-          "o": 2.635,
-          "h": 2.638,
-          "l": 2.632,
-          "c": 2.638
-        },
-        {
-          "t": 1795818600,
-          "o": 2.638,
-          "h": 2.643,
-          "l": 2.638,
-          "c": 2.639
-        },
-        {
-          "t": 1795818900,
-          "o": 2.639,
-          "h": 2.643,
-          "l": 2.637,
-          "c": 2.642
-        },
-        {
-          "t": 1795819200,
-          "o": 2.642,
-          "h": 2.643,
-          "l": 2.637,
-          "c": 2.642
-        },
-        {
-          "t": 1795819500,
-          "o": 2.642,
-          "h": 2.645,
-          "l": 2.639,
-          "c": 2.642
-        },
-        {
-          "t": 1795819800,
-          "o": 2.642,
-          "h": 2.645,
-          "l": 2.641,
-          "c": 2.643
-        },
-        {
-          "t": 1795820100,
-          "o": 2.643,
-          "h": 2.647,
-          "l": 2.642,
-          "c": 2.644
-        },
-        {
-          "t": 1795820400,
-          "o": 2.644,
-          "h": 2.651,
-          "l": 2.644,
-          "c": 2.649
-        },
-        {
-          "t": 1795820700,
-          "o": 2.649,
-          "h": 2.649,
-          "l": 2.644,
-          "c": 2.644
-        },
-        {
-          "t": 1795821000,
-          "o": 2.644,
-          "h": 2.646,
-          "l": 2.641,
-          "c": 2.643
-        },
-        {
-          "t": 1795821300,
-          "o": 2.643,
-          "h": 2.643,
-          "l": 2.641,
-          "c": 2.642
-        },
-        {
-          "t": 1795821600,
-          "o": 2.642,
-          "h": 2.643,
-          "l": 2.639,
-          "c": 2.641
-        },
-        {
-          "t": 1795821900,
-          "o": 2.641,
-          "h": 2.643,
-          "l": 2.641,
-          "c": 2.641
-        },
-        {
-          "t": 1795822200,
-          "o": 2.641,
-          "h": 2.653,
-          "l": 2.641,
-          "c": 2.652
-        },
-        {
-          "t": 1795822500,
-          "o": 2.652,
-          "h": 2.657,
-          "l": 2.652,
-          "c": 2.655
-        },
-        {
-          "t": 1795822800,
-          "o": 2.655,
-          "h": 2.656,
-          "l": 2.653,
-          "c": 2.655
-        },
-        {
-          "t": 1795823100,
-          "o": 2.655,
-          "h": 2.657,
-          "l": 2.652,
-          "c": 2.655
-        },
-        {
-          "t": 1795823400,
-          "o": 2.655,
-          "h": 2.662,
-          "l": 2.654,
-          "c": 2.661
-        },
-        {
-          "t": 1795823700,
-          "o": 2.661,
-          "h": 2.663,
-          "l": 2.66,
-          "c": 2.662
-        },
-        {
-          "t": 1795824000,
-          "o": 2.662,
-          "h": 2.665,
-          "l": 2.66,
-          "c": 2.663
-        },
-        {
-          "t": 1795824300,
-          "o": 2.663,
-          "h": 2.663,
-          "l": 2.659,
-          "c": 2.659
-        },
-        {
-          "t": 1795824600,
-          "o": 2.659,
-          "h": 2.66,
-          "l": 2.656,
-          "c": 2.657
-        },
-        {
-          "t": 1795824900,
-          "o": 2.657,
-          "h": 2.661,
-          "l": 2.656,
-          "c": 2.656
-        }
-      ],
-      "execution_tf": "1m",
-      "bid": 2.655,
-      "ask": 2.656,
-      "quote_valid": true,
-      "quote_ts": 1795825259174,
-      "analysis_fresh": true,
-      "htf_regime": "RANGE_TRANSITION",
-      "regime": "RANGE_TRANSITION",
-      "local_wave": {
-        "side": 0,
-        "m5": {
-          "side": -1,
-          "move_atr": 1.254,
-          "efficiency": 0.75,
-          "directional_bars": 3
-        },
-        "m15": {
-          "side": 1,
-          "move_atr": 1.806,
-          "efficiency": 0.615,
-          "directional_bars": 2
-        },
-        "m5_slow": {
-          "side": 0,
-          "move_atr": 0.209,
-          "efficiency": 0.067,
-          "directional_bars": 3
-        },
-        "breaks": []
-      },
-      "relative_strength": {
-        "available": true,
-        "side": 1,
-        "relative_atr": 0.762,
-        "asset_return_pct": 0.53,
-        "btc_return_pct": 0.266
-      },
-      "wave_side": 0,
-      "observed_wave_side": 1,
-      "model_schema": "MEXC_ADAPTIVE_DIRECTION_15_3",
-      "direction_diagnostics": {
-        "1": {
-          "side": 1,
-          "local_support": false,
-          "windows_checked": [
-            {
-              "tf": "M1",
-              "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -2.333,
-              "break_distance_atr": -2.917,
-              "rvol": 0.494,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M1",
-              "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": 0.56,
-              "break_distance_atr": 0.0,
-              "rvol": 0.604,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": -0.209,
-              "break_distance_atr": -1.881,
-              "rvol": 0.503,
-              "local_support": false,
-              "higher_opposes": false
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -0.4,
-              "break_distance_atr": -1.6,
-              "rvol": 0.445,
-              "local_support": false,
-              "higher_opposes": false
-            }
-          ],
-          "detected": 0,
-          "ready": 0,
-          "rejections": []
-        },
-        "-1": {
-          "side": -1,
-          "local_support": false,
-          "windows_checked": [
-            {
-              "tf": "M1",
-              "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 2.333,
-              "break_distance_atr": -0.0,
-              "rvol": 0.494,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M1",
-              "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": -0.56,
-              "break_distance_atr": -2.24,
-              "rvol": 0.604,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M5",
-              "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": 0.209,
-              "break_distance_atr": -0.836,
-              "rvol": 0.503,
-              "local_support": false,
-              "higher_opposes": true
-            },
-            {
-              "tf": "M5",
-              "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 0.4,
-              "break_distance_atr": -1.0,
-              "rvol": 0.445,
-              "local_support": false,
-              "higher_opposes": true
-            }
-          ],
-          "detected": 0,
-          "ready": 0,
-          "rejections": []
-        }
-      }
+      "be_trigger": null
     },
     {
       "symbol": "XPT_USDT",
@@ -9485,10 +10074,10 @@
       "cluster_ua": "МЕТАЛ",
       "fee_tag": "0% FEE",
       "mexc_url": "https://www.mexc.com/futures/XPT_USDT",
-      "price": 1340.74,
+      "price": 1339.03,
       "tick": 0.01,
-      "change_24h_pct": 1.24,
-      "volume_24h": 1772101.0,
+      "change_24h_pct": 1.11,
+      "volume_24h": 1772329.0,
       "funding_rate": 0.0,
       "funding_pct": 0.0,
       "open_interest": 17947077.0,
@@ -9508,8 +10097,8 @@
       "stop": null,
       "tp": null,
       "rr": null,
-      "rvol": 0.89,
-      "range_pos": 0.601,
+      "rvol": 1.1,
+      "range_pos": 0.578,
       "btc_aligned": true,
       "reason_ua": "LONG та SHORT перевірено; немає підтвердженого тригера",
       "sizing": null,
@@ -10078,13 +10667,6 @@
       ],
       "candles_5m": [
         {
-          "t": 1795801200,
-          "o": 1322.81,
-          "h": 1322.81,
-          "l": 1320.25,
-          "c": 1320.25
-        },
-        {
           "t": 1795801500,
           "o": 1320.25,
           "h": 1320.56,
@@ -10636,13 +11218,20 @@
           "h": 1339.82,
           "l": 1339.35,
           "c": 1339.75
+        },
+        {
+          "t": 1795825200,
+          "o": 1339.75,
+          "h": 1340.77,
+          "l": 1338.89,
+          "c": 1338.95
         }
       ],
       "execution_tf": "1m",
-      "bid": 1339.17,
-      "ask": 1340.79,
+      "bid": 1338.9,
+      "ask": 1340.54,
       "quote_valid": true,
-      "quote_ts": 1795825259348,
+      "quote_ts": 1795825548363,
       "analysis_fresh": true,
       "htf_regime": "RANGE_TRANSITION",
       "regime": "RANGE_TRANSITION",
@@ -10650,8 +11239,8 @@
         "side": 0,
         "m5": {
           "side": 0,
-          "move_atr": 0.719,
-          "efficiency": 0.492,
+          "move_atr": 0.847,
+          "efficiency": 0.47,
           "directional_bars": 2
         },
         "m15": {
@@ -10662,11 +11251,17 @@
         },
         "m5_slow": {
           "side": 0,
-          "move_atr": 0.983,
-          "efficiency": 0.311,
+          "move_atr": 1.599,
+          "efficiency": 0.424,
           "directional_bars": 5
         },
-        "breaks": []
+        "breaks": [
+          {
+            "side": -1,
+            "level": 1339.08,
+            "ts": 1795825200000
+          }
+        ]
       },
       "relative_strength": {
         "available": false,
@@ -10682,41 +11277,51 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": 0.079,
+              "break_distance_atr": -3.589,
+              "rvol": 0.715,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": -0.058,
-              "break_distance_atr": -3.143,
-              "rvol": 0.961,
+              "known_ts": 1795825440000,
+              "body_atr": -2.649,
+              "break_distance_atr": -4.248,
+              "rvol": 0.992,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": 0.195,
-              "break_distance_atr": -3.117,
-              "rvol": 0.648,
+              "known_ts": 1795825380000,
+              "body_atr": -0.997,
+              "break_distance_atr": -1.661,
+              "rvol": 0.934,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": 0.479,
-              "break_distance_atr": -1.498,
-              "rvol": 0.781,
+              "known_ts": 1795825500000,
+              "body_atr": -0.955,
+              "break_distance_atr": -2.447,
+              "rvol": 0.963,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": -0.406,
-              "break_distance_atr": -2.161,
-              "rvol": 0.813,
+              "known_ts": 1795825200000,
+              "body_atr": 0.479,
+              "break_distance_atr": -1.498,
+              "rvol": 0.781,
               "local_support": false,
               "higher_opposes": true
             }
@@ -10731,41 +11336,51 @@
           "windows_checked": [
             {
               "tf": "M1",
+              "offset": 0,
+              "known_ts": 1795825500000,
+              "body_atr": -0.079,
+              "break_distance_atr": -0.118,
+              "rvol": 0.715,
+              "local_support": false,
+              "higher_opposes": true
+            },
+            {
+              "tf": "M1",
               "offset": 1,
-              "known_ts": 1795825200000,
-              "body_atr": 0.058,
-              "break_distance_atr": -1.484,
-              "rvol": 0.961,
+              "known_ts": 1795825440000,
+              "body_atr": 2.649,
+              "break_distance_atr": 1.69,
+              "rvol": 0.992,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M1",
               "offset": 2,
-              "known_ts": 1795825140000,
-              "body_atr": -0.195,
-              "break_distance_atr": -1.475,
-              "rvol": 0.648,
+              "known_ts": 1795825380000,
+              "body_atr": 0.997,
+              "break_distance_atr": -1.163,
+              "rvol": 0.934,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 0,
-              "known_ts": 1795825200000,
-              "body_atr": -0.479,
-              "break_distance_atr": -0.803,
-              "rvol": 0.781,
+              "known_ts": 1795825500000,
+              "body_atr": 0.955,
+              "break_distance_atr": 0.155,
+              "rvol": 0.963,
               "local_support": false,
               "higher_opposes": true
             },
             {
               "tf": "M5",
               "offset": 1,
-              "known_ts": 1795824900000,
-              "body_atr": 0.406,
-              "break_distance_atr": -0.354,
-              "rvol": 0.813,
+              "known_ts": 1795825200000,
+              "body_atr": -0.479,
+              "break_distance_atr": -0.803,
+              "rvol": 0.781,
               "local_support": false,
               "higher_opposes": true
             }
@@ -10785,7 +11400,7 @@
     "active": {
       "phase": "OPEN",
       "placed_ts": 1795806958232,
-      "processed_until_ts": 1795825200000,
+      "processed_until_ts": 1795825500000,
       "expires_ts": 1795807858232,
       "stop_effective_ts": 1795806958232,
       "quality": "PARTIAL_ENTRY_BAR",
@@ -10860,22 +11475,13 @@
       },
       "opened_ts": 1795807140000,
       "opened_kyiv": "27.11 21:19",
-      "current_price": 90.83,
-      "pnl_r": 0.4348,
-      "pnl_usd": 0.37,
+      "current_price": 90.82,
+      "pnl_r": 0.413,
+      "pnl_usd": 0.35,
       "peak_r": 0.8260869565217713,
       "be_armed": false,
       "partial_entry_bar": true,
       "trail_m5": [
-        {
-          "bucket": 1795820400000,
-          "last": 1795820700000,
-          "count": 5,
-          "o": 90.92,
-          "h": 90.97,
-          "l": 90.9,
-          "c": 90.92
-        },
         {
           "bucket": 1795820700000,
           "last": 1795821000000,
@@ -11010,6 +11616,15 @@
           "h": 90.9,
           "l": 90.83,
           "c": 90.89
+        },
+        {
+          "bucket": 1795825200000,
+          "last": 1795825500000,
+          "count": 5,
+          "o": 90.89,
+          "h": 90.9,
+          "l": 90.82,
+          "c": 90.84
         }
       ]
     },
@@ -11206,7 +11821,7 @@
     "active": {
       "phase": "OPEN",
       "placed_ts": 1795823162898,
-      "processed_until_ts": 1795825200000,
+      "processed_until_ts": 1795825500000,
       "expires_ts": 1795823642898,
       "stop_effective_ts": 1795823162898,
       "quality": "OBSERVED_M1",
@@ -11281,10 +11896,10 @@
       },
       "opened_ts": 1795823162898,
       "opened_kyiv": "28.11 01:46",
-      "current_price": 45.43,
-      "pnl_r": 0.9286,
-      "pnl_usd": 0.84,
-      "peak_r": 1.052631578947396,
+      "current_price": 45.49,
+      "pnl_r": 1.0864,
+      "pnl_usd": 0.98,
+      "peak_r": 1.0789473684210753,
       "be_armed": false,
       "partial_entry_bar": true,
       "trail_m5": [
@@ -11341,6 +11956,15 @@
           "h": 45.45,
           "l": 45.27,
           "c": 45.4
+        },
+        {
+          "bucket": 1795825200000,
+          "last": 1795825500000,
+          "count": 5,
+          "o": 45.4,
+          "h": 45.46,
+          "l": 45.28,
+          "c": 45.45
         }
       ]
     },
@@ -12175,5 +12799,5 @@
       "reason_ua": "Беззбиток / Структурний трейлінг"
     }
   ],
-  "last_attempt_ts": 1795825260477
+  "last_attempt_ts": 1795825552130
 }
