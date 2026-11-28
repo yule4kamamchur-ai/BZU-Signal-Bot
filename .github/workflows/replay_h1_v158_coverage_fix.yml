@@ -1,0 +1,76 @@
+name: BZU v15.8 H1 M15 portfolio research (PAPER only)
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: UTC start (YYYY-MM-DD)
+        required: true
+        default: '2026-11-08'
+      end:
+        description: UTC exclusive end (YYYY-MM-DD)
+        required: true
+        default: '2026-11-28'
+      profile:
+        description: Independent strategy portfolio
+        type: choice
+        options:
+          - MIXED_PEAK_RANGE
+          - PEAK_CURRENT
+          - CLOSE_PRIOR
+          - RANGE_ONLY
+        default: MIXED_PEAK_RANGE
+      coverage_mode:
+        description: available = common covered interval; strict = exact requested dates
+        type: choice
+        options:
+          - available
+          - strict
+        default: available
+      spread_bps:
+        description: Additional full quoted spread in bps (0 = only fee/slippage)
+        required: true
+        default: '0'
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      PYTHONUNBUFFERED: '1'
+      MEXC_FUTURES_BASE: 'https://api.mexc.com'
+      MEXC_TAKER_FEE_RATE: '0.0002'
+      MEXC_SLIPPAGE_RATE: '0.0001'
+      START: ${{ inputs.start }}
+      END: ${{ inputs.end }}
+      PROFILE: ${{ inputs.profile }}
+      SPREAD_BPS: ${{ inputs.spread_bps }}
+      COVERAGE_MODE: ${{ inputs.coverage_mode }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/cache/restore@v4
+        id: candles
+        with:
+          path: mexc_replay_cache
+          key: mexc-h1-coverage-${{ inputs.start }}-${{ inputs.end }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            mexc-h1-coverage-${{ inputs.start }}-${{ inputs.end }}-
+            mexc-h1-v158-${{ inputs.start }}-${{ inputs.end }}
+      - name: H1 portfolio replay, no live state writes
+        run: python replay_h1_portfolio.py --data mexc_replay_cache --start "$START" --end "$END" --download --interval 180 --spread-bps "$SPREAD_BPS" --profile "$PROFILE" --coverage-mode "$COVERAGE_MODE" --coverage-out H1_M15_COVERAGE.json --out H1_M15_PORTFOLIO_REPORT.json
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: mexc_replay_cache
+          key: ${{ steps.candles.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mexc-v158-${{ inputs.profile }}-research
+          path: |
+            H1_M15_PORTFOLIO_REPORT.json
+            H1_M15_COVERAGE.json
+          if-no-files-found: warn
